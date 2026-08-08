@@ -1,0 +1,111 @@
+{
+  "Auth": {
+    "openViaTelegram": "Bu ilovani Telegram orqali oching.",
+    "needsPhoneLink": "Hisobingizni bog'lash uchun telefon raqamingizni ulashing.",
+    "sharePhone": "Telefon raqamimni ulashish",
+    "linkTimeout": "Bog'lash amalga oshmadi. Telegram botdagi xabarni tekshiring yoki administratoringiz bilan bog'laning, so'ng qayta urinib ko'ring."
+  },
+  "Home": {
+    "greeting": "Salom, {name}",
+    "today": "BUGUN",
+    "loadError": "Ma'lumotlarni yuklab bo'lmadi",
+    "stops": "nuqta",
+    "collected": "Yig'ilgan",
+    "routeAction": "MARSHRUT",
+    "orderAction": "BUYURTMA",
+    "reportAction": "HISOBOT"
+  },
+  "Route": {
+    "title": "Bugungi marshrut",
+    "emptyState": "Bugun uchun marshrut belgilanmagan",
+    "loadError": "Marshrutni yuklab bo'lmadi",
+    "metersShort": "m",
+    "collectPayment": "To'lov qabul qilish",
+    "finishRoute": "Marshrutni tugatish",
+    "finishSuccess": "Marshrut tugatildi",
+    "finished": "Marshrut tugatilgan"
+  },
+  "Report": {
+    "title": "Kunlik hisobot",
+    "orders": "Buyurtmalar",
+    "payments": "To'lovlar",
+    "noOrders": "Bugun buyurtma yo'q",
+    "noPayments": "Bugun to'lov yo'q"
+  },
+  "Order": {
+    "customer": "Mijoz",
+    "loadError": "Mahsulotlarni yuklab bo'lmadi",
+    "noProducts": "Mahsulot topilmadi",
+    "pickCustomer": "Mijozni tanlang",
+    "repeatLastOrder": "Oxirgisini takrorlash",
+    "repeated": "Oxirgi buyurtma qo'shildi",
+    "save": "SAQLASH",
+    "saved": "Buyurtma saqlandi",
+    "searchCustomer": "Mijoz qidirish",
+    "searchProduct": "Mahsulot qidirish",
+    "total": "Jami",
+    "available": "Qoldiq",
+    "priceUnavailable": "Narx yo'q",
+    "stockExceeded": "Omborda {available} ta mavjud, iltimos tovar sonini kamaytiring",
+    "stockExceededBanner": "Ba'zi mahsulotlar uchun miqdor ombordagi qoldiqdan ko'p — saqlashdan oldin kamaytiring"
+  },
+  "Payment": {
+    "amount": "Summa",
+    "currentDebt": "Joriy qarz",
+    "customer": "Mijoz",
+    "invoicesNeedConnection": "Fakturalar ro'yxati internet ulanganda ko'rinadi",
+    "method": "To'lov turi",
+    "noOpenInvoices": "To'lanmagan faktura yo'q",
+    "notFound": "Mijoz topilmadi",
+    "openInvoices": "To'lanmagan fakturalar",
+    "receiptCopied": "Kvitansiya nusxalandi",
+    "receiptTitle": "To'lov kvitansiyasi",
+    "save": "SAQLASH",
+    "saved": "To'lov saqlandi",
+    "shareReceipt": "Kvitansiyani yuborish"
+  },
+  "Visit": {
+    "collectPayment": "To'lov qabul qilish",
+    "currentDebt": "Joriy qarz",
+    "distance": "Masofa",
+    "lastOrder": "Oxirgi buyurtma",
+    "leaveNoOrder": "Buyurtmasiz ketish",
+    "metersShort": "m",
+    "never": "Hech qachon",
+    "noOrderReasonLabel": "Sabab (ixtiyoriy)",
+    "noOrderReasonPlaceholder": "Nega buyurtma bo'lmadi?",
+    "notFound": "Nuqta topilmadi",
+    "gpsUnknown": "GPS aniqlanmoqda — joylashuvingiz aniqlanguncha kuting",
+    "gpsTooFar": "Siz nuqtadan 150m'dan uzoqdasiz — yaqinlashing",
+    "takeOrder": "Buyurtma olish"
+  },
+  "NotFound": {
+    "title": "Bunday sahifa mavjud emas",
+    "description": "Siz izlagan sahifa topilmadi yoki ko'chirilgan.",
+    "homeAction": "BOSH SAHIFA"
+  },
+  "Common": {
+    "somUnit": "so'm",
+    "mapUnavailable": "Xarita mavjud emas",
+    "online": "Onlayn",
+    "offline": "Oflayn",
+    "syncFailed": "{count} ta xatolik",
+    "syncPending": "{count} ta kutilmoqda",
+    "syncRetry": "Qayta urinish",
+    "logoutBlockedPendingSync": "{count} ta hujjat hali yuborilmagan. Internetga ulaning va sinxronizatsiya tugashini kuting, keyin chiqing.",
+    "all": "Hammasi",
+    "done": "Tayyor",
+    "cancel": "Bekor qilish",
+    "confirm": "Tasdiqlash",
+    "paymentMethod": {
+      "CASH": "Naqd",
+      "CARD": "Karta",
+      "TRANSFER": "Pul ko'chirish"
+    },
+    "queueStatus": {
+      "PENDING": "Kutilmoqda",
+      "SYNCED": "Yuborildi",
+      "FAILED": "Xatolik"
+    }
+  }
+}

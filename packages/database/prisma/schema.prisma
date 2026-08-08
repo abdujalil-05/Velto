@@ -1,0 +1,905 @@
+// Velto MVP v1.0 — domain schema per VELTO-TZ.md section 6.
+// Conventions (6.1): StockMovement/Payment are append-only sources of truth;
+// no 1:1 uniques between commercial documents; money = Decimal(18,2),
+// qty = Decimal(18,3), percentages = Decimal(5,2); tenant isolation is
+// enforced at the database level via Postgres RLS (see migrations), not by
+// relying on middleware alone.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// 6.2 Tenant va foydalanuvchilar
+// ---------------------------------------------------------------------------
+
+enum Plan {
+  START
+  GROWTH
+  SCALE
+  ENTERPRISE
+}
+
+model Tenant {
+  id          String    @id @default(uuid()) @db.Uuid
+  name        String
+  slug        String    @unique
+  plan        Plan      @default(START)
+  isActive    Boolean   @default(true)
+  trialEndsAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  companies Company[]
+}
+
+model Company {
+  id             String   @id @default(uuid()) @db.Uuid
+  tenantId       String   @db.Uuid
+  name           String
+  legalName      String?
+  phone          String?
+  address        String?
+  currency       String   @default("UZS")
+  defaultVatRate Decimal  @default(12) @db.Decimal(5, 2)
+  docPrefix      String   @default("")
+  timezone       String   @default("Asia/Tashkent")
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  users             User[]
+  roles             Role[]
+  customers         Customer[]
+  outlets           Outlet[]
+  productCategories ProductCategory[]
+  products          Product[]
+  priceLists        PriceList[]
+  warehouses        Warehouse[]
+  stockMovements    StockMovement[]
+  salesOrders       SalesOrder[]
+  invoices          Invoice[]
+  payments          Payment[]
+  cashSessions      CashSession[]
+  routes            Route[]
+  routeRuns         RouteRun[]
+  visits            Visit[]
+  suppliers         Supplier[]
+  purchaseOrders    PurchaseOrder[]
+  auditLogs         AuditLog[]
+  outboxEvents      OutboxEvent[]
+  importJobs        ImportJob[]
+  exportJobs        ExportJob[]
+  documentCounters  DocumentCounter[]
+  notifications     Notification[]
+
+  @@index([tenantId])
+}
+
+model User {
+  id           String    @id @default(uuid()) @db.Uuid
+  companyId    String    @db.Uuid
+  firstName    String
+  lastName     String
+  phone        String // asosiy identifikator
+  email        String?
+  passwordHash String? // agentda bo'lmasligi mumkin
+  telegramId   BigInt? // Telegram orqali kirish
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  roles             UserRole[]
+  refreshTokens     RefreshToken[]
+  agentOrders       SalesOrder[]    @relation("AgentOrders")
+  paymentsCollected Payment[]       @relation("PaymentsCollected")
+  cashSessions      CashSession[]
+  agentRoutes       Route[]         @relation("AgentRoutes")
+  agentVisits       Visit[]         @relation("AgentVisits")
+  auditLogs         AuditLog[]
+  purchaseOrders    PurchaseOrder[] @relation("PurchaseOrderCreatedBy")
+  exportJobs        ExportJob[]
+  notifications     Notification[]
+
+  @@unique([companyId, phone])
+  @@unique([telegramId])
+  @@index([companyId])
+}
+
+model Role {
+  id        String   @id @default(uuid()) @db.Uuid
+  companyId String   @db.Uuid
+  name      String
+  code      String
+  isSystem  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company     Company          @relation(fields: [companyId], references: [id])
+  permissions RolePermission[]
+  users       UserRole[]
+
+  @@unique([companyId, code])
+  @@index([companyId])
+}
+
+model Permission {
+  id        String   @id @default(uuid()) @db.Uuid
+  module    String
+  code      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  roles RolePermission[]
+
+  @@unique([module, code])
+}
+
+model RolePermission {
+  roleId       String   @db.Uuid
+  permissionId String   @db.Uuid
+  createdAt    DateTime @default(now())
+
+  role       Role       @relation(fields: [roleId], references: [id])
+  permission Permission @relation(fields: [permissionId], references: [id])
+
+  @@id([roleId, permissionId])
+}
+
+model UserRole {
+  userId    String   @db.Uuid
+  roleId    String   @db.Uuid
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+  role Role @relation(fields: [roleId], references: [id])
+
+  @@id([userId, roleId])
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String // xom token saqlanmaydi
+  familyId  String    @db.Uuid // rotatsiya oilasi
+  expiresAt DateTime
+  revokedAt DateTime?
+  userAgent String?
+  ip        String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([familyId])
+}
+
+// ---------------------------------------------------------------------------
+// 6.3 Mijozlar va nuqtalar
+// ---------------------------------------------------------------------------
+
+enum OutletType {
+  SHOP
+  MINIMARKET
+  SUPERMARKET
+  BAZAAR
+  HORECA
+  WAREHOUSE
+  OTHER
+}
+
+model Customer {
+  id              String    @id @default(uuid()) @db.Uuid
+  companyId       String    @db.Uuid
+  code            String
+  name            String
+  phone           String?
+  contactPerson   String?
+  priceListId     String?   @db.Uuid
+  paymentTermDays Int       @default(0)
+  isBlocked       Boolean   @default(false)
+  blockReason     String?
+  cachedBalance   Decimal   @default(0) @db.Decimal(18, 2) // proyeksiya, 6.7-bo'lim
+  isActive        Boolean   @default(true)
+  deletedAt       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  company   Company    @relation(fields: [companyId], references: [id])
+  priceList PriceList? @relation(fields: [priceListId], references: [id])
+
+  outlets     Outlet[]
+  salesOrders SalesOrder[]
+  invoices    Invoice[]
+  payments    Payment[]
+
+  // Uniqueness on `code` only applies to live rows — enforced by a partial
+  // index in prisma/migrations/*_soft_delete_partial_unique (Prisma's schema
+  // DSL can't express `WHERE "deletedAt" IS NULL`), so a soft-deleted
+  // customer's code can be reused. This plain index just keeps lookups fast.
+  @@index([companyId, code])
+  @@index([companyId, name])
+  // F-M01 (6.3) name-similarity duplicate detection (pg_trgm) — declared here
+  // (not hand-written SQL) so Prisma's migration diff manages it and stops
+  // proposing to drop it on every subsequent `migrate dev`.
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin)
+}
+
+model Outlet {
+  id         String     @id @default(uuid()) @db.Uuid
+  companyId  String     @db.Uuid
+  customerId String     @db.Uuid
+  name       String
+  type       OutletType @default(SHOP)
+  address    String?
+  latitude   Decimal?   @db.Decimal(10, 7)
+  longitude  Decimal?   @db.Decimal(10, 7)
+  photoUrl   String? // [v1.1]
+  isActive   Boolean    @default(true)
+  deletedAt  DateTime?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  company  Company  @relation(fields: [companyId], references: [id])
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  salesOrders SalesOrder[]
+  routeStops  RouteStop[]
+  visits      Visit[]
+
+  @@index([companyId, customerId])
+  @@index([companyId, latitude, longitude])
+}
+
+// Domen qoidasi (F-M01): mijoz to'laqonli obyekt. Dublikat aniqlash — INN,
+// telefon, koordinata (50m radius) va nom o'xshashligi bo'yicha ogohlantirish
+// (application-layer, apps/api customer module da amalga oshiriladi).
+
+// ---------------------------------------------------------------------------
+// 6.4 Katalog va narxlar
+// ---------------------------------------------------------------------------
+
+model ProductCategory {
+  id        String   @id @default(uuid()) @db.Uuid
+  companyId String   @db.Uuid
+  name      String
+  parentId  String?  @db.Uuid
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company  Company           @relation(fields: [companyId], references: [id])
+  parent   ProductCategory?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children ProductCategory[] @relation("CategoryTree")
+  products Product[]
+
+  @@unique([companyId, name, parentId])
+}
+
+model Product {
+  id           String    @id @default(uuid()) @db.Uuid
+  companyId    String    @db.Uuid
+  categoryId   String?   @db.Uuid
+  sku          String
+  barcode      String?
+  name         String
+  brand        String?
+  baseUnit     String // "dona", "kg", "litr"
+  vatRate      Decimal   @default(12) @db.Decimal(5, 2)
+  minPrice     Decimal?  @db.Decimal(18, 2) // agent undan past sota olmaydi
+  imageUrl     String?
+  externalCode String? // 1C moslashtirish uchun, 1C eksport majburiy
+  isActive     Boolean   @default(true)
+  deletedAt    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  company  Company          @relation(fields: [companyId], references: [id])
+  category ProductCategory? @relation(fields: [categoryId], references: [id])
+
+  packagings         ProductPackaging[]
+  priceListItems     PriceListItem[]
+  stockLevels        StockLevel[]
+  stockMovements     StockMovement[]
+  orderLines         SalesOrderLine[]
+  invoiceLines       InvoiceLine[]
+  purchaseOrderLines PurchaseOrderLine[]
+
+  // Same partial-unique-index note as Customer.code above — see
+  // prisma/migrations/*_soft_delete_partial_unique.
+  @@index([companyId, sku])
+  @@index([companyId, name])
+  @@index([companyId, barcode])
+}
+
+model ProductPackaging {
+  // dona → blok → quti
+  id            String   @id @default(uuid()) @db.Uuid
+  productId     String   @db.Uuid
+  name          String // "dona", "blok", "quti"
+  qtyInBaseUnit Decimal  @db.Decimal(18, 3)
+  isDefault     Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  product    Product          @relation(fields: [productId], references: [id])
+  orderLines SalesOrderLine[]
+
+  @@index([productId])
+}
+
+model PriceList {
+  id        String   @id @default(uuid()) @db.Uuid
+  companyId String   @db.Uuid
+  name      String
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company   Company         @relation(fields: [companyId], references: [id])
+  items     PriceListItem[]
+  customers Customer[]
+
+  @@index([companyId])
+}
+
+model PriceListItem {
+  id          String   @id @default(uuid()) @db.Uuid
+  priceListId String   @db.Uuid
+  productId   String   @db.Uuid
+  price       Decimal  @db.Decimal(18, 2)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  priceList PriceList @relation(fields: [priceListId], references: [id])
+  product   Product   @relation(fields: [productId], references: [id])
+
+  @@unique([priceListId, productId])
+}
+
+// ---------------------------------------------------------------------------
+// 6.5 Ombor
+// ---------------------------------------------------------------------------
+
+enum StockMovementType {
+  RECEIVE
+  ISSUE
+  RESERVE
+  RELEASE
+  ADJUST
+}
+
+model Warehouse {
+  id        String   @id @default(uuid()) @db.Uuid
+  companyId String   @db.Uuid
+  name      String
+  address   String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company        Company         @relation(fields: [companyId], references: [id])
+  stockLevels    StockLevel[]
+  stockMovements StockMovement[]
+  purchaseOrders PurchaseOrder[]
+  salesOrders    SalesOrder[]
+
+  @@index([companyId])
+}
+
+model StockLevel {
+  // proyeksiya — StockMovement'dan qayta hisoblanadi
+  productId   String   @db.Uuid
+  warehouseId String   @db.Uuid
+  onHand      Decimal  @default(0) @db.Decimal(18, 3)
+  reserved    Decimal  @default(0) @db.Decimal(18, 3)
+  // available = onHand - reserved (hisoblanadi)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  product   Product   @relation(fields: [productId], references: [id])
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id])
+
+  @@id([productId, warehouseId])
+}
+
+model StockMovement {
+  // haqiqat manbai — append-only
+  id          String            @id @default(uuid()) @db.Uuid
+  companyId   String            @db.Uuid
+  productId   String            @db.Uuid
+  warehouseId String            @db.Uuid
+  type        StockMovementType
+  qty         Decimal           @db.Decimal(18, 3) // ishorali: + kirim, - chiqim
+  refType     String? // "SalesOrder", "PurchaseOrder"...
+  refId       String?           @db.Uuid
+  note        String?
+  createdAt   DateTime          @default(now())
+
+  company   Company   @relation(fields: [companyId], references: [id])
+  product   Product   @relation(fields: [productId], references: [id])
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id])
+
+  @@index([companyId, productId, warehouseId])
+}
+
+// Qoida (F-M03): konkurent operatsiyalarda ortiqcha sotishni oldini olish —
+// row-level lock (`SELECT ... FOR UPDATE`) majburiy rezerv operatsiyasida
+// (apps/api stock module'da amalga oshiriladi).
+
+// ---------------------------------------------------------------------------
+// 6.6 Sotish
+// ---------------------------------------------------------------------------
+
+enum OrderStatus {
+  DRAFT
+  SUBMITTED
+  CONFIRMED
+  SHIPPED
+  DELIVERED
+  CLOSED
+  CANCELLED
+}
+
+model SalesOrder {
+  id          String      @id @default(uuid()) @db.Uuid
+  companyId   String      @db.Uuid
+  number      String // SO-2026-000123
+  customerId  String      @db.Uuid
+  outletId    String?     @db.Uuid
+  agentId     String?     @db.Uuid
+  // Not in the TZ's 6.6 schema, but stock reservation (8.3) is inherently
+  // per-warehouse (StockLevel/StockMovement are keyed by warehouseId) —
+  // required infrastructure the doc's schema section omitted.
+  warehouseId String      @db.Uuid
+  status      OrderStatus @default(DRAFT)
+  clientId    String?     @unique // offline idempotentlik kaliti
+  note        String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  company   Company   @relation(fields: [companyId], references: [id])
+  customer  Customer  @relation(fields: [customerId], references: [id])
+  outlet    Outlet?   @relation(fields: [outletId], references: [id])
+  agent     User?     @relation("AgentOrders", fields: [agentId], references: [id])
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id])
+
+  lines    SalesOrderLine[]
+  invoices Invoice[]
+
+  @@unique([companyId, number])
+  @@index([companyId, customerId])
+  @@index([companyId, agentId, createdAt])
+}
+
+model SalesOrderLine {
+  id          String   @id @default(uuid()) @db.Uuid
+  orderId     String   @db.Uuid
+  productId   String   @db.Uuid
+  packagingId String   @db.Uuid
+  qty         Decimal  @db.Decimal(18, 3)
+  unitPrice   Decimal  @db.Decimal(18, 2)
+  discountPct Decimal  @default(0) @db.Decimal(5, 2)
+  vatRate     Decimal  @db.Decimal(5, 2)
+  lineTotal   Decimal  @db.Decimal(18, 2) // serverda hisoblanadi, agent yubormaydi
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  order     SalesOrder       @relation(fields: [orderId], references: [id])
+  product   Product          @relation(fields: [productId], references: [id])
+  packaging ProductPackaging @relation(fields: [packagingId], references: [id])
+
+  @@index([orderId])
+}
+
+// PICKING holati MVP'da ishlatilmaydi — logistika moduli [v1.1].
+// CONFIRMED to'g'ridan DELIVERED'ga o'tishi mumkin (8.7-bo'lim).
+
+enum InvoiceStatus {
+  OPEN
+  PARTIALLY_PAID
+  PAID
+  CANCELLED
+}
+
+model Invoice {
+  id         String        @id @default(uuid()) @db.Uuid
+  companyId  String        @db.Uuid
+  number     String // INV-2026-000142
+  customerId String        @db.Uuid
+  orderId    String?       @db.Uuid // N:M munosabat kelajakda — MVP'da 1 order = 1 invoice soddalashtirilgan
+  total      Decimal       @db.Decimal(18, 2)
+  status     InvoiceStatus @default(OPEN)
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  company  Company     @relation(fields: [companyId], references: [id])
+  customer Customer    @relation(fields: [customerId], references: [id])
+  order    SalesOrder? @relation(fields: [orderId], references: [id])
+
+  lines       InvoiceLine[]
+  allocations PaymentAllocation[]
+
+  @@unique([companyId, number])
+}
+
+model InvoiceLine {
+  id        String   @id @default(uuid()) @db.Uuid
+  invoiceId String   @db.Uuid
+  productId String   @db.Uuid
+  qty       Decimal  @db.Decimal(18, 3)
+  unitPrice Decimal  @db.Decimal(18, 2)
+  vatRate   Decimal  @db.Decimal(5, 2)
+  lineTotal Decimal  @db.Decimal(18, 2)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+
+  @@index([invoiceId])
+}
+
+// ---------------------------------------------------------------------------
+// 6.7 To'lovlar — qisman to'lovning asosi
+// ---------------------------------------------------------------------------
+
+enum PaymentMethod {
+  CASH
+  CARD
+  TRANSFER
+}
+
+model Payment {
+  id          String        @id @default(uuid()) @db.Uuid
+  companyId   String        @db.Uuid
+  number      String // PAY-2026-000311
+  customerId  String        @db.Uuid
+  amount      Decimal       @db.Decimal(18, 2)
+  method      PaymentMethod
+  collectedBy String?       @db.Uuid // agent/kassir
+  clientId    String?       @unique // offline idempotentlik
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  company   Company  @relation(fields: [companyId], references: [id])
+  customer  Customer @relation(fields: [customerId], references: [id])
+  collector User?    @relation("PaymentsCollected", fields: [collectedBy], references: [id])
+
+  allocations PaymentAllocation[]
+
+  @@unique([companyId, number])
+}
+
+model PaymentAllocation {
+  // N:M Payment ↔ Invoice — qisman to'lovning yuragi
+  id        String   @id @default(uuid()) @db.Uuid
+  paymentId String   @db.Uuid
+  invoiceId String   @db.Uuid
+  amount    Decimal  @db.Decimal(18, 2)
+  createdAt DateTime @default(now())
+
+  payment Payment @relation(fields: [paymentId], references: [id])
+  invoice Invoice @relation(fields: [invoiceId], references: [id])
+
+  @@index([paymentId])
+  @@index([invoiceId])
+}
+
+// Qoida (F-M05): 1 hisob-faktura = ko'p to'lov, 1 to'lov = ko'p hisob-faktura.
+// FIFO avtomatik taqsimlash + qo'lda o'zgartirish (apps/api payment module).
+// Balans hech qachon to'g'ridan-to'g'ri UPDATE qilinmaydi:
+//   Balans = Σ(Invoice.total) − Σ(PaymentAllocation.amount)
+// Customer.cachedBalance — proyeksiya, tranzaksiya ichida yangilanadi,
+// kunlik job orqali qayta hisoblanib tekshiriladi (drift detection).
+
+model CashSession {
+  // kassa smenasi
+  id          String    @id @default(uuid()) @db.Uuid
+  companyId   String    @db.Uuid
+  userId      String    @db.Uuid
+  openedAt    DateTime  @default(now())
+  closedAt    DateTime?
+  openAmount  Decimal   @db.Decimal(18, 2)
+  closeAmount Decimal?  @db.Decimal(18, 2)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+
+  // "One open shift per user" is enforced by a partial unique index in
+  // prisma/migrations/*_cash_session_one_open_per_user (WHERE "closedAt" IS
+  // NULL — Prisma's schema DSL can't express that), matching the
+  // soft-delete partial-unique pattern above on Customer/Product. This plain
+  // index just keeps lookups fast.
+  @@index([companyId, userId])
+}
+
+// ---------------------------------------------------------------------------
+// 6.8 Dala: marshrut va tashrif
+// ---------------------------------------------------------------------------
+
+model Route {
+  id        String   @id @default(uuid()) @db.Uuid
+  companyId String   @db.Uuid
+  agentId   String   @db.Uuid
+  weekday   Int // 1-7
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company     @relation(fields: [companyId], references: [id])
+  agent   User        @relation("AgentRoutes", fields: [agentId], references: [id])
+  stops   RouteStop[]
+  runs    RouteRun[]
+
+  @@index([companyId, agentId])
+}
+
+/** One row per calendar-day occurrence of a recurring Route (9.4-follow-up: "marshrutni tugatish") — completedAt is set only once every stop has a GPS-verified Visit for that day. */
+model RouteRun {
+  id          String    @id @default(uuid()) @db.Uuid
+  companyId   String    @db.Uuid
+  routeId     String    @db.Uuid
+  date        DateTime  @db.Date
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+  route   Route   @relation(fields: [routeId], references: [id])
+
+  @@unique([routeId, date])
+  @@index([companyId])
+}
+
+model RouteStop {
+  id        String   @id @default(uuid()) @db.Uuid
+  routeId   String   @db.Uuid
+  outletId  String   @db.Uuid
+  sortOrder Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  route  Route  @relation(fields: [routeId], references: [id])
+  outlet Outlet @relation(fields: [outletId], references: [id])
+
+  @@index([routeId])
+}
+
+enum VisitOutcome {
+  ORDERED
+  NO_ORDER
+}
+
+model Visit {
+  id            String       @id @default(uuid()) @db.Uuid
+  companyId     String       @db.Uuid
+  agentId       String       @db.Uuid
+  outletId      String       @db.Uuid
+  startedAt     DateTime
+  endedAt       DateTime?
+  latitude      Decimal      @db.Decimal(10, 7)
+  longitude     Decimal      @db.Decimal(10, 7)
+  // null = outlet has no registered coordinates, so the check couldn't run
+  // (allowed through, not blocked — see visits.service.ts); true/false = a
+  // real 150m-radius check was performed.
+  gpsOk         Boolean?
+  outcome       VisitOutcome
+  noOrderReason String?
+  clientId      String?      @unique
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+  agent   User    @relation("AgentVisits", fields: [agentId], references: [id])
+  outlet  Outlet  @relation(fields: [outletId], references: [id])
+
+  @@index([companyId, agentId, startedAt])
+  @@index([companyId, outletId])
+}
+
+// ---------------------------------------------------------------------------
+// 6.x Xaridlar (M09) — sxema 6-bo'limda berilmagan, 5.3/9.2 qamroviga ko'ra
+// soddalashtirilgan holda shu yerda qo'shildi (yetkazib beruvchi, xarid
+// buyurtmasi, qabul).
+// ---------------------------------------------------------------------------
+
+model Supplier {
+  id        String    @id @default(uuid()) @db.Uuid
+  companyId String    @db.Uuid
+  name      String
+  phone     String?
+  address   String?
+  isActive  Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  company        Company         @relation(fields: [companyId], references: [id])
+  purchaseOrders PurchaseOrder[]
+
+  @@index([companyId, name])
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  ORDERED
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CANCELLED
+}
+
+model PurchaseOrder {
+  id          String              @id @default(uuid()) @db.Uuid
+  companyId   String              @db.Uuid
+  number      String // PO-2026-000027
+  supplierId  String              @db.Uuid
+  warehouseId String              @db.Uuid
+  createdById String?             @db.Uuid
+  status      PurchaseOrderStatus @default(DRAFT)
+  note        String?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  company   Company   @relation(fields: [companyId], references: [id])
+  supplier  Supplier  @relation(fields: [supplierId], references: [id])
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id])
+  createdBy User?     @relation("PurchaseOrderCreatedBy", fields: [createdById], references: [id])
+
+  lines PurchaseOrderLine[]
+
+  @@unique([companyId, number])
+  @@index([companyId, supplierId])
+}
+
+model PurchaseOrderLine {
+  id              String   @id @default(uuid()) @db.Uuid
+  purchaseOrderId String   @db.Uuid
+  productId       String   @db.Uuid
+  qty             Decimal  @db.Decimal(18, 3)
+  qtyReceived     Decimal  @default(0) @db.Decimal(18, 3)
+  unitPrice       Decimal  @db.Decimal(18, 2)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
+  product       Product       @relation(fields: [productId], references: [id])
+
+  @@index([purchaseOrderId])
+}
+
+// ---------------------------------------------------------------------------
+// 6.9 Infratuzilma (audit, outbox, import)
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  companyId String   @db.Uuid
+  userId    String?  @db.Uuid
+  action    String // "order.create", "payment.delete"...
+  entity    String
+  entityId  String   @db.Uuid
+  oldValue  Json?
+  newValue  Json?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+  user    User?   @relation(fields: [userId], references: [id])
+
+  @@index([companyId, entity, entityId])
+}
+
+// Append-only — o'chirish/o'zgartirish imkonsiz (DB trigger orqali
+// ta'minlanadi, ko'ring: prisma/migrations/*_audit_append_only).
+
+model OutboxEvent {
+  id          String    @id @default(uuid()) @db.Uuid
+  companyId   String    @db.Uuid
+  eventType   String
+  payload     Json
+  processedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([companyId, processedAt])
+}
+
+model ImportJob {
+  id        String   @id @default(uuid()) @db.Uuid
+  companyId String   @db.Uuid
+  type      String // "customers", "products"
+  status    String // PENDING PROCESSING DONE FAILED
+  fileUrl   String
+  errorLog  Json?
+  createdAt DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([companyId, status])
+}
+
+// 11.1: "Buxgalter /export/1c'da davrni tanlaydi -> fayl BullMQ orqali fon
+// rejimida generatsiya qilinadi -> yuklab olinadi" — mirrors ImportJob's
+// lightweight job-tracking shape (free-form `type`/`status` strings) rather
+// than a fully domain-modeled table, since this is job-queue bookkeeping,
+// not a business document. `fileUrl` is null until the background worker
+// finishes; `errorLog` also doubles as a non-fatal warnings slot (e.g.
+// products missing `externalCode`, still exported by falling back to `sku`)
+// even on a DONE job, not only on FAILED.
+model ExportJob {
+  id          String   @id @default(uuid()) @db.Uuid
+  companyId   String   @db.Uuid
+  type        String // "1c"
+  format      String // "XML" | "EXCEL"
+  periodFrom  DateTime
+  periodTo    DateTime
+  status      String // PENDING PROCESSING DONE FAILED
+  fileUrl     String?
+  errorLog    Json?
+  requestedBy String?  @db.Uuid
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+  user    User?   @relation(fields: [requestedBy], references: [id])
+
+  @@index([companyId, status])
+}
+
+// M14 (5.3: "In-app + Telegram"). `title`/`message` are LocalizedMessage
+// JSON ({uz, ru, en} — the same trilingual shape as AppException's error
+// body, 7.1) so the web UI can render whichever language it's set to;
+// Telegram delivery (NotificationsService) is best-effort and always uses
+// `uz` since there's no per-user locale preference stored anywhere in the
+// schema. `entityType`/`entityId` let the UI deep-link to what triggered it
+// (e.g. an approved order) without a per-notification-type
+// table.
+model Notification {
+  id          String    @id @default(uuid()) @db.Uuid
+  companyId   String    @db.Uuid
+  recipientId String    @db.Uuid
+  type        String // "order.on_hold" | "order.approved"
+  title       Json
+  message     Json
+  entityType  String?
+  entityId    String?   @db.Uuid
+  readAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  company   Company @relation(fields: [companyId], references: [id])
+  recipient User    @relation(fields: [recipientId], references: [id])
+
+  @@index([companyId, recipientId, readAt])
+}
+
+// 8.6: sequential, gapless-per-cancellation document numbering
+// ("SO-2026-000123"), scoped per company/docType/year. Not in the TZ's
+// explicit schema (6.x) but required infrastructure for that section — a
+// plain "select max + 1" would race under concurrent order creation, so
+// this is incremented atomically via `INSERT ... ON CONFLICT DO UPDATE` in
+// apps/api's DocumentNumberingService.
+model DocumentCounter {
+  companyId  String   @db.Uuid
+  docType    String // "SO", "INV", "PAY", "PO"
+  year       Int
+  lastNumber Int      @default(0)
+  updatedAt  DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@id([companyId, docType, year])
+}

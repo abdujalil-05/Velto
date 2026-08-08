@@ -1,0 +1,111 @@
+{
+  "Auth": {
+    "openViaTelegram": "Open this app via Telegram.",
+    "needsPhoneLink": "Share your phone number to link your account.",
+    "sharePhone": "Share my phone number",
+    "linkTimeout": "Linking failed. Check the message from the Telegram bot or contact your administrator, then try again."
+  },
+  "Home": {
+    "greeting": "Hello, {name}",
+    "today": "TODAY",
+    "loadError": "Couldn't load data",
+    "stops": "stops",
+    "collected": "Collected",
+    "routeAction": "ROUTE",
+    "orderAction": "ORDER",
+    "reportAction": "REPORT"
+  },
+  "Route": {
+    "title": "Today's route",
+    "emptyState": "No route assigned for today",
+    "loadError": "Couldn't load the route",
+    "metersShort": "m",
+    "collectPayment": "Collect payment",
+    "finishRoute": "Finish route",
+    "finishSuccess": "Route finished",
+    "finished": "Route finished"
+  },
+  "Report": {
+    "title": "Daily report",
+    "orders": "Orders",
+    "payments": "Payments",
+    "noOrders": "No orders today",
+    "noPayments": "No payments today"
+  },
+  "Order": {
+    "customer": "Customer",
+    "loadError": "Couldn't load products",
+    "noProducts": "No products found",
+    "pickCustomer": "Choose a customer",
+    "repeatLastOrder": "Repeat last order",
+    "repeated": "Last order added",
+    "save": "SAVE",
+    "saved": "Order saved",
+    "searchCustomer": "Search customer",
+    "searchProduct": "Search product",
+    "total": "Total",
+    "available": "Available",
+    "priceUnavailable": "Price unavailable",
+    "stockExceeded": "Only {available} in stock — please reduce the quantity",
+    "stockExceededBanner": "Some items exceed what's in stock — reduce the quantity before saving"
+  },
+  "Payment": {
+    "amount": "Amount",
+    "currentDebt": "Current debt",
+    "customer": "Customer",
+    "invoicesNeedConnection": "The invoice list appears once you're back online",
+    "method": "Payment method",
+    "noOpenInvoices": "No open invoices",
+    "notFound": "Customer not found",
+    "openInvoices": "Open invoices",
+    "receiptCopied": "Receipt copied",
+    "receiptTitle": "Payment receipt",
+    "save": "SAVE",
+    "saved": "Payment saved",
+    "shareReceipt": "Share receipt"
+  },
+  "Visit": {
+    "collectPayment": "Collect payment",
+    "currentDebt": "Current debt",
+    "distance": "Distance",
+    "lastOrder": "Last order",
+    "leaveNoOrder": "Leave without an order",
+    "metersShort": "m",
+    "never": "Never",
+    "noOrderReasonLabel": "Reason (optional)",
+    "noOrderReasonPlaceholder": "Why was there no order?",
+    "notFound": "Outlet not found",
+    "gpsUnknown": "Locating you — please wait for GPS",
+    "gpsTooFar": "You're more than 150m from the outlet — get closer",
+    "takeOrder": "Take order"
+  },
+  "NotFound": {
+    "title": "This page does not exist",
+    "description": "The page you are looking for was not found or has been moved.",
+    "homeAction": "HOME"
+  },
+  "Common": {
+    "somUnit": "so'm",
+    "mapUnavailable": "Map unavailable",
+    "online": "Online",
+    "offline": "Offline",
+    "syncFailed": "{count} failed",
+    "syncPending": "{count} pending",
+    "syncRetry": "Retry",
+    "logoutBlockedPendingSync": "{count} document(s) not sent yet. Connect to the internet, wait for sync to finish, then log out.",
+    "all": "All",
+    "done": "Done",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "paymentMethod": {
+      "CASH": "Cash",
+      "CARD": "Card",
+      "TRANSFER": "Transfer"
+    },
+    "queueStatus": {
+      "PENDING": "Pending",
+      "SYNCED": "Sent",
+      "FAILED": "Failed"
+    }
+  }
+}

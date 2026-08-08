@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  # In CI, `velto` is the Postgres bootstrap role (superuser), unlike the
+  # least-privilege setup docs describe for real environments — acceptable
+  # here since the whole container is thrown away after the run. This lets
+  # scripts/provision-roles.sql (ALTER DEFAULT PRIVILEGES FOR ROLE velto ...)
+  # work unmodified.
+  DATABASE_URL: postgresql://velto:velto@localhost:5432/velto_ci?schema=public
+  DATABASE_SYSTEM_URL: postgresql://velto_system:velto_system@localhost:5432/velto_ci?schema=public
+  REDIS_URL: redis://localhost:6379
+  JWT_ACCESS_SECRET: ci-only-secret-not-for-real-use-min-32-chars
+  SEED_DEMO_PASSWORD: Velto#CI2026
+  # test/order-flow.e2e.test.ts boots the full AppModule, which fails env
+  # validation (env.schema.ts) without these — no real S3 traffic happens in
+  # the tests that run in CI, so any well-formed placeholder is fine.
+  S3_ENDPOINT: http://localhost:9000
+  S3_ACCESS_KEY: velto-ci
+  S3_SECRET_KEY: velto-ci-secret
+  S3_BUCKET: velto-ci
+  CORS_ORIGINS: http://localhost:3000,http://localhost:3002
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: velto
+          POSTGRES_PASSWORD: velto
+          POSTGRES_DB: velto_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U velto"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.17.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm --filter @velto/database run generate
+
+      - name: Run migrations
+        run: pnpm --filter @velto/database exec prisma migrate deploy
+
+      - name: Provision BYPASSRLS system role
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/scripts/provision-roles.sql
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      # 6.10 / SEC-001..005: cross-tenant isolation tests must run in CI and
+      # block merge — this is what packages/database/src/__tests__ enforces.
+      # Also runs test/order-flow.e2e.test.ts (16: "E2E — 10 asosiy
+      # ssenariy") — a real HTTP walk through login -> order -> confirm ->
+      # deliver -> payment -> balance via the actual Nest app (guards,
+      # interceptors, DTO validation), not just service-level calls — and,
+      # via turbo's workspace-wide `test` task, apps/miniapp's offline/queue
+      # and 50MB-storage-budget suites (10.2/10.3).
+      - name: Unit, integration & e2e tests
+        run: pnpm run test
+
+      # SEC-048: blocks the merge on critical findings, per TZ 15.5. Scoped to
+      # --prod because devDependencies (e.g. vitest, only used to run this
+      # same CI job) never ship — verified 2026-08-04 that --prod is clean at
+      # this threshold; drop the flag if that stops being true.
+      - name: Dependency vulnerability scan
+        run: pnpm audit --prod --audit-level=critical
+
+      - name: Build
+        run: pnpm run build
+
+  # 15.7 / 16: "SAST CI'da" — source-level static analysis (injection, XSS,
+  # secrets, unsafe deserialization, ...), distinct from the dependency-only
+  # `pnpm audit` above. Runs as its own job so a slow/flaky scan can't hold
+  # up the main test/build job; both are required checks, so either failing
+  # still blocks merge. `--severity ERROR` matches 15.7's "SAST kritik
+  # topilma bermaydi" — only high-confidence findings block, not every
+  # style-level nitpick a broader ruleset would also flag.
+  sast:
+    name: SAST (Semgrep)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep scan
+        run: semgrep scan --config p/owasp-top-ten --config p/security-audit --config p/typescript --config p/nodejsscan --severity ERROR --error

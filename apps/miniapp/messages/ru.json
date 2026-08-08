@@ -1,0 +1,111 @@
+{
+  "Auth": {
+    "openViaTelegram": "Откройте это приложение через Telegram.",
+    "needsPhoneLink": "Поделитесь номером телефона, чтобы привязать аккаунт.",
+    "sharePhone": "Поделиться номером телефона",
+    "linkTimeout": "Не удалось привязать номер. Проверьте сообщение от Telegram-бота или свяжитесь с администратором, затем попробуйте снова."
+  },
+  "Home": {
+    "greeting": "Здравствуйте, {name}",
+    "today": "СЕГОДНЯ",
+    "loadError": "Не удалось загрузить данные",
+    "stops": "точек",
+    "collected": "Собрано",
+    "routeAction": "МАРШРУТ",
+    "orderAction": "ЗАКАЗ",
+    "reportAction": "ОТЧЁТ"
+  },
+  "Route": {
+    "title": "Маршрут на сегодня",
+    "emptyState": "На сегодня маршрут не назначен",
+    "loadError": "Не удалось загрузить маршрут",
+    "metersShort": "м",
+    "collectPayment": "Принять оплату",
+    "finishRoute": "Завершить маршрут",
+    "finishSuccess": "Маршрут завершён",
+    "finished": "Маршрут завершён"
+  },
+  "Report": {
+    "title": "Дневной отчёт",
+    "orders": "Заказы",
+    "payments": "Платежи",
+    "noOrders": "Сегодня заказов нет",
+    "noPayments": "Сегодня платежей нет"
+  },
+  "Order": {
+    "customer": "Клиент",
+    "loadError": "Не удалось загрузить товары",
+    "noProducts": "Товары не найдены",
+    "pickCustomer": "Выберите клиента",
+    "repeatLastOrder": "Повторить последний",
+    "repeated": "Последний заказ добавлен",
+    "save": "СОХРАНИТЬ",
+    "saved": "Заказ сохранён",
+    "searchCustomer": "Поиск клиента",
+    "searchProduct": "Поиск товара",
+    "total": "Итого",
+    "available": "Остаток",
+    "priceUnavailable": "Цена недоступна",
+    "stockExceeded": "На складе доступно {available} — уменьшите количество",
+    "stockExceededBanner": "Количество некоторых товаров превышает остаток на складе — уменьшите перед сохранением"
+  },
+  "Payment": {
+    "amount": "Сумма",
+    "currentDebt": "Текущий долг",
+    "customer": "Клиент",
+    "invoicesNeedConnection": "Список счетов появится при подключении к интернету",
+    "method": "Способ оплаты",
+    "noOpenInvoices": "Нет неоплаченных счетов",
+    "notFound": "Клиент не найден",
+    "openInvoices": "Неоплаченные счета",
+    "receiptCopied": "Квитанция скопирована",
+    "receiptTitle": "Квитанция об оплате",
+    "save": "СОХРАНИТЬ",
+    "saved": "Платёж сохранён",
+    "shareReceipt": "Отправить квитанцию"
+  },
+  "Visit": {
+    "collectPayment": "Принять оплату",
+    "currentDebt": "Текущий долг",
+    "distance": "Расстояние",
+    "lastOrder": "Последний заказ",
+    "leaveNoOrder": "Уйти без заказа",
+    "metersShort": "м",
+    "never": "Никогда",
+    "noOrderReasonLabel": "Причина (необязательно)",
+    "noOrderReasonPlaceholder": "Почему не было заказа?",
+    "notFound": "Точка не найдена",
+    "gpsUnknown": "Определяем ваше местоположение — подождите GPS",
+    "gpsTooFar": "Вы дальше 150м от точки — подойдите ближе",
+    "takeOrder": "Оформить заказ"
+  },
+  "NotFound": {
+    "title": "Такой страницы не существует",
+    "description": "Запрошенная страница не найдена или была перемещена.",
+    "homeAction": "НА ГЛАВНУЮ"
+  },
+  "Common": {
+    "somUnit": "сум",
+    "mapUnavailable": "Карта недоступна",
+    "online": "Онлайн",
+    "offline": "Офлайн",
+    "syncFailed": "Ошибок: {count}",
+    "syncPending": "В очереди: {count}",
+    "syncRetry": "Повторить",
+    "logoutBlockedPendingSync": "{count} документ(ов) ещё не отправлено. Подключитесь к интернету, дождитесь синхронизации и выйдите снова.",
+    "all": "Все",
+    "done": "Готово",
+    "cancel": "Отмена",
+    "confirm": "Подтвердить",
+    "paymentMethod": {
+      "CASH": "Наличные",
+      "CARD": "Карта",
+      "TRANSFER": "Перевод"
+    },
+    "queueStatus": {
+      "PENDING": "В очереди",
+      "SYNCED": "Отправлено",
+      "FAILED": "Ошибка"
+    }
+  }
+}
