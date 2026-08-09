@@ -1,5 +1,5 @@
 import { createHash, randomInt } from 'node:crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import argon2 from 'argon2';
 import type Redis from 'ioredis';
 import { systemPrisma } from '@velto/database';
@@ -38,6 +38,8 @@ function hashCode(phone: string, code: string): string {
  */
 @Injectable()
 export class PasswordResetService {
+  private readonly logger = new Logger('PasswordResetService');
+
   constructor(
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     private readonly tenantPrisma: TenantPrismaService,
@@ -95,7 +97,17 @@ export class PasswordResetService {
     const stored: StoredCode = { codeHash: hashCode(phone, code), attempts: 0 };
     await this.redis.set(this.codeKey(phone), JSON.stringify(stored), 'EX', CODE_TTL_SECONDS);
 
-    await this.sms.send(phone, `Velto: parolni tiklash kodi — ${code}. Kodni hech kimga aytmang.`);
+    try {
+      await this.sms.send(phone, `Velto: parolni tiklash kodi — ${code}. Kodni hech kimga aytmang.`);
+    } catch (err) {
+      // SmsService.send() throws on a gateway failure, and this call only
+      // happens for a phone that *did* match an account — letting it
+      // propagate turns into a 500 for exactly those phones and a 204 for
+      // every other one, which is the user enumeration this method's contract
+      // (see the doc comment above) rules out. Logged, not swallowed silently;
+      // the caller can request a new code once the cooldown expires.
+      this.logger.error(`Password reset SMS delivery failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     for (const user of candidates) {
       await this.tenantPrisma.run(user.companyId, (tx) =>

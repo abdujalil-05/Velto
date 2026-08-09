@@ -1,8 +1,9 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CreateUserDto } from './dto/create-user.dto';
+import { DeleteUserQueryDto } from './dto/delete-user.query';
 import { ListUsersQueryDto } from './dto/list-users.query';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UsersService } from './users.service';
@@ -39,6 +40,17 @@ export class UsersController {
   @RequirePermission('users.update')
   deactivate(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.users.deactivate(id, user);
+  }
+
+  /** Returns 200 with `{ mode: 'soft' | 'hard', references }` — a soft delete is a successful outcome, not a partial failure. */
+  @Delete(':id')
+  @RequirePermission('users.delete')
+  remove(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query() query: DeleteUserQueryDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.users.remove(id, query, user);
   }
 
   @Post(':id/activate')

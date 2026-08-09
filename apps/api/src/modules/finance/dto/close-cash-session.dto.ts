@@ -1,9 +1,7 @@
-import { Type } from 'class-transformer';
-import { Min } from 'class-validator';
+import { IsMoneyAmount } from '../../../common/validators/numeric-bounds';
 
 /** 9.2 "/cash ... yopish". */
 export class CloseCashSessionDto {
-  @Type(() => Number)
-  @Min(0)
+  @IsMoneyAmount({ allowZero: true })
   closeAmount!: number;
 }

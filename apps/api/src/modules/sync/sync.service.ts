@@ -1,4 +1,5 @@
 import { HttpException, Injectable, Logger } from '@nestjs/common';
+import { withSavepoint } from '@velto/database';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { CreatePaymentDto } from '../finance/dto/create-payment.dto';
@@ -127,36 +128,48 @@ export class SyncService {
     const tx = this.tenantPrisma.client;
 
     try {
-      switch (doc.type) {
-        case SyncDocType.ORDER: {
-          // Checked *before* create() runs, purely to report DUPLICATE vs
-          // ACCEPTED accurately — create() is idempotent regardless (10.4:
-          // "Bir hujjat ikki marta yuborilgan → clientId bo'yicha rad
-          // etiladi, 200 qaytariladi, xato emas"), so a rare race here just
-          // means an occasional DUPLICATE is reported as ACCEPTED instead —
-          // never a correctness issue.
-          const alreadyExisted = (await tx.salesOrder.findUnique({ where: { clientId: doc.clientId } })) !== null;
-          const dto = await validatePayload(CreateOrderDto, { ...doc.payload, clientId: doc.clientId });
-          const order = await this.sales.create(dto, user);
-          return { clientId: doc.clientId, id: order.id, status: alreadyExisted ? 'DUPLICATE' : 'ACCEPTED' };
+      // One SAVEPOINT per document, so "each independently" (see push()'s
+      // doc) actually holds: the whole batch shares the single request
+      // transaction opened by TenantContextInterceptor. Without it, a
+      // rejected document keeps whatever it wrote before failing — e.g.
+      // PaymentsService.create() inserts the Payment row *before* allocating
+      // it, so an AllocationExceedsInvoiceException would still commit an
+      // orphan payment (and burn that clientId, which every later retry then
+      // resolves to) alongside the rest of the batch. A document that fails
+      // on a DB error would additionally leave the transaction aborted
+      // (25P02) and take every later document in the batch down with it.
+      return await withSavepoint(tx, 'sync_push_doc', async () => {
+        switch (doc.type) {
+          case SyncDocType.ORDER: {
+            // Checked *before* create() runs, purely to report DUPLICATE vs
+            // ACCEPTED accurately — create() is idempotent regardless (10.4:
+            // "Bir hujjat ikki marta yuborilgan → clientId bo'yicha rad
+            // etiladi, 200 qaytariladi, xato emas"), so a rare race here just
+            // means an occasional DUPLICATE is reported as ACCEPTED instead —
+            // never a correctness issue.
+            const alreadyExisted = (await tx.salesOrder.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: doc.clientId } } })) !== null;
+            const dto = await validatePayload(CreateOrderDto, { ...doc.payload, clientId: doc.clientId });
+            const order = await this.sales.create(dto, user);
+            return { clientId: doc.clientId, id: order.id, status: alreadyExisted ? 'DUPLICATE' : 'ACCEPTED' };
+          }
+          case SyncDocType.VISIT: {
+            const alreadyExisted = (await tx.visit.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: doc.clientId } } })) !== null;
+            const dto = await validatePayload(CreateVisitDto, { ...doc.payload, clientId: doc.clientId });
+            const visit = await this.visits.create(dto, user);
+            return { clientId: doc.clientId, id: visit.id, status: alreadyExisted ? 'DUPLICATE' : 'ACCEPTED' };
+          }
+          case SyncDocType.PAYMENT: {
+            const alreadyExisted = (await tx.payment.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: doc.clientId } } })) !== null;
+            const dto = await validatePayload(CreatePaymentDto, { ...doc.payload, clientId: doc.clientId });
+            const payment = await this.payments.create(dto, user);
+            return { clientId: doc.clientId, id: payment.id, status: alreadyExisted ? 'DUPLICATE' : 'ACCEPTED' };
+          }
         }
-        case SyncDocType.VISIT: {
-          const alreadyExisted = (await tx.visit.findUnique({ where: { clientId: doc.clientId } })) !== null;
-          const dto = await validatePayload(CreateVisitDto, { ...doc.payload, clientId: doc.clientId });
-          const visit = await this.visits.create(dto, user);
-          return { clientId: doc.clientId, id: visit.id, status: alreadyExisted ? 'DUPLICATE' : 'ACCEPTED' };
-        }
-        case SyncDocType.PAYMENT: {
-          const alreadyExisted = (await tx.payment.findUnique({ where: { clientId: doc.clientId } })) !== null;
-          const dto = await validatePayload(CreatePaymentDto, { ...doc.payload, clientId: doc.clientId });
-          const payment = await this.payments.create(dto, user);
-          return { clientId: doc.clientId, id: payment.id, status: alreadyExisted ? 'DUPLICATE' : 'ACCEPTED' };
-        }
-      }
-      // Unreachable — `type` is already constrained to SyncDocType by
-      // @IsEnum on the DTO — but satisfies the compiler's control-flow
-      // analysis for the declared return type.
-      throw new Error(`Unknown sync document type: ${doc.type as string}`);
+        // Unreachable — `type` is already constrained to SyncDocType by
+        // @IsEnum on the DTO — but satisfies the compiler's control-flow
+        // analysis for the declared return type.
+        throw new Error(`Unknown sync document type: ${doc.type as string}`);
+      });
     } catch (error) {
       return { clientId: doc.clientId, status: 'REJECTED', error: toErrorDetail(error) };
     }

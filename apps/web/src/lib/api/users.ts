@@ -86,3 +86,50 @@ export function useDeactivateUserMutation() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['users'] }),
   });
 }
+
+/**
+ * Rows still pointing at the user, keyed by table. Mirrors `countReferences()`
+ * in `apps/api/src/modules/users/users.service.ts` — only non-zero counts are
+ * sent, so every key is optional. Also arrives as `details.references` on the
+ * 409 a `hard=true` delete throws.
+ */
+export interface UserReferences {
+  salesOrders?: number;
+  payments?: number;
+  cashSessions?: number;
+  routes?: number;
+  visits?: number;
+  purchaseOrders?: number;
+  auditLogs?: number;
+  exportJobs?: number;
+  notifications?: number;
+}
+
+export interface DeleteUserResult {
+  /** `soft` = anonymized + deactivated (history kept); `hard` = row physically gone. */
+  mode: 'soft' | 'hard';
+  id: string;
+  references: UserReferences;
+  /** The anonymized row on a soft delete; `null` once hard-deleted. */
+  user: User | null;
+}
+
+/**
+ * DELETE /users/:id — the API picks soft (anonymize) vs hard (physical) itself
+ * based on whether anything still references the user, and reports which it did
+ * via `mode`. `hard: true` turns that into an assertion: it 409s with
+ * `details.references` instead of silently soft-deleting.
+ */
+export function useDeleteUserMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, hard }: { id: string; hard?: boolean }) =>
+      // `hard: false` is the default — send the flag only when asserting, so the
+      // URL stays a plain `/users/:id`.
+      apiFetch<DeleteUserResult>(`/users/${id}${toQueryString({ hard: hard || undefined })}`, { method: 'DELETE' }),
+    onSuccess: (_result, { id }) => {
+      queryClient.invalidateQueries({ queryKey: ['users'] });
+      queryClient.invalidateQueries({ queryKey: ['users', id] });
+    },
+  });
+}

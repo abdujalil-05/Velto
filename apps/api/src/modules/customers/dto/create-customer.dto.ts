@@ -6,6 +6,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Max,
   Min,
   MaxLength,
   MinLength,
@@ -38,10 +39,14 @@ export class CreateCustomerDto {
   @IsUUID()
   priceListId?: string;
 
+  // Max is not cosmetic: the column is `integer` (schema 6.3), so an unbounded
+  // @IsInt() lets 3_000_000_000 through and Postgres answers SQLSTATE 22003.
+  // 10 years is far past any real payment term.
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(0)
+  @Max(3650)
   paymentTermDays?: number;
 
   // A customer with no outlet isn't useful in the field (6.3) — the create

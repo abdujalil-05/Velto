@@ -59,6 +59,11 @@ export function useCreatePaymentMutation() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['payments'] });
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      // payments.service.ts rewrites customer.cachedBalance, and the open cash
+      // shift's totalCollected is summed from payments (cash-sessions.service.ts)
+      // — both are rendered right next to the payments list on /cash.
+      queryClient.invalidateQueries({ queryKey: ['customers'] });
+      queryClient.invalidateQueries({ queryKey: ['cash-sessions'] });
     },
   });
 }

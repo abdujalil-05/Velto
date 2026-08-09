@@ -2,10 +2,11 @@
 
 import { useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
+import { toast } from 'sonner';
 import { Plus, RefreshCw, Search, Users } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
-import { useCustomersQuery } from '@/lib/api/customers';
+import { useCustomersQuery, useDeleteCustomerMutation, type Customer } from '@/lib/api/customers';
 import { errorMessage } from '@/lib/api/client';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
 import { useSort } from '@/lib/hooks/use-sort';
@@ -18,6 +19,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { PaginationBar } from '@/components/shared/pagination-bar';
 import { ExportCsvButton } from '@/components/shared/export-csv-button';
 import { CustomersTable } from '@/components/customers/customers-table';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { cn } from '@/lib/utils';
 
 type BlockedFilter = 'all' | 'active' | 'blocked';
@@ -32,6 +34,7 @@ export default function CustomersPage() {
   const [page, setPage] = useState(1);
   const debouncedSearch = useDebouncedValue(search, 300);
   const { sort, toggle: toggleSort } = useSort();
+  const canDelete = hasPermission('customers.delete');
 
   const { data, isLoading, isError, error, refetch, isFetching } = useCustomersQuery({
     page,
@@ -41,6 +44,25 @@ export default function CustomersPage() {
     sortBy: sort.sortBy,
     sortDir: sort.sortDir,
   });
+
+  const deleteMutation = useDeleteCustomerMutation();
+  const [pendingDelete, setPendingDelete] = useState<Customer | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // Soft delete, cascading to the customer's outlets. The API refuses with a
+  // 409 while the balance is non-zero, so surface its trilingual message inside
+  // the dialog rather than closing on failure.
+  async function confirmDelete() {
+    if (!pendingDelete) return;
+    setDeleteError(null);
+    try {
+      await deleteMutation.mutateAsync(pendingDelete.id);
+      toast.success(t('deleteSuccess', { name: pendingDelete.name }));
+      setPendingDelete(null);
+    } catch (err) {
+      setDeleteError(errorMessage(err, locale));
+    }
+  }
 
   function handleExport() {
     if (!data) return;
@@ -157,11 +179,36 @@ export default function CustomersPage() {
       {data && data.data.length > 0 && (
         <Card>
           <CardContent className="pt-6">
-            <CustomersTable customers={data.data} sort={sort} onSort={toggleSort} />
+            <CustomersTable
+              customers={data.data}
+              sort={sort}
+              onSort={toggleSort}
+              canDelete={canDelete}
+              onDelete={(customer) => {
+                setDeleteError(null);
+                setPendingDelete(customer);
+              }}
+            />
             <PaginationBar meta={data.meta} onPageChange={setPage} />
           </CardContent>
         </Card>
       )}
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingDelete(null);
+            setDeleteError(null);
+          }
+        }}
+        title={t('confirmDelete.title')}
+        description={t('confirmDelete.description', { name: pendingDelete?.name ?? '' })}
+        confirmLabel={t('delete')}
+        error={deleteError}
+        isPending={deleteMutation.isPending}
+        onConfirm={confirmDelete}
+      />
     </div>
   );
 }

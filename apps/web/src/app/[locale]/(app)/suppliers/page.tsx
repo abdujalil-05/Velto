@@ -19,10 +19,12 @@ import { PaginationBar } from '@/components/shared/pagination-bar';
 import { ExportCsvButton } from '@/components/shared/export-csv-button';
 import { SuppliersTable } from '@/components/suppliers/suppliers-table';
 import { SupplierFormDialog } from '@/components/suppliers/supplier-form-dialog';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { cn } from '@/lib/utils';
 
 export default function SuppliersPage() {
   const t = useTranslations('Suppliers');
+  const tCommon = useTranslations('Common');
   const locale = useLocale();
   const { hasPermission } = useAuth();
   const canCreate = hasPermission('purchases.create');
@@ -57,6 +59,8 @@ export default function SuppliersPage() {
   const deleteMutation = useDeleteSupplierMutation();
   const activateMutation = useActivateSupplierMutation();
   const [togglingId, setTogglingId] = useState<string | undefined>();
+  const [pendingDeactivate, setPendingDeactivate] = useState<Supplier | null>(null);
+  const [deactivateError, setDeactivateError] = useState<string | null>(null);
 
   function openCreate() {
     setEditingSupplier(null);
@@ -68,16 +72,32 @@ export default function SuppliersPage() {
     setDialogOpen(true);
   }
 
+  // Deactivation is destructive (DELETE /suppliers/:id) — always confirm first.
+  // Re-activation is harmless, so it fires straight away.
   async function toggleActive(supplier: Supplier) {
+    if (supplier.isActive) {
+      setPendingDeactivate(supplier);
+      return;
+    }
     setTogglingId(supplier.id);
     try {
-      if (supplier.isActive) {
-        await deleteMutation.mutateAsync(supplier.id);
-      } else {
-        await activateMutation.mutateAsync(supplier.id);
-      }
+      await activateMutation.mutateAsync(supplier.id);
     } catch (err) {
       toast.error(errorMessage(err, locale));
+    } finally {
+      setTogglingId(undefined);
+    }
+  }
+
+  async function confirmDeactivate() {
+    if (!pendingDeactivate) return;
+    setDeactivateError(null);
+    setTogglingId(pendingDeactivate.id);
+    try {
+      await deleteMutation.mutateAsync(pendingDeactivate.id);
+      setPendingDeactivate(null);
+    } catch (err) {
+      setDeactivateError(errorMessage(err, locale));
     } finally {
       setTogglingId(undefined);
     }
@@ -178,6 +198,22 @@ export default function SuppliersPage() {
       )}
 
       <SupplierFormDialog open={dialogOpen} onOpenChange={setDialogOpen} supplier={editingSupplier} />
+
+      <ConfirmDialog
+        open={pendingDeactivate !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingDeactivate(null);
+            setDeactivateError(null);
+          }
+        }}
+        title={tCommon('confirmDeactivate.title')}
+        description={tCommon('confirmDeactivate.description', { name: pendingDeactivate?.name ?? '' })}
+        confirmLabel={tCommon('confirmDeactivate.confirm')}
+        error={deactivateError}
+        isPending={deleteMutation.isPending}
+        onConfirm={confirmDeactivate}
+      />
     </div>
   );
 }

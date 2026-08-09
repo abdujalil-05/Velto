@@ -150,11 +150,19 @@ export class AuthService {
       throw new InvalidCredentialsException();
     }
 
-    const user = await systemPrisma.user.findUnique({ where: { telegramId } });
-    if (!user) {
-      // Unrecognized telegramId — no tenant to scope an AuditLog row to.
+    // telegramId is unique per *company*, not globally (schema 6.2 — a global
+    // unique would be a cross-tenant constraint), so this lookup is a findMany
+    // that fails closed on anything other than exactly one hit, mirroring the
+    // phone-lookup path below. In practice linkTelegram() refuses to create a
+    // second link, so >1 should be unreachable; if it ever happens there is no
+    // safe way to guess which company the agent meant.
+    const candidates = await systemPrisma.user.findMany({ where: { telegramId } });
+    if (candidates.length !== 1) {
+      // Unrecognized (or ambiguous) telegramId — no tenant to scope an
+      // AuditLog row to.
       throw new InvalidCredentialsException();
     }
+    const [user] = candidates;
     if (!user.isActive) {
       await this.logFailedLogin([user], meta);
       throw new InvalidCredentialsException();
@@ -220,6 +228,19 @@ export class AuthService {
       // Already linked to a *different* Telegram account — don't silently
       // reassign a login credential out from under someone.
       await this.replyTelegram(telegramId, "Bu raqam boshqa Telegram akkauntga bog'langan. Administratoringiz bilan bog'laning.");
+      return;
+    }
+
+    // telegramId is only unique per company now, so the database no longer
+    // stops one Telegram account from being linked in two companies at once —
+    // which would make the telegram login lookup above ambiguous and lock the
+    // account out. Enforce the "one Telegram account = one Velto user"
+    // invariant here instead. `systemPrisma` is correct for this specific
+    // check: it is a cross-tenant question asked before a companyId is known,
+    // the same reason the phone lookup above uses it.
+    const alreadyLinked = await systemPrisma.user.findFirst({ where: { telegramId }, select: { id: true } });
+    if (alreadyLinked) {
+      await this.replyTelegram(telegramId, "Bu Telegram akkaunt boshqa foydalanuvchiga bog'langan. Administratoringiz bilan bog'laning.");
       return;
     }
 

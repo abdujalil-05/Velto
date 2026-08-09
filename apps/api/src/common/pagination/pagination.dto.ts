@@ -5,10 +5,14 @@ export type SortDir = 'asc' | 'desc';
 
 /** 7.1: "Ro'yxat endpoint'larida pagination majburiy (default 25, max 100)." */
 export class PaginationQueryDto {
+  // Upper bound is required, not cosmetic: `skip` is computed as
+  // (page - 1) * pageSize and Prisma/Postgres take it as a 32-bit int, so an
+  // unbounded page turned `?page=999999999` into a 500 instead of an empty list.
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(1_000_000)
   page: number = 1;
 
   @IsOptional()

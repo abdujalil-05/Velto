@@ -4,7 +4,7 @@ import { prisma, systemPrisma } from '@velto/database';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { AuditLogService } from '../../../common/audit/audit-log.service';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
-import { AgentNotFoundException, GpsTooFarException } from '../field-exceptions';
+import { AgentNotFoundException, GpsTooFarException, VisitNotFoundException } from '../field-exceptions';
 import { VisitsService } from './visits.service';
 
 describe('VisitsService (integration, real Postgres + RLS)', () => {
@@ -206,18 +206,69 @@ describe('VisitsService (integration, real Postgres + RLS)', () => {
     const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
     const todayList = await tenantPrisma.run(companyId, () =>
-      visits.list({ page: 1, pageSize: 100, agentId: agentUser.id, from: today, to: today }),
+      visits.list({ page: 1, pageSize: 100, agentId: agentUser.id, from: today, to: today }, directorUser),
     );
     expect(todayList.data.map((v) => v.id)).toContain(visit.id);
 
     const futureList = await tenantPrisma.run(companyId, () =>
-      visits.list({ page: 1, pageSize: 100, agentId: agentUser.id, from: tomorrow, to: tomorrow }),
+      visits.list({ page: 1, pageSize: 100, agentId: agentUser.id, from: tomorrow, to: tomorrow }, directorUser),
     );
     expect(futureList.data.map((v) => v.id)).not.toContain(visit.id);
 
     const unbounded = await tenantPrisma.run(companyId, () =>
-      visits.list({ page: 1, pageSize: 100, agentId: agentUser.id }),
+      visits.list({ page: 1, pageSize: 100, agentId: agentUser.id }, directorUser),
     );
     expect(unbounded.data.map((v) => v.id)).toContain(visit.id);
+  });
+
+  it('SEC-023 (15.3): a SALES_AGENT only sees their own visits via list()/getById()', async () => {
+    const otherAgentDbUser = await systemPrisma.user.create({
+      data: { companyId, firstName: 'Agent', lastName: 'Two', phone: `+99890${Date.now().toString().slice(-7)}` },
+    });
+    const otherAgent: AuthenticatedUser = {
+      id: otherAgentDbUser.id,
+      companyId,
+      firstName: 'Agent',
+      lastName: 'Two',
+      roles: ['SALES_AGENT'],
+      permissions: ['field.create', 'field.read'],
+    };
+
+    const visitFor = (u: AuthenticatedUser) =>
+      tenantPrisma.run(companyId, () =>
+        visits.create(
+          {
+            outletId: outletWithCoordsId,
+            startedAt: new Date().toISOString(),
+            latitude: OUTLET_LAT,
+            longitude: OUTLET_LNG,
+            outcome: 'ORDERED',
+          },
+          u,
+        ),
+      );
+
+    const own = await visitFor(agentUser);
+    const other = await visitFor(otherAgent);
+
+    const ownList = await tenantPrisma.run(companyId, () => visits.list({ page: 1, pageSize: 100 }, agentUser));
+    const ids = ownList.data.map((v) => v.id);
+    expect(ids).toContain(own.id);
+    expect(ids).not.toContain(other.id);
+
+    // Passing another agent's id must not override the server-enforced scope.
+    const spoofed = await tenantPrisma.run(companyId, () =>
+      visits.list({ page: 1, pageSize: 100, agentId: otherAgent.id }, agentUser),
+    );
+    expect(spoofed.data.map((v) => v.id)).not.toContain(other.id);
+
+    await expect(tenantPrisma.run(companyId, () => visits.getById(other.id, agentUser))).rejects.toBeInstanceOf(
+      VisitNotFoundException,
+    );
+    expect((await tenantPrisma.run(companyId, () => visits.getById(own.id, agentUser))).id).toBe(own.id);
+
+    // SALES_DIRECTOR keeps the company-wide view their reports depend on.
+    const directorList = await tenantPrisma.run(companyId, () => visits.list({ page: 1, pageSize: 100 }, directorUser));
+    expect(directorList.data.map((v) => v.id)).toEqual(expect.arrayContaining([own.id, other.id]));
   });
 });

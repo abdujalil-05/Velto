@@ -1,12 +1,12 @@
 import { Type } from 'class-transformer';
-import { ArrayMinSize, IsArray, IsPositive, IsUUID, ValidateNested } from 'class-validator';
+import { ArrayMinSize, IsArray, IsUUID, ValidateNested } from 'class-validator';
+import { IsQuantity } from '../../../../common/validators/numeric-bounds';
 
 class ReceivePurchaseOrderLineDto {
   @IsUUID()
   purchaseOrderLineId!: string;
 
-  @Type(() => Number)
-  @IsPositive()
+  @IsQuantity()
   qty!: number;
 }
 

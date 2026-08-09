@@ -10,19 +10,42 @@ export class ApiError extends Error {
   readonly details?: unknown;
 
   constructor(status: number, body: ApiErrorBody) {
-    super(body.message?.en ?? `Request failed with status ${status}`);
+    const message = normalizeMessage(body?.message, status);
+    super(message.en);
     this.name = 'ApiError';
     this.status = status;
-    this.code = body.code ?? `HTTP_${status}`;
-    this.localizedMessage = body.message;
-    this.details = body.details;
+    this.code = body?.code ?? `HTTP_${status}`;
+    this.localizedMessage = message;
+    this.details = body?.details;
   }
+}
+
+/**
+ * Not every failure comes back through the global exception filter's
+ * `{ code, message: { uz, ru, en } }` contract — a Nest validation pipe, a
+ * proxy 502 or a non-JSON body can produce a bare string (or nothing), and
+ * indexing that as a LocalizedMessage used to yield `undefined` (a blank
+ * error toast) or throw. Coerce whatever arrived into a full trilingual
+ * object once, here, so every consumer can rely on the contract.
+ */
+function normalizeMessage(message: unknown, status: number): LocalizedMessage {
+  const fallback = `Request failed with status ${status}`;
+  if (typeof message === 'string' && message) {
+    return { uz: message, ru: message, en: message };
+  }
+  if (message && typeof message === 'object') {
+    const m = message as Partial<LocalizedMessage>;
+    const en = m.en || m.ru || m.uz || fallback;
+    return { uz: m.uz || en, ru: m.ru || en, en };
+  }
+  return { uz: fallback, ru: fallback, en: fallback };
 }
 
 /** Reads the trilingual message for the given app locale, falling back to English. */
 export function errorMessage(error: unknown, locale: string): string {
   if (error instanceof ApiError) {
-    return error.localizedMessage[locale as keyof LocalizedMessage] ?? error.localizedMessage.en;
+    const message = error.localizedMessage;
+    return message[locale as keyof LocalizedMessage] || message.en || error.message;
   }
   return error instanceof Error ? error.message : String(error);
 }
@@ -112,8 +135,55 @@ export async function apiFetch<T = void>(path: string, options: ApiFetchOptions 
   const data = isJson ? await res.json() : undefined;
 
   if (!res.ok) {
-    throw new ApiError(res.status, (data as ApiErrorBody) ?? { code: `HTTP_${res.status}`, message: { uz: '', ru: '', en: '' } });
+    throw new ApiError(res.status, data as ApiErrorBody);
   }
 
   return data as T;
+}
+
+/**
+ * Streams a binary response (.xlsx export / import template) straight to a
+ * browser download. Goes through the same token attachment, single silent
+ * `/auth/refresh` retry and typed `ApiError` handling as `apiFetch` — a failed
+ * export has to surface the backend's trilingual message like every other
+ * error, not a raw English string.
+ */
+export async function apiDownload(path: string, fallbackFilename: string): Promise<void> {
+  const send = (token: string | null) =>
+    fetch(`${API_URL}${path}`, {
+      credentials: 'include',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+
+  let res = await send(getAccessToken());
+
+  if (res.status === 401) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      res = await send(refreshed);
+    } else {
+      clearTokens();
+      unauthorizedHandlers.forEach((handler) => handler());
+    }
+  }
+
+  if (!res.ok) {
+    const isJson = res.headers.get('content-type')?.includes('application/json');
+    const body = isJson ? ((await res.json().catch(() => undefined)) as ApiErrorBody | undefined) : undefined;
+    throw new ApiError(res.status, body as ApiErrorBody);
+  }
+
+  const blob = await res.blob();
+  // Prefer the server's own filename when it sent one (import templates do).
+  const disposition = res.headers.get('content-disposition') ?? '';
+  const filename = /filename="?([^";]+)"?/.exec(disposition)?.[1] ?? fallbackFilename;
+
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }

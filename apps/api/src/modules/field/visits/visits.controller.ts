@@ -12,14 +12,14 @@ export class VisitsController {
 
   @Get()
   @RequirePermission('field.read')
-  list(@Query() query: ListVisitsQueryDto) {
-    return this.visits.list(query);
+  list(@Query() query: ListVisitsQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.visits.list(query, user);
   }
 
   @Get(':id')
   @RequirePermission('field.read')
-  getById(@Param('id', ParseUUIDPipe) id: string) {
-    return this.visits.getById(id);
+  getById(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.visits.getById(id, user);
   }
 
   @Post()

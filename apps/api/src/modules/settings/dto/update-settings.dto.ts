@@ -1,5 +1,5 @@
-import { Type } from 'class-transformer';
-import { IsOptional, IsString, Max, MaxLength, Min, MinLength } from 'class-validator';
+import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsPercentage } from '../../../common/validators/numeric-bounds';
 
 // 6.2 Company fields — deliberately excludes tenantId/plan/isActive, which
 // are platform-admin concerns ([v1.1] full UI per 4.1, DB-level only in MVP).
@@ -32,9 +32,7 @@ export class UpdateSettingsDto {
   currency?: string;
 
   @IsOptional()
-  @Type(() => Number)
-  @Min(0)
-  @Max(100)
+  @IsPercentage()
   defaultVatRate?: number;
 
   @IsOptional()

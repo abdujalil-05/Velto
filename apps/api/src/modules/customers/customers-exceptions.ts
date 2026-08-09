@@ -65,3 +65,18 @@ export class CustomerNotBlockedException extends AppException {
     });
   }
 }
+
+export class CustomerHasOutstandingBalanceException extends AppException {
+  constructor(balance: string) {
+    super(
+      HttpStatus.CONFLICT,
+      'CUSTOMER_HAS_OUTSTANDING_BALANCE',
+      {
+        uz: `Mijozning to'lanmagan qarzi bor (${balance}), uni o'chirib bo'lmaydi`,
+        ru: `У клиента есть непогашенный баланс (${balance}) — удаление невозможно`,
+        en: `The customer has an outstanding balance (${balance}) and cannot be deleted`,
+      },
+      { balance },
+    );
+  }
+}

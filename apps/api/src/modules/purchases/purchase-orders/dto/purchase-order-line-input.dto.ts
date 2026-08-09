@@ -1,15 +1,13 @@
-import { Type } from 'class-transformer';
-import { IsPositive, IsUUID } from 'class-validator';
+import { IsUUID } from 'class-validator';
+import { IsMoneyAmount, IsQuantity } from '../../../../common/validators/numeric-bounds';
 
 export class PurchaseOrderLineInputDto {
   @IsUUID()
   productId!: string;
 
-  @Type(() => Number)
-  @IsPositive()
+  @IsQuantity()
   qty!: number;
 
-  @Type(() => Number)
-  @IsPositive()
+  @IsMoneyAmount()
   unitPrice!: number;
 }

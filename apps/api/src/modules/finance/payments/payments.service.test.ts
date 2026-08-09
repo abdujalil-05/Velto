@@ -6,7 +6,12 @@ import { AuditLogService } from '../../../common/audit/audit-log.service';
 import { DocumentNumberingService } from '../../../common/document-numbering/document-numbering.service';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import { CustomersService } from '../../customers/customers.service';
-import { AllocationExceedsInvoiceException, AllocationExceedsPaymentException, InvoiceNotFoundException } from '../finance-exceptions';
+import {
+  AllocationExceedsInvoiceException,
+  AllocationExceedsPaymentException,
+  InvoiceNotFoundException,
+  PaymentNotFoundException,
+} from '../finance-exceptions';
 import { PaymentsService } from './payments.service';
 
 describe('PaymentsService (integration, real Postgres + RLS)', () => {
@@ -237,16 +242,64 @@ describe('PaymentsService (integration, real Postgres + RLS)', () => {
     const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
     const todayList = await tenantPrisma.run(companyId, () =>
-      payments.list({ page: 1, pageSize: 100, collectedBy: user.id, from: today, to: today }),
+      payments.list({ page: 1, pageSize: 100, collectedBy: user.id, from: today, to: today }, user),
     );
     expect(todayList.data.map((p) => p.id)).toContain(payment.id);
 
     const futureList = await tenantPrisma.run(companyId, () =>
-      payments.list({ page: 1, pageSize: 100, collectedBy: user.id, from: tomorrow, to: tomorrow }),
+      payments.list({ page: 1, pageSize: 100, collectedBy: user.id, from: tomorrow, to: tomorrow }, user),
     );
     expect(futureList.data.map((p) => p.id)).not.toContain(payment.id);
 
-    const unbounded = await tenantPrisma.run(companyId, () => payments.list({ page: 1, pageSize: 100, customerId }));
+    const unbounded = await tenantPrisma.run(companyId, () =>
+      payments.list({ page: 1, pageSize: 100, customerId }, user),
+    );
     expect(unbounded.data.map((p) => p.id)).toContain(payment.id);
+  });
+
+  it('SEC-023 (15.3): a SALES_AGENT only sees payments they collected via list()/getById()', async () => {
+    const [agent1, agent2] = await Promise.all(
+      ['+998900000015', '+998900000016'].map(async (phone, i) => {
+        const dbUser = await systemPrisma.user.create({
+          data: { companyId, firstName: 'Scoped', lastName: `Agent${i + 1}`, phone },
+        });
+        return {
+          id: dbUser.id,
+          companyId,
+          firstName: 'Scoped',
+          lastName: `Agent${i + 1}`,
+          roles: ['SALES_AGENT'],
+          permissions: ['payments.create', 'payments.read'],
+        } satisfies AuthenticatedUser;
+      }),
+    );
+
+    const { customerId } = await createCustomerWithInvoices([{ total: '20000', ageDays: 1 }]);
+    const own = await tenantPrisma.run(companyId, () =>
+      payments.create({ customerId, amount: 5000, method: 'CASH' }, agent1),
+    );
+    const other = await tenantPrisma.run(companyId, () =>
+      payments.create({ customerId, amount: 5000, method: 'CASH' }, agent2),
+    );
+
+    const agent1List = await tenantPrisma.run(companyId, () => payments.list({ page: 1, pageSize: 100 }, agent1));
+    const ids = agent1List.data.map((p) => p.id);
+    expect(ids).toContain(own.id);
+    expect(ids).not.toContain(other.id);
+
+    // Passing another collector's id must not override the server-enforced scope.
+    const spoofed = await tenantPrisma.run(companyId, () =>
+      payments.list({ page: 1, pageSize: 100, collectedBy: agent2.id }, agent1),
+    );
+    expect(spoofed.data.map((p) => p.id)).not.toContain(other.id);
+
+    await expect(tenantPrisma.run(companyId, () => payments.getById(other.id, agent1))).rejects.toBeInstanceOf(
+      PaymentNotFoundException,
+    );
+    expect((await tenantPrisma.run(companyId, () => payments.getById(own.id, agent1))).id).toBe(own.id);
+
+    // CASHIER (and every other non-agent role) stays unrestricted.
+    const cashierList = await tenantPrisma.run(companyId, () => payments.list({ page: 1, pageSize: 100 }, user));
+    expect(cashierList.data.map((p) => p.id)).toEqual(expect.arrayContaining([own.id, other.id]));
   });
 });

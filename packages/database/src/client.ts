@@ -1,3 +1,6 @@
+// Must stay the first import: it populates process.env before the
+// module-level PrismaClient constructions below read DATABASE_SYSTEM_URL.
+import './load-env';
 import { PrismaClient, Prisma } from '../generated/client';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -27,6 +30,20 @@ export const systemPrisma = new PrismaClient({
 export type TenantClient = Prisma.TransactionClient;
 
 /**
+ * Transaction knobs passed straight through to `prisma.$transaction`. Request
+ * handling should keep the defaults (Prisma's 5s `timeout` / 2s `maxWait`) —
+ * a tenant transaction that outlives that is holding an RLS-scoped connection
+ * far too long. Long-running provisioning scripts (seed.ts) legitimately need
+ * a larger window; without one they abort mid-way with P2028 ("Transaction
+ * already closed"), leaving the tenant half-seeded.
+ */
+export type TenantTxOptions = {
+  maxWait?: number;
+  timeout?: number;
+  isolationLevel?: Prisma.TransactionIsolationLevel;
+};
+
+/**
  * Runs `fn` inside a transaction with `app.current_company_id` set via
  * `SET LOCAL` (through `set_config(..., true)`, which is what actually makes
  * every tenant-scoped RLS policy in prisma/migrations/*_rls_and_audit_lock
@@ -36,6 +53,7 @@ export type TenantClient = Prisma.TransactionClient;
 export async function withTenant<T>(
   companyId: string,
   fn: (tx: TenantClient) => Promise<T>,
+  options?: TenantTxOptions,
 ): Promise<T> {
   if (!UUID_RE.test(companyId)) {
     throw new Error(`withTenant: "${companyId}" is not a valid companyId`);
@@ -43,7 +61,7 @@ export async function withTenant<T>(
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT set_config('app.current_company_id', ${companyId}, true)`;
     return fn(tx);
-  });
+  }, options);
 }
 
 const SAVEPOINT_NAME_RE = /^[a-z][a-z0-9_]*$/;

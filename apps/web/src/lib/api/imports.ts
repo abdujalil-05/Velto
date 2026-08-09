@@ -1,8 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiFetch } from './client';
+import { apiDownload, apiFetch } from './client';
 import { toQueryString } from './query-string';
 import type { PaginatedResult } from './types';
-import { getAccessToken } from '@/lib/auth/tokens';
 
 export type ImportType = 'customers' | 'products';
 export type ImportStatus = 'PENDING' | 'PROCESSING' | 'DONE' | 'FAILED';
@@ -77,32 +76,22 @@ export function useConfirmImportMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => apiFetch<ImportJob>(`/import/${id}/confirm`, { method: 'POST' }),
-    onSuccess: (_, id) => {
+    onSuccess: (job, id) => {
       queryClient.invalidateQueries({ queryKey: ['imports'] });
       queryClient.invalidateQueries({ queryKey: ['imports', id] });
+      // The confirm step actually inserts the rows (import.processor.ts), so
+      // the imported resource's own cache is now stale.
+      if (job.type === 'customers') {
+        queryClient.invalidateQueries({ queryKey: ['customers'] });
+      } else {
+        queryClient.invalidateQueries({ queryKey: ['products'] });
+        queryClient.invalidateQueries({ queryKey: ['categories'] });
+      }
     },
   });
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
-
 /** Streams the .xlsx template — not JSON, so it bypasses apiFetch. */
-export async function downloadImportTemplate(type: ImportType): Promise<void> {
-  const res = await fetch(`${API_URL}/import/${type}/template`, {
-    headers: { Authorization: `Bearer ${getAccessToken() ?? ''}` },
-  });
-  if (!res.ok) throw new Error(`Template download failed with status ${res.status}`);
-  const blob = await res.blob();
-  const disposition = res.headers.get('content-disposition') ?? '';
-  const filenameMatch = /filename="?([^"]+)"?/.exec(disposition);
-  const filename = filenameMatch?.[1] ?? `${type}-template.xlsx`;
-
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
+export function downloadImportTemplate(type: ImportType): Promise<void> {
+  return apiDownload(`/import/${type}/template`, `${type}-template.xlsx`);
 }

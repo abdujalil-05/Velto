@@ -61,10 +61,22 @@ export async function applyPull(result: SyncPullResult): Promise<void> {
     balances.bulkPut(result.balances),
   ]);
 
-  await db.routes.clear();
-  await db.routeStops.clear();
-  await routes.bulkPut(result.routes);
-  await routeStops.bulkPut(result.routeStops);
+  // Encrypt first (Web Crypto can't be awaited inside a live Dexie
+  // transaction), then swap both tables in one transaction. Doing the
+  // clear() and the bulkPut() as separate top-level operations left a window
+  // where an app kill / WebView teardown between them leaves the agent with
+  // an empty route list — and since routes only arrive with a *successful*
+  // pull, an offline agent would have no route for the rest of the day.
+  const [routeRows, routeStopRows] = await Promise.all([
+    routes.encodeRows(result.routes),
+    routeStops.encodeRows(result.routeStops),
+  ]);
+  await db.transaction('rw', [db.routes, db.routeStops], async () => {
+    await db.routes.clear();
+    await db.routeStops.clear();
+    await routes.bulkPutRows(routeRows);
+    await routeStops.bulkPutRows(routeStopRows);
+  });
 
   await setCursor(result.cursor);
   await setDefaultPriceListId(result.defaultPriceListId);

@@ -14,6 +14,9 @@ import {
   PaymentMethod,
   VisitOutcome,
 } from './index';
+// Role/permission catalog lives in one place only — see rbac-catalog.ts.
+// Do not re-declare these lists here.
+import { SYSTEM_ROLES, PERMISSION_DEFS, permissionKeysForRole } from './rbac-catalog';
 
 if (process.env.NODE_ENV === 'production') {
   console.error('Refusing to seed: NODE_ENV=production. Demo data must never run against prod.');
@@ -104,13 +107,22 @@ async function main() {
 
   console.log(`Company created: ${company.id}`);
 
+  // argon2 is deliberately hashed *before* the transaction opens: it's ~100ms
+  // of CPU per call and would otherwise burn the transaction's time budget
+  // while holding an RLS-scoped connection.
+  const passwordHash = await argon2.hash(DEMO_PASSWORD!, { type: argon2.argon2id });
+
   // Everything from here on goes through the same RLS-bound path the app
   // itself uses — a useful end-to-end check that tenant-scoped writes work.
+  // The explicit timeout is required: this seed writes ~10k rows (120 SKUs,
+  // 80 customers, 30 days of history) in a single transaction, and Prisma's
+  // 5s interactive-transaction default aborts it with P2028 long before that
+  // finishes, leaving a half-seeded tenant behind.
   await withTenant(company.id, async (tx) => {
     const roles = await seedRoles(tx, company.id);
     const permissionIdByKey = await seedPermissions();
     await seedRolePermissions(tx, roles, permissionIdByKey);
-    const users = await seedUsers(tx, company.id, roles);
+    const users = await seedUsers(tx, company.id, roles, passwordHash);
     const warehouse = await tx.warehouse.create({
       data: { companyId: company.id, name: 'Asosiy ombor', address: 'Toshkent sh., Chilonzor tumani' },
     });
@@ -128,31 +140,12 @@ async function main() {
       stockLedger,
     });
     void routes;
-  });
+  }, { maxWait: 30_000, timeout: 15 * 60_000 });
 
   console.log('Seed complete.');
 }
 
 // --- Roles & users -----------------------------------------------------
-
-// 4.1 (post-simplification): trimmed from 9 to 6 system roles. SUPERVISOR
-// (permissions were a near-subset of SALES_DIRECTOR — no persona in 4.2, and
-// the ICP's 8-40 agents are manageable by one director), OPERATOR (phone-order
-// channel — folded into SALES_DIRECTOR/OWNER taking calls directly), and
-// VIEWER (no persona, no workflow depends on read-only access) were dropped
-// to keep the role list unambiguous for non-technical owners. ACCOUNTANT was
-// briefly dropped too (3.4) but restored per customer request. OWNER/
-// SALES_DIRECTOR/SALES_AGENT role *codes* are unchanged (business logic keys
-// off them — see users.service.ts, cash-sessions.service.ts) — only the
-// display name changed (Admin / Director / Agent).
-const SYSTEM_ROLES: { code: string; name: string }[] = [
-  { code: 'OWNER', name: 'Admin' },
-  { code: 'SALES_DIRECTOR', name: 'Director' },
-  { code: 'SALES_AGENT', name: 'Agent' },
-  { code: 'WAREHOUSE', name: 'Omborchi' },
-  { code: 'CASHIER', name: 'Kassir' },
-  { code: 'ACCOUNTANT', name: 'Buxgalter' },
-];
 
 async function seedRoles(tx: TenantClient, companyId: string) {
   const roles: Record<string, string> = {};
@@ -164,56 +157,6 @@ async function seedRoles(tx: TenantClient, companyId: string) {
   }
   return roles;
 }
-
-// RBAC catalog (SEC-020..024: "modul.harakat"). Not specified verbatim in
-// the TZ — a reasonable module/action split covering MVP scope (5.3), grants
-// per role loosely matching the responsibilities in 4.1.
-const PERMISSION_DEFS: { module: string; actions: string[] }[] = [
-  { module: 'customers', actions: ['read', 'create', 'update', 'delete'] },
-  { module: 'catalog', actions: ['read', 'create', 'update', 'delete'] },
-  { module: 'stock', actions: ['read', 'receive', 'adjust'] },
-  { module: 'orders', actions: ['read', 'create', 'update', 'cancel'] },
-  { module: 'invoices', actions: ['read'] },
-  { module: 'payments', actions: ['read', 'create'] },
-  { module: 'cash', actions: ['read', 'open', 'close'] },
-  { module: 'routes', actions: ['read', 'create', 'update'] },
-  { module: 'field', actions: ['read', 'create'] },
-  { module: 'purchases', actions: ['read', 'create', 'update', 'receive'] },
-  { module: 'reports', actions: ['read', 'export'] },
-  { module: 'users', actions: ['read', 'create', 'update'] },
-  { module: 'roles', actions: ['read'] },
-  { module: 'audit', actions: ['read'] },
-  { module: 'settings', actions: ['read', 'update'] },
-  { module: 'integrations', actions: ['export1c'] },
-];
-
-const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
-  OWNER: 'ALL',
-  SALES_DIRECTOR: [
-    'customers.read', 'customers.update', 'catalog.read', 'stock.read',
-    'orders.read', 'orders.update', 'invoices.read', 'payments.read',
-    'routes.read', 'routes.create', 'routes.update', 'field.read',
-    'reports.read', 'reports.export', 'users.read', 'users.create',
-    'users.update', 'roles.read',
-  ],
-  SALES_AGENT: [
-    'customers.read', 'catalog.read', 'stock.read', 'orders.read',
-    'orders.create', 'payments.create', 'payments.read', 'invoices.read', 'routes.read', 'field.read', 'field.create',
-  ],
-  WAREHOUSE: [
-    'catalog.read', 'stock.read', 'stock.receive', 'stock.adjust',
-    'purchases.read', 'purchases.create', 'purchases.update', 'purchases.receive',
-    'orders.read', 'orders.update', // marks CONFIRMED orders as DELIVERED
-  ],
-  CASHIER: [
-    'customers.read', 'invoices.read', 'payments.read', 'payments.create',
-    'cash.read', 'cash.open', 'cash.close',
-  ],
-  ACCOUNTANT: [
-    'customers.read', 'invoices.read', 'payments.read', 'cash.read', 'reports.read',
-    'reports.export', 'integrations.export1c',
-  ],
-};
 
 /** Permission is global reference data (schema 6.2, not tenant-scoped) — seeded once via the BYPASSRLS client. */
 async function seedPermissions(): Promise<Record<string, string>> {
@@ -236,11 +179,8 @@ async function seedRolePermissions(
   roles: Record<string, string>,
   permissionIdByKey: Record<string, string>,
 ) {
-  const allKeys = Object.keys(permissionIdByKey);
   for (const [roleCode, roleId] of Object.entries(roles)) {
-    const grant = ROLE_PERMISSIONS[roleCode];
-    const keys = grant === 'ALL' ? allKeys : (grant ?? []);
-    for (const key of keys) {
+    for (const key of permissionKeysForRole(roleCode)) {
       const permissionId = permissionIdByKey[key];
       if (!permissionId) continue;
       await tx.rolePermission.create({ data: { roleId, permissionId } });
@@ -248,9 +188,12 @@ async function seedRolePermissions(
   }
 }
 
-async function seedUsers(tx: TenantClient, companyId: string, roles: Record<string, string>) {
-  const passwordHash = await argon2.hash(DEMO_PASSWORD!, { type: argon2.argon2id });
-
+async function seedUsers(
+  tx: TenantClient,
+  companyId: string,
+  roles: Record<string, string>,
+  passwordHash: string,
+) {
   async function createUser(firstName: string, lastName: string, phone: string, roleCode: string) {
     const user = await tx.user.create({
       data: { companyId, firstName, lastName, phone, passwordHash, isActive: true },

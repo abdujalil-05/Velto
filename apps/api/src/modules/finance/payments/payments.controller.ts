@@ -12,14 +12,14 @@ export class PaymentsController {
 
   @Get()
   @RequirePermission('payments.read')
-  list(@Query() query: ListPaymentsQueryDto) {
-    return this.payments.list(query);
+  list(@Query() query: ListPaymentsQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.payments.list(query, user);
   }
 
   @Get(':id')
   @RequirePermission('payments.read')
-  getById(@Param('id', ParseUUIDPipe) id: string) {
-    return this.payments.getById(id);
+  getById(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.payments.getById(id, user);
   }
 
   @Post()

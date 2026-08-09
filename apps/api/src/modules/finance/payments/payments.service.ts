@@ -34,11 +34,17 @@ export class PaymentsService {
     private readonly docNumbering: DocumentNumberingService,
   ) {}
 
-  async list(query: ListPaymentsQueryDto) {
+  async list(query: ListPaymentsQueryDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
+    // SEC-023 (15.3): a SALES_AGENT only ever sees the payments they
+    // collected themselves — this overrides whatever `collectedBy` they
+    // passed, so they can't page through the company's cash collection by
+    // guessing another user's id. CASHIER/ACCOUNTANT/DIRECTOR/OWNER are
+    // unrestricted (their whole job is the company-wide cash picture).
+    const scopedCollectedBy = user.roles.includes('SALES_AGENT') ? user.id : query.collectedBy;
     const where: Prisma.PaymentWhereInput = {
       ...(query.customerId ? { customerId: query.customerId } : {}),
-      ...(query.collectedBy ? { collectedBy: query.collectedBy } : {}),
+      ...(scopedCollectedBy ? { collectedBy: scopedCollectedBy } : {}),
       ...(query.from || query.to
         ? {
             createdAt: {
@@ -73,9 +79,16 @@ export class PaymentsService {
     return paginate(data, total, query.page, query.pageSize);
   }
 
-  async getById(id: string) {
+  async getById(id: string, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
-    const payment = await tx.payment.findFirst({ where: { id }, include: PAYMENT_INCLUDE });
+    // SEC-023: same object-level scoping as list() — another collector's
+    // payment id returns the same "not found" as a bad id, so the response
+    // never confirms that payment exists.
+    const scopedCollectedBy = user.roles.includes('SALES_AGENT') ? user.id : undefined;
+    const payment = await tx.payment.findFirst({
+      where: { id, ...(scopedCollectedBy ? { collectedBy: scopedCollectedBy } : {}) },
+      include: PAYMENT_INCLUDE,
+    });
     if (!payment) throw new PaymentNotFoundException();
     return payment;
   }
@@ -96,7 +109,7 @@ export class PaymentsService {
     const tx = this.tenantPrisma.client;
 
     if (dto.clientId) {
-      const existing = await tx.payment.findUnique({ where: { clientId: dto.clientId }, include: PAYMENT_INCLUDE });
+      const existing = await tx.payment.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: PAYMENT_INCLUDE });
       if (existing) return existing;
     }
 
@@ -131,7 +144,7 @@ export class PaymentsService {
       // exists for — both requests can race past the pre-check above and the
       // loser hits this unique violation. Return the winner's payment.
       if (dto.clientId && err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-        const existing = await tx.payment.findUnique({ where: { clientId: dto.clientId }, include: PAYMENT_INCLUDE });
+        const existing = await tx.payment.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: PAYMENT_INCLUDE });
         if (existing) return existing;
       }
       throw err;

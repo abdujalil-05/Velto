@@ -1,12 +1,12 @@
 import { Type } from 'class-transformer';
-import { ArrayMinSize, IsArray, IsPositive, IsUUID, ValidateNested } from 'class-validator';
+import { ArrayMinSize, IsArray, IsUUID, ValidateNested } from 'class-validator';
+import { IsMoneyAmount } from '../../../../common/validators/numeric-bounds';
 
 class PriceListItemInput {
   @IsUUID()
   productId!: string;
 
-  @Type(() => Number)
-  @IsPositive()
+  @IsMoneyAmount()
   price!: number;
 }
 

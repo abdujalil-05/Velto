@@ -5,12 +5,11 @@ import {
   IsOptional,
   IsString,
   IsUUID,
-  Max,
   MaxLength,
-  Min,
   MinLength,
   ValidateNested,
 } from 'class-validator';
+import { IsMoneyAmount, IsPercentage } from '../../../../common/validators/numeric-bounds';
 import { PackagingDto } from './packaging.dto';
 
 export class CreateProductDto {
@@ -44,14 +43,11 @@ export class CreateProductDto {
   categoryId?: string;
 
   @IsOptional()
-  @Type(() => Number)
-  @Min(0)
-  @Max(100)
+  @IsPercentage()
   vatRate?: number;
 
   @IsOptional()
-  @Type(() => Number)
-  @Min(0)
+  @IsMoneyAmount({ allowZero: true })
   minPrice?: number;
 
   // The product's sale price — stored as a PriceListItem on the single
@@ -59,8 +55,7 @@ export class CreateProductDto {
   // not a Product column. Optional: a product can exist before its price
   // is set, same as before this field existed.
   @IsOptional()
-  @Type(() => Number)
-  @Min(0)
+  @IsMoneyAmount({ allowZero: true })
   price?: number;
 
   // 1C export requires this (6.4) — service defaults it to `sku` if omitted.

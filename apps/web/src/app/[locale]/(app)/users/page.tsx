@@ -6,8 +6,15 @@ import { toast } from 'sonner';
 import { Plus, RefreshCw, Search, Users as UsersIcon } from 'lucide-react';
 import { Link, useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
-import { useUsersQuery, useActivateUserMutation, useDeactivateUserMutation, type User } from '@/lib/api/users';
-import { errorMessage } from '@/lib/api/client';
+import {
+  useUsersQuery,
+  useActivateUserMutation,
+  useDeactivateUserMutation,
+  useDeleteUserMutation,
+  type User,
+  type UserReferences,
+} from '@/lib/api/users';
+import { ApiError, errorMessage } from '@/lib/api/client';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
 import { exportToCsv } from '@/lib/export-csv';
 import { formatDateTime } from '@/lib/format';
@@ -19,17 +26,48 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { PaginationBar } from '@/components/shared/pagination-bar';
 import { ExportCsvButton } from '@/components/shared/export-csv-button';
 import { UsersTable } from '@/components/users/users-table';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { cn } from '@/lib/utils';
 
 type StatusFilter = 'all' | 'active' | 'inactive';
 
+/** Order the reference counters are listed in — mirrors `Users.references.*`. */
+const REFERENCE_KEYS = [
+  'salesOrders',
+  'payments',
+  'cashSessions',
+  'routes',
+  'visits',
+  'purchaseOrders',
+  'auditLogs',
+  'exportJobs',
+  'notifications',
+] as const satisfies readonly (keyof UserReferences)[];
+
+/** `details.references` only rides along on the 409 a `hard=true` delete throws. */
+function referencesFromError(error: unknown): UserReferences | null {
+  if (!(error instanceof ApiError)) return null;
+  const details = error.details as { references?: UserReferences } | undefined;
+  return details?.references ?? null;
+}
+
 export default function UsersPage() {
   const t = useTranslations('Users');
+  const tRoles = useTranslations('AppShell.roles');
+  const tCommon = useTranslations('Common');
   const locale = useLocale();
   const { hasPermission, user: currentUser } = useAuth();
   const canCreate = hasPermission('users.create');
   const canUpdate = hasPermission('users.update');
+  const canDelete = hasPermission('users.delete');
   const router = useRouter();
+
+  /** "Sales orders: 3, Payments: 2" — the human-readable side of `references`. */
+  function formatReferences(references: UserReferences): string {
+    return REFERENCE_KEYS.filter((key) => (references[key] ?? 0) > 0)
+      .map((key) => `${t(`references.${key}`)}: ${references[key]}`)
+      .join(', ');
+  }
 
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<StatusFilter>('all');
@@ -46,19 +84,69 @@ export default function UsersPage() {
   const activateMutation = useActivateUserMutation();
   const deactivateMutation = useDeactivateUserMutation();
   const [togglingId, setTogglingId] = useState<string | undefined>();
+  const [pendingDeactivate, setPendingDeactivate] = useState<User | null>(null);
+  const [deactivateError, setDeactivateError] = useState<string | null>(null);
+  const deleteMutation = useDeleteUserMutation();
+  const [pendingDelete, setPendingDelete] = useState<User | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
+  // Deactivation cuts the user off from the system — always confirm.
+  // Re-activation is harmless, so it fires straight away.
   async function toggleActive(targetUser: User) {
+    if (targetUser.isActive) {
+      setPendingDeactivate(targetUser);
+      return;
+    }
     setTogglingId(targetUser.id);
     try {
-      if (targetUser.isActive) {
-        await deactivateMutation.mutateAsync(targetUser.id);
-      } else {
-        await activateMutation.mutateAsync(targetUser.id);
-      }
+      await activateMutation.mutateAsync(targetUser.id);
     } catch (err) {
       toast.error(errorMessage(err, locale));
     } finally {
       setTogglingId(undefined);
+    }
+  }
+
+  async function confirmDeactivate() {
+    if (!pendingDeactivate) return;
+    setDeactivateError(null);
+    setTogglingId(pendingDeactivate.id);
+    try {
+      await deactivateMutation.mutateAsync(pendingDeactivate.id);
+      setPendingDeactivate(null);
+    } catch (err) {
+      setDeactivateError(errorMessage(err, locale));
+    } finally {
+      setTogglingId(undefined);
+    }
+  }
+
+  // Deleting is a different operation from deactivating: it revokes every role,
+  // kills live sessions and then either anonymizes the account (if history
+  // points at it) or drops the row. The API decides which and reports it back
+  // as `mode` — we only learn the outcome after the fact, so the confirmation
+  // text has to describe both branches.
+  async function confirmDelete() {
+    if (!pendingDelete) return;
+    const name = `${pendingDelete.firstName} ${pendingDelete.lastName}`;
+    setDeleteError(null);
+    try {
+      const result = await deleteMutation.mutateAsync({ id: pendingDelete.id });
+      setPendingDelete(null);
+      if (result.mode === 'soft') {
+        const summary = formatReferences(result.references);
+        toast.success(summary ? t('deleteSoftSuccessWithRefs', { name, items: summary }) : t('deleteSoftSuccess', { name }));
+      } else {
+        toast.success(t('deleteHardSuccess', { name }));
+      }
+    } catch (err) {
+      // A 409 from a `hard` delete carries the blocking row counts — spell them
+      // out instead of leaving the user with a bare "conflict".
+      const references = referencesFromError(err);
+      const summary = references ? formatReferences(references) : '';
+      setDeleteError(
+        summary ? `${errorMessage(err, locale)} ${t('deleteBlockedBy', { items: summary })}` : errorMessage(err, locale),
+      );
     }
   }
 
@@ -69,7 +157,7 @@ export default function UsersPage() {
     exportToCsv(`foydalanuvchilar-${new Date().toISOString().slice(0, 10)}.csv`, data.data, [
       { header: t('name'), value: (u) => `${u.firstName} ${u.lastName}` },
       { header: t('phone'), value: (u) => u.phone },
-      { header: t('roles'), value: (u) => u.roles.map((r) => r.name).join('; ') },
+      { header: t('roles'), value: (u) => u.roles.map((r) => tRoles(r.code)).join('; ') },
       { header: t('lastLogin'), value: (u) => (u.lastLoginAt ? formatDateTime(u.lastLoginAt, locale) : '') },
       { header: t('status'), value: (u) => (u.isActive ? t('filter.active') : t('filter.inactive')) },
     ]);
@@ -176,15 +264,56 @@ export default function UsersPage() {
             <UsersTable
               users={data.data}
               canUpdate={canUpdate}
+              canDelete={canDelete}
               currentUserId={currentUser?.id}
               onEdit={(u) => router.push(`/users/${u.id}/edit`)}
               onToggleActive={toggleActive}
+              onDelete={(u) => {
+                setDeleteError(null);
+                setPendingDelete(u);
+              }}
               togglingId={togglingId}
             />
             <PaginationBar meta={data.meta} onPageChange={setPage} />
           </CardContent>
         </Card>
       )}
+
+      <ConfirmDialog
+        open={pendingDeactivate !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingDeactivate(null);
+            setDeactivateError(null);
+          }
+        }}
+        title={tCommon('confirmDeactivate.title')}
+        description={tCommon('confirmDeactivate.description', {
+          name: pendingDeactivate ? `${pendingDeactivate.firstName} ${pendingDeactivate.lastName}` : '',
+        })}
+        confirmLabel={tCommon('confirmDeactivate.confirm')}
+        error={deactivateError}
+        isPending={deactivateMutation.isPending}
+        onConfirm={confirmDeactivate}
+      />
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingDelete(null);
+            setDeleteError(null);
+          }
+        }}
+        title={t('confirmDelete.title')}
+        description={t('confirmDelete.description', {
+          name: pendingDelete ? `${pendingDelete.firstName} ${pendingDelete.lastName}` : '',
+        })}
+        confirmLabel={t('delete')}
+        error={deleteError}
+        isPending={deleteMutation.isPending}
+        onConfirm={confirmDelete}
+      />
     </div>
   );
 }

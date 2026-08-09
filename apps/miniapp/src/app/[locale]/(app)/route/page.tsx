@@ -23,6 +23,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { ConfirmSheet } from '@/components/shared/confirm-sheet';
 
 export default function RoutePage() {
   const t = useTranslations('Route');
@@ -42,6 +43,7 @@ export default function RoutePage() {
 
   const [finishedRouteIds, setFinishedRouteIds] = useState<Set<string>>(new Set());
   const [finishingId, setFinishingId] = useState<string | null>(null);
+  const [finishConfirmOpen, setFinishConfirmOpen] = useState(false);
 
   const today = useMemo(() => new Date(), []);
 
@@ -85,6 +87,10 @@ export default function RoutePage() {
   const pendingRouteIds = todaysRouteIds.filter((id) => !finishedRouteIds.has(id));
   const canFinish = allVisited && pendingRouteIds.length > 0;
 
+  // Closing the run is a server-side one-way door (no reopen endpoint for an
+  // agent) and, unlike orders/visits/payments, it is NOT queueable — it goes
+  // straight to the API, so a partial failure mid-loop can leave one route of
+  // the day closed and another open. Worth an explicit confirmation.
   async function handleFinish() {
     setFinishingId('*');
     try {
@@ -92,6 +98,7 @@ export default function RoutePage() {
         await finishRoute.mutateAsync(routeId);
       }
       setFinishedRouteIds((prev) => new Set([...prev, ...pendingRouteIds]));
+      setFinishConfirmOpen(false);
       toast.success(t('finishSuccess'));
     } catch (err) {
       toast.error(errorMessage(err, locale));
@@ -172,11 +179,26 @@ export default function RoutePage() {
       </div>
 
       {allVisited && (
-        <Button size="lg" className="w-full gap-2" disabled={!canFinish || finishingId !== null} onClick={handleFinish}>
+        <Button
+          size="lg"
+          className="w-full gap-2"
+          disabled={!canFinish || finishingId !== null}
+          onClick={() => setFinishConfirmOpen(true)}
+        >
           <Flag className="h-4 w-4" />
           {isFinished ? t('finished') : t('finishRoute')}
         </Button>
       )}
+
+      <ConfirmSheet
+        open={finishConfirmOpen}
+        onOpenChange={setFinishConfirmOpen}
+        title={t('finishConfirmTitle')}
+        description={t('finishConfirmDescription', { count: stops.length })}
+        tone="default"
+        confirmLabel={t('finishRoute')}
+        onConfirm={handleFinish}
+      />
     </div>
   );
 }

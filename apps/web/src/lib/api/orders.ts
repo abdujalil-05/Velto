@@ -81,6 +81,13 @@ export interface CreateOrderInput {
 function invalidateOrder(queryClient: ReturnType<typeof useQueryClient>, id: string) {
   queryClient.invalidateQueries({ queryKey: ['orders'] });
   queryClient.invalidateQueries({ queryKey: ['orders', id] });
+  // Every status transition moves stock (sales.service.ts: confirm reserves,
+  // deliver issues, cancel releases) and deliver additionally cuts a 1:1
+  // invoice that changes the customer's balance — all of which are cached
+  // under their own keys and would otherwise stay stale on screen.
+  queryClient.invalidateQueries({ queryKey: ['stock'] });
+  queryClient.invalidateQueries({ queryKey: ['invoices'] });
+  queryClient.invalidateQueries({ queryKey: ['customers'] });
 }
 
 export function useCreateOrderMutation() {

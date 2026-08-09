@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useTranslations } from 'next-intl';
 import { Plus } from 'lucide-react';
 import { useSuppliersQuery, type Supplier } from '@/lib/api/suppliers';
@@ -49,7 +49,9 @@ export function PurchaseOrderForm({ isSubmitting, submitError, onSubmit }: Purch
   const [supplierDialogOpen, setSupplierDialogOpen] = useState(false);
 
   const { data: warehouses } = useWarehousesQuery();
-  const activeWarehouses = (warehouses ?? []).filter((w) => w.isActive);
+  // Memoised: `.filter()` returns a fresh array every render, which as an
+  // effect dependency re-ran the auto-select effect on every single render.
+  const activeWarehouses = useMemo(() => (warehouses ?? []).filter((w) => w.isActive), [warehouses]);
   const [warehouseId, setWarehouseId] = useState('');
   useEffect(() => {
     if (activeWarehouses.length === 1 && !warehouseId) setWarehouseId(activeWarehouses[0]!.id);

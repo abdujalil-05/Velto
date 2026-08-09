@@ -3,7 +3,7 @@
 import { use, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { toast } from 'sonner';
-import { ArrowLeft, Loader2, Trash2 } from 'lucide-react';
+import { ArrowLeft, Trash2 } from 'lucide-react';
 import { Link, useRouter } from '@/i18n/navigation';
 import { useDeleteProductMutation, useProductQuery, useUpdateProductMutation } from '@/lib/api/products';
 import { useCategoriesQuery } from '@/lib/api/categories';
@@ -13,7 +13,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { ProductForm } from '@/components/products/product-form';
 import { ProductImageUpload } from '@/components/products/product-image-upload';
 
@@ -99,41 +99,23 @@ export default function EditProductPage({ params }: { params: Promise<{ id: stri
         </Card>
       )}
 
-      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t('deleteConfirmTitle')}</DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">{t('deleteConfirmDescription', { name: product?.name ?? '' })}</p>
-          {deleteError && (
-            <Alert variant="destructive">
-              <AlertDescription>{deleteError}</AlertDescription>
-            </Alert>
-          )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteOpen(false)} disabled={deleteMutation.isPending}>
-              {t('deleteCancel')}
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={deleteMutation.isPending}
-              onClick={() => {
-                setDeleteError(null);
-                deleteMutation.mutate(id, {
-                  onSuccess: () => {
-                    toast.success(t('deleted'));
-                    router.push('/products');
-                  },
-                  onError: (err) => setDeleteError(errorMessage(err, locale)),
-                });
-              }}
-            >
-              {deleteMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {t('deleteConfirmAction')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConfirmDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        itemName={product?.name ?? ''}
+        error={deleteError}
+        isPending={deleteMutation.isPending}
+        onConfirm={() => {
+          setDeleteError(null);
+          deleteMutation.mutate(id, {
+            onSuccess: () => {
+              toast.success(t('deleted'));
+              router.push('/products');
+            },
+            onError: (err) => setDeleteError(errorMessage(err, locale)),
+          });
+        }}
+      />
     </div>
   );
 }

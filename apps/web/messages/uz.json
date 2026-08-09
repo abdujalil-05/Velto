@@ -12,7 +12,23 @@
     "somUnit": "so'm",
     "paginationSummary": "{from}–{to} / jami {total}",
     "previousPage": "Oldingi sahifa",
-    "nextPage": "Keyingi sahifa"
+    "nextPage": "Keyingi sahifa",
+    "confirmDelete": {
+      "title": "O'chirishni tasdiqlang",
+      "description": "«{name}» ni rostdan ham o'chirmoqchimisiz? Bu amalni ortga qaytarib bo'lmaydi.",
+      "confirm": "O'chirish",
+      "cancel": "Bekor qilish"
+    },
+    "confirmDeactivate": {
+      "title": "Faolsizlantirishni tasdiqlang",
+      "description": "«{name}» ni rostdan ham faolsizlantirmoqchimisiz? U ro'yxatlarda tanlash uchun mavjud bo'lmaydi.",
+      "confirm": "Faolsizlantirish"
+    },
+    "confirmCancel": {
+      "title": "Bekor qilishni tasdiqlang",
+      "description": "«{name}» ni rostdan ham bekor qilmoqchimisiz? Bu amalni ortga qaytarib bo'lmaydi.",
+      "confirm": "Ha, bekor qilish"
+    }
   },
   "Nav": {
     "dashboard": "Bosh sahifa",
@@ -118,6 +134,13 @@
     "status": "Holat",
     "active": "Faol",
     "blocked": "Bloklangan",
+    "actions": "Amallar",
+    "delete": "O'chirish",
+    "confirmDelete": {
+      "title": "Mijozni o'chirish",
+      "description": "«{name}» o'chirilsinmi? Mijoz va uning barcha savdo nuqtalari tizimdan yashiriladi; buyurtmalar va to'lovlar tarixi saqlanib qoladi. Mijozda qoplanmagan qarz bo'lsa, o'chirishga ruxsat berilmaydi."
+    },
+    "deleteSuccess": "«{name}» o'chirildi.",
     "filter": {
       "all": "Barchasi",
       "active": "Faol",
@@ -340,10 +363,6 @@
       "submitCreate": "Mahsulot qo'shish",
       "submitUpdate": "O'zgarishlarni saqlash",
       "delete": "O'chirish",
-      "deleteConfirmTitle": "Mahsulotni o'chirish",
-      "deleteConfirmDescription": "\"{name}\" mahsulotini o'chirmoqchimisiz? Bu amalni bekor qilib bo'lmaydi.",
-      "deleteConfirmAction": "O'chirish",
-      "deleteCancel": "Bekor qilish",
       "deleted": "Mahsulot o'chirildi",
       "categoryDialog": {
         "title": "Yangi kategoriya",
@@ -525,6 +544,27 @@
     "deactivate": "Faolsizlantirish",
     "activate": "Faollashtirish",
     "cannotDeactivateSelf": "O'z hisobingizni faolsizlantira olmaysiz",
+    "delete": "O'chirish",
+    "cannotDeleteSelf": "O'z hisobingizni o'chira olmaysiz",
+    "confirmDelete": {
+      "title": "Foydalanuvchini o'chirish",
+      "description": "«{name}» o'chirilsinmi? Barcha rollar olib tashlanadi va faol sessiyalar tugatiladi. Agar foydalanuvchida tizimda yozuvlar bo'lsa (buyurtmalar, to'lovlar, tashriflar, audit jurnali), hisob o'chirilmaydi, balki shaxssizlantiriladi va faolsizlantiriladi — tarix saqlanib qoladi. Faqat bog'liq yozuvlari yo'q hisob butunlay o'chiriladi."
+    },
+    "deleteHardSuccess": "«{name}» o'chirildi.",
+    "deleteSoftSuccess": "«{name}» tizimda yozuvlarga ega, shuning uchun hisob o'chirilmadi, balki shaxssizlantirildi va faolsizlantirildi.",
+    "deleteSoftSuccessWithRefs": "«{name}» tizimda yozuvlarga ega ({items}), shuning uchun hisob o'chirilmadi, balki shaxssizlantirildi va faolsizlantirildi.",
+    "deleteBlockedBy": "Bog'liq yozuvlar: {items}.",
+    "references": {
+      "salesOrders": "Buyurtmalar",
+      "payments": "To'lovlar",
+      "cashSessions": "Kassa smenalari",
+      "routes": "Marshrutlar",
+      "visits": "Tashriflar",
+      "purchaseOrders": "Xaridlar",
+      "auditLogs": "Audit yozuvlari",
+      "exportJobs": "Eksport vazifalari",
+      "notifications": "Bildirishnomalar"
+    },
     "filter": {
       "all": "Barchasi",
       "active": "Faol",

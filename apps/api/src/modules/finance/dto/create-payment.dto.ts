@@ -1,14 +1,14 @@
 import { Type } from 'class-transformer';
-import { ArrayMinSize, IsArray, IsEnum, IsOptional, IsPositive, IsUUID, ValidateNested } from 'class-validator';
+import { ArrayMinSize, IsArray, IsEnum, IsOptional, IsUUID, ValidateNested } from 'class-validator';
 import { PaymentMethod } from '@velto/database';
+import { IsMoneyAmount } from '../../../common/validators/numeric-bounds';
 
 /** 8.4 manual-override line: explicit invoice/amount pairs instead of FIFO. */
 export class PaymentAllocationInputDto {
   @IsUUID()
   invoiceId!: string;
 
-  @Type(() => Number)
-  @IsPositive()
+  @IsMoneyAmount()
   amount!: number;
 }
 
@@ -17,8 +17,7 @@ export class CreatePaymentDto {
   @IsUUID()
   customerId!: string;
 
-  @Type(() => Number)
-  @IsPositive()
+  @IsMoneyAmount()
   amount!: number;
 
   @IsEnum(PaymentMethod)

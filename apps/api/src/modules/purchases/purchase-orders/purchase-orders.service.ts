@@ -69,9 +69,18 @@ export class PurchaseOrdersService {
     await this.suppliers.findActiveOrThrow(tx, dto.supplierId);
     await this.assertWarehouseExists(tx, dto.warehouseId);
 
+    // One batched lookup instead of one query per line; the validation loop
+    // below still runs in `dto.lines` order and throws the same exception.
+    const productIds = [...new Set(dto.lines.map((l) => l.productId))];
+    const productRows = await tx.product.findMany({
+      where: { id: { in: productIds }, deletedAt: null },
+      select: { id: true },
+    });
+    const productById = new Map(productRows.map((p) => [p.id, p]));
+
     const lines: { productId: string; qty: number; unitPrice: number }[] = [];
     for (const lineDto of dto.lines) {
-      const product = await tx.product.findFirst({ where: { id: lineDto.productId, deletedAt: null } });
+      const product = productById.get(lineDto.productId);
       if (!product) throw new ProductNotFoundException();
       lines.push({ productId: product.id, qty: lineDto.qty, unitPrice: lineDto.unitPrice });
     }

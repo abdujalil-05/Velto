@@ -19,14 +19,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Textarea } from '@/components/ui/textarea';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { YandexMap } from '@/components/shared/yandex-map';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogCloseButton,
-  DialogFooter,
-} from '@/components/ui/dialog';
+import { ConfirmSheet } from '@/components/shared/confirm-sheet';
 import { cn } from '@/lib/utils';
 
 const GPS_RADIUS_M = 150;
@@ -57,7 +50,6 @@ export default function VisitPage() {
   const startedAtRef = useRef(new Date().toISOString());
   const [noOrderDialogOpen, setNoOrderDialogOpen] = useState(false);
   const [noOrderReason, setNoOrderReason] = useState('');
-  const [submitting, setSubmitting] = useState(false);
 
   const outletHasCoords = outlet?.latitude != null && outlet?.longitude != null;
   const distance =
@@ -104,18 +96,18 @@ export default function VisitPage() {
     router.push(`/order/new?${search.toString()}`);
   }
 
+  // Closing a visit as NO_ORDER is not undoable from the device: the moment
+  // `enqueue` resolves the document is durable in IndexedDB and owned by the
+  // queue, which will push it on the next sync whether or not the agent
+  // changes their mind. Hence the confirmation, and the "will be sent" note
+  // the sheet renders via `queued` — ConfirmSheet owns the in-flight lock.
   async function handleNoOrder() {
     if (!canProceed) return;
-    setSubmitting(true);
-    try {
-      const payload = buildVisitPayload('NO_ORDER');
-      await enqueue('visit', payload as unknown as Record<string, unknown>);
-      syncEngine.notifyQueueChanged();
-      setNoOrderDialogOpen(false);
-      router.push('/route');
-    } finally {
-      setSubmitting(false);
-    }
+    const payload = buildVisitPayload('NO_ORDER');
+    await enqueue('visit', payload as unknown as Record<string, unknown>);
+    syncEngine.notifyQueueChanged();
+    setNoOrderDialogOpen(false);
+    router.push('/route');
   }
 
   if (isLoading) {
@@ -201,31 +193,26 @@ export default function VisitPage() {
         </Button>
       </div>
 
-      <Dialog open={noOrderDialogOpen} onOpenChange={setNoOrderDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t('leaveNoOrder')}</DialogTitle>
-            <DialogCloseButton onClick={() => setNoOrderDialogOpen(false)} />
-          </DialogHeader>
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium">{t('noOrderReasonLabel')}</label>
-            <Textarea
-              value={noOrderReason}
-              onChange={(e) => setNoOrderReason(e.target.value)}
-              placeholder={t('noOrderReasonPlaceholder')}
-              rows={2}
-            />
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setNoOrderDialogOpen(false)} disabled={submitting}>
-              {tCommon('cancel')}
-            </Button>
-            <Button onClick={handleNoOrder} disabled={submitting}>
-              {tCommon('confirm')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConfirmSheet
+        open={noOrderDialogOpen}
+        onOpenChange={setNoOrderDialogOpen}
+        title={t('noOrderConfirmTitle')}
+        description={t('noOrderConfirmDescription')}
+        itemName={`${customer.name} · ${outlet.name}`}
+        queued
+        confirmLabel={t('noOrderConfirmAction')}
+        onConfirm={handleNoOrder}
+      >
+        <div className="space-y-1.5">
+          <label className="text-sm font-medium">{t('noOrderReasonLabel')}</label>
+          <Textarea
+            value={noOrderReason}
+            onChange={(e) => setNoOrderReason(e.target.value)}
+            placeholder={t('noOrderReasonPlaceholder')}
+            rows={2}
+          />
+        </div>
+      </ConfirmSheet>
     </div>
   );
 }

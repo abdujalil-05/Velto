@@ -45,7 +45,7 @@ export default function ReportsPage() {
   const overviewQuery = useOverviewReportQuery(range, tab === 'overview');
   const salesQuery = useSalesReportQuery(range, tab === 'sales');
   const agentsQuery = useAgentPerformanceReportQuery(range, tab === 'agents');
-  const agingQuery = useAgingReportQuery({ page: agingPage, pageSize: 25 });
+  const agingQuery = useAgingReportQuery({ page: agingPage, pageSize: 25 }, tab === 'aging');
 
   const activeQuery = tab === 'overview' ? overviewQuery : tab === 'sales' ? salesQuery : tab === 'agents' ? agentsQuery : agingQuery;
 

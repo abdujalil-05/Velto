@@ -66,7 +66,7 @@ export async function decryptValue<T>(blob: EncryptedBlob): Promise<T> {
   return JSON.parse(new TextDecoder().decode(plaintext)) as T;
 }
 
-/** Wipes the device key (e.g. on logout) — any previously encrypted rows become unreadable, which is fine since the whole local DB is cleared alongside it (see db.ts's `clearAll`). */
+/** Wipes the device key — called by auth-context.tsx's logout(), immediately after `clearOfflineDb()` (db.ts). Any previously encrypted row becomes unreadable, which is fine since the whole local DB is cleared alongside it, and logout is blocked while anything is still unsynced. */
 export function clearDeviceKey(): void {
   window.localStorage.removeItem(DB_KEY_STORAGE_KEY);
   cachedKey = null;

@@ -5,7 +5,9 @@ import { AuditLogService } from '../../common/audit/audit-log.service';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import {
   CustomerAlreadyBlockedException,
+  CustomerHasOutstandingBalanceException,
   CustomerNotBlockedException,
+  CustomerNotFoundException,
   DuplicateCustomerCodeException,
 } from './customers-exceptions';
 import { CustomersService } from './customers.service';
@@ -93,6 +95,44 @@ describe('CustomersService (integration, real Postgres + RLS)', () => {
 
     const detail = await tenantPrisma.run(companyId, () => customers.getById(customerId, user));
     expect(detail.balance.toString()).toBe('60000');
+  });
+
+  it('remove() soft-deletes the customer, cascades to its outlets and frees the code for reuse', async () => {
+    const { customer } = await tenantPrisma.run(companyId, () => customers.create(dto('C-DEL-1'), user));
+    const id = (customer as { id: string }).id;
+    await tenantPrisma.run(companyId, (tx) =>
+      tx.outlet.create({ data: { companyId, customerId: id, name: 'Outlet A' } }),
+    );
+
+    const deleted = await tenantPrisma.run(companyId, () => customers.remove(id, user));
+    expect(deleted.deletedAt).not.toBeNull();
+    expect(deleted.isActive).toBe(false);
+
+    const liveOutlets = await tenantPrisma.run(companyId, (tx) =>
+      tx.outlet.count({ where: { customerId: id, deletedAt: null } }),
+    );
+    expect(liveOutlets).toBe(0);
+
+    // Gone from every read path, and the code is available again.
+    await expect(tenantPrisma.run(companyId, () => customers.getById(id, user))).rejects.toBeInstanceOf(
+      CustomerNotFoundException,
+    );
+    const { customer: reused } = await tenantPrisma.run(companyId, () => customers.create(dto('C-DEL-1'), user));
+    expect((reused as { code: string }).code).toBe('C-DEL-1');
+  });
+
+  it('remove() refuses while the customer still owes money (6.7)', async () => {
+    const { customer } = await tenantPrisma.run(companyId, () => customers.create(dto('C-DEL-2'), user));
+    const id = (customer as { id: string }).id;
+    await tenantPrisma.run(companyId, (tx) =>
+      tx.invoice.create({
+        data: { companyId, number: 'INV-TEST-DEL-1', customerId: id, total: '5000.00', status: 'OPEN' },
+      }),
+    );
+
+    await expect(tenantPrisma.run(companyId, () => customers.remove(id, user))).rejects.toBeInstanceOf(
+      CustomerHasOutstandingBalanceException,
+    );
   });
 
   it('SEC-023 (15.3): a SALES_AGENT only sees customers reached via their own orders/routes/visits', async () => {

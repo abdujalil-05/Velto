@@ -8,12 +8,18 @@ import { cn } from '@/lib/utils';
 interface DialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /**
+   * `bottom` docks the panel to the bottom edge (Telegram Mini App sheet
+   * idiom — thumb-reachable on a phone, no desktop-style centred modal).
+   * `center` stays the default so existing call sites are unchanged.
+   */
+  placement?: 'center' | 'bottom';
   children: React.ReactNode;
 }
 
 // A minimal, dependency-free modal — no Radix (11.2 keeps deps lean). Covers
 // what this app needs: overlay click / Escape to close, no nested dialogs.
-function Dialog({ open, onOpenChange, children }: DialogProps) {
+function Dialog({ open, onOpenChange, placement = 'center', children }: DialogProps) {
   const [mounted, setMounted] = React.useState(false);
   React.useEffect(() => setMounted(true), []);
 
@@ -33,9 +39,21 @@ function Dialog({ open, onOpenChange, children }: DialogProps) {
   if (!mounted || !open) return null;
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div
+      className={cn(
+        'fixed inset-0 z-50 flex justify-center',
+        placement === 'bottom' ? 'items-end p-0' : 'items-center p-4',
+      )}
+    >
       <div className="absolute inset-0 bg-black/50" onClick={() => onOpenChange(false)} aria-hidden="true" />
-      <div role="dialog" aria-modal="true" className="relative z-10 w-full max-w-md">
+      <div
+        role="dialog"
+        aria-modal="true"
+        className={cn(
+          'relative z-10 w-full max-w-md',
+          placement === 'bottom' && 'pb-[env(safe-area-inset-bottom)]',
+        )}
+      >
         {children}
       </div>
     </div>,

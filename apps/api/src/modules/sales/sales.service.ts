@@ -108,7 +108,7 @@ export class SalesService {
     const tx = this.tenantPrisma.client;
 
     if (dto.clientId) {
-      const existing = await tx.salesOrder.findUnique({ where: { clientId: dto.clientId }, include: ORDER_INCLUDE });
+      const existing = await tx.salesOrder.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: ORDER_INCLUDE });
       if (existing) return withTotal(existing);
     }
 
@@ -132,18 +132,38 @@ export class SalesService {
       vatRate: Prisma.Decimal;
       lineTotal: Prisma.Decimal;
     }[] = [];
+    // Batch the three per-line lookups instead of issuing them inside the loop:
+    // a 20-line order used to cost 60 sequential round-trips. The per-line
+    // validation below still runs in `dto.lines` order and throws the exact
+    // same exceptions, so error semantics are unchanged — only the fetching
+    // is hoisted.
+    const productIds = [...new Set(dto.lines.map((l) => l.productId))];
+    const packagingIds = [...new Set(dto.lines.map((l) => l.packagingId))];
+
+    const [productRows, packagingRows, priceRows] = await Promise.all([
+      tx.product.findMany({ where: { id: { in: productIds }, deletedAt: null } }),
+      tx.productPackaging.findMany({
+        where: { id: { in: packagingIds }, productId: { in: productIds } },
+      }),
+      priceListId
+        ? tx.priceListItem.findMany({ where: { priceListId, productId: { in: productIds } } })
+        : Promise.resolve([]),
+    ]);
+
+    const productById = new Map(productRows.map((p) => [p.id, p]));
+    // Keyed by packaging id *and* product id so a packaging belonging to a
+    // different product still misses, exactly like the old `findFirst` filter.
+    const packagingByIdProduct = new Map(packagingRows.map((p) => [`${p.id}:${p.productId}`, p]));
+    const priceByProduct = new Map(priceRows.map((p) => [p.productId, p]));
+
     for (const lineDto of dto.lines) {
-      const product = await tx.product.findFirst({ where: { id: lineDto.productId, deletedAt: null } });
+      const product = productById.get(lineDto.productId);
       if (!product) throw new ProductNotFoundException();
 
-      const packaging = await tx.productPackaging.findFirst({
-        where: { id: lineDto.packagingId, productId: lineDto.productId },
-      });
+      const packaging = packagingByIdProduct.get(`${lineDto.packagingId}:${lineDto.productId}`);
       if (!packaging) throw new PackagingMismatchException();
 
-      const priceListItem = priceListId
-        ? await tx.priceListItem.findFirst({ where: { priceListId, productId: lineDto.productId } })
-        : null;
+      const priceListItem = priceByProduct.get(lineDto.productId) ?? null;
       if (!priceListItem) throw new PriceNotFoundException(lineDto.productId);
 
       const baseQty = new Prisma.Decimal(lineDto.qty).times(packaging.qtyInBaseUnit);
@@ -195,7 +215,7 @@ export class SalesService {
       // for), both requests can race past it and the loser hits this unique
       // violation. Return the winner's order instead of a raw 500.
       if (dto.clientId && err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-        const existing = await tx.salesOrder.findUnique({ where: { clientId: dto.clientId }, include: ORDER_INCLUDE });
+        const existing = await tx.salesOrder.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: ORDER_INCLUDE });
         if (existing) return withTotal(existing);
       }
       throw err;
@@ -302,6 +322,16 @@ export class SalesService {
         },
       },
     });
+
+    // 6.7 (schema, Payment section): Customer.cachedBalance is a projection
+    // kept in step inside the same transaction as the ledger rows that move
+    // it. A new Invoice raises the customer's debt exactly like a payment
+    // lowers it (PaymentsService.create() recomputes it there), so it has to
+    // be recomputed here too — otherwise the cached figure (customers list
+    // `balance` sort, /sync/pull `balances` for the offline agent) stays
+    // stale until that customer happens to pay something.
+    const balance = await this.customers.getBalance(tx, order.customerId);
+    await tx.customer.update({ where: { id: order.customerId }, data: { cachedBalance: balance } });
 
     const updated = await tx.salesOrder.update({
       where: { id },

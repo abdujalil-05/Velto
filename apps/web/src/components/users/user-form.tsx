@@ -40,6 +40,9 @@ interface UserFormProps {
 
 export function UserForm({ mode, defaultValues, roles, isSubmitting, submitError, onSubmit }: UserFormProps) {
   const t = useTranslations('Users.form');
+  // Role display names are localised under AppShell.roles keyed by role code —
+  // `role.name` off the API is the untranslated backend catalog name.
+  const tRoles = useTranslations('AppShell.roles');
 
   const schema = userSchema(t);
   const {
@@ -134,7 +137,7 @@ export function UserForm({ mode, defaultValues, roles, isSubmitting, submitError
                 onChange={() => toggleRole(role.code)}
                 className="h-4 w-4 rounded border-input"
               />
-              {role.name}
+              {tRoles(role.code)}
             </label>
           ))}
         </div>

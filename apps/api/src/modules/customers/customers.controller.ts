@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
@@ -40,6 +40,12 @@ export class CustomersController {
   @RequirePermission('customers.update')
   update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateCustomerDto, @CurrentUser() user: AuthenticatedUser) {
     return this.customers.update(id, dto, user);
+  }
+
+  @Delete(':id')
+  @RequirePermission('customers.delete')
+  remove(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.customers.remove(id, user);
   }
 
   @Post(':id/block')

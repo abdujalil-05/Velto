@@ -1,5 +1,5 @@
-import { Type } from 'class-transformer';
-import { IsBoolean, IsOptional, IsPositive, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsBoolean, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsQuantity } from '../../../../common/validators/numeric-bounds';
 
 /** 6.4: dona → blok → quti. `qtyInBaseUnit` converts this packaging to the product's baseUnit. */
 export class PackagingDto {
@@ -8,8 +8,7 @@ export class PackagingDto {
   @MaxLength(50)
   name!: string;
 
-  @Type(() => Number)
-  @IsPositive()
+  @IsQuantity()
   qtyInBaseUnit!: number;
 
   @IsOptional()

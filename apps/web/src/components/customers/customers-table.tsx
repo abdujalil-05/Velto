@@ -1,6 +1,8 @@
 import { useTranslations } from 'next-intl';
+import { Trash2 } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { formatMoney } from '@/lib/format';
 import type { Customer } from '@/lib/api/customers';
 import { SortableHeader } from '@/components/shared/sortable-header';
@@ -10,11 +12,15 @@ interface CustomersTableProps {
   customers: Customer[];
   sort: SortState;
   onSort: (column: string) => void;
+  /** `customers.delete` — Owner-only on the API side. */
+  canDelete?: boolean;
+  onDelete?: (customer: Customer) => void;
 }
 
-export function CustomersTable({ customers, sort, onSort }: CustomersTableProps) {
+export function CustomersTable({ customers, sort, onSort, canDelete = false, onDelete }: CustomersTableProps) {
   const t = useTranslations('Customers');
   const tCommon = useTranslations('Common');
+  const showActions = canDelete && !!onDelete;
 
   return (
     <div className="overflow-x-auto">
@@ -32,6 +38,7 @@ export function CustomersTable({ customers, sort, onSort }: CustomersTableProps)
               {t('balance')}
             </SortableHeader>
             <th className="pb-2 font-medium">{t('status')}</th>
+            {showActions && <th className="pb-2 text-right font-medium">{t('actions')}</th>}
           </tr>
         </thead>
         <tbody className="divide-y divide-border">
@@ -60,6 +67,13 @@ export function CustomersTable({ customers, sort, onSort }: CustomersTableProps)
                     <Badge variant="success">{t('active')}</Badge>
                   )}
                 </td>
+                {showActions && (
+                  <td className="py-2 text-right">
+                    <Button variant="ghost" size="sm" onClick={() => onDelete?.(customer)} aria-label={t('delete')}>
+                      <Trash2 className="h-4 w-4 text-destructive" />
+                    </Button>
+                  </td>
+                )}
               </tr>
             );
           })}

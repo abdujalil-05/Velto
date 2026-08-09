@@ -4,6 +4,7 @@ import { Loader2 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/lib/auth/auth-context';
 import { SyncStatusBadge } from '@/components/shared/sync-status-badge';
+import { TelegramFallback } from '@/components/telegram-fallback';
 import { Button } from '@/components/ui/button';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
@@ -21,13 +22,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   // Neither a stored session nor Telegram initData — this device was never
   // authenticated and isn't inside Telegram right now. There is no
   // phone/password login screen here (9.4: agent identity is Telegram
-  // identity, 15.2) — the only way in is the bot's Mini App button/link.
+  // identity, 15.2) — the only way in is the bot's Mini App button/link, so
+  // the fallback's job is to hand the agent that link rather than to explain
+  // a login they cannot perform here. This used to be a single line of muted
+  // text on an otherwise empty page, which on a phone reads as a blank screen.
   if (status === 'no-telegram-context' || status === 'unauthenticated') {
-    return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-3 p-6 text-center">
-        <p className="max-w-xs text-sm text-muted-foreground">{t('openViaTelegram')}</p>
-      </div>
-    );
+    return <TelegramFallback reason={status} />;
   }
 
   // Valid Telegram identity, but no admin-created User.phone matches it yet

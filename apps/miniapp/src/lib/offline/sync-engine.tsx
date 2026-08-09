@@ -48,8 +48,18 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
 
   const cycle = useCallback(
     async (opts: { pull: boolean }) => {
-      if (runningRef.current || status !== 'authenticated') return;
-      if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+      if (status !== 'authenticated') return;
+      // Both callers (notifyQueueChanged/forceSyncNow) clear the pending
+      // timer before calling in, so bailing out here without re-arming it
+      // left the app with no scheduled sync at all — every offline save
+      // disarmed the loop, and it only ever came back if the browser
+      // happened to fire an `online` event (unreliable in Telegram's
+      // WebView, and never fired at all when connectivity returns without a
+      // navigator.onLine transition). Re-arm before returning.
+      if (runningRef.current || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+        scheduleNext();
+        return;
+      }
 
       runningRef.current = true;
       setIsSyncing(true);

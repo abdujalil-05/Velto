@@ -55,7 +55,12 @@ export default function PriceListItemsPage({ params }: { params: Promise<{ id: s
       .map(([productId, price]) => ({ productId, price: Number(price) }))
       .filter((entry) => Number.isFinite(entry.price) && entry.price > 0);
 
-    if (upserts.length === 0) return;
+    // Every edited row was blank/0/non-numeric: the button is enabled (there
+    // *are* pending edits) so silently doing nothing looks like a broken save.
+    if (upserts.length === 0) {
+      toast.error(t('invalidPrice'));
+      return;
+    }
 
     upsertMutation.mutate(upserts, {
       onSuccess: () => {

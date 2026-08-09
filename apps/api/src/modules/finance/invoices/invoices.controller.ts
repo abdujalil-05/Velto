@@ -1,4 +1,6 @@
 import { Controller, Get, Param, ParseUUIDPipe, Query } from '@nestjs/common';
+import type { AuthenticatedUser } from '../../../common/auth/auth.types';
+import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequirePermission } from '../../../common/decorators/require-permission.decorator';
 import { ListInvoicesQueryDto } from '../dto/list-invoices.query';
 import { InvoicesService } from './invoices.service';
@@ -10,13 +12,13 @@ export class InvoicesController {
 
   @Get()
   @RequirePermission('invoices.read')
-  list(@Query() query: ListInvoicesQueryDto) {
-    return this.invoices.list(query);
+  list(@Query() query: ListInvoicesQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.invoices.list(query, user);
   }
 
   @Get(':id')
   @RequirePermission('invoices.read')
-  getById(@Param('id', ParseUUIDPipe) id: string) {
-    return this.invoices.getById(id);
+  getById(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.invoices.getById(id, user);
   }
 }

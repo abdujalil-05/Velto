@@ -113,7 +113,13 @@ model User {
   notifications     Notification[]
 
   @@unique([companyId, phone])
-  @@unique([telegramId])
+  // Scoped per-company like every other natural key here: a global unique on
+  // telegramId is a cross-tenant constraint, so tenant A writing a telegramId
+  // could collide with (and thereby probe the existence of) a user in tenant
+  // B. The "one Telegram account = one Velto user" invariant that the Telegram
+  // login flow depends on is enforced in auth.service.ts instead, which fails
+  // closed on >1 match exactly like the phone-lookup path already does.
+  @@unique([companyId, telegramId])
   @@index([companyId])
 }
 
@@ -231,6 +237,7 @@ model Customer {
   // customer's code can be reused. This plain index just keeps lookups fast.
   @@index([companyId, code])
   @@index([companyId, name])
+  @@index([priceListId])
   // F-M01 (6.3) name-similarity duplicate detection (pg_trgm) — declared here
   // (not hand-written SQL) so Prisma's migration diff manages it and stops
   // proposing to drop it on every subsequent `migrate dev`.
@@ -284,6 +291,12 @@ model ProductCategory {
   children ProductCategory[] @relation("CategoryTree")
   products Product[]
 
+  // NOTE: `parentId` is nullable, and NULL is never equal to NULL in a btree
+  // unique index — so this constraint silently does NOT cover root categories.
+  // The root case is enforced by a partial unique index
+  // (`WHERE "parentId" IS NULL`) in
+  // prisma/migrations/*_tenant_scoped_keys_and_fk_guards, same technique as the
+  // soft-delete partial uniques on Customer.code / Product.sku.
   @@unique([companyId, name, parentId])
 }
 
@@ -318,6 +331,7 @@ model Product {
 
   // Same partial-unique-index note as Customer.code above — see
   // prisma/migrations/*_soft_delete_partial_unique.
+  @@index([categoryId])
   @@index([companyId, sku])
   @@index([companyId, name])
   @@index([companyId, barcode])
@@ -464,7 +478,9 @@ model SalesOrder {
   // required infrastructure the doc's schema section omitted.
   warehouseId String      @db.Uuid
   status      OrderStatus @default(DRAFT)
-  clientId    String?     @unique // offline idempotentlik kaliti
+  // Offline idempotency key (10.4). Scoped per-company, not globally unique:
+  // a client-generated id must never be able to collide across tenants.
+  clientId    String?
   note        String?
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
@@ -479,8 +495,11 @@ model SalesOrder {
   invoices Invoice[]
 
   @@unique([companyId, number])
+  @@unique([companyId, clientId])
   @@index([companyId, customerId])
   @@index([companyId, agentId, createdAt])
+  @@index([companyId, outletId])
+  @@index([companyId, warehouseId])
 }
 
 model SalesOrderLine {
@@ -532,6 +551,7 @@ model Invoice {
   allocations PaymentAllocation[]
 
   @@unique([companyId, number])
+  @@index([companyId, customerId])
 }
 
 model InvoiceLine {
@@ -569,7 +589,7 @@ model Payment {
   amount      Decimal       @db.Decimal(18, 2)
   method      PaymentMethod
   collectedBy String?       @db.Uuid // agent/kassir
-  clientId    String?       @unique // offline idempotentlik
+  clientId    String? // offline idempotentlik — per-company unique, see SalesOrder.clientId
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
@@ -580,6 +600,9 @@ model Payment {
   allocations PaymentAllocation[]
 
   @@unique([companyId, number])
+  @@unique([companyId, clientId])
+  @@index([companyId, customerId])
+  @@index([collectedBy])
 }
 
 model PaymentAllocation {
@@ -676,6 +699,7 @@ model RouteStop {
   outlet Outlet @relation(fields: [outletId], references: [id])
 
   @@index([routeId])
+  @@index([outletId])
 }
 
 enum VisitOutcome {
@@ -698,7 +722,7 @@ model Visit {
   gpsOk         Boolean?
   outcome       VisitOutcome
   noOrderReason String?
-  clientId      String?      @unique
+  clientId      String? // offline idempotentlik — per-company unique, see SalesOrder.clientId
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 
@@ -706,6 +730,7 @@ model Visit {
   agent   User    @relation("AgentVisits", fields: [agentId], references: [id])
   outlet  Outlet  @relation(fields: [outletId], references: [id])
 
+  @@unique([companyId, clientId])
   @@index([companyId, agentId, startedAt])
   @@index([companyId, outletId])
 }
@@ -762,6 +787,7 @@ model PurchaseOrder {
 
   @@unique([companyId, number])
   @@index([companyId, supplierId])
+  @@index([companyId, warehouseId])
 }
 
 model PurchaseOrderLine {

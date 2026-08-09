@@ -175,3 +175,20 @@ export function useUnblockCustomerMutation(id: string) {
     },
   });
 }
+
+/**
+ * DELETE /customers/:id — Owner-only (`customers.delete`). Always a soft delete
+ * (`deletedAt` set, cascading to the customer's outlets); 409s if the balance
+ * isn't zero. Takes the id per-call rather than per-hook because it's fired from
+ * the list, where the target is only known at click time.
+ */
+export function useDeleteCustomerMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => apiFetch<Customer>(`/customers/${id}`, { method: 'DELETE' }),
+    onSuccess: (_customer, id) => {
+      queryClient.invalidateQueries({ queryKey: ['customers'] });
+      queryClient.invalidateQueries({ queryKey: ['customers', id] });
+    },
+  });
+}

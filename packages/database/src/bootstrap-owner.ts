@@ -8,6 +8,9 @@ import 'dotenv/config';
 import argon2 from 'argon2';
 import crypto from 'node:crypto';
 import { systemPrisma, withTenant } from './index';
+// Role/permission catalog lives in one place only — see rbac-catalog.ts.
+// Do not re-declare these lists here.
+import { SYSTEM_ROLES, PERMISSION_DEFS, permissionKeysForRole } from './rbac-catalog';
 
 if (process.env.NODE_ENV === 'production') {
   console.error('Refusing to run: NODE_ENV=production.');
@@ -27,68 +30,6 @@ function generatePassword(): string {
     .map((b) => alphabet[b % alphabet.length])
     .join('');
 }
-
-const PERMISSION_DEFS: { module: string; actions: string[] }[] = [
-  { module: 'customers', actions: ['read', 'create', 'update', 'delete'] },
-  { module: 'catalog', actions: ['read', 'create', 'update', 'delete'] },
-  { module: 'stock', actions: ['read', 'receive', 'adjust'] },
-  { module: 'orders', actions: ['read', 'create', 'update', 'cancel'] },
-  { module: 'invoices', actions: ['read'] },
-  { module: 'payments', actions: ['read', 'create'] },
-  { module: 'cash', actions: ['read', 'open', 'close'] },
-  { module: 'routes', actions: ['read', 'create', 'update'] },
-  { module: 'field', actions: ['read', 'create'] },
-  { module: 'purchases', actions: ['read', 'create', 'update', 'receive'] },
-  { module: 'reports', actions: ['read', 'export'] },
-  { module: 'users', actions: ['read', 'create', 'update'] },
-  { module: 'roles', actions: ['read'] },
-  { module: 'audit', actions: ['read'] },
-  { module: 'settings', actions: ['read', 'update'] },
-  { module: 'integrations', actions: ['export1c'] },
-];
-
-// Keep in sync with SYSTEM_ROLES in seed.ts (4.1, post-simplification: 6 roles).
-const SYSTEM_ROLES = [
-  { code: 'OWNER', name: 'Admin' },
-  { code: 'SALES_DIRECTOR', name: 'Director' },
-  { code: 'SALES_AGENT', name: 'Agent' },
-  { code: 'WAREHOUSE', name: 'Omborchi' },
-  { code: 'CASHIER', name: 'Kassir' },
-  { code: 'ACCOUNTANT', name: 'Buxgalter' },
-];
-
-// Keep in sync with ROLE_PERMISSIONS in seed.ts. Roles are fixed system
-// roles with no custom-role authoring in MVP (roles.service.ts) — a real
-// tenant provisioned here has no later way to grant these, so every
-// non-OWNER role must come out of this script already usable, not just
-// created as an empty shell.
-const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
-  OWNER: 'ALL',
-  SALES_DIRECTOR: [
-    'customers.read', 'customers.update', 'catalog.read', 'stock.read',
-    'orders.read', 'orders.update', 'invoices.read', 'payments.read',
-    'routes.read', 'routes.create', 'routes.update', 'field.read',
-    'reports.read', 'reports.export', 'users.read', 'users.create',
-    'users.update', 'roles.read',
-  ],
-  SALES_AGENT: [
-    'customers.read', 'catalog.read', 'stock.read', 'orders.read',
-    'orders.create', 'payments.create', 'payments.read', 'invoices.read', 'routes.read', 'field.read', 'field.create',
-  ],
-  WAREHOUSE: [
-    'catalog.read', 'stock.read', 'stock.receive', 'stock.adjust',
-    'purchases.read', 'purchases.create', 'purchases.update', 'purchases.receive',
-    'orders.read', 'orders.update', // marks CONFIRMED orders as DELIVERED
-  ],
-  CASHIER: [
-    'customers.read', 'invoices.read', 'payments.read', 'payments.create',
-    'cash.read', 'cash.open', 'cash.close',
-  ],
-  ACCOUNTANT: [
-    'customers.read', 'invoices.read', 'payments.read', 'cash.read', 'reports.read',
-    'reports.export', 'integrations.export1c',
-  ],
-};
 
 async function main() {
   const password = generatePassword();
@@ -117,6 +58,11 @@ async function main() {
     }
   }
 
+  // Hashed before the transaction opens — argon2id is intentionally slow
+  // (~100ms+) and must not eat into the tenant transaction's time budget
+  // while an RLS-scoped connection is held open.
+  const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
+
   await withTenant(company.id, async (tx) => {
     const roleIdByCode: Record<string, string> = {};
     for (const def of SYSTEM_ROLES) {
@@ -127,16 +73,13 @@ async function main() {
     }
 
     for (const [roleCode, roleId] of Object.entries(roleIdByCode)) {
-      const grant = ROLE_PERMISSIONS[roleCode];
-      const keys = grant === 'ALL' ? Object.keys(permissionIdByKey) : (grant ?? []);
-      for (const key of keys) {
+      for (const key of permissionKeysForRole(roleCode)) {
         const permissionId = permissionIdByKey[key];
         if (!permissionId) continue;
         await tx.rolePermission.create({ data: { roleId, permissionId } });
       }
     }
 
-    const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
     const owner = await tx.user.create({
       data: {
         companyId: company.id,

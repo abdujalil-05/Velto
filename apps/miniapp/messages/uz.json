@@ -3,7 +3,14 @@
     "openViaTelegram": "Bu ilovani Telegram orqali oching.",
     "needsPhoneLink": "Hisobingizni bog'lash uchun telefon raqamingizni ulashing.",
     "sharePhone": "Telefon raqamimni ulashish",
-    "linkTimeout": "Bog'lash amalga oshmadi. Telegram botdagi xabarni tekshiring yoki administratoringiz bilan bog'laning, so'ng qayta urinib ko'ring."
+    "linkTimeout": "Bog'lash amalga oshmadi. Telegram botdagi xabarni tekshiring yoki administratoringiz bilan bog'laning, so'ng qayta urinib ko'ring.",
+    "fallbackTitle": "Velto Agent",
+    "fallbackBody": "Bu ilova faqat Telegram ichida ishlaydi. Botni oching va menyudagi Velto tugmasi orqali kiring.",
+    "fallbackSessionBody": "Sessiya tugadi yoki tasdiqlanmadi. Telegram botdagi Velto tugmasi orqali qaytadan kiring.",
+    "fallbackCrashBody": "Ilovani yuklashda kutilmagan xatolik yuz berdi. Qayta urinib ko'ring yoki botni Telegramda qayta oching.",
+    "openInTelegram": "Telegramda ochish",
+    "retry": "Qayta urinish",
+    "botLinkUnavailable": "Bot havolasi sozlanmagan — administratoringiz bilan bog'laning."
   },
   "Home": {
     "greeting": "Salom, {name}",
@@ -23,7 +30,9 @@
     "collectPayment": "To'lov qabul qilish",
     "finishRoute": "Marshrutni tugatish",
     "finishSuccess": "Marshrut tugatildi",
-    "finished": "Marshrut tugatilgan"
+    "finished": "Marshrut tugatilgan",
+    "finishConfirmTitle": "Marshrutni tugatasizmi?",
+    "finishConfirmDescription": "Bugungi marshrut ({count} ta nuqta) yopiladi. Undan keyin bu marshrutga yangi tashrif qo'sha olmaysiz."
   },
   "Report": {
     "title": "Kunlik hisobot",
@@ -47,7 +56,13 @@
     "available": "Qoldiq",
     "priceUnavailable": "Narx yo'q",
     "stockExceeded": "Omborda {available} ta mavjud, iltimos tovar sonini kamaytiring",
-    "stockExceededBanner": "Ba'zi mahsulotlar uchun miqdor ombordagi qoldiqdan ko'p — saqlashdan oldin kamaytiring"
+    "stockExceededBanner": "Ba'zi mahsulotlar uchun miqdor ombordagi qoldiqdan ko'p — saqlashdan oldin kamaytiring",
+    "repeatConfirmTitle": "Savat almashtirilsinmi?",
+    "repeatConfirmDescription": "Savatdagi {count} ta qator o'chiriladi va oxirgi buyurtma tarkibi bilan almashtiriladi.",
+    "repeatConfirmAction": "Almashtirish",
+    "discardConfirmTitle": "Qoralama o'chirilsinmi?",
+    "discardConfirmDescription": "Saqlanmagan {count} ta qator yo'qoladi. Buyurtma na qurilmada, na serverda saqlanadi.",
+    "discardConfirmAction": "O'chirish"
   },
   "Payment": {
     "amount": "Summa",
@@ -77,7 +92,10 @@
     "notFound": "Nuqta topilmadi",
     "gpsUnknown": "GPS aniqlanmoqda — joylashuvingiz aniqlanguncha kuting",
     "gpsTooFar": "Siz nuqtadan 150m'dan uzoqdasiz — yaqinlashing",
-    "takeOrder": "Buyurtma olish"
+    "takeOrder": "Buyurtma olish",
+    "noOrderConfirmTitle": "Tashrifni buyurtmasiz yakunlaysizmi?",
+    "noOrderConfirmDescription": "Tashrif «buyurtmasiz» deb yopiladi va bugungi hisobotga shu holda tushadi. Qayta ochib bo'lmaydi.",
+    "noOrderConfirmAction": "Ha, yakunlash"
   },
   "NotFound": {
     "title": "Bunday sahifa mavjud emas",
@@ -106,6 +124,11 @@
       "PENDING": "Kutilmoqda",
       "SYNCED": "Yuborildi",
       "FAILED": "Xatolik"
+    },
+    "confirmSheet": {
+      "delete": "O'chirish",
+      "working": "Bajarilmoqda…",
+      "offlineQueueWarning": "Bu amal darhol qurilmada saqlanadi va keyingi sinxronizatsiyada serverga yuboriladi — oflayn bo'lsangiz ham. Keyin uni bekor qilib bo'lmaydi."
     }
   }
 }

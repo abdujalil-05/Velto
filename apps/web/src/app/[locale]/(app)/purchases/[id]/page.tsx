@@ -20,6 +20,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { PurchaseOrderStatusBadge } from '@/components/purchases/purchase-order-status-badge';
 import { ReceivePurchaseOrderDialog } from '@/components/purchases/receive-purchase-order-dialog';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 
 export default function PurchaseOrderDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -33,6 +34,8 @@ export default function PurchaseOrderDetailPage({ params }: { params: Promise<{ 
   const receiveMutation = useReceivePurchaseOrderMutation(id);
   const cancelMutation = useCancelPurchaseOrderMutation(id);
   const [receiveDialogOpen, setReceiveDialogOpen] = useState(false);
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
 
   if (isLoading) {
     return (
@@ -104,17 +107,7 @@ export default function PurchaseOrderDetailPage({ params }: { params: Promise<{ 
             </Button>
           )}
           {canCancel && (
-            <Button
-              size="sm"
-              variant="destructive"
-              onClick={() =>
-                cancelMutation.mutate(undefined, {
-                  onSuccess: () => toast.success(t('cancelSuccess')),
-                  onError: (err) => toast.error(errorMessage(err, locale)),
-                })
-              }
-              disabled={cancelMutation.isPending}
-            >
+            <Button size="sm" variant="destructive" onClick={() => setCancelDialogOpen(true)} disabled={cancelMutation.isPending}>
               <Ban className="mr-2 h-4 w-4" />
               {t('cancel')}
             </Button>
@@ -188,6 +181,29 @@ export default function PurchaseOrderDetailPage({ params }: { params: Promise<{ 
             onError: (err) => toast.error(errorMessage(err, locale)),
           })
         }
+      />
+
+      <ConfirmDialog
+        open={cancelDialogOpen}
+        onOpenChange={(open) => {
+          setCancelDialogOpen(open);
+          if (!open) setCancelError(null);
+        }}
+        title={tCommon('confirmCancel.title')}
+        description={tCommon('confirmCancel.description', { name: po.number })}
+        confirmLabel={tCommon('confirmCancel.confirm')}
+        error={cancelError}
+        isPending={cancelMutation.isPending}
+        onConfirm={() => {
+          setCancelError(null);
+          cancelMutation.mutate(undefined, {
+            onSuccess: () => {
+              toast.success(t('cancelSuccess'));
+              setCancelDialogOpen(false);
+            },
+            onError: (err) => setCancelError(errorMessage(err, locale)),
+          });
+        }}
       />
     </div>
   );

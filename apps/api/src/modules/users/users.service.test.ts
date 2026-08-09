@@ -6,12 +6,15 @@ import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import type { CreateUserDto } from './dto/create-user.dto';
 import {
   CannotDeactivateSelfException,
+  CannotDeleteOwnerException,
+  CannotDeleteSelfException,
   CannotGrantOwnerRoleException,
   DuplicateUserPhoneException,
   InvalidRoleCodesException,
   LastOwnerException,
   UserAlreadyActiveException,
   UserAlreadyInactiveException,
+  UserHasReferencesException,
 } from './users-exceptions';
 import { UsersService } from './users.service';
 
@@ -183,5 +186,118 @@ describe('UsersService (integration, real Postgres + RLS)', () => {
     const ownerB2 = await tenantPrisma.run(company2, () => users.create(dto({ roleCodes: ['OWNER'] }), actor2));
     const deactivated = await tenantPrisma.run(company2, () => users.deactivate(ownerB2.id, actor2));
     expect(deactivated.isActive).toBe(false);
+  });
+
+  describe('remove()', () => {
+    /** Cheapest real FK into User that doesn't require standing up a whole order/route graph. */
+    const addReference = (targetCompanyId: string, userId: string) =>
+      tenantPrisma.run(targetCompanyId, (tx) =>
+        tx.notification.create({
+          data: {
+            companyId: targetCompanyId,
+            recipientId: userId,
+            type: 'order.on_hold',
+            title: { uz: 't', ru: 't', en: 't' },
+            message: { uz: 'm', ru: 'm', en: 'm' },
+          },
+        }),
+      );
+
+    it('hard-deletes a user that owns no business records', async () => {
+      const created = await tenantPrisma.run(companyId, () => users.create(dto(), actor));
+
+      const result = await tenantPrisma.run(companyId, () => users.remove(created.id, {}, actor));
+      expect(result.mode).toBe('hard');
+
+      const [row, roleLinks] = await tenantPrisma.run(companyId, async (tx) => [
+        await tx.user.findUnique({ where: { id: created.id } }),
+        await tx.userRole.count({ where: { userId: created.id } }),
+      ]);
+      expect(row).toBeNull();
+      expect(roleLinks).toBe(0);
+    });
+
+    it('soft-deletes (anonymizes) a user that owns records, freeing their phone and killing their sessions', async () => {
+      const phone = '+998901119901';
+      const created = await tenantPrisma.run(companyId, () => users.create(dto({ phone }), actor));
+      await addReference(companyId, created.id);
+      await tenantPrisma.run(companyId, (tx) =>
+        tx.refreshToken.create({
+          data: { userId: created.id, tokenHash: 'y', familyId: created.id, expiresAt: new Date(Date.now() + 60_000) },
+        }),
+      );
+
+      const result = await tenantPrisma.run(companyId, () => users.remove(created.id, {}, actor));
+      expect(result.mode).toBe('soft');
+      expect(result.references.notifications).toBe(1);
+      expect(result.user?.isActive).toBe(false);
+      expect(result.user?.roles).toEqual([]);
+      expect(result.user?.phone).toBe(`deleted:${created.id}`);
+
+      const [row, tokens] = await tenantPrisma.run(companyId, async (tx) => [
+        await tx.user.findUnique({ where: { id: created.id } }),
+        await tx.refreshToken.findMany({ where: { userId: created.id } }),
+      ]);
+      expect(row).not.toBeNull();
+      expect(row?.passwordHash).toBeNull();
+      expect(tokens.every((t) => t.revokedAt !== null)).toBe(true);
+
+      // The tombstoned phone is free again under @@unique([companyId, phone]).
+      const reused = await tenantPrisma.run(companyId, () => users.create(dto({ phone }), actor));
+      expect(reused.phone).toBe(phone);
+    });
+
+    it('refuses ?hard=true when the user still owns records, instead of silently soft-deleting', async () => {
+      const created = await tenantPrisma.run(companyId, () => users.create(dto(), actor));
+      await addReference(companyId, created.id);
+
+      await expect(
+        tenantPrisma.run(companyId, () => users.remove(created.id, { hard: true }, actor)),
+      ).rejects.toBeInstanceOf(UserHasReferencesException);
+
+      const row = await tenantPrisma.run(companyId, (tx) => tx.user.findUnique({ where: { id: created.id } }));
+      expect(row).not.toBeNull();
+    });
+
+    it('writes an audit entry that outlives the hard-deleted row', async () => {
+      const created = await tenantPrisma.run(companyId, () => users.create(dto(), actor));
+      await tenantPrisma.run(companyId, () => users.remove(created.id, {}, actor));
+
+      const entries = await tenantPrisma.run(companyId, (tx) =>
+        tx.auditLog.findMany({ where: { entity: 'User', entityId: created.id, action: 'user.delete' } }),
+      );
+      expect(entries).toHaveLength(1);
+      expect(entries[0].userId).toBe(actor.id);
+    });
+
+    it('refuses to let a user delete their own account', async () => {
+      await expect(tenantPrisma.run(companyId, () => users.remove(actor.id, {}, actor))).rejects.toBeInstanceOf(
+        CannotDeleteSelfException,
+      );
+    });
+
+    it("refuses to delete the tenant's sole remaining OWNER", async () => {
+      const { companyId: isolatedCompanyId, freshActor } = await createIsolatedCompany();
+      const soleOwner = await tenantPrisma.run(isolatedCompanyId, () =>
+        users.create(dto({ roleCodes: ['OWNER'] }), freshActor),
+      );
+
+      await expect(
+        tenantPrisma.run(isolatedCompanyId, () => users.remove(soleOwner.id, {}, freshActor)),
+      ).rejects.toBeInstanceOf(LastOwnerException);
+    });
+
+    it('refuses to let a non-owner delete an OWNER (SEC-020..024)', async () => {
+      const { companyId: isolatedCompanyId, freshActor } = await createIsolatedCompany();
+      await tenantPrisma.run(isolatedCompanyId, () => users.create(dto({ roleCodes: ['OWNER'] }), freshActor));
+      const otherOwner = await tenantPrisma.run(isolatedCompanyId, () =>
+        users.create(dto({ roleCodes: ['OWNER'] }), freshActor),
+      );
+      const director: AuthenticatedUser = { ...freshActor, roles: ['SALES_DIRECTOR'], permissions: ['users.delete'] };
+
+      await expect(
+        tenantPrisma.run(isolatedCompanyId, () => users.remove(otherOwner.id, {}, director)),
+      ).rejects.toBeInstanceOf(CannotDeleteOwnerException);
+    });
   });
 });

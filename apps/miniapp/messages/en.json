@@ -3,7 +3,14 @@
     "openViaTelegram": "Open this app via Telegram.",
     "needsPhoneLink": "Share your phone number to link your account.",
     "sharePhone": "Share my phone number",
-    "linkTimeout": "Linking failed. Check the message from the Telegram bot or contact your administrator, then try again."
+    "linkTimeout": "Linking failed. Check the message from the Telegram bot or contact your administrator, then try again.",
+    "fallbackTitle": "Velto Agent",
+    "fallbackBody": "This app only runs inside Telegram. Open the bot and sign in via the Velto button in its menu.",
+    "fallbackSessionBody": "Your session expired or was not confirmed. Sign in again via the Velto button in the Telegram bot.",
+    "fallbackCrashBody": "Something went wrong while loading the app. Try again, or reopen the bot in Telegram.",
+    "openInTelegram": "Open in Telegram",
+    "retry": "Retry",
+    "botLinkUnavailable": "Bot link is not configured — contact your administrator."
   },
   "Home": {
     "greeting": "Hello, {name}",
@@ -23,7 +30,9 @@
     "collectPayment": "Collect payment",
     "finishRoute": "Finish route",
     "finishSuccess": "Route finished",
-    "finished": "Route finished"
+    "finished": "Route finished",
+    "finishConfirmTitle": "Finish the route?",
+    "finishConfirmDescription": "Today's route ({count} stops) will be closed. You won't be able to add a visit to it afterwards."
   },
   "Report": {
     "title": "Daily report",
@@ -47,7 +56,13 @@
     "available": "Available",
     "priceUnavailable": "Price unavailable",
     "stockExceeded": "Only {available} in stock — please reduce the quantity",
-    "stockExceededBanner": "Some items exceed what's in stock — reduce the quantity before saving"
+    "stockExceededBanner": "Some items exceed what's in stock — reduce the quantity before saving",
+    "repeatConfirmTitle": "Replace the cart?",
+    "repeatConfirmDescription": "The {count} line(s) currently in the cart will be removed and replaced with the last order.",
+    "repeatConfirmAction": "Replace",
+    "discardConfirmTitle": "Discard the draft?",
+    "discardConfirmDescription": "The {count} unsaved line(s) will be lost. The order won't be stored on the device or on the server.",
+    "discardConfirmAction": "Discard"
   },
   "Payment": {
     "amount": "Amount",
@@ -77,7 +92,10 @@
     "notFound": "Outlet not found",
     "gpsUnknown": "Locating you — please wait for GPS",
     "gpsTooFar": "You're more than 150m from the outlet — get closer",
-    "takeOrder": "Take order"
+    "takeOrder": "Take order",
+    "noOrderConfirmTitle": "Finish the visit without an order?",
+    "noOrderConfirmDescription": "The visit will be closed as “no order” and shown that way in today's report. It can't be reopened.",
+    "noOrderConfirmAction": "Yes, finish"
   },
   "NotFound": {
     "title": "This page does not exist",
@@ -106,6 +124,11 @@
       "PENDING": "Pending",
       "SYNCED": "Sent",
       "FAILED": "Failed"
+    },
+    "confirmSheet": {
+      "delete": "Delete",
+      "working": "Working…",
+      "offlineQueueWarning": "This is saved on the device immediately and will be sent to the server on the next sync — even if you're offline. It can't be undone afterwards."
     }
   }
 }

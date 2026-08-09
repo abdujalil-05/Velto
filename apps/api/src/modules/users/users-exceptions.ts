@@ -71,6 +71,47 @@ export class CannotDeactivateSelfException extends AppException {
   }
 }
 
+export class CannotDeleteSelfException extends AppException {
+  constructor() {
+    super(HttpStatus.BAD_REQUEST, 'USER_CANNOT_DELETE_SELF', {
+      uz: "O'z hisobingizni o'chira olmaysiz",
+      ru: 'Вы не можете удалить собственную учётную запись',
+      en: 'You cannot delete your own account',
+    });
+  }
+}
+
+/**
+ * Same SEC-020..024 reasoning as CannotGrantOwnerRoleException: `users.delete`
+ * is also held by SALES_DIRECTOR, and deleting the Owner is at least as
+ * powerful as granting yourself their role.
+ */
+export class CannotDeleteOwnerException extends AppException {
+  constructor() {
+    super(HttpStatus.FORBIDDEN, 'USER_CANNOT_DELETE_OWNER', {
+      uz: 'Faqat Egasi boshqa Egani o‘chira oladi',
+      ru: 'Только Владелец может удалить другого Владельца',
+      en: 'Only an Owner can delete another Owner',
+    });
+  }
+}
+
+/** `?hard=true` was requested for a user that still owns business records — physical deletion would break referential integrity (and AuditLog is append-only, so its rows can't be detached). */
+export class UserHasReferencesException extends AppException {
+  constructor(references: Record<string, number>) {
+    super(
+      HttpStatus.CONFLICT,
+      'USER_HAS_REFERENCES',
+      {
+        uz: "Foydalanuvchida bog'liq yozuvlar bor, uni butunlay o'chirib bo'lmaydi",
+        ru: 'У пользователя есть связанные записи — физическое удаление невозможно',
+        en: 'The user still has related records and cannot be physically deleted',
+      },
+      { references },
+    );
+  }
+}
+
 export class CannotGrantOwnerRoleException extends AppException {
   constructor() {
     super(HttpStatus.FORBIDDEN, 'USER_CANNOT_GRANT_OWNER_ROLE', {
@@ -94,9 +135,9 @@ export class CannotSetOthersPasswordException extends AppException {
 export class LastOwnerException extends AppException {
   constructor() {
     super(HttpStatus.CONFLICT, 'USER_LAST_OWNER', {
-      uz: "Kompaniyaning yagona Egasini faolsizlantirib yoki rolini o'zgartirib bo'lmaydi",
-      ru: 'Нельзя деактивировать или изменить роль единственного Владельца компании',
-      en: "The company's sole remaining Owner cannot be deactivated or have their role changed",
+      uz: "Kompaniyaning yagona Egasini o'chirib, faolsizlantirib yoki rolini o'zgartirib bo'lmaydi",
+      ru: 'Нельзя удалить, деактивировать или изменить роль единственного Владельца компании',
+      en: "The company's sole remaining Owner cannot be deleted, deactivated or have their role changed",
     });
   }
 }

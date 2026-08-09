@@ -7,6 +7,7 @@ import { apiFetch, onUnauthorized } from '@/lib/api/client';
 import type { AuthenticatedUser, TokenPair } from '@/lib/api/types';
 import { getTelegramWebApp } from '@/lib/telegram/webapp';
 import { clearOfflineDb } from '@/lib/offline/db';
+import { clearDeviceKey } from '@/lib/offline/crypto';
 import { queueRepository } from '@/lib/offline/queue';
 import { clearTokens, getAccessToken, getRefreshToken, setTokens } from './tokens';
 
@@ -62,8 +63,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // Bootstrap can only leave 'loading' when a fetch settles, and a fetch to an
+  // unreachable host does not settle quickly — a phone inside Telegram hitting
+  // a dead tunnel or a localhost NEXT_PUBLIC_API_URL sits on the OS-level TCP
+  // timeout (tens of seconds, sometimes never on a flaky mobile link). That
+  // rendered as a spinner forever with no explanation, which is the "app
+  // doesn't open" report. Cap it: after this long, fall through to the
+  // fallback screen, which offers the bot deep link and a retry.
+  const BOOTSTRAP_TIMEOUT_MS = 15_000;
+
   useEffect(() => {
     let cancelled = false;
+
+    const watchdog = setTimeout(() => {
+      if (cancelled) return;
+      // Only downgrade a still-unresolved bootstrap; never clobber a status a
+      // settled request already set.
+      setStatus((current) => (current === 'loading' ? 'unauthenticated' : current));
+    }, BOOTSTRAP_TIMEOUT_MS);
 
     async function bootstrap() {
       // PWA fallback (plan §2): a device that already logged in once via
@@ -99,9 +116,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
-    bootstrap();
+    bootstrap().finally(() => clearTimeout(watchdog));
     return () => {
       cancelled = true;
+      clearTimeout(watchdog);
     };
   }, [tryTelegramLogin]);
 
@@ -162,6 +180,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const refreshToken = getRefreshToken();
     clearTokens();
     await clearOfflineDb();
+    // Rotate the local DB key too, after the wipe: without this the next
+    // agent on a shared device re-uses the previous agent's key, and any row
+    // the wipe missed (a table added later and forgotten in clearOfflineDb)
+    // stays readable under it. Safe here specifically because the queue is
+    // provably empty by this point — see the guard above.
+    clearDeviceKey();
     setUser(null);
     setStatus('unauthenticated');
     if (refreshToken) {

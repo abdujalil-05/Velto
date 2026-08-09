@@ -31,6 +31,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { ProductCard } from '@/components/orders/product-card';
+import { ConfirmSheet } from '@/components/shared/confirm-sheet';
 import { cn } from '@/lib/utils';
 
 interface CartLine {
@@ -49,8 +50,6 @@ export default function NewOrderPage() {
   const visitStartedAt = searchParams.get('visitStartedAt');
   const visitLat = searchParams.get('visitLat');
   const visitLng = searchParams.get('visitLng');
-
-  useTelegramBackButton(useCallback(() => router.back(), [router]));
 
   const outlets = useOfflineOutlets();
   const customers = useOfflineCustomers();
@@ -77,6 +76,24 @@ export default function NewOrderPage() {
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [lines, setLines] = useState<Record<string, CartLine>>({});
   const [submitting, setSubmitting] = useState(false);
+  const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
+  const [repeatConfirmOpen, setRepeatConfirmOpen] = useState(false);
+
+  const lineCount = Object.keys(lines).length;
+
+  // Leaving the screen throws the draft away — nothing on this page has been
+  // enqueued yet, so there is nothing to recover from. Individual line
+  // removals stay unconfirmed (pure form noise); losing the whole cart does
+  // not. Registered after `lines` so the callback sees the current draft.
+  useTelegramBackButton(
+    useCallback(() => {
+      if (lineCount > 0) {
+        setDiscardConfirmOpen(true);
+        return;
+      }
+      router.back();
+    }, [lineCount, router]),
+  );
 
   const packagingsByProduct = useMemo(() => {
     const map = new Map<string, SyncPackaging[]>();
@@ -172,6 +189,7 @@ export default function NewOrderPage() {
       next[line.productId] = { packagingId: line.packagingId, qty: displayQty };
     }
     setLines(next);
+    setRepeatConfirmOpen(false);
     toast.success(t('repeated'));
   }
 
@@ -263,7 +281,13 @@ export default function NewOrderPage() {
               <p className="font-medium">{customer?.name}</p>
             </div>
             {lastOrder.data && (
-              <Button type="button" variant="outline" size="sm" onClick={repeatLastOrder} className="gap-1.5">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => (lineCount > 0 ? setRepeatConfirmOpen(true) : repeatLastOrder())}
+                className="gap-1.5"
+              >
                 <History className="h-3.5 w-3.5" />
                 {t('repeatLastOrder')}
               </Button>
@@ -350,6 +374,29 @@ export default function NewOrderPage() {
           </div>
         </>
       )}
+
+      <ConfirmSheet
+        open={repeatConfirmOpen}
+        onOpenChange={setRepeatConfirmOpen}
+        title={t('repeatConfirmTitle')}
+        description={t('repeatConfirmDescription', { count: lineCount })}
+        itemName={customer?.name}
+        confirmLabel={t('repeatConfirmAction')}
+        onConfirm={repeatLastOrder}
+      />
+
+      <ConfirmSheet
+        open={discardConfirmOpen}
+        onOpenChange={setDiscardConfirmOpen}
+        title={t('discardConfirmTitle')}
+        description={t('discardConfirmDescription', { count: lineCount })}
+        itemName={customer?.name}
+        confirmLabel={t('discardConfirmAction')}
+        onConfirm={() => {
+          setDiscardConfirmOpen(false);
+          router.back();
+        }}
+      />
     </div>
   );
 }

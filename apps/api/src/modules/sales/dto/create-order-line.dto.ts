@@ -1,5 +1,5 @@
-import { Type } from 'class-transformer';
-import { IsOptional, IsPositive, IsUUID, Max, Min } from 'class-validator';
+import { IsOptional, IsUUID } from 'class-validator';
+import { IsPercentage, IsQuantity } from '../../../common/validators/numeric-bounds';
 
 export class CreateOrderLineDto {
   @IsUUID()
@@ -10,14 +10,11 @@ export class CreateOrderLineDto {
 
   // Quantity in the chosen packaging unit (e.g. "3 blok") — the service
   // converts to base units via ProductPackaging.qtyInBaseUnit (8.1).
-  @Type(() => Number)
-  @IsPositive()
+  @IsQuantity()
   qty!: number;
 
   // MVP: simple percentage discount only (5.4 — no promotions/tiers yet).
   @IsOptional()
-  @Type(() => Number)
-  @Min(0)
-  @Max(100)
+  @IsPercentage()
   discountPct?: number;
 }

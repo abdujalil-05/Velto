@@ -1,5 +1,5 @@
-import { Type } from 'class-transformer';
-import { IsOptional, IsPositive, IsString, IsUUID, MaxLength } from 'class-validator';
+import { IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import { IsQuantity } from '../../../common/validators/numeric-bounds';
 
 /** 9.2 "/stock/receive ... Forma: mahsulot, miqdor, sabab" (product, quantity, reason). */
 export class ReceiveStockDto {
@@ -9,8 +9,7 @@ export class ReceiveStockDto {
   @IsUUID()
   warehouseId!: string;
 
-  @Type(() => Number)
-  @IsPositive()
+  @IsQuantity()
   qty!: number;
 
   @IsOptional()

@@ -6,6 +6,7 @@ import { paginate, resolveSort } from '../../common/pagination/pagination.dto';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import {
   CustomerAlreadyBlockedException,
+  CustomerHasOutstandingBalanceException,
   CustomerNotBlockedException,
   CustomerNotFoundException,
   DuplicateCustomerCodeException,
@@ -37,8 +38,12 @@ export class CustomersService {
    * own orders, or their own visits. Other roles (SALES_DIRECTOR, OWNER,
    * WAREHOUSE, CASHIER, ACCOUNTANT) are unrestricted here; this is only ever
    * applied when the caller holds the SALES_AGENT role.
+   *
+   * Public because Finance (Invoices) scopes its own rows through the
+   * customer relation using exactly this predicate — modules reach each
+   * other only via service interfaces (11.2), so the rule stays defined once.
    */
-  private agentScope(agentId: string): Prisma.CustomerWhereInput {
+  agentScope(agentId: string): Prisma.CustomerWhereInput {
     return {
       OR: [
         { outlets: { some: { routeStops: { some: { route: { agentId } } } } } },
@@ -289,6 +294,42 @@ export class CustomersService {
       entityId: id,
       oldValue: toAuditJson({ isBlocked: true, blockReason: before.blockReason }),
       newValue: toAuditJson({ isBlocked: false, blockReason: null }),
+    });
+
+    return customer;
+  }
+
+  /**
+   * DELETE /customers/:id — soft delete, same shape as SuppliersService.remove()
+   * and OutletsService.remove(): Customer carries `deletedAt`, and its orders /
+   * invoices / payments keep pointing at the row, so it's never physically
+   * removed. The `code` becomes reusable immediately thanks to the partial
+   * unique index (schema comment on Customer).
+   *
+   * Refuses while the customer still owes money (6.7) — deleting them would
+   * drop a live receivable out of every report that filters `deletedAt: null`.
+   */
+  async remove(id: string, user: AuthenticatedUser) {
+    const tx = this.tenantPrisma.client;
+    const before = await tx.customer.findFirst({ where: { id, deletedAt: null } });
+    if (!before) throw new CustomerNotFoundException();
+
+    const balance = await this.getBalance(tx, id);
+    if (!balance.isZero()) throw new CustomerHasOutstandingBalanceException(balance.toFixed(2));
+
+    const deletedAt = new Date();
+    const customer = await tx.customer.update({ where: { id }, data: { deletedAt, isActive: false } });
+    // Outlets are meaningless without their customer and every read path
+    // filters them by `deletedAt: null` — cascade rather than leave orphans.
+    await tx.outlet.updateMany({ where: { customerId: id, deletedAt: null }, data: { deletedAt, isActive: false } });
+
+    await this.auditLog.log(tx, {
+      companyId: user.companyId,
+      userId: user.id,
+      action: 'customer.delete',
+      entity: 'Customer',
+      entityId: id,
+      oldValue: toAuditJson(before),
     });
 
     return customer;

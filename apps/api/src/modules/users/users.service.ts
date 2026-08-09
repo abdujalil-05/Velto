@@ -7,6 +7,8 @@ import { paginate } from '../../common/pagination/pagination.dto';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import {
   CannotDeactivateSelfException,
+  CannotDeleteOwnerException,
+  CannotDeleteSelfException,
   CannotGrantOwnerRoleException,
   CannotSetOthersPasswordException,
   DuplicateUserPhoneException,
@@ -14,9 +16,11 @@ import {
   LastOwnerException,
   UserAlreadyActiveException,
   UserAlreadyInactiveException,
+  UserHasReferencesException,
   UserNotFoundException,
 } from './users-exceptions';
 import type { CreateUserDto } from './dto/create-user.dto';
+import type { DeleteUserQueryDto } from './dto/delete-user.query';
 import type { ListUsersQueryDto } from './dto/list-users.query';
 import type { UpdateUserDto } from './dto/update-user.dto';
 
@@ -279,5 +283,102 @@ export class UsersService {
     });
 
     return shaped;
+  }
+
+  /**
+   * Every table that points at User and whose rows are business history rather
+   * than session state. AuditLog is the decisive one in practice: it's
+   * append-only at the DB level (trigger, migration
+   * 20260730161500_rls_and_audit_lock), so its `userId` can't even be nulled
+   * out to free the FK — anyone who has ever acted in the system is
+   * permanently un-hard-deletable, which is the correct outcome for an audit
+   * trail.
+   */
+  private async countReferences(tx: TenantClient, userId: string): Promise<Record<string, number>> {
+    const [salesOrders, payments, cashSessions, routes, visits, purchaseOrders, auditLogs, exportJobs, notifications] =
+      await Promise.all([
+        tx.salesOrder.count({ where: { agentId: userId } }),
+        tx.payment.count({ where: { collectedBy: userId } }),
+        tx.cashSession.count({ where: { userId } }),
+        tx.route.count({ where: { agentId: userId } }),
+        tx.visit.count({ where: { agentId: userId } }),
+        tx.purchaseOrder.count({ where: { createdById: userId } }),
+        tx.auditLog.count({ where: { userId } }),
+        tx.exportJob.count({ where: { requestedBy: userId } }),
+        tx.notification.count({ where: { recipientId: userId } }),
+      ]);
+
+    const all = { salesOrders, payments, cashSessions, routes, visits, purchaseOrders, auditLogs, exportJobs, notifications };
+    return Object.fromEntries(Object.entries(all).filter(([, count]) => count > 0));
+  }
+
+  /**
+   * DELETE /users/:id — soft (anonymizing) delete by default, physical delete
+   * when the user owns nothing.
+   *
+   * User has no `deletedAt` column (unlike Customer/Supplier/Product), so the
+   * "soft" branch is an anonymization instead: roles revoked, sessions killed,
+   * PII stripped, `isActive=false`, and the phone replaced with a `deleted:<id>`
+   * tombstone so the real number is free to be reused under
+   * `@@unique([companyId, phone])`. The row itself has to stay because
+   * SalesOrder.agentId / Payment.collectedBy / AuditLog.userId still point at it.
+   *
+   * `?hard=true` is an assertion, not an override: if references exist it 409s
+   * rather than soft-deleting behind the caller's back.
+   */
+  async remove(id: string, query: DeleteUserQueryDto, actor: AuthenticatedUser) {
+    if (id === actor.id) throw new CannotDeleteSelfException();
+
+    const tx = this.tenantPrisma.client;
+    const before = await tx.user.findUnique({ where: { id }, select: USER_SAFE_SELECT });
+    if (!before) throw new UserNotFoundException();
+
+    const targetIsOwner = before.roles.some((r) => r.role.code === 'OWNER');
+    if (targetIsOwner && !actor.roles.includes('OWNER')) throw new CannotDeleteOwnerException();
+    if (await this.wouldRemoveLastOwner(tx, id)) throw new LastOwnerException();
+
+    const references = await this.countReferences(tx, id);
+    const hasReferences = Object.keys(references).length > 0;
+    if (query.hard && hasReferences) throw new UserHasReferencesException(references);
+
+    const shapedBefore = shapeUser(before);
+
+    // Written before the delete so the trail survives the row it describes —
+    // AuditLog.entityId is a plain uuid column, not an FK, so it stays readable.
+    await this.auditLog.log(tx, {
+      companyId: actor.companyId,
+      userId: actor.id,
+      action: hasReferences ? 'user.soft_delete' : 'user.delete',
+      entity: 'User',
+      entityId: id,
+      oldValue: toAuditJson(shapedBefore),
+      newValue: toAuditJson({ mode: hasReferences ? 'soft' : 'hard', references }),
+    });
+
+    await tx.userRole.deleteMany({ where: { userId: id } });
+
+    if (!hasReferences) {
+      // Refresh tokens are session state, not history — they go with the row.
+      await tx.refreshToken.deleteMany({ where: { userId: id } });
+      await tx.user.delete({ where: { id } });
+      return { mode: 'hard' as const, id, references, user: null };
+    }
+
+    await tx.refreshToken.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: new Date() } });
+    const anonymized = await tx.user.update({
+      where: { id },
+      data: {
+        isActive: false,
+        firstName: 'Deleted',
+        lastName: 'User',
+        phone: `deleted:${id}`,
+        email: null,
+        passwordHash: null,
+        telegramId: null,
+      },
+      select: USER_SAFE_SELECT,
+    });
+
+    return { mode: 'soft' as const, id, references, user: shapeUser(anonymized) };
   }
 }

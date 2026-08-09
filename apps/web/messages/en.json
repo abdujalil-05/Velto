@@ -12,7 +12,23 @@
     "somUnit": "UZS",
     "paginationSummary": "{from}–{to} of {total}",
     "previousPage": "Previous page",
-    "nextPage": "Next page"
+    "nextPage": "Next page",
+    "confirmDelete": {
+      "title": "Confirm deletion",
+      "description": "Are you sure you want to delete “{name}”? This action cannot be undone.",
+      "confirm": "Delete",
+      "cancel": "Cancel"
+    },
+    "confirmDeactivate": {
+      "title": "Confirm deactivation",
+      "description": "Are you sure you want to deactivate “{name}”? It will no longer be selectable in lists.",
+      "confirm": "Deactivate"
+    },
+    "confirmCancel": {
+      "title": "Confirm cancellation",
+      "description": "Are you sure you want to cancel “{name}”? This action cannot be undone.",
+      "confirm": "Yes, cancel"
+    }
   },
   "Nav": {
     "dashboard": "Dashboard",
@@ -118,6 +134,13 @@
     "status": "Status",
     "active": "Active",
     "blocked": "Blocked",
+    "actions": "Actions",
+    "delete": "Delete",
+    "confirmDelete": {
+      "title": "Delete customer",
+      "description": "Delete “{name}”? The customer and all of its outlets will be hidden from the system; order and payment history is kept. Deletion is refused while the customer still has an outstanding balance."
+    },
+    "deleteSuccess": "“{name}” has been deleted.",
     "filter": {
       "all": "All",
       "active": "Active",
@@ -340,10 +363,6 @@
       "submitCreate": "Save product",
       "submitUpdate": "Save changes",
       "delete": "Delete",
-      "deleteConfirmTitle": "Delete product",
-      "deleteConfirmDescription": "Delete \"{name}\"? This action cannot be undone.",
-      "deleteConfirmAction": "Delete",
-      "deleteCancel": "Cancel",
       "deleted": "Product deleted",
       "categoryDialog": {
         "title": "New category",
@@ -525,6 +544,27 @@
     "deactivate": "Deactivate",
     "activate": "Activate",
     "cannotDeactivateSelf": "You can't deactivate your own account",
+    "delete": "Delete",
+    "cannotDeleteSelf": "You can't delete your own account",
+    "confirmDelete": {
+      "title": "Delete user",
+      "description": "Delete “{name}”? All roles will be revoked and active sessions terminated. If this user has records in the system (orders, payments, visits, audit log), the account will be anonymized and disabled rather than erased — the history stays. Only an account with no related records is removed permanently."
+    },
+    "deleteHardSuccess": "“{name}” has been deleted.",
+    "deleteSoftSuccess": "“{name}” has records in the system, so the account was anonymized and disabled instead of being erased.",
+    "deleteSoftSuccessWithRefs": "“{name}” has records in the system ({items}), so the account was anonymized and disabled instead of being erased.",
+    "deleteBlockedBy": "Related records: {items}.",
+    "references": {
+      "salesOrders": "Sales orders",
+      "payments": "Payments",
+      "cashSessions": "Cash sessions",
+      "routes": "Routes",
+      "visits": "Visits",
+      "purchaseOrders": "Purchase orders",
+      "auditLogs": "Audit log entries",
+      "exportJobs": "Export jobs",
+      "notifications": "Notifications"
+    },
     "filter": {
       "all": "All",
       "active": "Active",

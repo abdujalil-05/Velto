@@ -23,10 +23,15 @@ export class VisitsService {
     private readonly auditLog: AuditLogService,
   ) {}
 
-  async list(query: ListVisitsQueryDto) {
+  async list(query: ListVisitsQueryDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
+    // SEC-023 (15.3): a SALES_AGENT only ever sees their own visits — this
+    // overrides whatever `agentId` they passed, so they can't read another
+    // agent's GPS trail by guessing ids. Supervisor roles (SALES_DIRECTOR,
+    // OWNER, ...) keep the company-wide view their reports depend on.
+    const scopedAgentId = user.roles.includes('SALES_AGENT') ? user.id : query.agentId;
     const where: Prisma.VisitWhereInput = {
-      ...(query.agentId ? { agentId: query.agentId } : {}),
+      ...(scopedAgentId ? { agentId: scopedAgentId } : {}),
       ...(query.outletId ? { outletId: query.outletId } : {}),
       ...(query.from || query.to
         ? {
@@ -52,9 +57,15 @@ export class VisitsService {
     return paginate(data, total, query.page, query.pageSize);
   }
 
-  async getById(id: string) {
+  async getById(id: string, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
-    const visit = await tx.visit.findFirst({ where: { id }, include: VISIT_INCLUDE });
+    // SEC-023: same object-level scoping as list() — another agent's visit id
+    // gets the same "not found" as a bad id, rather than leaking that it exists.
+    const scopedAgentId = user.roles.includes('SALES_AGENT') ? user.id : undefined;
+    const visit = await tx.visit.findFirst({
+      where: { id, ...(scopedAgentId ? { agentId: scopedAgentId } : {}) },
+      include: VISIT_INCLUDE,
+    });
     if (!visit) throw new VisitNotFoundException();
     return visit;
   }
@@ -72,7 +83,7 @@ export class VisitsService {
     const tx = this.tenantPrisma.client;
 
     if (dto.clientId) {
-      const existing = await tx.visit.findUnique({ where: { clientId: dto.clientId }, include: VISIT_INCLUDE });
+      const existing = await tx.visit.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: VISIT_INCLUDE });
       if (existing) return existing;
     }
 
@@ -116,7 +127,7 @@ export class VisitsService {
       // exists for — both requests can race past the pre-check above and the
       // loser hits this unique violation. Return the winner's visit.
       if (dto.clientId && err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-        const existing = await tx.visit.findUnique({ where: { clientId: dto.clientId }, include: VISIT_INCLUDE });
+        const existing = await tx.visit.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: VISIT_INCLUDE });
         if (existing) return existing;
       }
       throw err;
