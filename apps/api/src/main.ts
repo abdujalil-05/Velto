@@ -10,6 +10,15 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   const config = app.get(ConfigService);
 
+  // Behind nginx on the same host: trust only the loopback hop for
+  // X-Forwarded-For/-Proto so req.ip resolves to the real client IP (used by
+  // ThrottlerGuard's per-IP bucketing and AuditLog's recorded IP — SEC-045).
+  // 'loopback' (not `true`/a wildcard) deliberately excludes trusting every
+  // hop, so a client can't spoof X-Forwarded-For to evade the rate limiter.
+  if (config.get<boolean>('TRUST_PROXY', false)) {
+    app.getHttpAdapter().getInstance().set('trust proxy', 'loopback');
+  }
+
   // 11.7 "xato tracker ulandi" — no-op (SDK calls are safe pre-init) until
   // SENTRY_DSN is set in the deploy environment; dev/CI never set it.
   const sentryDsn = config.get<string>('SENTRY_DSN', '');
@@ -25,8 +34,9 @@ async function bootstrap() {
   );
 
   const port = process.env.API_PORT ?? 3001;
-  await app.listen(port);
-  Logger.log(`Velto API listening on :${port}`, 'Bootstrap');
+  const host = process.env.API_HOST ?? '0.0.0.0';
+  await app.listen(port, host);
+  Logger.log(`Velto API listening on ${host}:${port}`, 'Bootstrap');
 }
 
 bootstrap();

@@ -4,6 +4,10 @@ import { z } from 'zod';
 export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   API_PORT: z.coerce.number().int().positive().default(3001),
+  // Defaults to every interface for container/dev parity; a reverse-proxied
+  // deploy sets this to 127.0.0.1 so the plaintext API is only reachable via
+  // nginx, not directly if a firewall rule ever slips.
+  API_HOST: z.string().default('0.0.0.0'),
   DATABASE_URL: z.string().min(1),
   DATABASE_SYSTEM_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
@@ -42,6 +46,18 @@ export const envSchema = z.object({
     .enum(['true', 'false'])
     .optional()
     .default('true')
+    .transform((v) => v === 'true'),
+  // When the API sits behind a reverse proxy (nginx terminating TLS and
+  // forwarding via X-Forwarded-For/-Proto), Express's req.ip is 127.0.0.1
+  // for every request unless it's told to trust that hop — which silently
+  // breaks IP-scoped rate limiting (SEC-045, all clients bucket together)
+  // and AuditLog's recorded client IP. Same z.enum (not z.coerce.boolean())
+  // pattern as S3_FORCE_PATH_STYLE, for the same reason. Default 'false' so
+  // local dev / CI (no proxy in front) keep using the raw socket address.
+  TRUST_PROXY: z
+    .enum(['true', 'false'])
+    .optional()
+    .default('false')
     .transform((v) => v === 'true'),
 });
 
