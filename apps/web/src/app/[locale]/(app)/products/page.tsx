@@ -2,10 +2,11 @@
 
 import { useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
+import { toast } from 'sonner';
 import { Package, Plus, RefreshCw, Search } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
-import { useProductsQuery } from '@/lib/api/products';
+import { useDeleteProductMutation, useProductsQuery, type Product } from '@/lib/api/products';
 import { useCategoriesQuery } from '@/lib/api/categories';
 import { errorMessage } from '@/lib/api/client';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
@@ -18,6 +19,7 @@ import { Select } from '@/components/ui/select';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { PaginationBar } from '@/components/shared/pagination-bar';
 import { ExportCsvButton } from '@/components/shared/export-csv-button';
 import { ProductsTable } from '@/components/products/products-table';
@@ -27,6 +29,7 @@ export default function ProductsPage() {
   const t = useTranslations('Products');
   const locale = useLocale();
   const { hasPermission } = useAuth();
+  const canDelete = hasPermission('catalog.delete');
 
   const [search, setSearch] = useState('');
   const [categoryId, setCategoryId] = useState('');
@@ -43,6 +46,22 @@ export default function ProductsPage() {
     sortBy: sort.sortBy,
     sortDir: sort.sortDir,
   });
+
+  const deleteMutation = useDeleteProductMutation();
+  const [pendingDelete, setPendingDelete] = useState<Product | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  async function confirmDelete() {
+    if (!pendingDelete) return;
+    setDeleteError(null);
+    try {
+      await deleteMutation.mutateAsync(pendingDelete.id);
+      toast.success(t('deleteSuccess', { name: pendingDelete.name }));
+      setPendingDelete(null);
+    } catch (err) {
+      setDeleteError(errorMessage(err, locale));
+    }
+  }
 
   const hasFilters = debouncedSearch.length > 0 || !!categoryId;
 
@@ -154,11 +173,36 @@ export default function ProductsPage() {
       {data && data.data.length > 0 && (
         <Card>
           <CardContent className="pt-6">
-            <ProductsTable products={data.data} sort={sort} onSort={toggleSort} />
+            <ProductsTable
+              products={data.data}
+              sort={sort}
+              onSort={toggleSort}
+              canDelete={canDelete}
+              onDelete={(product) => {
+                setDeleteError(null);
+                setPendingDelete(product);
+              }}
+            />
             <PaginationBar meta={data.meta} onPageChange={setPage} />
           </CardContent>
         </Card>
       )}
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingDelete(null);
+            setDeleteError(null);
+          }
+        }}
+        title={t('confirmDelete.title')}
+        description={t('confirmDelete.description', { name: pendingDelete?.name ?? '' })}
+        confirmLabel={t('delete')}
+        error={deleteError}
+        isPending={deleteMutation.isPending}
+        onConfirm={confirmDelete}
+      />
     </div>
   );
 }

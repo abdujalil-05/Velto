@@ -25,6 +25,10 @@ describe('tenant isolation (RLS)', () => {
   let productBId: string;
   let priceListAId: string;
   let routeAId: string;
+  let supplierAId: string;
+  let supplierBId: string;
+  let supplierRouteAId: string;
+  let supplierRouteBId: string;
 
   beforeAll(async () => {
     const stamp = Date.now();
@@ -121,6 +125,62 @@ describe('tenant isolation (RLS)', () => {
       await tx.routeRun.create({ data: { companyId: companyAId, routeId: route.id, date: new Date('2026-08-08') } });
     });
 
+    // SupplierTelegramLink + Supplier pickup location
+    // (20260809120000_supplier_telegram_link_and_pickup).
+    const [supplierA, supplierB] = await Promise.all([
+      withTenant(companyAId, (tx) =>
+        tx.supplier.create({
+          data: {
+            companyId: companyAId,
+            name: 'Supplier A',
+            pickupAddress: 'Toshkent, Chilonzor 1',
+            pickupLatitude: '41.2856000',
+            pickupLongitude: '69.2034000',
+          },
+        }),
+      ),
+      withTenant(companyBId, (tx) => tx.supplier.create({ data: { companyId: companyBId, name: 'Supplier B' } })),
+    ]);
+    supplierAId = supplierA.id;
+    supplierBId = supplierB.id;
+
+    await withTenant(companyAId, (tx) =>
+      tx.supplierTelegramLink.create({
+        data: { companyId: companyAId, supplierId: supplierAId, telegramId: BigInt(Date.now()) + 1n },
+      }),
+    );
+
+    // SupplierRoute + SupplierRouteStop (20260809140000_supplier_pickup_routes).
+    // Both tenants get a route so the "each side sees only its own" assertions
+    // below can't pass vacuously.
+    const [supplierRouteA, supplierRouteB] = await Promise.all([
+      withTenant(companyAId, (tx) =>
+        tx.supplierRoute.create({
+          data: { companyId: companyAId, supplierId: supplierAId, weekday: 2, name: 'Pickup Route A' },
+        }),
+      ),
+      withTenant(companyBId, (tx) =>
+        tx.supplierRoute.create({
+          data: { companyId: companyBId, supplierId: supplierBId, weekday: 3, name: 'Pickup Route B' },
+        }),
+      ),
+    ]);
+    supplierRouteAId = supplierRouteA.id;
+    supplierRouteBId = supplierRouteB.id;
+
+    await withTenant(companyAId, (tx) =>
+      tx.supplierRouteStop.create({
+        data: {
+          companyId: companyAId,
+          routeId: supplierRouteAId,
+          sequence: 1,
+          pickupAddress: 'Toshkent, Chilonzor 1 (ombor)',
+          latitude: '41.2856000',
+          longitude: '69.2034000',
+        },
+      }),
+    );
+
     await withTenant(companyAId, async (tx) => {
       const role = await tx.role.create({ data: { companyId: companyAId, code: 'ISO_TEST', name: 'Isolation Test Role' } });
       await tx.rolePermission.create({ data: { roleId: role.id, permissionId } });
@@ -144,6 +204,11 @@ describe('tenant isolation (RLS)', () => {
     await systemPrisma.route.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
     await systemPrisma.user.delete({ where: { id: recipientId } });
     const scopedCompanies = { companyId: { in: [companyAId, companyBId, companyCId] } };
+    await systemPrisma.supplierTelegramLink.deleteMany({ where: scopedCompanies });
+    // Stops before routes before suppliers — all three are FK RESTRICT.
+    await systemPrisma.supplierRouteStop.deleteMany({ where: scopedCompanies });
+    await systemPrisma.supplierRoute.deleteMany({ where: scopedCompanies });
+    await systemPrisma.supplier.deleteMany({ where: scopedCompanies });
     await systemPrisma.salesOrder.deleteMany({ where: scopedCompanies });
     await systemPrisma.priceListItem.deleteMany({ where: { priceListId: priceListAId } });
     await systemPrisma.stockLevel.deleteMany({ where: { warehouseId: { in: [warehouseAId, warehouseBId] } } });
@@ -205,6 +270,95 @@ describe('tenant isolation (RLS)', () => {
 
     expect(seenFromA).toHaveLength(1);
     expect(seenFromB).toHaveLength(0);
+  });
+
+  // 20260809120000_supplier_telegram_link_and_pickup. Supplier contacts are
+  // external counterparties, so a leak here would hand one distributor its
+  // competitor's supplier list *and* a live Telegram id to message.
+  it('a direct-companyId table (SupplierTelegramLink, M09) is scoped per tenant', async () => {
+    const seenFromA = await withTenant(companyAId, (tx) => tx.supplierTelegramLink.findMany());
+    const seenFromB = await withTenant(companyBId, (tx) => tx.supplierTelegramLink.findMany());
+
+    expect(seenFromA).toHaveLength(1);
+    expect(seenFromA[0]?.supplierId).toBe(supplierAId);
+    expect(seenFromB).toHaveLength(0);
+
+    // Reading company A's supplier (and therefore its pickup coordinates) by
+    // id from company B must return nothing, not just be filtered from a list.
+    const probed = await withTenant(companyBId, (tx) => tx.supplier.findUnique({ where: { id: supplierAId } }));
+    expect(probed).toBeNull();
+  });
+
+  it('rejects a SupplierTelegramLink pointing at another tenant’s supplier', async () => {
+    await expect(
+      systemPrisma.supplierTelegramLink.create({
+        data: { companyId: companyAId, supplierId: supplierBId, telegramId: BigInt(Date.now()) + 2n },
+      }),
+    ).rejects.toThrow(/cross-tenant/i);
+
+    // No link row leaked into either company as a side effect.
+    const inB = await withTenant(companyBId, (tx) => tx.supplierTelegramLink.findMany());
+    expect(inB).toHaveLength(0);
+  });
+
+  it('rejects a PurchaseOrder pointing at another tenant’s supplier', async () => {
+    await expect(
+      systemPrisma.purchaseOrder.create({
+        data: {
+          companyId: companyAId,
+          number: 'ISO-PO-XT-1',
+          supplierId: supplierBId,
+          warehouseId: warehouseAId,
+        },
+      }),
+    ).rejects.toThrow(/cross-tenant/i);
+
+    // Selective, not "always throws": the all-company-A row is accepted.
+    const ok = await withTenant(companyAId, (tx) =>
+      tx.purchaseOrder.create({
+        data: { companyId: companyAId, number: 'ISO-PO-XT-OK', supplierId: supplierAId, warehouseId: warehouseAId },
+      }),
+    );
+    expect(ok.supplierId).toBe(supplierAId);
+    await systemPrisma.purchaseOrder.delete({ where: { id: ok.id } });
+  });
+
+  it('SupplierTelegramLink.telegramId is unique per company, not globally', async () => {
+    const telegramId = BigInt(Date.now()) + 3n;
+
+    // A second supplier in company A: the per-supplier unique means the same
+    // telegramId can't be re-linked to supplierA, so the collision under test
+    // is specifically the companyId+telegramId one.
+    const [supplierA2, supplierA3] = await Promise.all([
+      withTenant(companyAId, (tx) => tx.supplier.create({ data: { companyId: companyAId, name: 'Supplier A2' } })),
+      withTenant(companyAId, (tx) => tx.supplier.create({ data: { companyId: companyAId, name: 'Supplier A3' } })),
+    ]);
+
+    const links = await Promise.all([
+      withTenant(companyAId, (tx) =>
+        tx.supplierTelegramLink.create({
+          data: { companyId: companyAId, supplierId: supplierA2.id, telegramId },
+        }),
+      ),
+      withTenant(companyBId, (tx) =>
+        tx.supplierTelegramLink.create({
+          data: { companyId: companyBId, supplierId: supplierBId, telegramId },
+        }),
+      ),
+    ]);
+    expect(links).toHaveLength(2);
+
+    // Still unique *within* a company — one Telegram account cannot be two
+    // supplier contacts in the same tenant.
+    await expect(
+      withTenant(companyAId, (tx) =>
+        tx.supplierTelegramLink.create({
+          data: { companyId: companyAId, supplierId: supplierA3.id, telegramId },
+        }),
+      ),
+    ).rejects.toThrow();
+
+    await systemPrisma.supplierTelegramLink.deleteMany({ where: { id: { in: links.map((l) => l.id) } } });
   });
 
   // 20260808120000_tenant_scoped_keys_and_fk_guards: Tenant was the last table
@@ -294,6 +448,90 @@ describe('tenant isolation (RLS)', () => {
       tx.routeStop.create({ data: { routeId: routeAId, outletId: outletAId, sortOrder: 1 } }),
     );
     expect(ok.outletId).toBe(outletAId);
+  });
+
+  // 20260809140000_supplier_pickup_routes. A supplier pickup schedule is
+  // competitively sensitive: it reveals who a rival buys from, how often, and
+  // the exact coordinates of the collection point.
+  it('a direct-companyId table (SupplierRoute, M09 pickups) is scoped per tenant', async () => {
+    const seenFromA = await withTenant(companyAId, (tx) => tx.supplierRoute.findMany());
+    const seenFromB = await withTenant(companyBId, (tx) => tx.supplierRoute.findMany());
+
+    expect(seenFromA.map((r) => r.id)).toEqual([supplierRouteAId]);
+    expect(seenFromB.map((r) => r.id)).toEqual([supplierRouteBId]);
+
+    // Direct-id probe from the wrong tenant must be indistinguishable from
+    // "does not exist", not an authorization error.
+    const probed = await withTenant(companyBId, (tx) => tx.supplierRoute.findUnique({ where: { id: supplierRouteAId } }));
+    expect(probed).toBeNull();
+  });
+
+  it('a direct-companyId table (SupplierRouteStop) is scoped per tenant', async () => {
+    const seenFromA = await withTenant(companyAId, (tx) => tx.supplierRouteStop.findMany());
+    const seenFromB = await withTenant(companyBId, (tx) => tx.supplierRouteStop.findMany());
+
+    expect(seenFromA).toHaveLength(1);
+    expect(seenFromA[0]?.routeId).toBe(supplierRouteAId);
+    expect(seenFromA[0]?.pickupAddress).toContain('Chilonzor');
+    expect(seenFromB).toHaveLength(0);
+
+    // Coordinates must not leak through the parent relation either.
+    const viaParent = await withTenant(companyBId, (tx) =>
+      tx.supplierRoute.findMany({ include: { stops: true } }),
+    );
+    expect(viaParent.flatMap((r) => r.stops)).toHaveLength(0);
+  });
+
+  it('supplier pickup routes are invisible outside withTenant (fail closed)', async () => {
+    // Same caveat as the generic fail-closed test below: on a pooled
+    // connection the custom GUC reverts to '' rather than NULL, so the
+    // ::uuid cast in the policy may throw instead of matching zero rows.
+    // Both outcomes are safe; asserting on which one occurs would only test
+    // connection-pool timing.
+    for (const read of [() => prisma.supplierRoute.findMany(), () => prisma.supplierRouteStop.findMany()]) {
+      try {
+        expect(await read()).toHaveLength(0);
+      } catch (err) {
+        expect(String(err)).toMatch(/uuid/i);
+      }
+    }
+  });
+
+  it('rejects a SupplierRoute pointing at another tenant’s supplier', async () => {
+    await expect(
+      systemPrisma.supplierRoute.create({
+        data: { companyId: companyAId, supplierId: supplierBId, weekday: 4, name: 'Cross-tenant pickup' },
+      }),
+    ).rejects.toThrow(/cross-tenant/i);
+
+    const inB = await withTenant(companyBId, (tx) => tx.supplierRoute.findMany());
+    expect(inB.map((r) => r.id)).toEqual([supplierRouteBId]);
+  });
+
+  it('rejects a SupplierRouteStop pointing at another tenant’s SupplierRoute', async () => {
+    await expect(
+      systemPrisma.supplierRouteStop.create({
+        data: { companyId: companyAId, routeId: supplierRouteBId, sequence: 1, pickupAddress: 'leak' },
+      }),
+    ).rejects.toThrow(/cross-tenant/i);
+
+    const ok = await withTenant(companyAId, (tx) =>
+      tx.supplierRouteStop.create({
+        data: { companyId: companyAId, routeId: supplierRouteAId, sequence: 2, pickupAddress: 'Sergeli bozor' },
+      }),
+    );
+    expect(ok.routeId).toBe(supplierRouteAId);
+  });
+
+  // Guards the "do not touch existing Route/RouteStop" constraint: the new
+  // tables must not have become visible to the agent-route readers.
+  it('SupplierRoute rows do not appear in the agent Route/RouteStop tables', async () => {
+    const routes = await withTenant(companyAId, (tx) => tx.route.findMany());
+    expect(routes.map((r) => r.id)).toEqual([routeAId]);
+    expect(routes.every((r) => r.agentId !== null)).toBe(true);
+
+    const stops = await withTenant(companyAId, (tx) => tx.routeStop.findMany());
+    expect(stops.every((s) => s.routeId === routeAId)).toBe(true);
   });
 
   // Before 20260808120000 these keys were globally unique, so tenant A writing

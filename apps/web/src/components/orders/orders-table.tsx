@@ -1,5 +1,7 @@
 import { useLocale, useTranslations } from 'next-intl';
+import { Trash2 } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
+import { Button } from '@/components/ui/button';
 import { formatDate, formatMoney } from '@/lib/format';
 import { OrderStatusBadge } from '@/components/shared/order-status-badge';
 import { SortableHeader } from '@/components/shared/sortable-header';
@@ -10,12 +12,16 @@ interface OrdersTableProps {
   orders: SalesOrder[];
   sort: SortState;
   onSort: (column: string) => void;
+  /** `orders.update` — API only allows deleting SUBMITTED orders. */
+  canDelete?: boolean;
+  onDelete?: (order: SalesOrder) => void;
 }
 
-export function OrdersTable({ orders, sort, onSort }: OrdersTableProps) {
+export function OrdersTable({ orders, sort, onSort, canDelete = false, onDelete }: OrdersTableProps) {
   const t = useTranslations('Orders');
   const tCommon = useTranslations('Common');
   const locale = useLocale();
+  const showActions = canDelete && !!onDelete;
 
   return (
     <div className="overflow-x-auto">
@@ -31,6 +37,7 @@ export function OrdersTable({ orders, sort, onSort }: OrdersTableProps) {
             </SortableHeader>
             <th className="pb-2 pr-3 text-right font-medium">{t('total')}</th>
             <th className="pb-2 font-medium">{t('status')}</th>
+            {showActions && <th className="pb-2 text-right font-medium">{t('actions')}</th>}
           </tr>
         </thead>
         <tbody className="divide-y divide-border">
@@ -53,6 +60,15 @@ export function OrdersTable({ orders, sort, onSort }: OrdersTableProps) {
               <td className="py-2">
                 <OrderStatusBadge status={order.status} />
               </td>
+              {showActions && (
+                <td className="py-2 text-right">
+                  {order.status === 'SUBMITTED' && (
+                    <Button variant="ghost" size="sm" onClick={() => onDelete?.(order)} aria-label={t('delete')}>
+                      <Trash2 className="h-4 w-4 text-destructive" />
+                    </Button>
+                  )}
+                </td>
+              )}
             </tr>
           ))}
         </tbody>

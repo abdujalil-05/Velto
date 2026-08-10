@@ -1,11 +1,23 @@
 'use client';
 
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import type { Route } from '@/lib/api/routes';
+import { formatDate } from '@/lib/format';
+
+/** Next calendar date (ISO weekday 1=Mon..7=Sun) on or after today matching the route's weekday. */
+function nextDateForWeekday(weekday: number): Date {
+  const now = new Date();
+  const todayIso = now.getDay() === 0 ? 7 : now.getDay();
+  const diff = (weekday - todayIso + 7) % 7;
+  const result = new Date(now);
+  result.setDate(now.getDate() + diff);
+  return result;
+}
 
 export function RoutesTable({ routes }: { routes: Route[] }) {
   const t = useTranslations('Routes');
+  const locale = useLocale();
 
   return (
     <div className="overflow-x-auto">
@@ -29,7 +41,9 @@ export function RoutesTable({ routes }: { routes: Route[] }) {
               <td className="py-2 pr-3 text-muted-foreground">
                 {route.agent.firstName} {route.agent.lastName}
               </td>
-              <td className="py-2 pr-3 text-muted-foreground">{t(`weekdays.${route.weekday}`)}</td>
+              <td className="py-2 pr-3 text-muted-foreground">
+                {t(`weekdays.${route.weekday}`)} · {formatDate(nextDateForWeekday(route.weekday), locale)}
+              </td>
               <td className="py-2 pr-3 text-right tabular-nums">{route.stops.length}</td>
             </tr>
           ))}

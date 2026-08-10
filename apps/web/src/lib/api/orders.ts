@@ -129,3 +129,11 @@ export function useCancelOrderMutation(id: string) {
     onSuccess: () => invalidateOrder(queryClient, id),
   });
 }
+
+export function useDeleteOrderMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => apiFetch<SalesOrder>(`/orders/${id}`, { method: 'DELETE' }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['orders'] }),
+  });
+}

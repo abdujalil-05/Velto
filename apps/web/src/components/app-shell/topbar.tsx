@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { LogOut, Menu, X } from 'lucide-react';
 import { Link, usePathname } from '@/i18n/navigation';
@@ -17,6 +17,14 @@ export function Topbar() {
   const pathname = usePathname();
   const { user, hasPermission, logout } = useAuth();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [mobileNavOpen]);
 
   const items = NAV_ITEMS.filter((item) => !item.permission || hasPermission(item.permission));
   const roleLabel = user?.roles[0] ? tShell(`roles.${user.roles[0]}`) : '';
@@ -55,7 +63,11 @@ export function Topbar() {
       </div>
 
       {mobileNavOpen && (
-        <nav className="flex flex-col gap-1 border-t border-border p-2 md:hidden">
+        <nav
+          className="fixed inset-x-0 bottom-0 top-14 z-50 flex flex-col gap-1 overflow-y-auto bg-card p-2 md:hidden"
+          aria-modal="true"
+          role="dialog"
+        >
           {items.map((item) => {
             const Icon = item.icon;
             const active = isNavItemActive(pathname, item.href);

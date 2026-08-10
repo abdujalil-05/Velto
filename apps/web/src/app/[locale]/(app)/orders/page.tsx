@@ -2,10 +2,11 @@
 
 import { useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
+import { toast } from 'sonner';
 import { Plus, RefreshCw, ShoppingCart } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
-import { useOrdersQuery } from '@/lib/api/orders';
+import { useOrdersQuery, useDeleteOrderMutation, type SalesOrder } from '@/lib/api/orders';
 import { useCustomersQuery, type Customer, type OrderStatus } from '@/lib/api/customers';
 import { errorMessage } from '@/lib/api/client';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
@@ -16,6 +17,7 @@ import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { PaginationBar } from '@/components/shared/pagination-bar';
 import { SearchSelect } from '@/components/shared/search-select';
 import { ExportCsvButton } from '@/components/shared/export-csv-button';
@@ -28,6 +30,7 @@ export default function OrdersPage() {
   const t = useTranslations('Orders');
   const locale = useLocale();
   const { hasPermission } = useAuth();
+  const canDelete = hasPermission('orders.update');
 
   const [status, setStatus] = useState<'all' | OrderStatus>('all');
   const [customer, setCustomer] = useState<Customer | null>(null);
@@ -50,6 +53,22 @@ export default function OrdersPage() {
     sortBy: sort.sortBy,
     sortDir: sort.sortDir,
   });
+
+  const deleteMutation = useDeleteOrderMutation();
+  const [pendingDelete, setPendingDelete] = useState<SalesOrder | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  async function confirmDelete() {
+    if (!pendingDelete) return;
+    setDeleteError(null);
+    try {
+      await deleteMutation.mutateAsync(pendingDelete.id);
+      toast.success(t('deleteSuccess', { number: pendingDelete.number }));
+      setPendingDelete(null);
+    } catch (err) {
+      setDeleteError(errorMessage(err, locale));
+    }
+  }
 
   const hasFilters = status !== 'all' || !!customer;
 
@@ -168,11 +187,36 @@ export default function OrdersPage() {
       {data && data.data.length > 0 && (
         <Card>
           <CardContent className="pt-6">
-            <OrdersTable orders={data.data} sort={sort} onSort={toggleSort} />
+            <OrdersTable
+              orders={data.data}
+              sort={sort}
+              onSort={toggleSort}
+              canDelete={canDelete}
+              onDelete={(order) => {
+                setDeleteError(null);
+                setPendingDelete(order);
+              }}
+            />
             <PaginationBar meta={data.meta} onPageChange={setPage} />
           </CardContent>
         </Card>
       )}
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingDelete(null);
+            setDeleteError(null);
+          }
+        }}
+        title={t('confirmDelete.title')}
+        description={t('confirmDelete.description', { number: pendingDelete?.number ?? '' })}
+        confirmLabel={t('delete')}
+        error={deleteError}
+        isPending={deleteMutation.isPending}
+        onConfirm={confirmDelete}
+      />
     </div>
   );
 }

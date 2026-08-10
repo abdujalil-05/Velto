@@ -427,6 +427,33 @@ export class SalesService {
     return withTotal(updated);
   }
 
+  /**
+   * Hard delete — only for SUBMITTED orders (no stock reservation via
+   * confirm(), no invoice via deliver() yet), so there's nothing else to
+   * unwind. Anything past that must go through cancel() instead, which
+   * releases the reservation and keeps the record for audit.
+   */
+  async remove(id: string, user: AuthenticatedUser) {
+    const tx = this.tenantPrisma.client;
+    const order = await this.getRawOrder(tx, id);
+
+    if (order.status !== OrderStatus.SUBMITTED) {
+      throw new InvalidOrderTransitionException(order.status, 'DELETED');
+    }
+
+    await tx.salesOrderLine.deleteMany({ where: { orderId: id } });
+    await tx.salesOrder.delete({ where: { id } });
+
+    await this.auditLog.log(tx, {
+      companyId: user.companyId,
+      userId: user.id,
+      action: 'order.delete',
+      entity: 'SalesOrder',
+      entityId: id,
+      oldValue: toAuditJson(order),
+    });
+  }
+
   private async getRawOrder(tx: TenantClient, id: string, scopedAgentId?: string) {
     const order = await tx.salesOrder.findFirst({
       where: { id, ...(scopedAgentId ? { agentId: scopedAgentId } : {}) },

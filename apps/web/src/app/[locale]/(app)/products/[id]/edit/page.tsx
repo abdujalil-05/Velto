@@ -3,9 +3,9 @@
 import { use, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { toast } from 'sonner';
-import { ArrowLeft, Trash2 } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 import { Link, useRouter } from '@/i18n/navigation';
-import { useDeleteProductMutation, useProductQuery, useUpdateProductMutation } from '@/lib/api/products';
+import { useProductQuery, useUpdateProductMutation } from '@/lib/api/products';
 import { useCategoriesQuery } from '@/lib/api/categories';
 import { errorMessage } from '@/lib/api/client';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -13,7 +13,6 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
-import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { ProductForm } from '@/components/products/product-form';
 import { ProductImageUpload } from '@/components/products/product-image-upload';
 
@@ -26,10 +25,7 @@ export default function EditProductPage({ params }: { params: Promise<{ id: stri
   const { data: product, isLoading, isError, error, refetch } = useProductQuery(id);
   const { data: categories } = useCategoriesQuery();
   const updateMutation = useUpdateProductMutation(id);
-  const deleteMutation = useDeleteProductMutation();
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [deleteOpen, setDeleteOpen] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   return (
     <div className="space-y-4">
@@ -53,12 +49,8 @@ export default function EditProductPage({ params }: { params: Promise<{ id: stri
 
       {product && (
         <Card className="mx-auto max-w-2xl">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <CardHeader>
             <CardTitle>{t('editTitle', { name: product.name })}</CardTitle>
-            <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setDeleteOpen(true)}>
-              <Trash2 className="mr-2 h-4 w-4" />
-              {t('delete')}
-            </Button>
           </CardHeader>
           <CardContent className="space-y-6">
             <div className="space-y-2">
@@ -98,24 +90,6 @@ export default function EditProductPage({ params }: { params: Promise<{ id: stri
           </CardContent>
         </Card>
       )}
-
-      <ConfirmDialog
-        open={deleteOpen}
-        onOpenChange={setDeleteOpen}
-        itemName={product?.name ?? ''}
-        error={deleteError}
-        isPending={deleteMutation.isPending}
-        onConfirm={() => {
-          setDeleteError(null);
-          deleteMutation.mutate(id, {
-            onSuccess: () => {
-              toast.success(t('deleted'));
-              router.push('/products');
-            },
-            onError: (err) => setDeleteError(errorMessage(err, locale)),
-          });
-        }}
-      />
     </div>
   );
 }

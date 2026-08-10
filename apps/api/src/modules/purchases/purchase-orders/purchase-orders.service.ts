@@ -6,6 +6,7 @@ import { DocumentNumberingService } from '../../../common/document-numbering/doc
 import { paginate } from '../../../common/pagination/pagination.dto';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import { ProductNotFoundException } from '../../catalog/catalog-exceptions';
+import { NotificationsService } from '../../notifications/notifications.service';
 import { StockService } from '../../stock/stock.service';
 import { WarehouseNotFoundException } from '../../stock/stock-exceptions';
 import {
@@ -35,6 +36,7 @@ export class PurchaseOrdersService {
     private readonly suppliers: SuppliersService,
     private readonly stock: StockService,
     private readonly docNumbering: DocumentNumberingService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   async list(query: ListPurchaseOrdersQueryDto) {
@@ -109,7 +111,60 @@ export class PurchaseOrdersService {
       newValue: toAuditJson(po),
     });
 
+    await this.notifySupplierAndBuyer(tx, po, user);
+
     return po;
+  }
+
+  /**
+   * Best-effort Telegram push to the supplier (if it has an active
+   * SupplierTelegramLink) plus an in-app Notification for whoever created
+   * the order, so it shows up as an unread badge on their next login —
+   * mirrors NotificationsService.notify()'s "in-app always, Telegram
+   * best-effort" split, done inline in this transaction the same way that
+   * method's own doc comment describes callers like SalesService using it.
+   */
+  private async notifySupplierAndBuyer(
+    tx: TenantClient,
+    po: Prisma.PurchaseOrderGetPayload<{ include: typeof PO_INCLUDE }>,
+    user: AuthenticatedUser,
+  ): Promise<void> {
+    const company = await tx.company.findUnique({ where: { id: user.companyId } });
+
+    const sent = await this.notifications.notifySupplierNewOrder(tx, po.supplierId, {
+      companyName: company?.name ?? '',
+      contactFirstName: user.firstName,
+      contactLastName: user.lastName,
+      address: company?.address ?? null,
+      phone: company?.phone ?? null,
+      orderNumber: po.number,
+    });
+
+    await this.auditLog.log(tx, {
+      companyId: user.companyId,
+      userId: user.id,
+      action: 'purchaseOrder.supplierNotified',
+      entity: 'PurchaseOrder',
+      entityId: po.id,
+      newValue: toAuditJson({ supplierId: po.supplierId, telegramSent: sent }),
+    });
+
+    await this.notifications.notify(tx, {
+      recipientId: user.id,
+      type: 'purchaseOrder.created',
+      title: {
+        uz: 'Yangi xarid buyurtmasi',
+        ru: 'Новый заказ на закупку',
+        en: 'New purchase order',
+      },
+      message: {
+        uz: `${po.number} yaratildi (${po.supplier.name})${sent ? ", yetkazib beruvchiga Telegram orqali yuborildi" : ''}`,
+        ru: `${po.number} создан (${po.supplier.name})${sent ? ', отправлен поставщику через Telegram' : ''}`,
+        en: `${po.number} created (${po.supplier.name})${sent ? ' — sent to the supplier via Telegram' : ''}`,
+      },
+      entityType: 'PurchaseOrder',
+      entityId: po.id,
+    });
   }
 
   /** DRAFT → ORDERED — sends the order to the supplier; no stock effect yet. */

@@ -56,30 +56,33 @@ model Company {
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
 
-  users             User[]
-  roles             Role[]
-  customers         Customer[]
-  outlets           Outlet[]
-  productCategories ProductCategory[]
-  products          Product[]
-  priceLists        PriceList[]
-  warehouses        Warehouse[]
-  stockMovements    StockMovement[]
-  salesOrders       SalesOrder[]
-  invoices          Invoice[]
-  payments          Payment[]
-  cashSessions      CashSession[]
-  routes            Route[]
-  routeRuns         RouteRun[]
-  visits            Visit[]
-  suppliers         Supplier[]
-  purchaseOrders    PurchaseOrder[]
-  auditLogs         AuditLog[]
-  outboxEvents      OutboxEvent[]
-  importJobs        ImportJob[]
-  exportJobs        ExportJob[]
-  documentCounters  DocumentCounter[]
-  notifications     Notification[]
+  users                 User[]
+  roles                 Role[]
+  customers             Customer[]
+  outlets               Outlet[]
+  productCategories     ProductCategory[]
+  products              Product[]
+  priceLists            PriceList[]
+  warehouses            Warehouse[]
+  stockMovements        StockMovement[]
+  salesOrders           SalesOrder[]
+  invoices              Invoice[]
+  payments              Payment[]
+  cashSessions          CashSession[]
+  routes                Route[]
+  routeRuns             RouteRun[]
+  visits                Visit[]
+  suppliers             Supplier[]
+  supplierTelegramLinks SupplierTelegramLink[]
+  supplierRoutes        SupplierRoute[]
+  supplierRouteStops    SupplierRouteStop[]
+  purchaseOrders        PurchaseOrder[]
+  auditLogs             AuditLog[]
+  outboxEvents          OutboxEvent[]
+  importJobs            ImportJob[]
+  exportJobs            ExportJob[]
+  documentCounters      DocumentCounter[]
+  notifications         Notification[]
 
   @@index([tenantId])
 }
@@ -671,7 +674,9 @@ model Route {
   @@index([companyId, agentId])
 }
 
-/** One row per calendar-day occurrence of a recurring Route (9.4-follow-up: "marshrutni tugatish") — completedAt is set only once every stop has a GPS-verified Visit for that day. */
+/**
+ * One row per calendar-day occurrence of a recurring Route (9.4-follow-up: "marshrutni tugatish") — completedAt is set only once every stop has a GPS-verified Visit for that day.
+ */
 model RouteRun {
   id          String    @id @default(uuid()) @db.Uuid
   companyId   String    @db.Uuid
@@ -746,16 +751,127 @@ model Supplier {
   companyId String    @db.Uuid
   name      String
   phone     String?
+  // Legal/correspondence address. `pickupAddress` below is where goods are
+  // actually collected, which is frequently a different warehouse or bazaar
+  // stall than the address on the contract.
   address   String?
   isActive  Boolean   @default(true)
   deletedAt DateTime?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
-  company        Company         @relation(fields: [companyId], references: [id])
+  // Where a PurchaseOrder is physically picked up. Coordinates use the same
+  // Decimal(10,7) shape as Visit.latitude/longitude so the existing
+  // GPS-radius helpers can be reused unchanged; both are nullable because a
+  // supplier may only ever be reachable by address text.
+  pickupAddress   String?
+  pickupLatitude  Decimal? @db.Decimal(10, 7)
+  pickupLongitude Decimal? @db.Decimal(10, 7)
+
+  company        Company               @relation(fields: [companyId], references: [id])
   purchaseOrders PurchaseOrder[]
+  telegramLink   SupplierTelegramLink?
+  pickupRoutes   SupplierRoute[]
 
   @@index([companyId, name])
+}
+
+/// Supplier <-> Telegram account link (M09 purchases + 5.3 "In-app + Telegram").
+///
+/// Suppliers are external counterparties, not `User` rows: they have no
+/// password, no Role and must never pass `JwtAuthGuard`, so their Telegram id
+/// cannot live on `User.telegramId` without also making them a tenant user.
+/// Hence a separate 1:1 side table rather than a column on Supplier — it keeps
+/// "is this Telegram account a Velto user?" and "is this Telegram account a
+/// supplier contact?" as two disjoint lookups, so a supplier can never be
+/// resolved by the login path in auth.service.ts.
+///
+/// `telegramId` is scoped per company for exactly the reason documented on
+/// User.telegramId: a global unique would let tenant A's write collide with —
+/// and thereby probe the existence of — a row in tenant B. The "one Telegram
+/// account = one supplier contact" invariant is therefore an application-layer
+/// check that must fail closed on >1 match, the same as the phone-lookup path.
+model SupplierTelegramLink {
+  id         String   @id @default(uuid()) @db.Uuid
+  companyId  String   @db.Uuid
+  supplierId String   @db.Uuid
+  telegramId BigInt
+  // Telegram @username at link time, for display only — it is user-mutable and
+  // must never be used to identify the account.
+  username   String?
+  isActive   Boolean  @default(true)
+  linkedAt   DateTime @default(now())
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  company  Company  @relation(fields: [companyId], references: [id])
+  supplier Supplier @relation(fields: [supplierId], references: [id])
+
+  @@unique([supplierId])
+  @@unique([companyId, telegramId])
+  @@index([companyId])
+}
+
+/// Recurring inbound pickup run at a supplier (M09 purchases).
+///
+/// Deliberately a separate table from `Route`/`RouteStop` rather than a
+/// `type`/`kind` discriminator on them: `Route` is outbound field-agent work —
+/// it is keyed on `agentId`, its stops are `Outlet` rows, and `RouteRun`/`Visit`
+/// plus every existing reader (routes service, miniapp sync, 9.4 route-finish
+/// completion rule) assume exactly that shape. Adding supplier pickups into it
+/// would either force `agentId`/`outletId` nullable — silently weakening those
+/// readers' assumptions — or make them start returning rows they have never
+/// seen. An independent pair of tables keeps all existing behaviour byte-for-byte
+/// unchanged.
+model SupplierRoute {
+  id         String   @id @default(uuid()) @db.Uuid
+  companyId  String   @db.Uuid
+  supplierId String   @db.Uuid
+  /// ISO-8601 weekday, 1 = Monday .. 7 = Sunday. Same encoding as Route.weekday
+  /// so the existing weekday helpers/labels can be reused unchanged.
+  weekday    Int
+  name       String
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  company  Company             @relation(fields: [companyId], references: [id])
+  supplier Supplier            @relation(fields: [supplierId], references: [id])
+  stops    SupplierRouteStop[]
+
+  @@index([companyId, supplierId])
+  @@index([companyId, weekday])
+}
+
+/// One pickup point on a `SupplierRoute`.
+///
+/// Unlike `RouteStop` (which joins an `Outlet` and therefore inherits its
+/// company through a subquery policy), a pickup point is free-form: a bazaar
+/// stall or a third-party warehouse that is not a Velto entity. So it carries
+/// its own address/coordinates and its own `companyId`, which lets RLS use the
+/// cheaper direct-column policy; the cross-tenant FK guard trigger is what stops
+/// `routeId` pointing at another tenant's SupplierRoute.
+model SupplierRouteStop {
+  id            String   @id @default(uuid()) @db.Uuid
+  companyId     String   @db.Uuid
+  routeId       String   @db.Uuid
+  /// Visit order within the route, 1-based.
+  sequence      Int
+  pickupAddress String
+  /// Decimal(10,7) — identical shape to Visit/Supplier pickup coordinates, so
+  /// the existing GPS-radius helpers apply as-is. Nullable: an address-only
+  /// pickup point is valid.
+  latitude      Decimal? @db.Decimal(10, 7)
+  longitude     Decimal? @db.Decimal(10, 7)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  company Company       @relation(fields: [companyId], references: [id])
+  route   SupplierRoute @relation(fields: [routeId], references: [id])
+
+  @@unique([routeId, sequence])
+  @@index([companyId, routeId])
+  @@index([companyId, latitude, longitude])
 }
 
 enum PurchaseOrderStatus {

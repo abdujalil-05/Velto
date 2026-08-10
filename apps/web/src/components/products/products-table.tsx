@@ -1,7 +1,8 @@
 import { useTranslations } from 'next-intl';
-import { ImageOff } from 'lucide-react';
+import { ImageOff, Trash2 } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { SortableHeader } from '@/components/shared/sortable-header';
 import { formatMoney } from '@/lib/format';
 import type { SortState } from '@/lib/hooks/use-sort';
@@ -11,10 +12,14 @@ interface ProductsTableProps {
   products: Product[];
   sort: SortState;
   onSort: (column: string) => void;
+  /** `catalog.delete` — restricted on the API side. */
+  canDelete?: boolean;
+  onDelete?: (product: Product) => void;
 }
 
-export function ProductsTable({ products, sort, onSort }: ProductsTableProps) {
+export function ProductsTable({ products, sort, onSort, canDelete = false, onDelete }: ProductsTableProps) {
   const t = useTranslations('Products');
+  const showActions = canDelete && !!onDelete;
 
   return (
     <div className="overflow-x-auto">
@@ -34,6 +39,7 @@ export function ProductsTable({ products, sort, onSort }: ProductsTableProps) {
             <th className="pb-2 pr-3 font-medium">{t('category')}</th>
             <th className="pb-2 pr-3 text-right font-medium">{t('price')}</th>
             <th className="pb-2 font-medium">{t('status')}</th>
+            {showActions && <th className="pb-2 text-right font-medium">{t('actions')}</th>}
           </tr>
         </thead>
         <tbody className="divide-y divide-border">
@@ -66,6 +72,13 @@ export function ProductsTable({ products, sort, onSort }: ProductsTableProps) {
                   <Badge variant="outline">{t('inactive')}</Badge>
                 )}
               </td>
+              {showActions && (
+                <td className="py-2 text-right">
+                  <Button variant="ghost" size="sm" onClick={() => onDelete?.(product)} aria-label={t('delete')}>
+                    <Trash2 className="h-4 w-4 text-destructive" />
+                  </Button>
+                </td>
+              )}
             </tr>
           ))}
         </tbody>

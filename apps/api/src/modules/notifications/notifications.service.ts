@@ -16,6 +16,16 @@ export interface NotifyInput {
   entityId?: string;
 }
 
+/** Contact details of the buyer placing a new PurchaseOrder — sent to the supplier so they know who to prepare stock for. */
+export interface SupplierOrderNotice {
+  companyName: string;
+  contactFirstName: string;
+  contactLastName: string;
+  address: string | null;
+  phone: string | null;
+  orderNumber: string;
+}
+
 const TELEGRAM_API = 'https://api.telegram.org';
 
 /**
@@ -99,6 +109,31 @@ export class NotificationsService {
       where: { recipientId, readAt: null },
       data: { readAt: new Date() },
     });
+  }
+
+  /**
+   * Suppliers are not `User` rows (see `SupplierTelegramLink`'s doc comment)
+   * so they can never be a `notify()` recipient — this is the Telegram-only
+   * counterpart of that method for the one thing a Supplier needs pushed to
+   * it: a newly placed PurchaseOrder. Best-effort/silent, same as `notify()`'s
+   * Telegram leg: returns false (no throw) when the bot isn't configured or
+   * the supplier hasn't linked Telegram, so the caller can still record an
+   * accurate audit-log entry either way.
+   */
+  async notifySupplierNewOrder(tx: TenantClient, supplierId: string, notice: SupplierOrderNotice): Promise<boolean> {
+    const link = await tx.supplierTelegramLink.findFirst({ where: { supplierId, isActive: true } });
+    if (!link) return false;
+
+    const lines = [
+      `Yangi buyurtma: ${notice.orderNumber}`,
+      `Kompaniya: ${notice.companyName}`,
+      `Kontakt: ${notice.contactFirstName} ${notice.contactLastName}`,
+      notice.address ? `Manzil: ${notice.address}` : undefined,
+      notice.phone ? `Telefon: ${notice.phone}` : undefined,
+    ].filter((line): line is string => Boolean(line));
+
+    await this.sendTelegram(link.telegramId, lines.join('\n'));
+    return true;
   }
 
   private async sendTelegram(telegramId: bigint, text: string): Promise<void> {

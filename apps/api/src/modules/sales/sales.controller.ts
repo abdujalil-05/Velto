@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
@@ -51,5 +51,13 @@ export class SalesController {
   @RequirePermission('orders.cancel')
   cancel(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CancelOrderDto, @CurrentUser() user: AuthenticatedUser) {
     return this.sales.cancel(id, dto, user);
+  }
+
+  // No dedicated 'orders.delete' permission in the RBAC catalog (packages/database/src/rbac-catalog.ts)
+  // — reuses 'orders.update', same precedent as SuppliersController.remove() reusing 'purchases.update'.
+  @Delete(':id')
+  @RequirePermission('orders.update')
+  remove(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.sales.remove(id, user);
   }
 }

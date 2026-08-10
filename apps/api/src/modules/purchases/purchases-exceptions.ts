@@ -71,6 +71,16 @@ export class OverReceiptException extends AppException {
   }
 }
 
+export class SupplierRouteNotFoundException extends AppException {
+  constructor() {
+    super(HttpStatus.NOT_FOUND, 'SUPPLIER_ROUTE_NOT_FOUND', {
+      uz: 'Yetkazib beruvchi marshruti topilmadi',
+      ru: 'Маршрут поставщика не найден',
+      en: 'Supplier route not found',
+    });
+  }
+}
+
 export class PurchaseOrderLineNotFoundException extends AppException {
   constructor() {
     super(HttpStatus.BAD_REQUEST, 'PURCHASE_ORDER_LINE_NOT_FOUND', {
