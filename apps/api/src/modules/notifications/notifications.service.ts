@@ -26,6 +26,12 @@ export interface SupplierOrderNotice {
   orderNumber: string;
 }
 
+/** SalesOrder → deliverer-Supplier assignment notice (F-M0x supplier delivery flow). */
+export interface SupplierOrderAssignedNotice {
+  companyName: string;
+  orderNumber: string;
+}
+
 const TELEGRAM_API = 'https://api.telegram.org';
 
 /**
@@ -134,6 +140,21 @@ export class NotificationsService {
 
     await this.sendTelegram(link.telegramId, lines.join('\n'));
     return true;
+  }
+
+  /**
+   * Best-effort Telegram push telling a Supplier they've been assigned as
+   * the deliverer of a SalesOrder (either at order-creation time or later,
+   * via SalesService.assignSupplier()). Deliberately takes an
+   * already-resolved `telegramId` instead of `(tx, supplierId)` like
+   * notifySupplierNewOrder above — the caller looks up the active
+   * SupplierTelegramLink itself inside its own transaction and defers this
+   * call via `TenantContext.afterCommit()`, by which point that transaction
+   * (and its `tx`) is gone, so this method can't do its own lookup.
+   */
+  async notifySupplierOrderAssigned(telegramId: bigint, notice: SupplierOrderAssignedNotice): Promise<void> {
+    const lines = [`Sizga yetkazib berish uchun buyurtma biriktirildi: ${notice.orderNumber}`, `Kompaniya: ${notice.companyName}`];
+    await this.sendTelegram(telegramId, lines.join('\n'));
   }
 
   private async sendTelegram(telegramId: bigint, text: string): Promise<void> {

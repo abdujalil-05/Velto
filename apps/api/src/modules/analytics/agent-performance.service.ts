@@ -43,6 +43,10 @@ export class AgentPerformanceReportService {
       const weekday = isoWeekday(new Date(t));
       for (const route of routes) {
         if (route.weekday !== weekday) continue;
+        // A supplier-served route (agentId null) never matches the
+        // `agentId: { in: agentIds } ` filter above, but its static type is
+        // still nullable — guard rather than assert.
+        if (!route.agentId) continue;
         plannedByAgent.set(route.agentId, (plannedByAgent.get(route.agentId) ?? 0) + route._count.stops);
       }
     }

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { ConfigService } from '@nestjs/config';
 import { prisma, systemPrisma } from '@velto/database';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { AuditLogService } from '../../common/audit/audit-log.service';
@@ -8,6 +9,8 @@ import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { CustomersService } from '../customers/customers.service';
 import { PaymentsService } from '../finance/payments/payments.service';
 import { VisitsService } from '../field/visits/visits.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { SuppliersService } from '../purchases/suppliers/suppliers.service';
 import { SalesService } from '../sales/sales.service';
 import { StockService } from '../stock/stock.service';
 import { SyncDocType } from './dto/sync-push.dto';
@@ -27,7 +30,9 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
   const customers = new CustomersService(tenantPrisma, auditLog);
   const stock = new StockService(tenantPrisma, auditLog);
   const docNumbering = new DocumentNumberingService();
-  const sales = new SalesService(tenantPrisma, auditLog, customers, stock, docNumbering);
+  const suppliers = new SuppliersService(tenantPrisma, auditLog);
+  const notifications = new NotificationsService(tenantPrisma, new ConfigService());
+  const sales = new SalesService(tenantPrisma, auditLog, customers, stock, docNumbering, suppliers, notifications);
   const payments = new PaymentsService(tenantPrisma, auditLog, customers, docNumbering);
   const visits = new VisitsService(tenantPrisma, auditLog);
   const sync = new SyncService(tenantPrisma, sales, payments, visits);

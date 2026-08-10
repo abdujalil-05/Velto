@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import argon2 from 'argon2';
@@ -172,7 +172,16 @@ describe('AuthService.linkTelegramContact (integration, real Postgres + RLS)', (
     companyId = company.id;
   });
 
+  // replyTelegram() fires on most branches below and ConfigService falls
+  // through to process.env, where the repo's .env carries a *real*
+  // TELEGRAM_BOT_TOKEN — without this stub these tests would hit
+  // api.telegram.org for every fixture chat id.
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true }) as Response));
+  });
+
   afterAll(async () => {
+    vi.unstubAllGlobals();
     await prisma.$disconnect();
     await systemPrisma.$disconnect();
   });
@@ -257,6 +266,28 @@ describe('AuthService.linkTelegramContact (integration, real Postgres + RLS)', (
 
     const updated = await systemPrisma.user.findUnique({ where: { id: user.id } });
     expect(updated?.telegramId).toBe(BigInt(tgId));
+  });
+
+  // The webhook now multiplexes two flows (contact-share -> User,
+  // "/start <code>" -> Supplier) through handleTelegramUpdate(); these two
+  // pin down that the original contact-share path is unchanged and that a
+  // bare "/start" is still the no-op it always was.
+  it('handleTelegramUpdate still links a shared contact', async () => {
+    const phone = uniquePhone();
+    const user = await createUser(phone);
+    const tgId = fakeTelegramId();
+
+    await auth.handleTelegramUpdate({
+      message: { from: { id: tgId }, contact: { phone_number: phone, user_id: tgId } },
+    });
+
+    expect((await systemPrisma.user.findUnique({ where: { id: user.id } }))?.telegramId).toBe(BigInt(tgId));
+  });
+
+  it('handleTelegramUpdate treats a bare /start as a no-op', async () => {
+    await expect(
+      auth.handleTelegramUpdate({ message: { from: { id: fakeTelegramId() }, text: '/start' } }),
+    ).resolves.toBeUndefined();
   });
 
   it('does not link when the phone is ambiguous across more than one company', async () => {

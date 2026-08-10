@@ -6,6 +6,7 @@ import { paginate } from '../../../common/pagination/pagination.dto';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import { endOfDay, isoWeekday, startOfDay } from '../../analytics/report-utils';
 import { OutletNotFoundException } from '../../customers/customers-exceptions';
+import { SuppliersService } from '../../purchases/suppliers/suppliers.service';
 import {
   AgentNotFoundException,
   RouteNotFoundException,
@@ -19,6 +20,7 @@ import type { UpdateRouteDto } from './dto/update-route.dto';
 
 const ROUTE_INCLUDE = {
   agent: { select: { id: true, firstName: true, lastName: true } },
+  deliverySupplier: { select: { id: true, name: true } },
   stops: {
     orderBy: { sortOrder: 'asc' },
     include: {
@@ -32,6 +34,7 @@ export class RoutesService {
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     private readonly auditLog: AuditLogService,
+    private readonly suppliers: SuppliersService,
   ) {}
 
   // 7.2 groups this as "GET /routes/:agentId" — kept here as a query filter
@@ -42,6 +45,7 @@ export class RoutesService {
     const tx = this.tenantPrisma.client;
     const where: Prisma.RouteWhereInput = {
       ...(query.agentId ? { agentId: query.agentId } : {}),
+      ...(query.supplierId ? { supplierId: query.supplierId } : {}),
       ...(query.weekday ? { weekday: query.weekday } : {}),
     };
 
@@ -83,15 +87,22 @@ export class RoutesService {
 
     const today = startOfDay(new Date());
     const outletIds = route.stops.map((s) => s.outletId);
-    const verifiedVisits = await tx.visit.findMany({
-      where: {
-        agentId: route.agentId,
-        outletId: { in: outletIds },
-        gpsOk: true,
-        startedAt: { gte: today, lte: endOfDay(new Date()) },
-      },
-      select: { outletId: true },
-    });
+    // A supplier-served route (`agentId` null) has no GPS-tracked agent to
+    // log a Visit in the first place — the "every stop has a verified visit"
+    // gate below is agent-route-only in MVP, so it just never finds one
+    // finished (falls straight to RouteNotReadyException) rather than
+    // querying Visit with a null agentId.
+    const verifiedVisits = route.agentId
+      ? await tx.visit.findMany({
+          where: {
+            agentId: route.agentId,
+            outletId: { in: outletIds },
+            gpsOk: true,
+            startedAt: { gte: today, lte: endOfDay(new Date()) },
+          },
+          select: { outletId: true },
+        })
+      : [];
     const verifiedOutletIds = new Set(verifiedVisits.map((v) => v.outletId));
     const missingStops = route.stops.filter((s) => !verifiedOutletIds.has(s.outletId));
     if (missingStops.length > 0) {
@@ -118,13 +129,18 @@ export class RoutesService {
 
   async create(dto: CreateRouteDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
-    await this.assertAgentExists(tx, dto.agentId);
+    // CreateRouteDto's ExactlyOneOf decorators already guarantee exactly one
+    // of agentId/supplierId reaches here — these just turn a bad id into the
+    // right 404-ish AppException instead of a raw FK-violation 500.
+    if (dto.agentId) await this.assertAgentExists(tx, dto.agentId);
+    if (dto.supplierId) await this.suppliers.findActiveOrThrow(tx, dto.supplierId);
     await this.assertOutletsExist(tx, dto.stops);
 
     const route = await tx.route.create({
       data: {
         companyId: user.companyId,
         agentId: dto.agentId,
+        supplierId: dto.supplierId,
         weekday: dto.weekday,
         name: dto.name,
         stops: { create: dto.stops.map((stop, index) => ({ outletId: stop.outletId, sortOrder: index + 1 })) },
@@ -144,7 +160,22 @@ export class RoutesService {
     return route;
   }
 
-  /** 9.2 "tahrirlash, nuqta biriktirish" — `stops`, when given, fully replaces the existing stop list (same pattern as PriceLists.upsertItems). */
+  /**
+   * 9.2 "tahrirlash, nuqta biriktirish" — `stops`, when given, fully
+   * replaces the existing stop list (same pattern as PriceLists.upsertItems).
+   *
+   * `agentId`/`supplierId`: UpdateRouteDto's AtMostOneUuidOf decorators only
+   * reject the two arriving *together* in this request — they don't know
+   * about the row already in the DB, so reassigning to one explicitly clears
+   * the other here (rather than leaving both set, which would violate the
+   * DB's `Route_agent_xor_supplier_check` CHECK). Omitting both leaves the
+   * route's current assignment untouched. Uses the *Unchecked* input (raw
+   * scalar FK columns) instead of `agent: {connect/disconnect}` so both
+   * columns land in a single UPDATE statement — two separate relation
+   * updates would each individually re-check the CHECK constraint against
+   * whatever the *other* column still held at that intermediate moment, and
+   * fail even on a legitimate reassignment.
+   */
   async update(id: string, dto: UpdateRouteDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
     const before = await tx.route.findFirst({ where: { id }, include: ROUTE_INCLUDE });
@@ -158,9 +189,20 @@ export class RoutesService {
       });
     }
 
+    const data: Prisma.RouteUncheckedUpdateInput = { name: dto.name, weekday: dto.weekday };
+    if (dto.agentId) {
+      await this.assertAgentExists(tx, dto.agentId);
+      data.agentId = dto.agentId;
+      data.supplierId = null;
+    } else if (dto.supplierId) {
+      await this.suppliers.findActiveOrThrow(tx, dto.supplierId);
+      data.supplierId = dto.supplierId;
+      data.agentId = null;
+    }
+
     const route = await tx.route.update({
       where: { id },
-      data: { name: dto.name, weekday: dto.weekday },
+      data,
       include: ROUTE_INCLUDE,
     });
 

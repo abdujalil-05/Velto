@@ -29,6 +29,13 @@ describe('tenant isolation (RLS)', () => {
   let supplierBId: string;
   let supplierRouteAId: string;
   let supplierRouteBId: string;
+  let deliveryOrderAId: string;
+  let deliveryRouteAId: string;
+  let adminBId: string;
+  let linkCodeAId: string;
+  let linkCodeAValue: string;
+  let linkCodeBId: string;
+  let linkCodeBValue: string;
 
   beforeAll(async () => {
     const stamp = Date.now();
@@ -150,6 +157,44 @@ describe('tenant isolation (RLS)', () => {
       }),
     );
 
+    // SupplierTelegramLinkCode (20260810150000_supplier_telegram_link_code):
+    // the one-time `/start <code>` handshake that is the only thing that ever
+    // creates the link row above. Both companies get one, so "each side sees
+    // only its own" can't pass vacuously.
+    const adminB = await systemPrisma.user.create({
+      data: { companyId: companyBId, firstName: 'Admin', lastName: 'B', phone: '+998900000096' },
+    });
+    adminBId = adminB.id;
+
+    const [linkCodeA, linkCodeB] = await Promise.all([
+      withTenant(companyAId, (tx) =>
+        tx.supplierTelegramLinkCode.create({
+          data: {
+            companyId: companyAId,
+            supplierId: supplierAId,
+            code: `ISO-TG-A-${stamp}`,
+            expiresAt: new Date(Date.now() + 3_600_000),
+            createdById: recipientId,
+          },
+        }),
+      ),
+      withTenant(companyBId, (tx) =>
+        tx.supplierTelegramLinkCode.create({
+          data: {
+            companyId: companyBId,
+            supplierId: supplierBId,
+            code: `ISO-TG-B-${stamp}`,
+            expiresAt: new Date(Date.now() + 3_600_000),
+            createdById: adminB.id,
+          },
+        }),
+      ),
+    ]);
+    linkCodeAId = linkCodeA.id;
+    linkCodeAValue = linkCodeA.code;
+    linkCodeBId = linkCodeB.id;
+    linkCodeBValue = linkCodeB.code;
+
     // SupplierRoute + SupplierRouteStop (20260809140000_supplier_pickup_routes).
     // Both tenants get a route so the "each side sees only its own" assertions
     // below can't pass vacuously.
@@ -181,6 +226,33 @@ describe('tenant isolation (RLS)', () => {
       }),
     );
 
+    // Deliverer ("yetkazib beruvchi") links on outbound work
+    // (20260810120000_order_route_supplier_link + 20260810130000_route_agent_or_supplier).
+    // Company A only, on purpose: the Route cases above assert company B owns
+    // no route at all, and what needs proving here is that B cannot reach A's
+    // — a mirrored B fixture would weaken those assertions without adding
+    // coverage. `routeAId` stays agent-served so both arms of the XOR are
+    // represented in the fixture set.
+    const deliveryRouteA = await withTenant(companyAId, (tx) =>
+      tx.route.create({
+        data: { companyId: companyAId, supplierId: supplierAId, weekday: 5, name: 'Supplier-served Route A' },
+      }),
+    );
+    deliveryRouteAId = deliveryRouteA.id;
+    const deliveryOrderA = await withTenant(companyAId, (tx) =>
+      tx.salesOrder.create({
+        data: {
+          companyId: companyAId,
+          number: 'ISO-SUP-A',
+          customerId: customerAId,
+          outletId: outletAId,
+          warehouseId: warehouseAId,
+          supplierId: supplierAId,
+        },
+      }),
+    );
+    deliveryOrderAId = deliveryOrderA.id;
+
     await withTenant(companyAId, async (tx) => {
       const role = await tx.role.create({ data: { companyId: companyAId, code: 'ISO_TEST', name: 'Isolation Test Role' } });
       await tx.rolePermission.create({ data: { roleId: role.id, permissionId } });
@@ -202,8 +274,12 @@ describe('tenant isolation (RLS)', () => {
     await systemPrisma.routeRun.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
     await systemPrisma.routeStop.deleteMany({ where: { routeId: routeAId } });
     await systemPrisma.route.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
-    await systemPrisma.user.delete({ where: { id: recipientId } });
     const scopedCompanies = { companyId: { in: [companyAId, companyBId, companyCId] } };
+    // Before the users: SupplierTelegramLinkCode.createdById is FK RESTRICT
+    // (only supplierId cascades).
+    await systemPrisma.supplierTelegramLinkCode.deleteMany({ where: scopedCompanies });
+    await systemPrisma.user.delete({ where: { id: recipientId } });
+    await systemPrisma.user.delete({ where: { id: adminBId } });
     await systemPrisma.supplierTelegramLink.deleteMany({ where: scopedCompanies });
     // Stops before routes before suppliers — all three are FK RESTRICT.
     await systemPrisma.supplierRouteStop.deleteMany({ where: scopedCompanies });
@@ -268,7 +344,9 @@ describe('tenant isolation (RLS)', () => {
     const seenFromA = await withTenant(companyAId, (tx) => tx.route.findMany());
     const seenFromB = await withTenant(companyBId, (tx) => tx.route.findMany());
 
-    expect(seenFromA).toHaveLength(1);
+    // Both arms of the agent-XOR-supplier split (20260810130000) are company
+    // A's; company B must see neither.
+    expect(new Set(seenFromA.map((r) => r.id))).toEqual(new Set([routeAId, deliveryRouteAId]));
     expect(seenFromB).toHaveLength(0);
   });
 
@@ -359,6 +437,110 @@ describe('tenant isolation (RLS)', () => {
     ).rejects.toThrow();
 
     await systemPrisma.supplierTelegramLink.deleteMany({ where: { id: { in: links.map((l) => l.id) } } });
+  });
+
+  // 20260810150000_supplier_telegram_link_code. This table holds a live secret
+  // (`code`) that anyone who can read it can redeem into a Telegram link on
+  // the owning tenant's supplier — so a read leak here is a write escalation,
+  // not just a disclosure.
+  it('a direct-companyId table (SupplierTelegramLinkCode, M09) is scoped per tenant', async () => {
+    const seenFromA = await withTenant(companyAId, (tx) => tx.supplierTelegramLinkCode.findMany());
+    const seenFromB = await withTenant(companyBId, (tx) => tx.supplierTelegramLinkCode.findMany());
+
+    expect(seenFromA.map((c) => c.id)).toEqual([linkCodeAId]);
+    expect(seenFromB.map((c) => c.id)).toEqual([linkCodeBId]);
+
+    // `code` is globally unique, so a findUnique by code is a legal query from
+    // *any* tenant — RLS is the only thing standing between company B and
+    // company A's redeemable secret. It must return nothing, not a row.
+    const probedByCode = await withTenant(companyBId, (tx) =>
+      tx.supplierTelegramLinkCode.findUnique({ where: { code: linkCodeAValue } }),
+    );
+    expect(probedByCode).toBeNull();
+
+    const probedById = await withTenant(companyBId, (tx) =>
+      tx.supplierTelegramLinkCode.findUnique({ where: { id: linkCodeAId } }),
+    );
+    expect(probedById).toBeNull();
+  });
+
+  it('cannot burn or hijack another tenant’s SupplierTelegramLinkCode', async () => {
+    // Marking someone else's code used is a denial-of-service on their linking
+    // flow; repointing it is worse. Both must be no-ops, not errors.
+    const burned = await withTenant(companyBId, (tx) =>
+      tx.supplierTelegramLinkCode.updateMany({ where: { code: linkCodeAValue }, data: { usedAt: new Date() } }),
+    );
+    expect(burned.count).toBe(0);
+
+    const deleted = await withTenant(companyBId, (tx) =>
+      tx.supplierTelegramLinkCode.deleteMany({ where: { code: linkCodeAValue } }),
+    );
+    expect(deleted.count).toBe(0);
+
+    const stillPending = await systemPrisma.supplierTelegramLinkCode.findUnique({ where: { code: linkCodeAValue } });
+    expect(stillPending?.usedAt).toBeNull();
+  });
+
+  it('rejects a SupplierTelegramLinkCode pointing at another tenant’s supplier or admin', async () => {
+    const base = {
+      companyId: companyAId,
+      expiresAt: new Date(Date.now() + 3_600_000),
+    };
+
+    // Cross-tenant supplier. systemPrisma (BYPASSRLS) is used deliberately:
+    // it's the role the webhook/provisioning paths run as, so it proves the
+    // guard is the trigger and not merely RLS filtering the parent lookup.
+    await expect(
+      systemPrisma.supplierTelegramLinkCode.create({
+        data: { ...base, supplierId: supplierBId, code: `ISO-TG-XT-1-${Date.now()}`, createdById: recipientId },
+      }),
+    ).rejects.toThrow(/cross-tenant/i);
+
+    // Cross-tenant createdById (the admin who generated the code).
+    await expect(
+      systemPrisma.supplierTelegramLinkCode.create({
+        data: { ...base, supplierId: supplierAId, code: `ISO-TG-XT-2-${Date.now()}`, createdById: adminBId },
+      }),
+    ).rejects.toThrow(/cross-tenant/i);
+
+    // Selective, not "always throws": the all-company-A row is accepted.
+    const ok = await withTenant(companyAId, (tx) =>
+      tx.supplierTelegramLinkCode.create({
+        data: { ...base, supplierId: supplierAId, code: `ISO-TG-XT-OK-${Date.now()}`, createdById: recipientId },
+      }),
+    );
+    expect(ok.supplierId).toBe(supplierAId);
+    expect(ok.usedAt).toBeNull();
+    await systemPrisma.supplierTelegramLinkCode.delete({ where: { id: ok.id } });
+
+    // Nothing leaked into company B as a side effect of the rejected writes.
+    const inB = await withTenant(companyBId, (tx) => tx.supplierTelegramLinkCode.findMany());
+    expect(inB.map((c) => c.id)).toEqual([linkCodeBId]);
+  });
+
+  it('SupplierTelegramLinkCode.code is globally unique so the webhook can resolve it with no tenant context', async () => {
+    // The webhook sees only a chat id and `/start <code>` — there is no
+    // companyId to scope by, exactly like the phone lookup at login. These two
+    // assertions are the contract api-dev builds the redemption flow on.
+    const resolved = await systemPrisma.supplierTelegramLinkCode.findUnique({ where: { code: linkCodeBValue } });
+    expect(resolved?.companyId).toBe(companyBId);
+    expect(resolved?.supplierId).toBe(supplierBId);
+
+    // ...and the uniqueness that makes that lookup unambiguous spans tenants:
+    // company A cannot mint a code that collides with company B's.
+    await expect(
+      withTenant(companyAId, (tx) =>
+        tx.supplierTelegramLinkCode.create({
+          data: {
+            companyId: companyAId,
+            supplierId: supplierAId,
+            code: linkCodeBValue,
+            expiresAt: new Date(Date.now() + 3_600_000),
+            createdById: recipientId,
+          },
+        }),
+      ),
+    ).rejects.toThrow();
   });
 
   // 20260808120000_tenant_scoped_keys_and_fk_guards: Tenant was the last table
@@ -523,12 +705,166 @@ describe('tenant isolation (RLS)', () => {
     expect(ok.routeId).toBe(supplierRouteAId);
   });
 
+  // 20260810120000_order_route_supplier_link. The deliverer link is a new
+  // column on two tables that were already RLS-protected, so this asserts the
+  // existing `tenant_isolation` policy really does cover it (a policy is
+  // per-table, not per-column) — including through the new Supplier
+  // back-relations, which are a fresh join path into another tenant's rows.
+  it('a SalesOrder/Route carrying a supplierId (deliverer) is invisible cross-tenant', async () => {
+    const ordersFromA = await withTenant(companyAId, (tx) =>
+      tx.salesOrder.findMany({ where: { supplierId: { not: null } } }),
+    );
+    expect(ordersFromA.map((o) => o.id)).toEqual([deliveryOrderAId]);
+    expect(ordersFromA[0]?.supplierId).toBe(supplierAId);
+
+    const ordersFromB = await withTenant(companyBId, (tx) =>
+      tx.salesOrder.findMany({ where: { supplierId: { not: null } } }),
+    );
+    expect(ordersFromB).toHaveLength(0);
+
+    // Filtering by the other tenant's supplier id must be indistinguishable
+    // from "no such supplier" — otherwise the filter is an existence oracle.
+    const probedOrders = await withTenant(companyBId, (tx) =>
+      tx.salesOrder.findMany({ where: { supplierId: supplierAId } }),
+    );
+    expect(probedOrders).toHaveLength(0);
+    const probedOrder = await withTenant(companyBId, (tx) =>
+      tx.salesOrder.findUnique({ where: { id: deliveryOrderAId } }),
+    );
+    expect(probedOrder).toBeNull();
+
+    const routeFromA = await withTenant(companyAId, (tx) =>
+      tx.route.findUnique({ where: { id: deliveryRouteAId } }),
+    );
+    expect(routeFromA?.supplierId).toBe(supplierAId);
+    expect(routeFromA?.agentId).toBeNull();
+    const routesFromB = await withTenant(companyBId, (tx) =>
+      tx.route.findMany({ where: { supplierId: supplierAId } }),
+    );
+    expect(routesFromB).toHaveLength(0);
+    const probedRoute = await withTenant(companyBId, (tx) =>
+      tx.route.findUnique({ where: { id: deliveryRouteAId } }),
+    );
+    expect(probedRoute).toBeNull();
+
+    // ...and neither link leaks through the new Supplier back-relations.
+    const viaSupplier = await withTenant(companyBId, (tx) =>
+      tx.supplier.findMany({ include: { deliveryOrders: true, routes: true } }),
+    );
+    expect(viaSupplier.flatMap((s) => s.deliveryOrders)).toHaveLength(0);
+    expect(viaSupplier.flatMap((s) => s.routes)).toHaveLength(0);
+  });
+
+  it('rejects a SalesOrder/Route whose deliverer is another tenant’s supplier', async () => {
+    await expect(
+      systemPrisma.salesOrder.create({
+        data: {
+          companyId: companyAId,
+          number: 'ISO-SUP-XT',
+          customerId: customerAId,
+          warehouseId: warehouseAId,
+          supplierId: supplierBId,
+        },
+      }),
+    ).rejects.toThrow(/cross-tenant/i);
+
+    // UPDATE is guarded too, not just INSERT: re-assigning an existing route's
+    // deliverer is the easier way to stitch two tenants together. Re-pointing
+    // the already-supplier-served route keeps the agent/supplier XOR satisfied,
+    // so this asserts the cross-tenant guard and not the CHECK constraint.
+    await expect(
+      systemPrisma.route.update({ where: { id: deliveryRouteAId }, data: { supplierId: supplierBId } }),
+    ).rejects.toThrow(/cross-tenant/i);
+
+    const untouched = await systemPrisma.route.findUnique({ where: { id: deliveryRouteAId } });
+    expect(untouched?.supplierId).toBe(supplierAId);
+
+    // Selective, not "always throws": the all-company-A assignment is accepted.
+    const ok = await withTenant(companyAId, (tx) =>
+      tx.salesOrder.create({
+        data: {
+          companyId: companyAId,
+          number: 'ISO-SUP-OK',
+          customerId: customerAId,
+          warehouseId: warehouseAId,
+          supplierId: supplierAId,
+        },
+      }),
+    );
+    expect(ok.supplierId).toBe(supplierAId);
+    await systemPrisma.salesOrder.delete({ where: { id: ok.id } });
+  });
+
+  // 20260810130000_route_agent_or_supplier: "Route"."agentId" is nullable now,
+  // so the only thing standing between the schema and an ownerless (or
+  // double-owned) route is the CHECK constraint. Enforced in the database, not
+  // in a service, so it holds for the miniapp sync path and for BYPASSRLS
+  // `velto_system` too.
+  it('rejects a Route with neither an agent nor a supplier', async () => {
+    await expect(
+      withTenant(companyAId, (tx) =>
+        tx.route.create({ data: { companyId: companyAId, weekday: 6, name: 'Ownerless Route' } }),
+      ),
+    ).rejects.toThrow(/Route_agent_xor_supplier_check|check constraint/i);
+
+    // Same for an UPDATE that strips the last owner off an existing route.
+    await expect(
+      systemPrisma.route.update({ where: { id: routeAId }, data: { agentId: null } }),
+    ).rejects.toThrow(/Route_agent_xor_supplier_check|check constraint/i);
+
+    const stillOwned = await systemPrisma.route.findUnique({ where: { id: routeAId } });
+    expect(stillOwned?.agentId).toBe(recipientId);
+  });
+
+  it('rejects a Route assigned to both an agent and a supplier', async () => {
+    await expect(
+      withTenant(companyAId, (tx) =>
+        tx.route.create({
+          data: {
+            companyId: companyAId,
+            agentId: recipientId,
+            supplierId: supplierAId,
+            weekday: 6,
+            name: 'Double-owned Route',
+          },
+        }),
+      ),
+    ).rejects.toThrow(/Route_agent_xor_supplier_check|check constraint/i);
+
+    // Adding a deliverer to an agent route, and an agent to a supplier route,
+    // are the two realistic ways an API handler would break the invariant.
+    await expect(
+      systemPrisma.route.update({ where: { id: routeAId }, data: { supplierId: supplierAId } }),
+    ).rejects.toThrow(/Route_agent_xor_supplier_check|check constraint/i);
+
+    await expect(
+      systemPrisma.route.update({ where: { id: deliveryRouteAId }, data: { agentId: recipientId } }),
+    ).rejects.toThrow(/Route_agent_xor_supplier_check|check constraint/i);
+
+    // Selective, not "always throws": both single-owner shapes are accepted,
+    // and swapping one owner for the other in a single statement is legal.
+    const agentOnly = await withTenant(companyAId, (tx) =>
+      tx.route.create({ data: { companyId: companyAId, agentId: recipientId, weekday: 6, name: 'Agent Route' } }),
+    );
+    const swapped = await withTenant(companyAId, (tx) =>
+      tx.route.update({ where: { id: agentOnly.id }, data: { agentId: null, supplierId: supplierAId } }),
+    );
+    expect(swapped.agentId).toBeNull();
+    expect(swapped.supplierId).toBe(supplierAId);
+
+    await systemPrisma.route.delete({ where: { id: agentOnly.id } });
+  });
+
   // Guards the "do not touch existing Route/RouteStop" constraint: the new
   // tables must not have become visible to the agent-route readers.
   it('SupplierRoute rows do not appear in the agent Route/RouteStop tables', async () => {
     const routes = await withTenant(companyAId, (tx) => tx.route.findMany());
-    expect(routes.map((r) => r.id)).toEqual([routeAId]);
-    expect(routes.every((r) => r.agentId !== null)).toBe(true);
+    expect(new Set(routes.map((r) => r.id))).toEqual(new Set([routeAId, deliveryRouteAId]));
+    // `agentId !== null` no longer discriminates the two tables now that a
+    // supplier-served Route may have none (20260810130000), so assert the
+    // pickup-route ids are absent directly.
+    expect(routes.map((r) => r.id)).not.toContain(supplierRouteAId);
+    expect(routes.map((r) => r.id)).not.toContain(supplierRouteBId);
 
     const stops = await withTenant(companyAId, (tx) => tx.routeStop.findMany());
     expect(stops.every((s) => s.routeId === routeAId)).toBe(true);

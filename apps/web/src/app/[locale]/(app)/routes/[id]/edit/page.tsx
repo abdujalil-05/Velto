@@ -70,7 +70,8 @@ export default function EditRoutePage({ params }: { params: Promise<{ id: string
           <RouteForm
             mode="edit"
             defaultValues={{
-              agentId: route.agentId,
+              agentId: route.agentId ?? undefined,
+              supplierId: route.supplierId ?? undefined,
               weekday: route.weekday,
               name: route.name,
               stops: route.stops.map((s) => ({

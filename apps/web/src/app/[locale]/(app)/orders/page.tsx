@@ -1,16 +1,18 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { toast } from 'sonner';
-import { Plus, RefreshCw, ShoppingCart } from 'lucide-react';
+import { Plus, RefreshCw, ShoppingCart, X } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
 import { useOrdersQuery, useDeleteOrderMutation, type SalesOrder } from '@/lib/api/orders';
 import { useCustomersQuery, type Customer, type OrderStatus } from '@/lib/api/customers';
+import { useSupplierQuery } from '@/lib/api/suppliers';
 import { errorMessage } from '@/lib/api/client';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
 import { useSort } from '@/lib/hooks/use-sort';
+import { useInitialQueryParam } from '@/lib/hooks/use-initial-query-param';
 import { exportToCsv } from '@/lib/export-csv';
 import { formatDate, formatMoney } from '@/lib/format';
 import { Button, buttonVariants } from '@/components/ui/button';
@@ -39,20 +41,36 @@ export default function OrdersPage() {
   const debouncedCustomerQuery = useDebouncedValue(customerQuery, 300);
   const { sort, toggle: toggleSort } = useSort();
 
+  // Deep-linked from the suppliers list ("N orders" link). GET /orders has no supplierId filter
+  // (only customerId/agentId/status/date-range), so this switches the page into a client-filtered
+  // mode: fetch a generous unpaginated page and filter by supplierId in the browser.
+  const supplierIdFilter = useInitialQueryParam('supplierId');
+  const { data: filterSupplier } = useSupplierQuery(supplierIdFilter, !!supplierIdFilter);
+
   const { data: customerOptions, isLoading: customersLoading } = useCustomersQuery({
     page: 1,
     pageSize: 10,
     search: debouncedCustomerQuery || undefined,
   });
 
-  const { data, isLoading, isError, error, refetch, isFetching } = useOrdersQuery({
-    page,
-    pageSize: 25,
-    status: status === 'all' ? undefined : status,
-    customerId: customer?.id,
-    sortBy: sort.sortBy,
-    sortDir: sort.sortDir,
-  });
+  const { data: rawData, isLoading, isError, error, refetch, isFetching } = useOrdersQuery(
+    supplierIdFilter
+      ? { page: 1, pageSize: 200, sortBy: 'createdAt', sortDir: 'desc' }
+      : {
+          page,
+          pageSize: 25,
+          status: status === 'all' ? undefined : status,
+          customerId: customer?.id,
+          sortBy: sort.sortBy,
+          sortDir: sort.sortDir,
+        },
+  );
+
+  const data = useMemo(() => {
+    if (!rawData || !supplierIdFilter) return rawData;
+    const filtered = rawData.data.filter((o) => o.supplierId === supplierIdFilter);
+    return { data: filtered, meta: { ...rawData.meta, total: filtered.length, totalPages: 1, page: 1 } };
+  }, [rawData, supplierIdFilter]);
 
   const deleteMutation = useDeleteOrderMutation();
   const [pendingDelete, setPendingDelete] = useState<SalesOrder | null>(null);
@@ -70,7 +88,7 @@ export default function OrdersPage() {
     }
   }
 
-  const hasFilters = status !== 'all' || !!customer;
+  const hasFilters = status !== 'all' || !!customer || !!supplierIdFilter;
 
   function handleExport() {
     if (!data) return;
@@ -95,52 +113,64 @@ export default function OrdersPage() {
         )}
       </div>
 
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex gap-1 overflow-x-auto rounded-md border border-border p-1">
-          {STATUS_FILTERS.map((f) => (
-            <button
-              key={f}
-              type="button"
-              onClick={() => {
-                setStatus(f);
+      {supplierIdFilter ? (
+        <Alert>
+          <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
+            <span>{t('supplierFilterBanner', { name: filterSupplier?.name ?? '…' })}</span>
+            <Link href="/orders" className="inline-flex items-center gap-1 text-sm text-primary hover:underline">
+              <X className="h-3.5 w-3.5" />
+              {t('clearSupplierFilter')}
+            </Link>
+          </AlertDescription>
+        </Alert>
+      ) : (
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex gap-1 overflow-x-auto rounded-md border border-border p-1">
+            {STATUS_FILTERS.map((f) => (
+              <button
+                key={f}
+                type="button"
+                onClick={() => {
+                  setStatus(f);
+                  setPage(1);
+                }}
+                className={cn(
+                  'whitespace-nowrap rounded px-3 py-1 text-sm font-medium transition-colors',
+                  status === f ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent',
+                )}
+              >
+                {t(`filter.${f}`)}
+              </button>
+            ))}
+          </div>
+
+          <div className="w-full max-w-xs">
+            <SearchSelect
+              selected={customer}
+              onSelect={(c) => {
+                setCustomer(c);
                 setPage(1);
               }}
-              className={cn(
-                'whitespace-nowrap rounded px-3 py-1 text-sm font-medium transition-colors',
-                status === f ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent',
-              )}
-            >
-              {t(`filter.${f}`)}
-            </button>
-          ))}
+              query={customerQuery}
+              onQueryChange={setCustomerQuery}
+              items={customerOptions?.data ?? []}
+              isLoading={customersLoading}
+              getId={(c) => c.id}
+              getLabel={(c) => c.name}
+              getDescription={(c) => c.code}
+              placeholder={t('customerFilterPlaceholder')}
+              emptyText={t('form.noCustomers')}
+            />
+          </div>
+
+          <Button variant="ghost" size="sm" onClick={() => refetch()} disabled={isFetching}>
+            <RefreshCw className={cn('mr-2 h-4 w-4', isFetching && 'animate-spin')} />
+            {t('refresh')}
+          </Button>
+
+          <ExportCsvButton onExport={handleExport} disabled={!data || data.data.length === 0} />
         </div>
-
-        <div className="w-full max-w-xs">
-          <SearchSelect
-            selected={customer}
-            onSelect={(c) => {
-              setCustomer(c);
-              setPage(1);
-            }}
-            query={customerQuery}
-            onQueryChange={setCustomerQuery}
-            items={customerOptions?.data ?? []}
-            isLoading={customersLoading}
-            getId={(c) => c.id}
-            getLabel={(c) => c.name}
-            getDescription={(c) => c.code}
-            placeholder={t('customerFilterPlaceholder')}
-            emptyText={t('form.noCustomers')}
-          />
-        </div>
-
-        <Button variant="ghost" size="sm" onClick={() => refetch()} disabled={isFetching}>
-          <RefreshCw className={cn('mr-2 h-4 w-4', isFetching && 'animate-spin')} />
-          {t('refresh')}
-        </Button>
-
-        <ExportCsvButton onExport={handleExport} disabled={!data || data.data.length === 0} />
-      </div>
+      )}
 
       {isLoading && (
         <Card>

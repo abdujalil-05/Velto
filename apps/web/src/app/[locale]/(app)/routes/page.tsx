@@ -1,12 +1,14 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { Map, Plus, RefreshCw } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
-import { useRoutesQuery } from '@/lib/api/routes';
+import { useRoutesQuery, type Route } from '@/lib/api/routes';
 import { useUsersQuery } from '@/lib/api/users';
+import { useSuppliersQuery } from '@/lib/api/suppliers';
+import { useInitialQueryParam } from '@/lib/hooks/use-initial-query-param';
 import { errorMessage } from '@/lib/api/client';
 import { exportToCsv } from '@/lib/export-csv';
 import { Button, buttonVariants } from '@/components/ui/button';
@@ -27,25 +29,42 @@ export default function RoutesPage() {
   const { hasPermission } = useAuth();
   const canCreate = hasPermission('routes.create');
 
+  // Deep-linked from the agents/suppliers list ("N routes" link) — synced once on mount.
+  const initialAgentId = useInitialQueryParam('agentId');
+  const initialSupplierId = useInitialQueryParam('supplierId');
   const [agentId, setAgentId] = useState('');
+  const [supplierId, setSupplierId] = useState('');
   const [weekday, setWeekday] = useState('');
   const [page, setPage] = useState(1);
 
+  useEffect(() => {
+    if (initialAgentId) setAgentId(initialAgentId);
+  }, [initialAgentId]);
+  useEffect(() => {
+    if (initialSupplierId) setSupplierId(initialSupplierId);
+  }, [initialSupplierId]);
+
   const { data: agents } = useUsersQuery({ roleCode: 'SALES_AGENT', isActive: true, pageSize: 100 });
+  const { data: suppliers } = useSuppliersQuery({ pageSize: 100 });
   const { data, isLoading, isError, error, refetch, isFetching } = useRoutesQuery({
     page,
     pageSize: 25,
     agentId: agentId || undefined,
+    supplierId: supplierId || undefined,
     weekday: weekday ? Number(weekday) : undefined,
   });
 
-  const hasFilters = !!agentId || !!weekday;
+  const hasFilters = !!agentId || !!supplierId || !!weekday;
+
+  function assigneeLabel(r: Route) {
+    return r.agent ? `${r.agent.firstName} ${r.agent.lastName}` : r.deliverySupplier ? r.deliverySupplier.name : '';
+  }
 
   function handleExport() {
     if (!data) return;
     exportToCsv(`marshrutlar-${new Date().toISOString().slice(0, 10)}.csv`, data.data, [
       { header: t('name'), value: (r) => r.name },
-      { header: t('agent'), value: (r) => `${r.agent.firstName} ${r.agent.lastName}` },
+      { header: t('assignee'), value: (r) => assigneeLabel(r) },
       { header: t('weekday'), value: (r) => t(`weekdays.${r.weekday}`) },
       { header: t('stopCount'), value: (r) => r.stops.length },
     ]);
@@ -68,6 +87,7 @@ export default function RoutesPage() {
           value={agentId}
           onChange={(e) => {
             setAgentId(e.target.value);
+            setSupplierId('');
             setPage(1);
           }}
           className="w-auto"
@@ -76,6 +96,22 @@ export default function RoutesPage() {
           {agents?.data.map((agent) => (
             <option key={agent.id} value={agent.id}>
               {agent.firstName} {agent.lastName}
+            </option>
+          ))}
+        </Select>
+        <Select
+          value={supplierId}
+          onChange={(e) => {
+            setSupplierId(e.target.value);
+            setAgentId('');
+            setPage(1);
+          }}
+          className="w-auto"
+        >
+          <option value="">{t('allSuppliers')}</option>
+          {suppliers?.data.map((supplier) => (
+            <option key={supplier.id} value={supplier.id}>
+              {supplier.name}
             </option>
           ))}
         </Select>

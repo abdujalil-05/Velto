@@ -61,13 +61,27 @@ function normalizeUzPhone(raw: string): string | null {
   return null;
 }
 
-/** Minimal shape of a Telegram Bot API Update — only the fields the contact-share webhook needs. */
+/** Minimal shape of a Telegram Bot API Update — only the fields the webhook needs. */
 export interface TelegramWebhookUpdate {
   message?: {
-    from?: { id: number };
+    from?: { id: number; username?: string };
+    text?: string;
     contact?: { phone_number: string; user_id?: number };
   };
 }
+
+// `/start PAYLOAD`, optionally addressed to the bot in a group (`/start@velto_bot`).
+// The payload is Telegram's deep-link start param (A-Za-z0-9_-, <=64 chars).
+const START_COMMAND_RE = /^\/start(?:@\S+)?(?:\s+(\S{1,64}))?\s*$/;
+
+/**
+ * Shown for a code that never existed, one that has expired, and one that was
+ * redeemed by a *different* account — deliberately the same string for all
+ * three. Distinguishing them would tell whoever is guessing codes when they
+ * hit a real one, and `SupplierTelegramLinkCode.code` is globally unique
+ * across tenants (see its schema doc), so that is a cross-tenant oracle.
+ */
+const INVALID_CODE_REPLY = "Kod yaroqsiz yoki muddati tugagan. Administratoringizdan yangi kod so'rang.";
 
 export function parseDurationMs(input: string): number {
   const match = /^(\d+)(s|m|h|d)$/.exec(input);
@@ -176,6 +190,133 @@ export class AuthService {
 
     return this.tenantPrisma.run(user.companyId, (tx) =>
       this.issueTokensInTx(tx, user, meta, undefined, 'auth.login.telegram'),
+    );
+  }
+
+  /**
+   * Single entry point for every Telegram Bot API update the webhook receives.
+   * Two disjoint linking flows share one bot (and therefore one webhook):
+   * a shared contact links a `User` (agents, below), a `/start <code>` links a
+   * `Supplier` (external counterparties, which are deliberately not Users).
+   * Like `linkTelegramContact` it never throws — Telegram retries any non-2xx.
+   */
+  async handleTelegramUpdate(update: TelegramWebhookUpdate): Promise<void> {
+    if (update.message?.contact) {
+      await this.linkTelegramContact(update);
+      return;
+    }
+    const match = START_COMMAND_RE.exec(update.message?.text?.trim() ?? '');
+    if (match) {
+      await this.redeemSupplierLinkCode(update, match[1]);
+    }
+  }
+
+  /**
+   * Redeems a `SupplierTelegramLinkCode` issued by an admin
+   * (`POST /suppliers/:id/telegram/link-code`) into the `SupplierTelegramLink`
+   * row that sales.service.ts / notifications.service.ts read when pushing a
+   * supplier their orders. Nothing else writes that table.
+   */
+  private async redeemSupplierLinkCode(update: TelegramWebhookUpdate, code: string | undefined): Promise<void> {
+    const from = update.message?.from;
+    // A bare `/start` (no payload) is the ordinary "user opened the bot"
+    // update — same no-op it has always been here; the welcome text is
+    // BotFather-configured, not sent from this handler.
+    if (!from || !code) return;
+
+    const telegramId = BigInt(from.id);
+    const username = from.username ?? null;
+
+    // `systemPrisma` for exactly the reason the phone lookup in login() uses
+    // it: a Telegram update carries only a chat id and the code text, so there
+    // is no companyId yet to scope an RLS-bound query to. `code` is globally
+    // unique precisely so this one lookup can work — everything after it
+    // switches to the tenant client.
+    const codeRow = await systemPrisma.supplierTelegramLinkCode.findUnique({ where: { code } });
+    if (!codeRow || codeRow.expiresAt <= new Date()) {
+      await this.replyTelegram(telegramId, INVALID_CODE_REPLY);
+      return;
+    }
+
+    if (codeRow.usedAt !== null) {
+      // Single-use (schema doc): never re-link. The friendlier "you're already
+      // connected" wording is only for the account that actually holds the
+      // link — anyone else gets the same opaque reply as an unknown code.
+      const isSameAccount = await this.tenantPrisma.run(codeRow.companyId, (tx) =>
+        tx.supplierTelegramLink.findFirst({
+          where: { supplierId: codeRow.supplierId, telegramId, isActive: true },
+          select: { id: true },
+        }),
+      );
+      await this.replyTelegram(
+        telegramId,
+        isSameAccount ? "Siz allaqachon bog'langansiz. Yangi buyurtmalar shu yerga keladi." : INVALID_CODE_REPLY,
+      );
+      return;
+    }
+
+    const outcome = await this.tenantPrisma.run(codeRow.companyId, async (tx) => {
+      // One Telegram account = one supplier contact within a company
+      // (@@unique([companyId, telegramId]) would reject it anyway, as a 500).
+      // Refuse rather than silently moving the link, same philosophy as the
+      // User path's "already linked to a different account" guard.
+      const otherLink = await tx.supplierTelegramLink.findFirst({ where: { telegramId } });
+      if (otherLink && otherLink.supplierId !== codeRow.supplierId) return 'taken' as const;
+
+      // Compare-and-set: `usedAt: null` in the WHERE makes two updates racing
+      // on the same code (Telegram retries, double-tapped deep link) resolve
+      // to exactly one winner, without a second read.
+      const consumed = await tx.supplierTelegramLinkCode.updateMany({
+        where: { id: codeRow.id, usedAt: null },
+        data: { usedAt: new Date() },
+      });
+      if (consumed.count === 0) return 'used' as const;
+
+      const linkedAt = new Date();
+      // upsert, not create: `@@unique([supplierId])` is global, so a supplier
+      // that was previously linked and then unlinked would hit P2002 here if
+      // any row survived — and re-linking must overwrite, never duplicate.
+      await tx.supplierTelegramLink.upsert({
+        where: { supplierId: codeRow.supplierId },
+        create: { companyId: codeRow.companyId, supplierId: codeRow.supplierId, telegramId, username, isActive: true, linkedAt },
+        update: { telegramId, username, isActive: true, linkedAt },
+      });
+
+      await this.auditLog.log(tx, {
+        companyId: codeRow.companyId,
+        // No acting User: the supplier redeemed this from Telegram, not an
+        // admin from the web app. The issuing admin is recorded in the
+        // matching `supplier.telegram_link_code_issued` entry instead.
+        action: 'supplier.telegram_linked',
+        entity: 'Supplier',
+        entityId: codeRow.supplierId,
+        newValue: { telegramId: telegramId.toString(), username, linkCodeId: codeRow.id },
+      });
+
+      const supplier = await tx.supplier.findUnique({
+        where: { id: codeRow.supplierId },
+        select: { name: true },
+      });
+      return { supplierName: supplier?.name ?? '' };
+    });
+
+    if (outcome === 'taken') {
+      await this.replyTelegram(
+        telegramId,
+        "Bu Telegram akkaunt boshqa yetkazib beruvchiga bog'langan. Administratoringiz bilan bog'laning.",
+      );
+      return;
+    }
+    if (outcome === 'used') {
+      await this.replyTelegram(telegramId, INVALID_CODE_REPLY);
+      return;
+    }
+
+    await this.replyTelegram(
+      telegramId,
+      outcome.supplierName
+        ? `Bog'landi! "${outcome.supplierName}" uchun yangi buyurtmalar shu yerga keladi.`
+        : "Bog'landi! Yangi buyurtmalar shu yerga keladi.",
     );
   }
 

@@ -10,6 +10,7 @@ import { SupplierRoutesService } from '../supplier-routes/supplier-routes.servic
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { ListSuppliersQueryDto } from './dto/list-suppliers.query';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
+import { SupplierTelegramService } from './supplier-telegram.service';
 import { SuppliersService } from './suppliers.service';
 
 @Controller('suppliers')
@@ -18,6 +19,7 @@ export class SuppliersController {
     private readonly suppliers: SuppliersService,
     private readonly supplierRoutes: SupplierRoutesService,
     private readonly purchaseOrders: PurchaseOrdersService,
+    private readonly supplierTelegram: SupplierTelegramService,
   ) {}
 
   @Get()
@@ -71,6 +73,27 @@ export class SuppliersController {
     @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.supplierRoutes.create(id, dto, user);
+  }
+
+  // Telegram linking. `purchases.update` (not `.create`) for both mutations:
+  // they change the linking state of an existing supplier, exactly like
+  // PATCH/DELETE :id above, and every role holding one holds the other.
+  @Get(':id/telegram')
+  @RequirePermission('purchases.read')
+  telegramStatus(@Param('id', ParseUUIDPipe) id: string) {
+    return this.supplierTelegram.getStatus(id);
+  }
+
+  @Post(':id/telegram/link-code')
+  @RequirePermission('purchases.update')
+  createTelegramLinkCode(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.supplierTelegram.issueLinkCode(id, user);
+  }
+
+  @Delete(':id/telegram')
+  @RequirePermission('purchases.update')
+  unlinkTelegram(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.supplierTelegram.unlink(id, user);
   }
 
   @Post(':id/routes/:routeId/stops')

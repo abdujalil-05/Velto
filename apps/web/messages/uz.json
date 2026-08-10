@@ -43,6 +43,7 @@
     "reports": "Hisobotlar",
     "audit": "Audit jurnali",
     "settings": "Sozlamalar",
+    "help": "Ma'lumot",
     "cash": "Kassa va to'lovlar"
   },
   "LanguageSwitcher": {
@@ -287,7 +288,8 @@
       "cancelTitle": "Buyurtmani bekor qilish",
       "cancelReasonLabel": "Sabab (ixtiyoriy)",
       "cancelConfirm": "Bekor qilish",
-      "cancelKeep": "Bekor qilmaslik"
+      "cancelKeep": "Bekor qilmaslik",
+      "deliverer": "Yetkazib beruvchi"
     },
     "form": {
       "title": "Yangi buyurtma",
@@ -310,8 +312,13 @@
       "submit": "Buyurtma yaratish",
       "created": "Buyurtma yaratildi",
       "selectCustomerFirst": "Avval mijozni tanlang",
-      "emptyLinesError": "Kamida bitta qator qo'shing"
-    }
+      "emptyLinesError": "Kamida bitta qator qo'shing",
+      "supplier": "Yetkazib beruvchi",
+      "supplierOptional": "Ixtiyoriy",
+      "supplierHint": "Yetkazib beruvchi tanlansa, buyurtma darhol \"Jo'natilmoqda\" holatiga o'tadi"
+    },
+    "supplierFilterBanner": "«{name}» yetkazib beruvchisiga biriktirilgan buyurtmalar",
+    "clearSupplierFilter": "Filterni tozalash"
   },
   "Receivables": {
     "customer": "Mijoz",
@@ -820,7 +827,10 @@
     "noRoutes": "Marshrut biriktirilmagan",
     "todayVisits": "Bugungi tashriflar",
     "todayOrders": "Bugungi buyurtmalar",
-    "todayTurnover": "Bugungi aylanma"
+    "todayTurnover": "Bugungi aylanma",
+    "actions": "Amallar",
+    "delete": "O'chirish",
+    "deleteSuccess": "«{name}» o'chirildi"
   },
   "Routes": {
     "title": "Marshrutlar",
@@ -868,8 +878,16 @@
       "submitUpdate": "O'zgarishlarni saqlash",
       "created": "Marshrut yaratildi",
       "updated": "O'zgarishlar saqlandi",
-      "retry": "Qayta urinish"
-    }
+      "retry": "Qayta urinish",
+      "assigneeType": "Kimga biriktiriladi",
+      "assigneeTypeAgent": "Agent",
+      "assigneeTypeSupplier": "Yetkazib beruvchi",
+      "supplier": "Yetkazib beruvchi",
+      "selectSupplierFirst": "Avval yetkazib beruvchini tanlang"
+    },
+    "assignee": "Biriktirilgan",
+    "allSuppliers": "Barcha yetkazib beruvchilar",
+    "supplier": "Yetkazib beruvchi"
   },
   "Suppliers": {
     "title": "Yetkazib beruvchilar",
@@ -896,6 +914,40 @@
       "phone": "Telefon",
       "address": "Manzil",
       "nameRequired": "Nomini kiriting"
+    },
+    "routes": "Marshrutlar",
+    "orders": "Buyurtmalar",
+    "routeCount": "{count} ta marshrut",
+    "noRoutes": "Marshrut biriktirilmagan",
+    "orderCount": "{count} ta buyurtma",
+    "noOrders": "Buyurtma yo'q",
+    "telegram": {
+      "column": "Telegram",
+      "action": "Telegram",
+      "title": "Telegram bog'lanishi",
+      "subtitle": "«{name}» uchun Telegram orqali buyurtma bildirishnomalari",
+      "linked": "Bog'langan",
+      "notLinked": "Bog'lanmagan",
+      "statusLinked": "Bog'langan",
+      "statusNotLinked": "Bu yetkazib beruvchi hali Telegramga bog'lanmagan. Bog'lash kodini yarating va unga yuboring.",
+      "linkedAt": "{date} dan beri bog'langan",
+      "generateCode": "Bog'lash kodini yaratish",
+      "newCode": "Yangi kod yaratish",
+      "codeIssued": "Bog'lash kodi yaratildi",
+      "codeLabel": "Bog'lash kodi",
+      "expiresAt": "Amal qilish muddati: {date}",
+      "copy": "Nusxa olish",
+      "copyFailed": "Kodni nusxalab bo'lmadi",
+      "openBot": "Telegram botni ochish",
+      "noDeepLinkHint": "Bu kodni yetkazib beruvchiga yuboring — u botga /start buyrug'i bilan birga kiritsin.",
+      "unlink": "Bog'lanishni uzish",
+      "unlinkSuccess": "«{name}» Telegram bog'lanishi uzildi",
+      "close": "Yopish",
+      "confirmUnlink": {
+        "title": "Telegram bog'lanishini uzish",
+        "description": "«{name}» Telegram orqali buyurtma bildirishnomalarini olishni to'xtatadi. Davom etasizmi?",
+        "confirm": "Uzish"
+      }
     }
   },
   "Cash": {
@@ -956,6 +1008,381 @@
       "save": "Saqlash",
       "saved": "Narxlar saqlandi",
       "unsavedChanges": "Saqlanmagan o'zgarishlar bor"
+    }
+  },
+  "Help": {
+    "title": "Ma'lumot",
+    "subtitle": "Velto qanday ishlaydi va har bir bo'limda nima qilinadi — oddiy tilda tushuntirilgan qo'llanma.",
+    "tocTitle": "Bo'limlar",
+    "sections": {
+      "intro": {
+        "title": "Velto nima?",
+        "intro": "Velto — distribyutor kompaniyalar uchun savdo boshqaruv tizimi. Agentning telefonidagi buyurtmadan tortib omborga, kassaga va hisobotlargacha bo'lgan barcha ish bitta joyda yuritiladi. Qog'oz daftar, alohida Excel fayllar va telefon orqali kelishuvlar o'rniga hamma narsa tizimda saqlanadi.",
+        "groups": [
+          {
+            "heading": "Tizim nimani hal qiladi",
+            "items": [
+              "Qaysi mijoz qancha qarzdor va qachondan beri — bir qarashda ko'rinadi.",
+              "Agent qaysi do'konda bo'ldi, qancha buyurtma oldi — kun davomida kuzatib boriladi.",
+              "Omborda qancha mahsulot bor, qanchasi buyurtmalarga band qilingan — avtomatik hisoblanadi.",
+              "Kassir qabul qilgan har bir so'm qaysi hisob-fakturaga tushgani yozib boriladi."
+            ]
+          },
+          {
+            "heading": "Asosiy tushunchalar",
+            "items": [
+              "Mijoz — siz mahsulot sotadigan kompaniya yoki tadbirkor. Bitta mijozning bir nechta savdo nuqtasi (do'koni) bo'lishi mumkin.",
+              "Savdo nuqtasi — mijozning aniq do'koni va manzili. Marshrutlar aynan nuqtalarga tuziladi.",
+              "Buyurtma — mijoz so'ragan mahsulotlar ro'yxati va uning summasi.",
+              "Faktura — buyurtma yetkazilgandan keyin hosil bo'ladigan, to'lanishi kerak bo'lgan hujjat. Qarz shundan hisoblanadi.",
+              "To'lov — mijozdan olingan pul. U fakturalarga taqsimlanadi va qarzni kamaytiradi.",
+              "Marshrut — agent ma'lum hafta kunida aylanib chiqadigan savdo nuqtalari ro'yxati."
+            ]
+          }
+        ]
+      },
+      "roles": {
+        "title": "Kim nima qiladi",
+        "intro": "Har bir xodim faqat o'z ishiga kerakli bo'limlarni ko'radi. Menyudagi bo'limlar sizning rolingizga qarab ochiladi — ba'zi bo'limlar ko'rinmasligi xatolik emas.",
+        "groups": [
+          {
+            "items": [
+              "Admin — hamma narsani ko'radi va o'zgartiradi: xodimlar, sozlamalar, narxlar, hisobotlar.",
+              "Director — savdo bo'yicha javobgar: buyurtmalar, mijozlar, agentlar, marshrutlar va hisobotlar.",
+              "Omborchi — mahsulot qabul qiladi, qoldiqni yuritadi, buyurtmalarni yig'ib jo'natadi.",
+              "Kassir — smena ochadi, mijozlardan pul qabul qiladi, kun oxirida smenani yopadi.",
+              "Buxgalter — to'lovlar, qarzdorlik va moliyaviy hisobotlar bilan ishlaydi.",
+              "Agent — telefonidagi Telegram ilovasi orqali ishlaydi: mijozga boradi, buyurtma oladi, pul yig'adi."
+            ]
+          }
+        ]
+      },
+      "start": {
+        "title": "Ishni qayerdan boshlash",
+        "intro": "Tizim bo'sh holatda keladi. Quyidagi tartibda to'ldirsangiz hech narsa chalkashmaydi — har bir qadam o'zidan oldingisiga tayanadi.",
+        "groups": [
+          {
+            "heading": "Qadamma-qadam",
+            "items": [
+              "Sozlamalar — kompaniya nomi, telefoni, manzili, valyutasi va vaqt mintaqasini kiriting.",
+              "Foydalanuvchilar — xodimlarni qo'shing va har biriga rol bering. Parol bir marta ko'rsatiladi, uni xodimga o'zingiz yetkazing.",
+              "Mahsulotlar — sotadigan tovarlaringizni kiriting: nomi, kodi, narxi, qadog'i.",
+              "Ombor — «Qabul qilish» tugmasi orqali mavjud qoldiqni kiriting.",
+              "Mijozlar — do'konlaringizni qo'shing va har biriga savdo nuqtasini biriktiring.",
+              "Marshrutlar — qaysi agent qaysi kuni qaysi nuqtalarga borishini belgilang."
+            ]
+          },
+          {
+            "heading": "Maslahat",
+            "items": [
+              "Hammasini birdan kiritishga urinmang. Avval 10–20 ta mahsulot va 5–10 ta mijoz bilan boshlab, bitta buyurtmani boshidan oxirigacha o'tkazib ko'ring.",
+              "Shunda tizim qanday ishlashini his qilasiz va xodimlarga tushuntirish osonlashadi."
+            ]
+          }
+        ]
+      },
+      "flow": {
+        "title": "Buyurtmadan pulgacha: kundalik aylanma",
+        "intro": "Har bir buyurtma bir xil yo'ldan o'tadi. Holat (status) — buyurtma hozir qaysi bosqichda ekanini bildiradi.",
+        "groups": [
+          {
+            "heading": "Bosqichlar",
+            "items": [
+              "Yuborilgan — agent yoki operator buyurtmani kiritdi, u ko'rib chiqishni kutmoqda.",
+              "Tasdiqlangan — buyurtma qabul qilindi, mahsulot omborda shu mijoz uchun band qilinadi.",
+              "Yetkazilgan — mahsulot mijozga topshirildi. Shu payt ombor qoldig'i kamayadi va faktura hosil bo'ladi.",
+              "Yopilgan — faktura to'liq to'landi, buyurtma bo'yicha ish tugadi.",
+              "Bekor qilingan — buyurtma amalga oshmadi, band qilingan mahsulot bo'shatiladi."
+            ]
+          },
+          {
+            "heading": "Kim qaysi bosqichda ishlaydi",
+            "items": [
+              "Agent yoki operator buyurtmani yaratadi.",
+              "Director yoki admin uni tasdiqlaydi.",
+              "Omborchi mahsulotni yig'adi va «Yetkazildi» deb belgilaydi.",
+              "Kassir pulni qabul qiladi, qarz yopilgach buyurtma yakunlanadi."
+            ]
+          }
+        ]
+      },
+      "dashboard": {
+        "title": "Bosh sahifa",
+        "intro": "Kunning qisqacha manzarasi. Sahifani ochganingizda bugungi holat darhol ko'rinadi.",
+        "groups": [
+          {
+            "items": [
+              "Bugungi aylanma va buyurtmalar soni — kechagi kun bilan solishtirilgan holda.",
+              "Yig'ilgan pul — bugun kassaga tushgan summa.",
+              "Muddati o'tgan qarz — to'lov muddati o'tib ketgan summa. Bu raqam o'sib borsa, qarz undirishni kuchaytirish kerak.",
+              "Oxirgi 30 kun grafigi — savdo o'sayaptimi yoki tushayaptimi, shundan ko'rinadi.",
+              "Bugungi agentlar — kim nechta tashrif qilgani va qancha buyurtma olgani.",
+              "Eng katta qarzdorlar — birinchi navbatda kim bilan ishlash kerakligi."
+            ]
+          }
+        ]
+      },
+      "orders": {
+        "title": "Buyurtmalar",
+        "intro": "Barcha buyurtmalar shu yerda to'planadi. Ro'yxatni holat yoki mijoz bo'yicha filtrlash mumkin.",
+        "groups": [
+          {
+            "heading": "Yangi buyurtma yaratish",
+            "items": [
+              "«Yangi buyurtma» tugmasini bosing.",
+              "Mijozni qidirib tanlang, kerak bo'lsa savdo nuqtasini ko'rsating.",
+              "«Qator qo'shish» orqali mahsulot, qadoq va miqdorni kiriting; kerak bo'lsa chegirma qo'ying.",
+              "Har bir mahsulot yonida omborda erkin qolgan miqdor ko'rinadi — undan ortiq yozmang.",
+              "Saqlang. Buyurtma «Yuborilgan» holatida ro'yxatga tushadi."
+            ]
+          },
+          {
+            "heading": "Buyurtma kartochkasidagi tugmalar",
+            "items": [
+              "«Tasdiqlash» — mahsulotni shu mijoz uchun band qiladi.",
+              "«Yetkazildi deb belgilash» — ombor qoldig'ini kamaytiradi va fakturani hosil qiladi.",
+              "«Yopish» — to'lov to'liq bo'lgach buyurtmani yakunlaydi.",
+              "«Bekor qilish» — sababini yozib qoldirish mumkin; band qilingan mahsulot bo'shaydi."
+            ]
+          }
+        ]
+      },
+      "customers": {
+        "title": "Mijozlar",
+        "intro": "Mijozlar bazasi: kim bilan ishlaysiz, ular qanday shartlarda sotib oladi va qancha qarzdor.",
+        "groups": [
+          {
+            "heading": "Mijoz qo'shishda",
+            "items": [
+              "Kod — mijozning ichki raqami, takrorlanmasligi kerak.",
+              "To'lov muddati (kun) — mijoz fakturani necha kunda to'lashi kerak. Shu muddat o'tsa, qarz «muddati o'tgan» deb belgilanadi.",
+              "Narx ro'yxati — mijozga qaysi narxlar qo'llanishi.",
+              "Savdo nuqtasi — mijozning do'koni. Bittadan ortiq bo'lsa, keyinroq ham qo'shish mumkin."
+            ]
+          },
+          {
+            "heading": "Bilib qo'ying",
+            "items": [
+              "Bir xil telefon yoki o'xshash nomli mijoz bo'lsa, tizim ogohlantiradi — takror yozuvning oldini olish uchun.",
+              "Mijozni bloklash mumkin: u holda unga yangi buyurtma yozilmaydi.",
+              "Qarzi bor mijozni o'chirib bo'lmaydi.",
+              "O'chirilgan mijozning buyurtma va to'lov tarixi saqlanib qoladi."
+            ]
+          }
+        ]
+      },
+      "products": {
+        "title": "Mahsulotlar",
+        "intro": "Sotiladigan tovarlar ro'yxati. Buyurtma ham, ombor ham shu ro'yxatga tayanadi.",
+        "groups": [
+          {
+            "items": [
+              "SKU kodi — mahsulotning ichki kodi, takrorlanmaydi.",
+              "Asosiy birlik — nima bilan hisoblaysiz: dona, kg yoki litr.",
+              "Qadoqlar — bir yashikda nechta dona borligi. Agent yashik bilan, ombor dona bilan hisoblashi mumkin.",
+              "Narx — bitta asosiy birlik uchun narx.",
+              "Boshlang'ich qoldiq — mahsulotni qo'shayotib, omborda mavjud miqdorni darhol kiritish mumkin.",
+              "Rasm — agent telefonda mahsulotni tezroq topishiga yordam beradi.",
+              "Sotilmaydigan mahsulotni o'chirmasdan «nofaol» qilib qo'yish mumkin."
+            ]
+          }
+        ]
+      },
+      "stock": {
+        "title": "Ombor",
+        "intro": "Omborda nima borligi. Har bir mahsulot uchun uchta raqam ko'rsatiladi va ular ma'nosi har xil.",
+        "groups": [
+          {
+            "heading": "Raqamlar nimani bildiradi",
+            "items": [
+              "Mavjud — jismonan omborda turgan miqdor.",
+              "Rezerv — tasdiqlangan buyurtmalar uchun band qilingan miqdor.",
+              "Erkin — yangi buyurtmalarga sotish mumkin bo'lgan miqdor, ya'ni «Mavjud» minus «Rezerv»."
+            ]
+          },
+          {
+            "heading": "Qabul qilish",
+            "items": [
+              "«Qabul qilish» tugmasi orqali mahsulot, miqdor va sababni kiriting.",
+              "Qoldiq qo'lda o'chirilmaydi — har bir harakat yozib boriladi, shuning uchun kim qachon nimani kiritgani doim ma'lum.",
+              "Hisob-kitobda farq chiqsa, uni ham shu yerda kirim qilib to'g'rilanadi."
+            ]
+          }
+        ]
+      },
+      "cash": {
+        "title": "Kassa va to'lovlar",
+        "intro": "Mijozdan pul qabul qilish shu yerda. Pul qabul qilish uchun avval kassa smenasi ochilgan bo'lishi kerak.",
+        "groups": [
+          {
+            "heading": "Kun tartibi",
+            "items": [
+              "Ish boshida «Smenani ochish» — kassadagi boshlang'ich summani kiriting.",
+              "Kun davomida «Yangi to'lov» orqali mijozlardan pul qabul qiling.",
+              "Ish oxirida «Smenani yopish» — kassadagi haqiqiy summani kiriting. Tizim uni yig'ilgan summa bilan solishtiradi."
+            ]
+          },
+          {
+            "heading": "To'lovni taqsimlash",
+            "items": [
+              "Avtomatik (FIFO) — pul eng eski ochiq fakturadan boshlab taqsimlanadi. Odatda shu variant tanlanadi.",
+              "Qo'lda — mijoz aynan qaysi faktura uchun to'layotganini o'zingiz belgilaysiz.",
+              "To'lov usuli: naqd, karta yoki bank o'tkazmasi.",
+              "Saqlangan to'lov o'chirilmaydi — xato bo'lsa, uni tuzatuvchi yangi yozuv qilinadi."
+            ]
+          }
+        ]
+      },
+      "suppliers": {
+        "title": "Yetkazib beruvchilar",
+        "intro": "Sizga mahsulot yetkazib beradigan kompaniyalar ro'yxati.",
+        "groups": [
+          {
+            "items": [
+              "Yetkazib beruvchini qo'shib, unga marshrut biriktirish mumkin.",
+              "Telegram bog'lanishi — bog'lash kodini yaratib yetkazib beruvchiga yuborasiz; u kodni botga kiritgach, unga buyurtmalar haqida bildirishnoma keladi.",
+              "Vaqtincha ishlamayotgan yetkazib beruvchini o'chirmasdan «faolsizlantirish» mumkin."
+            ]
+          }
+        ]
+      },
+      "routes": {
+        "title": "Marshrutlar",
+        "intro": "Marshrut — bitta hafta kunida bitta agent (yoki yetkazib beruvchi) aylanib chiqadigan nuqtalar ro'yxati va ularning tartibi.",
+        "groups": [
+          {
+            "heading": "Marshrut tuzish",
+            "items": [
+              "Kimga biriktirilishini tanlang: agentga yoki yetkazib beruvchiga.",
+              "Hafta kunini belgilang — masalan, har seshanba.",
+              "Nuqtalarni qo'shing: avval mijozni qidiring, keyin uning savdo nuqtasini tanlang.",
+              "Strelkalar bilan tartibni o'zgartiring — agent aynan shu ketma-ketlikda yuradi."
+            ]
+          },
+          {
+            "heading": "Nima uchun kerak",
+            "items": [
+              "Agent telefonida kunlik ro'yxatni ko'radi va biror do'konni unutib qoldirmaydi.",
+              "Hisobotlarda «marshrut bajarilishi» ko'rinadi — rejadagi nuqtalarning nechtasiga borilgani."
+            ]
+          }
+        ]
+      },
+      "agents": {
+        "title": "Agentlar",
+        "intro": "Savdo agentlari va ularning bugungi natijasi bir sahifada.",
+        "groups": [
+          {
+            "items": [
+              "Har bir agent yonida bugungi tashriflar, buyurtmalar va aylanma ko'rinadi.",
+              "Agent — bu «Agent» roli berilgan foydalanuvchi. Yangi agent qo'shish, ya'ni yangi foydalanuvchi yaratish demakdir.",
+              "Agentga marshrut biriktirilmagan bo'lsa, u telefonida kunlik ro'yxatni ko'rmaydi."
+            ]
+          }
+        ]
+      },
+      "reports": {
+        "title": "Hisobotlar",
+        "intro": "Sana oralig'ini tanlaysiz, tizim hisoblab beradi. Jadvallarni Excelga yuklab olish mumkin.",
+        "groups": [
+          {
+            "heading": "Bo'limlar",
+            "items": [
+              "Umumiy — aylanma, buyurtmalar soni, o'rtacha chek, faol va yangi mijozlar, umumiy qarz.",
+              "Sotuv — kunlik aylanma grafigi, agentlar kesimi va eng ko'p sotilgan mahsulotlar.",
+              "Agent samaradorligi — tashriflar soni, marshrut bajarilishi, effektiv tashriflar (buyurtma bilan tugaganlari) va o'rtacha chek.",
+              "Qarzdorlik — qarz muddati bo'yicha guruhlangan: joriy, 1–30, 31–60, 61–90 va 90+ kun. Qarz qanchalik o'ngdagi ustunda bo'lsa, uni undirish shunchalik qiyin."
+            ]
+          }
+        ]
+      },
+      "users": {
+        "title": "Foydalanuvchilar",
+        "intro": "Xodimlarga tizimga kirish huquqi shu yerdan beriladi.",
+        "groups": [
+          {
+            "items": [
+              "Telefon raqami — bu login. Parol yaratilganda bir marta ko'rsatiladi, uni xodimga o'zingiz yetkazasiz.",
+              "Rol — xodim qaysi bo'limlarni ko'rishini belgilaydi. Bir foydalanuvchida bir nechta rol bo'lishi mumkin.",
+              "Xodim ishdan ketsa, o'chirish shart emas — «faolsizlantirish» kifoya, tarix saqlanadi.",
+              "Tizimda yozuvlari bor xodim o'chirilsa, ma'lumotlari shaxssizlantiriladi, buyurtma va to'lov tarixi esa joyida qoladi."
+            ]
+          }
+        ]
+      },
+      "audit": {
+        "title": "Audit jurnali",
+        "intro": "Kim, qachon, nima qilgani yozib boriladigan jurnal.",
+        "groups": [
+          {
+            "items": [
+              "Tizimga kirish, buyurtma tasdiqlash, narx o'zgartirish, foydalanuvchi qo'shish kabi harakatlar avtomatik qayd etiladi.",
+              "Bu yozuvlarni hech kim o'zgartira yoki o'chira olmaydi — hatto admin ham.",
+              "«Nega qoldiq o'zgardi?» yoki «bu buyurtmani kim bekor qildi?» degan savollarga javob shu yerdan topiladi."
+            ]
+          }
+        ]
+      },
+      "settings": {
+        "title": "Sozlamalar",
+        "intro": "Kompaniya haqidagi asosiy ma'lumot: nomi, yuridik nomi, telefoni, manzili, valyutasi va vaqt mintaqasi.",
+        "groups": [
+          {
+            "items": [
+              "Bu ma'lumotlar hujjatlar va hisobotlarda ishlatiladi.",
+              "Vaqt mintaqasi noto'g'ri bo'lsa, kunlik hisobotlar noto'g'ri kunga tushib qolishi mumkin.",
+              "O'zgartirish uchun tegishli ruxsat kerak; har bir o'zgarish audit jurnaliga tushadi."
+            ]
+          }
+        ]
+      },
+      "miniapp": {
+        "title": "Agent telefonidagi ilova",
+        "intro": "Savdo agentlari veb-versiyaga kirmaydi — ular Telegram ichidagi ilovada ishlaydi.",
+        "groups": [
+          {
+            "items": [
+              "Agent do'konga boradi, tashrifni ochadi va joyning o'zida buyurtma kiritadi.",
+              "Internet yo'q bo'lsa ham ishlaydi: ma'lumot telefonda saqlanadi va aloqa tiklanganda o'zi yuboriladi.",
+              "Shuning uchun buyurtma veb-versiyada bir necha daqiqa kechikib paydo bo'lishi mumkin — bu xatolik emas.",
+              "Telefondagi ma'lumot shifrlangan holda saqlanadi: telefon yo'qolsa, uni boshqa birov o'qiy olmaydi."
+            ]
+          }
+        ]
+      },
+      "faq": {
+        "title": "Ko'p beriladigan savollar",
+        "intro": "Kundalik ishda eng ko'p uchraydigan holatlar va ularning sababi.",
+        "groups": [
+          {
+            "items": [
+              "Menyuda ba'zi bo'limlar ko'rinmayapti — bu rolingizga bog'liq. Kerak bo'lsa, admin sizga tegishli rolni qo'shib beradi.",
+              "Buyurtma yaratayotganda mahsulot ro'yxatda yo'q — u hali qo'shilmagan yoki «nofaol» qilib qo'yilgan bo'lishi mumkin.",
+              "Mahsulotni sotib bo'lmayapti, «erkin» qoldiq nol — u boshqa tasdiqlangan buyurtmalarga band qilingan yoki ombor qoldig'i kiritilmagan.",
+              "To'lov qo'shib bo'lmayapti — kassa smenasi ochilmagan bo'lishi mumkin, avval smenani oching.",
+              "Mijozning qarzi noto'g'ri ko'rinmoqda — faktura buyurtma «Yetkazilgan» bo'lgandan keyin hosil bo'ladi, yetkazilmagan buyurtma qarzga kirmaydi.",
+              "Parolni unutdim — kirish sahifasidagi «Parolni unutdingizmi?» orqali telefonga kod keladi. Ishlamasa, admin yangi parol beradi.",
+              "Ma'lumotni Excelga yuklash mumkinmi — ha, ro'yxat va hisobot sahifalarida «Excelga eksport» tugmasi bor.",
+              "Tilni qanday o'zgartiraman — yuqori o'ng burchakdagi til tugmasi orqali: o'zbek, rus yoki ingliz."
+            ]
+          }
+        ]
+      },
+      "habits": {
+        "title": "Xavfsizlik va foydali odatlar",
+        "intro": "Bir necha oddiy qoida ma'lumotlaringizni toza va ishonchli saqlaydi.",
+        "groups": [
+          {
+            "items": [
+              "Parolingizni hech kimga bermang — tizimdagi har bir harakat sizning nomingizdan yoziladi.",
+              "Har bir xodimga alohida hisob oching, umumiy hisobdan foydalanmang.",
+              "Kun oxirida kassa smenasini yoping — shunda kunlik hisobot to'g'ri chiqadi.",
+              "Ombor qoldig'ini haftada bir marta jismonan tekshiring va farqni «Qabul qilish» orqali to'g'rilang.",
+              "Har bir kompaniyaning ma'lumoti alohida saqlanadi — boshqa kompaniya sizning ma'lumotingizni ko'ra olmaydi."
+            ]
+          }
+        ]
+      }
     }
   }
 }

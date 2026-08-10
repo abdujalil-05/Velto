@@ -63,7 +63,9 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const canCancel = hasPermission('orders.cancel');
 
   const canConfirm = canUpdate && order.status === 'SUBMITTED';
-  const canDeliver = canUpdate && order.status === 'CONFIRMED';
+  // CONFIRMED -> DELIVERED is the normal path; SHIPPED -> DELIVERED is for orders handed to a
+  // deliverer supplier (created with supplierId, or assigned one later) — see sales.service.ts deliver().
+  const canDeliver = canUpdate && (order.status === 'CONFIRMED' || order.status === 'SHIPPED');
   const canClose = canUpdate && order.status === 'DELIVERED';
   const canCancelOrder = canCancel && !['DELIVERED', 'CLOSED', 'CANCELLED'].includes(order.status);
 
@@ -144,6 +146,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         <InfoCard label={t('outlet')} value={order.outlet?.name} />
         <InfoCard label={t('agent')} value={order.agent ? `${order.agent.firstName} ${order.agent.lastName}` : t('noAgent')} />
         <InfoCard label={t('warehouse')} value={order.warehouse.name} />
+        {order.deliverySupplier && <InfoCard label={t('deliverer')} value={order.deliverySupplier.name} />}
       </div>
 
       {order.note && (

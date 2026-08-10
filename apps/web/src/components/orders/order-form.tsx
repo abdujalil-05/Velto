@@ -6,6 +6,7 @@ import { Plus } from 'lucide-react';
 import { useCustomerQuery, useCustomersQuery, type Customer } from '@/lib/api/customers';
 import { useDefaultWarehouseQuery } from '@/lib/api/warehouses';
 import { usePriceListItemsQuery } from '@/lib/api/price-lists';
+import { useSuppliersQuery } from '@/lib/api/suppliers';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
 import type { Product } from '@/lib/api/products';
 import type { CreateOrderInput } from '@/lib/api/orders';
@@ -50,9 +51,12 @@ export function OrderForm({ isSubmitting, submitError, onSubmit }: OrderFormProp
   const { data: customerDetail } = useCustomerQuery(customer?.id ?? '');
 
   const [outletId, setOutletId] = useState('');
+  const [supplierId, setSupplierId] = useState('');
   const [note, setNote] = useState('');
   const [lines, setLines] = useState<OrderLineDraft[]>([emptyLine()]);
   const [validationError, setValidationError] = useState<string | null>(null);
+
+  const { data: suppliers, isLoading: suppliersLoading } = useSuppliersQuery({ pageSize: 100 });
 
   // Single-warehouse-per-company model — no picker, just the one warehouse.
   const { data: warehouse } = useDefaultWarehouseQuery();
@@ -92,6 +96,7 @@ export function OrderForm({ isSubmitting, submitError, onSubmit }: OrderFormProp
       customerId: customer.id,
       outletId: outletId || undefined,
       warehouseId: warehouseId || undefined,
+      supplierId: supplierId || undefined,
       note: note.trim() || undefined,
       lines: validLines.map((line) => ({
         productId: line.product!.id,
@@ -137,6 +142,21 @@ export function OrderForm({ isSubmitting, submitError, onSubmit }: OrderFormProp
               </option>
             ))}
           </Select>
+        </div>
+
+        <div className="space-y-2 sm:col-span-2">
+          <Label htmlFor="supplier">
+            {t('supplier')} <span className="text-xs text-muted-foreground">({t('supplierOptional')})</span>
+          </Label>
+          <Select id="supplier" value={supplierId} onChange={(e) => setSupplierId(e.target.value)} disabled={suppliersLoading}>
+            <option value="">—</option>
+            {suppliers?.data.map((supplier) => (
+              <option key={supplier.id} value={supplier.id}>
+                {supplier.name}
+              </option>
+            ))}
+          </Select>
+          {supplierId && <p className="text-xs text-muted-foreground">{t('supplierHint')}</p>}
         </div>
       </div>
 

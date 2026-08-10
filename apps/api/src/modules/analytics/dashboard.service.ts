@@ -159,6 +159,10 @@ export class DashboardService {
 
     const plannedByAgent = new Map<string, number>();
     for (const route of routesToday) {
+      // A supplier-served route (agentId null) never matches the
+      // `agentId: { in: agentIds } ` filter above, but its static type is
+      // still nullable — guard rather than assert.
+      if (!route.agentId) continue;
       plannedByAgent.set(route.agentId, (plannedByAgent.get(route.agentId) ?? 0) + route._count.stops);
     }
 

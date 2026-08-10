@@ -81,6 +81,32 @@ export class SupplierRouteNotFoundException extends AppException {
   }
 }
 
+/**
+ * A supplier already has an active SupplierTelegramLink. Issuing a second
+ * link code would be a silent account takeover of the existing one (schema:
+ * `@@unique([supplierId])` means the redemption would overwrite it), so the
+ * caller must DELETE /suppliers/:id/telegram first.
+ */
+export class SupplierTelegramAlreadyLinkedException extends AppException {
+  constructor() {
+    super(HttpStatus.CONFLICT, 'SUPPLIER_TELEGRAM_ALREADY_LINKED', {
+      uz: "Yetkazib beruvchi allaqachon Telegramga bog'langan. Avval bog'lanishni uzing",
+      ru: 'Поставщик уже привязан к Telegram. Сначала отвяжите текущую привязку',
+      en: 'Supplier is already linked to Telegram. Unlink the current account first',
+    });
+  }
+}
+
+export class SupplierTelegramNotLinkedException extends AppException {
+  constructor() {
+    super(HttpStatus.NOT_FOUND, 'SUPPLIER_TELEGRAM_NOT_LINKED', {
+      uz: "Yetkazib beruvchi Telegramga bog'lanmagan",
+      ru: 'Поставщик не привязан к Telegram',
+      en: 'Supplier is not linked to Telegram',
+    });
+  }
+}
+
 export class PurchaseOrderLineNotFoundException extends AppException {
   constructor() {
     super(HttpStatus.BAD_REQUEST, 'PURCHASE_ORDER_LINE_NOT_FOUND', {

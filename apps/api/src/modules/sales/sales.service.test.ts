@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { ConfigService } from '@nestjs/config';
 import { prisma, systemPrisma } from '@velto/database';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { AuditLogService } from '../../common/audit/audit-log.service';
 import { DocumentNumberingService } from '../../common/document-numbering/document-numbering.service';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { CustomersService } from '../customers/customers.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { SuppliersService } from '../purchases/suppliers/suppliers.service';
 import { InsufficientStockException } from '../stock/stock-exceptions';
 import { StockService } from '../stock/stock.service';
 import { CustomerBlockedException, InvalidOrderTransitionException, SalesOrderNotFoundException } from './sales-exceptions';
@@ -17,13 +20,16 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
   let warehouseId: string;
   let productId: string;
   let packagingId: string;
+  let supplierId: string;
 
   const tenantPrisma = new TenantPrismaService();
   const auditLog = new AuditLogService();
   const customers = new CustomersService(tenantPrisma, auditLog);
   const stock = new StockService(tenantPrisma, auditLog);
   const docNumbering = new DocumentNumberingService();
-  const sales = new SalesService(tenantPrisma, auditLog, customers, stock, docNumbering);
+  const suppliers = new SuppliersService(tenantPrisma, auditLog);
+  const notifications = new NotificationsService(tenantPrisma, new ConfigService());
+  const sales = new SalesService(tenantPrisma, auditLog, customers, stock, docNumbering, suppliers, notifications);
 
   beforeAll(async () => {
     const tenant = await systemPrisma.tenant.create({
@@ -53,6 +59,9 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
 
       const priceList = await tx.priceList.create({ data: { companyId, name: 'Default', isDefault: true } });
       await tx.priceListItem.create({ data: { priceListId: priceList.id, productId: product.id, price: '10000' } });
+
+      const supplier = await tx.supplier.create({ data: { companyId, name: 'Sales Test Supplier' } });
+      supplierId = supplier.id;
     });
 
     await tenantPrisma.run(companyId, () => stock.receive({ productId, warehouseId, qty: 1000 }, user));
@@ -246,6 +255,80 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     );
     await expect(tenantPrisma.run(companyId, () => sales.confirm(order.id, user))).rejects.toBeInstanceOf(
       InsufficientStockException,
+    );
+  });
+
+  it('creating with a supplierId skips straight to SHIPPED, reserves stock, and deliver() works from there', async () => {
+    const before = await getReserved();
+    const customerId = await createCustomer();
+    const order = await tenantPrisma.run(companyId, () =>
+      sales.create({ customerId, supplierId, lines: [{ productId, packagingId, qty: 2 }] }, user),
+    );
+    expect(order.status).toBe('SHIPPED');
+    expect(order.supplierId).toBe(supplierId);
+    expect(order.deliverySupplier?.id).toBe(supplierId);
+    expect((await getReserved()).minus(before).toString()).toBe('2');
+
+    const delivered = await tenantPrisma.run(companyId, () => sales.deliver(order.id, user));
+    expect(delivered.status).toBe('DELIVERED');
+    expect((await getReserved()).toString()).toBe(before.toString());
+  });
+
+  it('assignSupplier() on a SUBMITTED order reserves stock and moves it to SHIPPED', async () => {
+    const before = await getReserved();
+    const customerId = await createCustomer();
+    const order = await tenantPrisma.run(companyId, () =>
+      sales.create({ customerId, lines: [{ productId, packagingId, qty: 1 }] }, user),
+    );
+    expect(order.status).toBe('SUBMITTED');
+
+    const assigned = await tenantPrisma.run(companyId, () => sales.assignSupplier(order.id, { supplierId }, user));
+    expect(assigned.status).toBe('SHIPPED');
+    expect(assigned.supplierId).toBe(supplierId);
+    expect((await getReserved()).minus(before).toString()).toBe('1');
+  });
+
+  it('assignSupplier() on a CONFIRMED order does not double-reserve, and is rejected once DELIVERED', async () => {
+    const customerId = await createCustomer();
+    const order = await tenantPrisma.run(companyId, () =>
+      sales.create({ customerId, lines: [{ productId, packagingId, qty: 1 }] }, user),
+    );
+    await tenantPrisma.run(companyId, () => sales.confirm(order.id, user));
+    const before = await getReserved();
+
+    const assigned = await tenantPrisma.run(companyId, () => sales.assignSupplier(order.id, { supplierId }, user));
+    expect(assigned.status).toBe('SHIPPED');
+    expect((await getReserved()).toString()).toBe(before.toString());
+
+    const delivered = await tenantPrisma.run(companyId, () => sales.deliver(order.id, user));
+    expect(delivered.status).toBe('DELIVERED');
+
+    await expect(
+      tenantPrisma.run(companyId, () => sales.assignSupplier(order.id, { supplierId }, user)),
+    ).rejects.toBeInstanceOf(InvalidOrderTransitionException);
+  });
+
+  it('remove() rejects deleting anything past SUBMITTED', async () => {
+    const customerId = await createCustomer();
+    const order = await tenantPrisma.run(companyId, () =>
+      sales.create({ customerId, lines: [{ productId, packagingId, qty: 1 }] }, user),
+    );
+    await tenantPrisma.run(companyId, () => sales.confirm(order.id, user));
+
+    await expect(tenantPrisma.run(companyId, () => sales.remove(order.id, user))).rejects.toBeInstanceOf(
+      InvalidOrderTransitionException,
+    );
+  });
+
+  it('remove() deletes a SUBMITTED order outright', async () => {
+    const customerId = await createCustomer();
+    const order = await tenantPrisma.run(companyId, () =>
+      sales.create({ customerId, lines: [{ productId, packagingId, qty: 1 }] }, user),
+    );
+    await tenantPrisma.run(companyId, () => sales.remove(order.id, user));
+
+    await expect(tenantPrisma.run(companyId, () => sales.getById(order.id, user))).rejects.toBeInstanceOf(
+      SalesOrderNotFoundException,
     );
   });
 });

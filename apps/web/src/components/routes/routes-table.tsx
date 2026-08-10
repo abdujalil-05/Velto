@@ -25,7 +25,7 @@ export function RoutesTable({ routes }: { routes: Route[] }) {
         <thead>
           <tr className="border-b border-border text-left text-xs text-muted-foreground">
             <th className="pb-2 pr-3 font-medium">{t('name')}</th>
-            <th className="pb-2 pr-3 font-medium">{t('agent')}</th>
+            <th className="pb-2 pr-3 font-medium">{t('assignee')}</th>
             <th className="pb-2 pr-3 font-medium">{t('weekday')}</th>
             <th className="pb-2 pr-3 text-right font-medium">{t('stopCount')}</th>
           </tr>
@@ -39,7 +39,11 @@ export function RoutesTable({ routes }: { routes: Route[] }) {
                 </Link>
               </td>
               <td className="py-2 pr-3 text-muted-foreground">
-                {route.agent.firstName} {route.agent.lastName}
+                {route.agent
+                  ? `${route.agent.firstName} ${route.agent.lastName}`
+                  : route.deliverySupplier
+                    ? `${route.deliverySupplier.name} (${t('supplier')})`
+                    : '—'}
               </td>
               <td className="py-2 pr-3 text-muted-foreground">
                 {t(`weekdays.${route.weekday}`)} · {formatDate(nextDateForWeekday(route.weekday), locale)}

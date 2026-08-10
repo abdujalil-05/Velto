@@ -2,10 +2,11 @@
 
 import { useMemo, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
+import { toast } from 'sonner';
 import { Plus, RefreshCw, Search, UserCog } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
-import { useUsersQuery } from '@/lib/api/users';
+import { useUsersQuery, useDeleteUserMutation, type User } from '@/lib/api/users';
 import { useDashboardQuery } from '@/lib/api/dashboard';
 import { errorMessage } from '@/lib/api/client';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
@@ -15,6 +16,7 @@ import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { PaginationBar } from '@/components/shared/pagination-bar';
 import { ExportCsvButton } from '@/components/shared/export-csv-button';
 import { AgentsTable } from '@/components/agents/agents-table';
@@ -23,9 +25,10 @@ import { cn } from '@/lib/utils';
 export default function AgentsPage() {
   const t = useTranslations('Agents');
   const locale = useLocale();
-  const { hasPermission } = useAuth();
+  const { hasPermission, user } = useAuth();
   const canCreate = hasPermission('users.create');
   const canSeeToday = hasPermission('reports.read');
+  const canDelete = hasPermission('users.delete');
 
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
@@ -53,6 +56,22 @@ export default function AgentsPage() {
       { header: t('name'), value: (a) => `${a.firstName} ${a.lastName}` },
       { header: t('phone'), value: (a) => a.phone },
     ]);
+  }
+
+  const deleteMutation = useDeleteUserMutation();
+  const [pendingDelete, setPendingDelete] = useState<User | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  async function confirmDelete() {
+    if (!pendingDelete) return;
+    setDeleteError(null);
+    try {
+      await deleteMutation.mutateAsync({ id: pendingDelete.id });
+      toast.success(t('deleteSuccess', { name: `${pendingDelete.firstName} ${pendingDelete.lastName}` }));
+      setPendingDelete(null);
+    } catch (err) {
+      setDeleteError(errorMessage(err, locale));
+    }
   }
 
   return (
@@ -133,11 +152,35 @@ export default function AgentsPage() {
       {data && data.data.length > 0 && (
         <Card>
           <CardContent className="pt-6">
-            <AgentsTable agents={data.data} todayByAgentId={todayByAgentId} showToday={canSeeToday} />
+            <AgentsTable
+              agents={data.data}
+              todayByAgentId={todayByAgentId}
+              showToday={canSeeToday}
+              canDelete={canDelete}
+              currentUserId={user?.id}
+              onDelete={(agent) => {
+                setDeleteError(null);
+                setPendingDelete(agent);
+              }}
+            />
             <PaginationBar meta={data.meta} onPageChange={setPage} />
           </CardContent>
         </Card>
       )}
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingDelete(null);
+            setDeleteError(null);
+          }
+        }}
+        itemName={pendingDelete ? `${pendingDelete.firstName} ${pendingDelete.lastName}` : ''}
+        error={deleteError}
+        isPending={deleteMutation.isPending}
+        onConfirm={confirmDelete}
+      />
     </div>
   );
 }

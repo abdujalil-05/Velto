@@ -1,9 +1,11 @@
 'use client';
 
 import { useTranslations } from 'next-intl';
+import { Trash2 } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useRoutesQuery } from '@/lib/api/routes';
 import { formatMoney } from '@/lib/format';
+import { Button } from '@/components/ui/button';
 import type { User } from '@/lib/api/users';
 import type { DashboardData } from '@/lib/api/dashboard';
 
@@ -11,11 +13,16 @@ interface AgentsTableProps {
   agents: User[];
   todayByAgentId: Map<string, DashboardData['agentsToday'][number]>;
   showToday: boolean;
+  /** `users.delete`, and never for the currently logged-in user (self-delete is blocked API-side, but hide the affordance too). */
+  canDelete?: boolean;
+  onDelete?: (agent: User) => void;
+  currentUserId?: string;
 }
 
-export function AgentsTable({ agents, todayByAgentId, showToday }: AgentsTableProps) {
+export function AgentsTable({ agents, todayByAgentId, showToday, canDelete = false, onDelete, currentUserId }: AgentsTableProps) {
   const t = useTranslations('Agents');
   const tCommon = useTranslations('Common');
+  const showActions = canDelete && !!onDelete;
 
   return (
     <div className="overflow-x-auto">
@@ -32,6 +39,7 @@ export function AgentsTable({ agents, todayByAgentId, showToday }: AgentsTablePr
                 <th className="pb-2 text-right font-medium">{t('todayTurnover')}</th>
               </>
             )}
+            {showActions && <th className="pb-2 text-right font-medium">{t('actions')}</th>}
           </tr>
         </thead>
         <tbody className="divide-y divide-border">
@@ -65,6 +73,15 @@ export function AgentsTable({ agents, todayByAgentId, showToday }: AgentsTablePr
                     </td>
                   </>
                 )}
+                {showActions && (
+                  <td className="py-2 text-right">
+                    {agent.id !== currentUserId && (
+                      <Button variant="ghost" size="sm" onClick={() => onDelete?.(agent)} aria-label={t('delete')}>
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      </Button>
+                    )}
+                  </td>
+                )}
               </tr>
             );
           })}
@@ -81,7 +98,7 @@ function AgentRouteCount({ agentId }: { agentId: string }) {
   if (isLoading) return <span className="text-muted-foreground">…</span>;
   const count = data?.meta.total ?? 0;
   return count > 0 ? (
-    <Link href={`/routes`} className="text-primary hover:underline">
+    <Link href={{ pathname: '/routes', query: { agentId } }} className="text-primary hover:underline">
       {t('routeCount', { count })}
     </Link>
   ) : (

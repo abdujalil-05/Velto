@@ -4,14 +4,18 @@ import { AuditLogService, toAuditJson } from '../../common/audit/audit-log.servi
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { DocumentNumberingService } from '../../common/document-numbering/document-numbering.service';
 import { paginate, resolveSort } from '../../common/pagination/pagination.dto';
+import { TenantContext } from '../../common/tenant/tenant-context';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { endOfDay, startOfDay } from '../analytics/report-utils';
 import { ProductNotFoundException } from '../catalog/catalog-exceptions';
 import { CustomersService } from '../customers/customers.service';
 import { OutletNotFoundException } from '../customers/customers-exceptions';
 import { AgentNotFoundException } from '../field/field-exceptions';
+import { NotificationsService } from '../notifications/notifications.service';
+import { SuppliersService } from '../purchases/suppliers/suppliers.service';
 import { WarehouseNotFoundException } from '../stock/stock-exceptions';
 import { StockService } from '../stock/stock.service';
+import type { AssignSupplierDto } from './dto/assign-supplier.dto';
 import type { CancelOrderDto } from './dto/cancel-order.dto';
 import type { CreateOrderDto } from './dto/create-order.dto';
 import type { ListOrdersQueryDto } from './dto/list-orders.query';
@@ -25,15 +29,16 @@ import {
   SalesOrderNotFoundException,
 } from './sales-exceptions';
 
-// Customer/outlet/agent/warehouse are included alongside lines so the web
-// UI (9.2 "/orders", "/orders/:id") can render a full row/card without an
-// extra round-trip per order.
+// Customer/outlet/agent/warehouse/supplier are included alongside lines so
+// the web UI (9.2 "/orders", "/orders/:id") can render a full row/card
+// without an extra round-trip per order.
 const ORDER_INCLUDE = {
   lines: { include: { product: true, packaging: true } },
   customer: { select: { id: true, name: true, code: true } },
   outlet: { select: { id: true, name: true } },
   agent: { select: { id: true, firstName: true, lastName: true } },
   warehouse: { select: { id: true, name: true } },
+  deliverySupplier: { select: { id: true, name: true } },
 } satisfies Prisma.SalesOrderInclude;
 
 @Injectable()
@@ -44,6 +49,8 @@ export class SalesService {
     private readonly customers: CustomersService,
     private readonly stock: StockService,
     private readonly docNumbering: DocumentNumberingService,
+    private readonly suppliers: SuppliersService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   async list(query: ListOrdersQueryDto, user: AuthenticatedUser) {
@@ -120,6 +127,11 @@ export class SalesService {
     const outletId = await this.resolveOutlet(tx, dto.customerId, dto.outletId);
     const warehouseId = await this.resolveWarehouse(tx, dto.warehouseId);
     const agentId = user.roles.includes('SALES_AGENT') ? user.id : await this.resolveAgent(tx, dto.agentId);
+    // A supplierId known up front means the order was never meant to leave
+    // from an own warehouse in the first place — it goes straight to
+    // "yetkazilmoqda" (SHIPPED) instead of the usual SUBMITTED, same as
+    // assignSupplier() does for an order that gets one attached later.
+    const supplier = dto.supplierId ? await this.suppliers.findActiveOrThrow(tx, dto.supplierId) : null;
 
     const priceListId = customer.priceListId ?? (await this.defaultPriceListId(tx));
 
@@ -200,7 +212,8 @@ export class SalesService {
             outletId,
             agentId,
             warehouseId,
-            status: OrderStatus.SUBMITTED,
+            supplierId: supplier?.id,
+            status: supplier ? OrderStatus.SHIPPED : OrderStatus.SUBMITTED,
             clientId: dto.clientId,
             note: dto.note,
             lines: { create: lines },
@@ -219,6 +232,15 @@ export class SalesService {
         if (existing) return withTotal(existing);
       }
       throw err;
+    }
+
+    if (supplier) {
+      // Jumping straight to SHIPPED skips confirm()'s usual reservation
+      // step, but deliver() still expects one to consume (stock.issue()
+      // decrements `reserved`) — reserve here so that invariant holds
+      // regardless of which path got the order to SHIPPED.
+      await this.reserveOrderStock(tx, order, user);
+      await this.scheduleSupplierAssignedNotification(tx, supplier.id, order.number, user.companyId);
     }
 
     await this.auditLog.log(tx, {
@@ -247,16 +269,7 @@ export class SalesService {
       throw new InvalidOrderTransitionException(order.status, OrderStatus.CONFIRMED);
     }
 
-    for (const line of order.lines) {
-      await this.stock.reserve(tx, {
-        companyId: user.companyId,
-        productId: line.productId,
-        warehouseId: order.warehouseId,
-        qty: line.qty,
-        refType: 'SalesOrder',
-        refId: order.id,
-      });
-    }
+    await this.reserveOrderStock(tx, order, user);
 
     const updated = await tx.salesOrder.update({
       where: { id },
@@ -278,15 +291,18 @@ export class SalesService {
   }
 
   /**
-   * CONFIRMED → DELIVERED (8.7: PICKING/SHIPPED skipped in MVP). Issues
-   * stock (consumes the reservation) and creates the invoice — 6.6:
-   * "MVP'da 1 order = 1 invoice soddalashtirilgan".
+   * CONFIRMED → DELIVERED, or SHIPPED → DELIVERED for a supplier-delivered
+   * order ("yetkazilmoqda" → "yetkazildi") — the plain PICKING step is still
+   * skipped in MVP (8.7), SHIPPED only exists as the supplier-assignment
+   * state. Issues stock (consumes the reservation, made either by confirm()
+   * or up front by create()/assignSupplier() for a supplier order) and
+   * creates the invoice — 6.6: "MVP'da 1 order = 1 invoice soddalashtirilgan".
    */
   async deliver(id: string, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
     const order = await this.getRawOrder(tx, id);
 
-    if (order.status !== OrderStatus.CONFIRMED) {
+    if (order.status !== OrderStatus.CONFIRMED && order.status !== OrderStatus.SHIPPED) {
       throw new InvalidOrderTransitionException(order.status, OrderStatus.DELIVERED);
     }
 
@@ -379,7 +395,7 @@ export class SalesService {
     return withTotal(updated);
   }
 
-  /** Releases any reservation (if CONFIRMED) — never allowed once DELIVERED/CLOSED. */
+  /** Releases any reservation (if CONFIRMED, or SHIPPED — a supplier-assigned order also carries one, see reserveOrderStock()) — never allowed once DELIVERED/CLOSED. */
   async cancel(id: string, dto: CancelOrderDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
     const order = await this.getRawOrder(tx, id);
@@ -392,7 +408,7 @@ export class SalesService {
       throw new InvalidOrderTransitionException(order.status, OrderStatus.CANCELLED);
     }
 
-    if (order.status === OrderStatus.CONFIRMED) {
+    if (order.status === OrderStatus.CONFIRMED || order.status === OrderStatus.SHIPPED) {
       for (const line of order.lines) {
         await this.stock.release(tx, {
           companyId: user.companyId,
@@ -428,6 +444,56 @@ export class SalesService {
   }
 
   /**
+   * Attaches a deliverer Supplier to an already-created order and moves it
+   * straight to SHIPPED — the same jump `create()` takes when `supplierId`
+   * is known up front. Blocked once the order is DELIVERED/CLOSED/CANCELLED
+   * (nothing left to deliver); allowed from DRAFT/SUBMITTED/CONFIRMED and
+   * even from SHIPPED itself (re-pointing an already-assigned order at a
+   * different supplier).
+   */
+  async assignSupplier(id: string, dto: AssignSupplierDto, user: AuthenticatedUser) {
+    const tx = this.tenantPrisma.client;
+    const order = await this.getRawOrder(tx, id);
+
+    if (
+      order.status === OrderStatus.DELIVERED ||
+      order.status === OrderStatus.CLOSED ||
+      order.status === OrderStatus.CANCELLED
+    ) {
+      throw new InvalidOrderTransitionException(order.status, OrderStatus.SHIPPED);
+    }
+
+    const supplier = await this.suppliers.findActiveOrThrow(tx, dto.supplierId);
+
+    // Only reserve if nothing has been reserved for this order yet — a
+    // CONFIRMED (or already-SHIPPED) order already carries one, and
+    // reserving twice would double-count against StockLevel.reserved.
+    if (order.status === OrderStatus.DRAFT || order.status === OrderStatus.SUBMITTED) {
+      await this.reserveOrderStock(tx, order, user);
+    }
+
+    const updated = await tx.salesOrder.update({
+      where: { id },
+      data: { supplierId: supplier.id, status: OrderStatus.SHIPPED },
+      include: ORDER_INCLUDE,
+    });
+
+    await this.auditLog.log(tx, {
+      companyId: user.companyId,
+      userId: user.id,
+      action: 'order.assignSupplier',
+      entity: 'SalesOrder',
+      entityId: id,
+      oldValue: toAuditJson({ status: order.status, supplierId: order.supplierId }),
+      newValue: toAuditJson({ status: OrderStatus.SHIPPED, supplierId: supplier.id }),
+    });
+
+    await this.scheduleSupplierAssignedNotification(tx, supplier.id, updated.number, user.companyId);
+
+    return withTotal(updated);
+  }
+
+  /**
    * Hard delete — only for SUBMITTED orders (no stock reservation via
    * confirm(), no invoice via deliver() yet), so there's nothing else to
    * unwind. Anything past that must go through cancel() instead, which
@@ -452,6 +518,49 @@ export class SalesService {
       entityId: id,
       oldValue: toAuditJson(order),
     });
+  }
+
+  /** Reserves every line of `order` (8.3) — shared by confirm(), create() (supplier-known-up-front) and assignSupplier(). */
+  private async reserveOrderStock(
+    tx: TenantClient,
+    order: { id: string; warehouseId: string; lines: { productId: string; qty: Prisma.Decimal }[] },
+    user: AuthenticatedUser,
+  ): Promise<void> {
+    for (const line of order.lines) {
+      await this.stock.reserve(tx, {
+        companyId: user.companyId,
+        productId: line.productId,
+        warehouseId: order.warehouseId,
+        qty: line.qty,
+        refType: 'SalesOrder',
+        refId: order.id,
+      });
+    }
+  }
+
+  /**
+   * Best-effort Telegram push to the Supplier just assigned as an order's
+   * deliverer. The SupplierTelegramLink lookup runs here, inside the caller's
+   * transaction, but the actual send is deferred to `TenantContext.afterCommit`
+   * so a Telegram outage can never roll back or fail the order
+   * create/assign request — matches NotificationsService's own "in-app
+   * always, Telegram best-effort" split (class doc there).
+   */
+  private async scheduleSupplierAssignedNotification(
+    tx: TenantClient,
+    supplierId: string,
+    orderNumber: string,
+    companyId: string,
+  ): Promise<void> {
+    const link = await tx.supplierTelegramLink.findFirst({ where: { supplierId, isActive: true } });
+    if (!link) return;
+
+    const company = await tx.company.findUnique({ where: { id: companyId }, select: { name: true } });
+    const telegramId = link.telegramId;
+    const companyName = company?.name ?? '';
+    TenantContext.afterCommit(() =>
+      this.notifications.notifySupplierOrderAssigned(telegramId, { orderNumber, companyName }),
+    );
   }
 
   private async getRawOrder(tx: TenantClient, id: string, scopedAgentId?: string) {

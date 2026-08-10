@@ -30,10 +30,13 @@ export interface SalesOrder {
   createdAt: string;
   lines: SalesOrderLine[];
   total: string;
+  supplierId: string | null;
   customer: { id: string; name: string; code: string };
   outlet: { id: string; name: string } | null;
   agent: { id: string; firstName: string; lastName: string } | null;
   warehouse: { id: string; name: string };
+  /** Set only once `supplierId` is — the deliverer, when the order was created/assigned straight to SHIPPED. */
+  deliverySupplier: { id: string; name: string } | null;
 }
 
 export interface ListOrdersParams {
@@ -47,10 +50,11 @@ export interface ListOrdersParams {
   [key: string]: string | number | undefined;
 }
 
-export function useOrdersQuery(params: ListOrdersParams) {
+export function useOrdersQuery(params: ListOrdersParams, enabled = true) {
   return useQuery({
     queryKey: ['orders', params],
     queryFn: () => apiFetch<PaginatedResult<SalesOrder>>(`/orders${toQueryString(params)}`),
+    enabled,
     placeholderData: (previous) => previous,
   });
 }
@@ -75,6 +79,8 @@ export interface CreateOrderInput {
   outletId?: string;
   warehouseId?: string;
   note?: string;
+  /** When set, the order is created directly in status SHIPPED with this supplier as deliverer. */
+  supplierId?: string;
   lines: CreateOrderLineInput[];
 }
 

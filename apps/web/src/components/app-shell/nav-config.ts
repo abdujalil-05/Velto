@@ -1,5 +1,6 @@
 import {
   BarChart3,
+  BookOpen,
   Building2,
   History,
   IdCard,
@@ -29,7 +30,8 @@ export interface NavItem {
     | 'agents'
     | 'reports'
     | 'audit'
-    | 'settings';
+    | 'settings'
+    | 'help';
   href: string;
   icon: LucideIcon;
   /** "module.action" required to see this item — omitted if every logged-in role may see it. */
@@ -60,6 +62,7 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'reports', href: '/reports', icon: BarChart3, permission: 'reports.read' },
   { key: 'audit', href: '/audit', icon: History, permission: 'audit.read' },
   { key: 'settings', href: '/settings', icon: SettingsIcon, permission: 'settings.read' },
+  { key: 'help', href: '/help', icon: BookOpen },
 ];
 
 export function isNavItemActive(pathname: string, href: string): boolean {

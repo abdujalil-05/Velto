@@ -20,6 +20,12 @@ export const envSchema = z.object({
   // empty means the webhook route always rejects, same fail-closed default
   // as an unset bot token.
   TELEGRAM_WEBHOOK_SECRET: z.string().default(''),
+  // Bot @username (without the "@"), used only to build the
+  // `https://t.me/<username>?start=<code>` deep link a supplier taps to redeem
+  // a SupplierTelegramLinkCode. Empty (the default) makes the API return
+  // `deepLink: null` rather than a broken URL — the raw code is still usable,
+  // so this stays optional like TELEGRAM_BOT_TOKEN itself.
+  TELEGRAM_BOT_USERNAME: z.string().default(''),
   // Comma-separated list of origins allowed to call the API with credentials
   // (SEC-040..048: CORS must not be wide-open). Web and Mini App dev ports by default.
   CORS_ORIGINS: z.string().default('http://localhost:3000,http://localhost:3002'),

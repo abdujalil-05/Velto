@@ -43,6 +43,7 @@
     "reports": "Reports",
     "audit": "Audit log",
     "settings": "Settings",
+    "help": "Help",
     "cash": "Cash & payments"
   },
   "LanguageSwitcher": {
@@ -287,7 +288,8 @@
       "cancelTitle": "Cancel order",
       "cancelReasonLabel": "Reason (optional)",
       "cancelConfirm": "Cancel order",
-      "cancelKeep": "Keep order"
+      "cancelKeep": "Keep order",
+      "deliverer": "Deliverer"
     },
     "form": {
       "title": "New order",
@@ -310,8 +312,13 @@
       "submit": "Create order",
       "created": "Order created",
       "selectCustomerFirst": "Select a customer first",
-      "emptyLinesError": "Add at least one line"
-    }
+      "emptyLinesError": "Add at least one line",
+      "supplier": "Supplier",
+      "supplierOptional": "Optional",
+      "supplierHint": "Choosing a supplier moves the order straight to \"Shipped\""
+    },
+    "supplierFilterBanner": "Orders assigned to supplier \"{name}\"",
+    "clearSupplierFilter": "Clear filter"
   },
   "Receivables": {
     "customer": "Customer",
@@ -820,7 +827,10 @@
     "noRoutes": "No route assigned",
     "todayVisits": "Visits today",
     "todayOrders": "Orders today",
-    "todayTurnover": "Turnover today"
+    "todayTurnover": "Turnover today",
+    "actions": "Actions",
+    "delete": "Delete",
+    "deleteSuccess": "\"{name}\" deleted"
   },
   "Routes": {
     "title": "Routes",
@@ -868,8 +878,16 @@
       "submitUpdate": "Save changes",
       "created": "Route created",
       "updated": "Changes saved",
-      "retry": "Retry"
-    }
+      "retry": "Retry",
+      "assigneeType": "Assign to",
+      "assigneeTypeAgent": "Agent",
+      "assigneeTypeSupplier": "Supplier",
+      "supplier": "Supplier",
+      "selectSupplierFirst": "Select a supplier first"
+    },
+    "assignee": "Assigned to",
+    "allSuppliers": "All suppliers",
+    "supplier": "Supplier"
   },
   "Suppliers": {
     "title": "Suppliers",
@@ -896,6 +914,40 @@
       "phone": "Phone",
       "address": "Address",
       "nameRequired": "Enter a name"
+    },
+    "routes": "Routes",
+    "orders": "Orders",
+    "routeCount": "{count, plural, one {# route} other {# routes}}",
+    "noRoutes": "No route assigned",
+    "orderCount": "{count, plural, one {# order} other {# orders}}",
+    "noOrders": "No orders",
+    "telegram": {
+      "column": "Telegram",
+      "action": "Telegram",
+      "title": "Telegram link",
+      "subtitle": "Telegram order notifications for “{name}”",
+      "linked": "Linked",
+      "notLinked": "Not linked",
+      "statusLinked": "Linked",
+      "statusNotLinked": "This supplier is not linked to Telegram yet. Generate a link code and send it to them.",
+      "linkedAt": "Linked since {date}",
+      "generateCode": "Generate link code",
+      "newCode": "Generate a new code",
+      "codeIssued": "Link code generated",
+      "codeLabel": "Link code",
+      "expiresAt": "Expires: {date}",
+      "copy": "Copy",
+      "copyFailed": "Could not copy the code",
+      "openBot": "Open Telegram bot",
+      "noDeepLinkHint": "Send this code to the supplier — they enter it with the bot's /start command.",
+      "unlink": "Unlink",
+      "unlinkSuccess": "Telegram unlinked for “{name}”",
+      "close": "Close",
+      "confirmUnlink": {
+        "title": "Unlink Telegram",
+        "description": "“{name}” will stop receiving Telegram order notifications. Continue?",
+        "confirm": "Unlink"
+      }
     }
   },
   "Cash": {
@@ -956,6 +1008,381 @@
       "save": "Save",
       "saved": "Prices saved",
       "unsavedChanges": "Unsaved changes"
+    }
+  },
+  "Help": {
+    "title": "Help",
+    "subtitle": "How Velto works and what each section is for — a guide in plain language.",
+    "tocTitle": "Sections",
+    "sections": {
+      "intro": {
+        "title": "What is Velto?",
+        "intro": "Velto is a sales management system for distributors. Everything — from an order taken on an agent's phone to the warehouse, the cash desk and the reports — is handled in one place. Instead of paper notebooks, scattered Excel files and phone agreements, it all lives in the system.",
+        "groups": [
+          {
+            "heading": "What the system solves",
+            "items": [
+              "Which customer owes how much, and since when — visible at a glance.",
+              "Which shop the agent visited and how many orders they took — tracked through the day.",
+              "How much stock you have and how much is reserved for orders — calculated automatically.",
+              "Every sum a cashier accepts is recorded against the invoice it pays off."
+            ]
+          },
+          {
+            "heading": "Key terms",
+            "items": [
+              "Customer — the company or entrepreneur you sell to. One customer can have several outlets.",
+              "Outlet — a customer's specific shop with its address. Routes are built from outlets.",
+              "Order — the list of products a customer asked for, and its total.",
+              "Invoice — the document to be paid, created once the order is delivered. Debt is counted from it.",
+              "Payment — money received from a customer. It is allocated to invoices and reduces the debt.",
+              "Route — the list of outlets an agent visits on a given weekday."
+            ]
+          }
+        ]
+      },
+      "roles": {
+        "title": "Who does what",
+        "intro": "Each employee only sees the sections their job needs. The menu depends on your role — a missing section is not an error.",
+        "groups": [
+          {
+            "items": [
+              "Admin — sees and changes everything: staff, settings, prices, reports.",
+              "Director — owns sales: orders, customers, agents, routes and reports.",
+              "Warehouse — receives goods, keeps stock levels, picks and ships orders.",
+              "Cashier — opens a shift, accepts money from customers, closes the shift at the end of the day.",
+              "Accountant — works with payments, receivables and financial reports.",
+              "Agent — works from the Telegram app on their phone: visits the customer, takes the order, collects money."
+            ]
+          }
+        ]
+      },
+      "start": {
+        "title": "Where to start",
+        "intro": "The system arrives empty. Fill it in this order — each step builds on the one before it, so nothing gets tangled.",
+        "groups": [
+          {
+            "heading": "Step by step",
+            "items": [
+              "Settings — enter the company name, phone, address, currency and time zone.",
+              "Users — add your staff and give each a role. The password is shown once; hand it to the employee yourself.",
+              "Products — enter what you sell: name, code, price, packaging.",
+              "Stock — use the \"Receive\" button to enter the quantities you actually have.",
+              "Customers — add your shops and give each one an outlet.",
+              "Routes — decide which agent visits which outlets on which day."
+            ]
+          },
+          {
+            "heading": "Tip",
+            "items": [
+              "Don't try to enter everything at once. Start with 10–20 products and 5–10 customers, and run a single order all the way through.",
+              "That gives you a feel for how the system works and makes it easier to explain to your staff."
+            ]
+          }
+        ]
+      },
+      "flow": {
+        "title": "From order to money: the daily cycle",
+        "intro": "Every order follows the same path. The status tells you which stage an order is at right now.",
+        "groups": [
+          {
+            "heading": "Stages",
+            "items": [
+              "Submitted — the agent or an operator entered the order; it is waiting for review.",
+              "Confirmed — the order is accepted and the goods are reserved in the warehouse for that customer.",
+              "Delivered — the goods were handed over. At that moment stock goes down and an invoice is created.",
+              "Closed — the invoice is fully paid and the order is finished.",
+              "Cancelled — the order fell through; the reserved goods are released."
+            ]
+          },
+          {
+            "heading": "Who works at each stage",
+            "items": [
+              "The agent or an operator creates the order.",
+              "The director or admin confirms it.",
+              "The warehouse picks the goods and marks the order delivered.",
+              "The cashier takes the money, and once the debt is cleared the order is closed."
+            ]
+          }
+        ]
+      },
+      "dashboard": {
+        "title": "Home page",
+        "intro": "A short picture of the day. Opening the page shows you today's state right away.",
+        "groups": [
+          {
+            "items": [
+              "Today's turnover and order count — compared with yesterday.",
+              "Money collected — what came into the cash desk today.",
+              "Overdue debt — amounts past their payment deadline. If this number grows, collection needs more attention.",
+              "The last 30 days chart — shows whether sales are rising or falling.",
+              "Agents today — who made how many visits and took how many orders.",
+              "Largest debtors — who to deal with first."
+            ]
+          }
+        ]
+      },
+      "orders": {
+        "title": "Orders",
+        "intro": "All orders live here. The list can be filtered by status or customer.",
+        "groups": [
+          {
+            "heading": "Creating an order",
+            "items": [
+              "Press \"New order\".",
+              "Search for and pick the customer; specify the outlet if needed.",
+              "Use \"Add line\" to enter the product, packaging and quantity; add a discount if needed.",
+              "Next to each product you see the free stock left — don't write more than that.",
+              "Save. The order appears in the list with the \"Submitted\" status."
+            ]
+          },
+          {
+            "heading": "Buttons on the order card",
+            "items": [
+              "\"Confirm\" — reserves the goods for this customer.",
+              "\"Mark delivered\" — reduces stock and creates the invoice.",
+              "\"Close\" — finishes the order once it is fully paid.",
+              "\"Cancel\" — you can record a reason; the reserved goods are released."
+            ]
+          }
+        ]
+      },
+      "customers": {
+        "title": "Customers",
+        "intro": "Your customer base: who you work with, on what terms they buy, and how much they owe.",
+        "groups": [
+          {
+            "heading": "When adding a customer",
+            "items": [
+              "Code — the customer's internal number; it must be unique.",
+              "Payment term (days) — how many days the customer has to pay an invoice. Past that, the debt is marked overdue.",
+              "Price list — which prices apply to this customer.",
+              "Outlet — the customer's shop. If there are several, the rest can be added later."
+            ]
+          },
+          {
+            "heading": "Good to know",
+            "items": [
+              "If a customer with the same phone or a similar name already exists, the system warns you — to prevent duplicates.",
+              "A customer can be blocked: no new orders can then be written for them.",
+              "A customer with outstanding debt cannot be deleted.",
+              "For a deleted customer, the order and payment history is kept."
+            ]
+          }
+        ]
+      },
+      "products": {
+        "title": "Products",
+        "intro": "The list of what you sell. Both orders and stock rely on it.",
+        "groups": [
+          {
+            "items": [
+              "SKU — the product's internal code; it is unique.",
+              "Base unit — what you count in: pieces, kg or litres.",
+              "Packagings — how many pieces are in one box. An agent can count in boxes while the warehouse counts in pieces.",
+              "Price — the price for one base unit.",
+              "Opening stock — while adding a product you can enter the quantity you already have.",
+              "Image — helps the agent find the product faster on their phone.",
+              "A product you no longer sell can be made \"inactive\" instead of deleted."
+            ]
+          }
+        ]
+      },
+      "stock": {
+        "title": "Stock",
+        "intro": "What is in the warehouse. Each product shows three numbers, and they mean different things.",
+        "groups": [
+          {
+            "heading": "What the numbers mean",
+            "items": [
+              "On hand — the quantity physically sitting in the warehouse.",
+              "Reserved — the quantity held for confirmed orders.",
+              "Available — what can still be sold on new orders: on hand minus reserved."
+            ]
+          },
+          {
+            "heading": "Receiving goods",
+            "items": [
+              "Use \"Receive\" and enter the product, quantity and reason.",
+              "Stock is never erased by hand — every movement is recorded, so it is always clear who entered what and when.",
+              "If a stock count finds a discrepancy, it is corrected with a receipt here too."
+            ]
+          }
+        ]
+      },
+      "cash": {
+        "title": "Cash desk and payments",
+        "intro": "Taking money from customers. A cash shift must be open before any payment can be accepted.",
+        "groups": [
+          {
+            "heading": "The daily routine",
+            "items": [
+              "At the start of the day press \"Open shift\" and enter the opening amount in the drawer.",
+              "During the day accept money through \"New payment\".",
+              "At the end of the day press \"Close shift\" and enter the actual amount in the drawer. The system compares it with what was collected."
+            ]
+          },
+          {
+            "heading": "Allocating a payment",
+            "items": [
+              "Automatic (FIFO) — the money is applied starting from the oldest open invoice. This is the usual choice.",
+              "Manual — you decide exactly which invoice the customer is paying for.",
+              "Payment method: cash, card or bank transfer.",
+              "A saved payment is never deleted — a mistake is fixed with a new correcting entry."
+            ]
+          }
+        ]
+      },
+      "suppliers": {
+        "title": "Suppliers",
+        "intro": "The companies that deliver goods to you.",
+        "groups": [
+          {
+            "items": [
+              "You can add a supplier and assign a route to them.",
+              "Telegram link — you generate a link code and send it to the supplier; once they enter it in the bot, they start receiving order notifications.",
+              "A supplier you are not working with for now can be deactivated instead of deleted."
+            ]
+          }
+        ]
+      },
+      "routes": {
+        "title": "Routes",
+        "intro": "A route is the list of outlets, in order, that one agent (or supplier) covers on a given weekday.",
+        "groups": [
+          {
+            "heading": "Building a route",
+            "items": [
+              "Choose who it belongs to: an agent or a supplier.",
+              "Pick the weekday — for example, every Tuesday.",
+              "Add stops: search for the customer first, then choose their outlet.",
+              "Reorder with the arrows — the agent travels in exactly this sequence."
+            ]
+          },
+          {
+            "heading": "Why it matters",
+            "items": [
+              "The agent sees the day's list on their phone and doesn't forget a shop.",
+              "Reports gain \"route completion\" — how many of the planned stops were actually visited."
+            ]
+          }
+        ]
+      },
+      "agents": {
+        "title": "Agents",
+        "intro": "Your sales agents and today's results on one page.",
+        "groups": [
+          {
+            "items": [
+              "Each agent shows today's visits, orders and turnover.",
+              "An agent is a user with the \"Agent\" role. Adding an agent means creating a new user.",
+              "If no route is assigned to an agent, they won't see a daily list on their phone."
+            ]
+          }
+        ]
+      },
+      "reports": {
+        "title": "Reports",
+        "intro": "You pick a date range and the system does the maths. Tables can be exported to Excel.",
+        "groups": [
+          {
+            "heading": "Tabs",
+            "items": [
+              "Overview — turnover, order count, average check, active and new customers, total debt.",
+              "Sales — daily turnover chart, a breakdown by agent, and the best-selling products.",
+              "Agent performance — visits, route completion, effective visits (those that ended in an order) and average check.",
+              "Receivables — debt grouped by age: current, 1–30, 31–60, 61–90 and 90+ days. The further right a column, the harder that money is to collect."
+            ]
+          }
+        ]
+      },
+      "users": {
+        "title": "Users",
+        "intro": "This is where staff are given access to the system.",
+        "groups": [
+          {
+            "items": [
+              "The phone number is the login. The password is shown once when created; pass it to the employee yourself.",
+              "The role decides which sections the employee sees. One user can hold several roles.",
+              "When someone leaves, you don't have to delete them — deactivating is enough and keeps the history.",
+              "If an employee has records in the system, deleting them anonymises their data while the order and payment history stays in place."
+            ]
+          }
+        ]
+      },
+      "audit": {
+        "title": "Audit log",
+        "intro": "The log of who did what, and when.",
+        "groups": [
+          {
+            "items": [
+              "Logins, order confirmations, price changes, user creation and similar actions are recorded automatically.",
+              "These records cannot be edited or deleted — not even by an admin.",
+              "This is where you find the answer to \"why did stock change?\" or \"who cancelled this order?\"."
+            ]
+          }
+        ]
+      },
+      "settings": {
+        "title": "Settings",
+        "intro": "The basic company details: name, legal name, phone, address, currency and time zone.",
+        "groups": [
+          {
+            "items": [
+              "These details are used in documents and reports.",
+              "If the time zone is wrong, daily reports can land on the wrong day.",
+              "Changing them requires the right permission, and every change goes into the audit log."
+            ]
+          }
+        ]
+      },
+      "miniapp": {
+        "title": "The app on the agent's phone",
+        "intro": "Sales agents don't use the web version — they work in the app inside Telegram.",
+        "groups": [
+          {
+            "items": [
+              "The agent arrives at the shop, opens a visit and enters the order on the spot.",
+              "It works without internet: the data is stored on the phone and sent by itself once the connection is back.",
+              "That is why an order may show up in the web version a few minutes later — this is not a fault.",
+              "Data on the phone is stored encrypted: if the phone is lost, nobody else can read it."
+            ]
+          }
+        ]
+      },
+      "faq": {
+        "title": "Frequently asked questions",
+        "intro": "The situations that come up most often in daily work, and what causes them.",
+        "groups": [
+          {
+            "items": [
+              "Some sections are missing from my menu — that depends on your role. An admin can add the role you need.",
+              "A product isn't in the list when creating an order — it hasn't been added yet, or it was made inactive.",
+              "A product can't be sold, available stock is zero — it is reserved for other confirmed orders, or the stock was never received.",
+              "A payment can't be added — the cash shift is probably not open. Open the shift first.",
+              "A customer's debt looks wrong — the invoice is only created once the order is delivered; an undelivered order is not counted as debt.",
+              "I forgot my password — use \"Forgot password?\" on the login page and a code is sent to your phone. If that fails, an admin can issue a new password.",
+              "Can data be exported to Excel — yes, list and report pages have an \"Export to Excel\" button.",
+              "How do I change the language — use the language button in the top right corner: Uzbek, Russian or English."
+            ]
+          }
+        ]
+      },
+      "habits": {
+        "title": "Security and good habits",
+        "intro": "A few simple rules keep your data clean and trustworthy.",
+        "groups": [
+          {
+            "items": [
+              "Never share your password — every action in the system is recorded under your name.",
+              "Give every employee their own account; don't use a shared one.",
+              "Close the cash shift at the end of the day so the daily report comes out right.",
+              "Count the warehouse physically once a week and correct any difference through \"Receive\".",
+              "Each company's data is stored separately — no other company can see yours."
+            ]
+          }
+        ]
+      }
     }
   }
 }

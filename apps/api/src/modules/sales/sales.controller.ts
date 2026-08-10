@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Query } from
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { AssignSupplierDto } from './dto/assign-supplier.dto';
 import { CancelOrderDto } from './dto/cancel-order.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { ListOrdersQueryDto } from './dto/list-orders.query';
@@ -39,6 +40,17 @@ export class SalesController {
   @RequirePermission('orders.update')
   deliver(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.sales.deliver(id, user);
+  }
+
+  /** Attaches a deliverer Supplier and moves the order straight to SHIPPED — see SalesService.assignSupplier(). */
+  @Post(':id/assign-supplier')
+  @RequirePermission('orders.update')
+  assignSupplier(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: AssignSupplierDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.sales.assignSupplier(id, dto, user);
   }
 
   @Post(':id/close')

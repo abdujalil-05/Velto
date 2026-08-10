@@ -8,6 +8,10 @@ export class ListRoutesQueryDto extends PaginationQueryDto {
   agentId?: string;
 
   @IsOptional()
+  @IsUUID()
+  supplierId?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
