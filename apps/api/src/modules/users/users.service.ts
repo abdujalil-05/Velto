@@ -17,6 +17,7 @@ import {
   UserAlreadyActiveException,
   UserAlreadyInactiveException,
   UserHasReferencesException,
+  TelegramNotLinkedException,
   UserNotFoundException,
 } from './users-exceptions';
 import type { CreateUserDto } from './dto/create-user.dto';
@@ -35,15 +36,24 @@ const USER_SAFE_SELECT = {
   lastLoginAt: true,
   createdAt: true,
   updatedAt: true,
+  // Selected only to derive the `telegramLinked` boolean below — the raw chat
+  // id never leaves the API (see shapeUser).
+  telegramId: true,
   roles: { select: { role: { select: { id: true, code: true, name: true } } } },
 } satisfies Prisma.UserSelect;
 
 type SafeUserRow = Prisma.UserGetPayload<{ select: typeof USER_SAFE_SELECT }>;
 
-/** Flattens the UserRole join rows into a plain `roles` array — passwordHash never enters this shape at all (5.4/SEC-030). */
+/**
+ * Flattens the UserRole join rows into a plain `roles` array — passwordHash
+ * never enters this shape at all (5.4/SEC-030). `telegramId` is collapsed to a
+ * `telegramLinked` boolean for the same "no more than the UI needs" reason:
+ * the Agents/Couriers screens only render "Linked / Not linked", and a raw
+ * Telegram chat id is a personal identifier with no client-side use.
+ */
 function shapeUser(user: SafeUserRow) {
-  const { roles, ...rest } = user;
-  return { ...rest, roles: roles.map((r) => r.role) };
+  const { roles, telegramId, ...rest } = user;
+  return { ...rest, telegramLinked: telegramId !== null, roles: roles.map((r) => r.role) };
 }
 
 @Injectable()
@@ -237,6 +247,36 @@ export class UsersService {
     return shaped;
   }
 
+  /**
+   * DELETE /users/:id/telegram — an admin unlinks a user's Telegram account.
+   * There is no admin-issued link code to match this: linking is always the
+   * user's own contact-share to the bot (AuthService.linkTelegramContact), for
+   * agents and couriers alike. Clearing `telegramId` simply makes the next
+   * contact-share bind afresh — e.g. after a courier changes phone/handle, or
+   * hands the device on.
+   */
+  async unlinkTelegram(id: string, actor: AuthenticatedUser) {
+    const tx = this.tenantPrisma.client;
+    const before = await tx.user.findUnique({ where: { id }, select: USER_SAFE_SELECT });
+    if (!before) throw new UserNotFoundException();
+    if (before.telegramId === null) throw new TelegramNotLinkedException();
+
+    const user = await tx.user.update({ where: { id }, data: { telegramId: null }, select: USER_SAFE_SELECT });
+    const shaped = shapeUser(user);
+
+    await this.auditLog.log(tx, {
+      companyId: actor.companyId,
+      userId: actor.id,
+      action: 'user.telegram_unlinked',
+      entity: 'User',
+      entityId: id,
+      oldValue: toAuditJson(shapeUser(before)),
+      newValue: toAuditJson(shaped),
+    });
+
+    return shaped;
+  }
+
   /** Also revokes every active session (15.2) — a deactivated account shouldn't keep working until its access token happens to expire. */
   async deactivate(id: string, actor: AuthenticatedUser) {
     if (id === actor.id) throw new CannotDeactivateSelfException();
@@ -295,20 +335,46 @@ export class UsersService {
    * trail.
    */
   private async countReferences(tx: TenantClient, userId: string): Promise<Record<string, number>> {
-    const [salesOrders, payments, cashSessions, routes, visits, purchaseOrders, auditLogs, exportJobs, notifications] =
-      await Promise.all([
-        tx.salesOrder.count({ where: { agentId: userId } }),
-        tx.payment.count({ where: { collectedBy: userId } }),
-        tx.cashSession.count({ where: { userId } }),
-        tx.route.count({ where: { agentId: userId } }),
-        tx.visit.count({ where: { agentId: userId } }),
-        tx.purchaseOrder.count({ where: { createdById: userId } }),
-        tx.auditLog.count({ where: { userId } }),
-        tx.exportJob.count({ where: { requestedBy: userId } }),
-        tx.notification.count({ where: { recipientId: userId } }),
-      ]);
+    const [
+      salesOrders,
+      courierOrders,
+      payments,
+      cashSessions,
+      routes,
+      courierRoutes,
+      visits,
+      auditLogs,
+      exportJobs,
+      notifications,
+    ] = await Promise.all([
+      tx.salesOrder.count({ where: { agentId: userId } }),
+      // Counted separately from `salesOrders` because the same user can be
+      // neither/either/both: a courier is just a User with the COURIER role.
+      // `Route.courierId` in particular is onDelete: Restrict, so a courier
+      // still on a route must fall to the anonymizing soft delete below.
+      tx.salesOrder.count({ where: { courierId: userId } }),
+      tx.payment.count({ where: { collectedBy: userId } }),
+      tx.cashSession.count({ where: { userId } }),
+      tx.route.count({ where: { agentId: userId } }),
+      tx.route.count({ where: { courierId: userId } }),
+      tx.visit.count({ where: { agentId: userId } }),
+      tx.auditLog.count({ where: { userId } }),
+      tx.exportJob.count({ where: { requestedBy: userId } }),
+      tx.notification.count({ where: { recipientId: userId } }),
+    ]);
 
-    const all = { salesOrders, payments, cashSessions, routes, visits, purchaseOrders, auditLogs, exportJobs, notifications };
+    const all = {
+      salesOrders,
+      courierOrders,
+      payments,
+      cashSessions,
+      routes,
+      courierRoutes,
+      visits,
+      auditLogs,
+      exportJobs,
+      notifications,
+    };
     return Object.fromEntries(Object.entries(all).filter(([, count]) => count > 0));
   }
 
@@ -316,7 +382,7 @@ export class UsersService {
    * DELETE /users/:id — soft (anonymizing) delete by default, physical delete
    * when the user owns nothing.
    *
-   * User has no `deletedAt` column (unlike Customer/Supplier/Product), so the
+   * User has no `deletedAt` column (unlike Customer/Product), so the
    * "soft" branch is an anonymization instead: roles revoked, sessions killed,
    * PII stripped, `isActive=false`, and the phone replaced with a `deleted:<id>`
    * tombstone so the real number is free to be reused under

@@ -6,7 +6,7 @@ import { Plus } from 'lucide-react';
 import { useCustomerQuery, useCustomersQuery, type Customer } from '@/lib/api/customers';
 import { useDefaultWarehouseQuery } from '@/lib/api/warehouses';
 import { usePriceListItemsQuery } from '@/lib/api/price-lists';
-import { useSuppliersQuery } from '@/lib/api/suppliers';
+import { useCouriersQuery, courierName } from '@/lib/api/couriers';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
 import type { Product } from '@/lib/api/products';
 import type { CreateOrderInput } from '@/lib/api/orders';
@@ -51,12 +51,12 @@ export function OrderForm({ isSubmitting, submitError, onSubmit }: OrderFormProp
   const { data: customerDetail } = useCustomerQuery(customer?.id ?? '');
 
   const [outletId, setOutletId] = useState('');
-  const [supplierId, setSupplierId] = useState('');
+  const [courierId, setCourierId] = useState('');
   const [note, setNote] = useState('');
   const [lines, setLines] = useState<OrderLineDraft[]>([emptyLine()]);
   const [validationError, setValidationError] = useState<string | null>(null);
 
-  const { data: suppliers, isLoading: suppliersLoading } = useSuppliersQuery({ pageSize: 100 });
+  const { data: couriers, isLoading: couriersLoading } = useCouriersQuery({ pageSize: 100, isActive: true });
 
   // Single-warehouse-per-company model — no picker, just the one warehouse.
   const { data: warehouse } = useDefaultWarehouseQuery();
@@ -96,7 +96,7 @@ export function OrderForm({ isSubmitting, submitError, onSubmit }: OrderFormProp
       customerId: customer.id,
       outletId: outletId || undefined,
       warehouseId: warehouseId || undefined,
-      supplierId: supplierId || undefined,
+      courierId: courierId || undefined,
       note: note.trim() || undefined,
       lines: validLines.map((line) => ({
         productId: line.product!.id,
@@ -145,18 +145,18 @@ export function OrderForm({ isSubmitting, submitError, onSubmit }: OrderFormProp
         </div>
 
         <div className="space-y-2 sm:col-span-2">
-          <Label htmlFor="supplier">
-            {t('supplier')} <span className="text-xs text-muted-foreground">({t('supplierOptional')})</span>
+          <Label htmlFor="courier">
+            {t('courier')} <span className="text-xs text-muted-foreground">({t('courierOptional')})</span>
           </Label>
-          <Select id="supplier" value={supplierId} onChange={(e) => setSupplierId(e.target.value)} disabled={suppliersLoading}>
+          <Select id="courier" value={courierId} onChange={(e) => setCourierId(e.target.value)} disabled={couriersLoading}>
             <option value="">—</option>
-            {suppliers?.data.map((supplier) => (
-              <option key={supplier.id} value={supplier.id}>
-                {supplier.name}
+            {couriers?.data.map((courier) => (
+              <option key={courier.id} value={courier.id}>
+                {courierName(courier)}
               </option>
             ))}
           </Select>
-          {supplierId && <p className="text-xs text-muted-foreground">{t('supplierHint')}</p>}
+          {courierId && <p className="text-xs text-muted-foreground">{t('courierHint')}</p>}
         </div>
       </div>
 

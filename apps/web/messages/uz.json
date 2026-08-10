@@ -36,7 +36,7 @@
     "customers": "Mijozlar",
     "products": "Mahsulotlar",
     "stock": "Ombor",
-    "suppliers": "Yetkazib beruvchilar",
+    "couriers": "Kuryerlar",
     "users": "Foydalanuvchilar",
     "agents": "Agentlar",
     "routes": "Marshrutlar",
@@ -91,7 +91,8 @@
       "SALES_AGENT": "Agent",
       "WAREHOUSE": "Omborchi",
       "CASHIER": "Kassir",
-      "ACCOUNTANT": "Buxgalter"
+      "ACCOUNTANT": "Buxgalter",
+      "COURIER": "Kuryer"
     },
     "theme": {
       "light": "Yorug' rejim (bosib qorong'iga o'tish)",
@@ -289,7 +290,7 @@
       "cancelReasonLabel": "Sabab (ixtiyoriy)",
       "cancelConfirm": "Bekor qilish",
       "cancelKeep": "Bekor qilmaslik",
-      "deliverer": "Yetkazib beruvchi"
+      "courier": "Kuryer"
     },
     "form": {
       "title": "Yangi buyurtma",
@@ -313,12 +314,12 @@
       "created": "Buyurtma yaratildi",
       "selectCustomerFirst": "Avval mijozni tanlang",
       "emptyLinesError": "Kamida bitta qator qo'shing",
-      "supplier": "Yetkazib beruvchi",
-      "supplierOptional": "Ixtiyoriy",
-      "supplierHint": "Yetkazib beruvchi tanlansa, buyurtma darhol \"Jo'natilmoqda\" holatiga o'tadi"
+      "courier": "Kuryer",
+      "courierOptional": "Ixtiyoriy",
+      "courierHint": "Kuryer tanlansa, buyurtma darhol \"Jo'natilmoqda\" holatiga o'tadi"
     },
-    "supplierFilterBanner": "«{name}» yetkazib beruvchisiga biriktirilgan buyurtmalar",
-    "clearSupplierFilter": "Filterni tozalash"
+    "courierFilterBanner": "«{name}» kuryeriga biriktirilgan buyurtmalar",
+    "clearCourierFilter": "Filterni tozalash"
   },
   "Receivables": {
     "customer": "Mijoz",
@@ -461,90 +462,6 @@
       "received": "Qoldiq qo'shildi"
     }
   },
-  "PurchaseOrderStatus": {
-    "DRAFT": "Qoralama",
-    "ORDERED": "Buyurtma qilingan",
-    "PARTIALLY_RECEIVED": "Qisman qabul qilingan",
-    "RECEIVED": "Qabul qilingan",
-    "CANCELLED": "Bekor qilingan"
-  },
-  "Purchases": {
-    "title": "Xaridlar",
-    "newPurchase": "Yangi xarid",
-    "refresh": "Yangilash",
-    "retry": "Qayta urinish",
-    "emptyState": "Hali xarid buyurtmasi yo'q",
-    "number": "Raqami",
-    "supplier": "Yetkazib beruvchi",
-    "date": "Sana",
-    "total": "Summa",
-    "status": "Holat",
-    "filter": {
-      "all": "Barchasi",
-      "DRAFT": "Qoralama",
-      "ORDERED": "Buyurtma qilingan",
-      "PARTIALLY_RECEIVED": "Qisman qabul qilingan",
-      "RECEIVED": "Qabul qilingan",
-      "CANCELLED": "Bekor qilingan"
-    },
-    "detail": {
-      "backToList": "Xaridlarga qaytish",
-      "retry": "Qayta urinish",
-      "notFound": "Xarid buyurtmasi topilmadi",
-      "supplier": "Yetkazib beruvchi",
-      "warehouse": "Ombor",
-      "note": "Izoh",
-      "lines": "Qatorlar",
-      "product": "Mahsulot",
-      "qty": "Buyurtma miqdori",
-      "qtyReceived": "Qabul qilingan",
-      "unitPrice": "Narxi",
-      "lineTotal": "Summa",
-      "orderTotal": "Jami summa",
-      "submit": "Buyurtma qilish",
-      "submitSuccess": "Buyurtma yetkazib beruvchiga yuborildi",
-      "receive": "Qabul qilish",
-      "receiveSuccess": "Mahsulotlar qabul qilindi",
-      "cancel": "Bekor qilish",
-      "cancelSuccess": "Xarid buyurtmasi bekor qilindi"
-    },
-    "form": {
-      "title": "Yangi xarid buyurtmasi",
-      "backToList": "Xaridlarga qaytish",
-      "supplier": "Yetkazib beruvchi",
-      "newSupplier": "Yangi",
-      "searchSupplier": "Nomi yoki telefoni bo'yicha qidirish",
-      "noSuppliers": "Yetkazib beruvchi topilmadi",
-      "warehouse": "Ombor",
-      "lines": "Qatorlar",
-      "addLine": "Qator qo'shish",
-      "removeLine": "Qatorni o'chirish",
-      "searchProduct": "Mahsulot qidirish",
-      "noProducts": "Mahsulot topilmadi",
-      "qty": "Miqdor",
-      "unitPrice": "Narxi",
-      "note": "Izoh",
-      "submit": "Xarid buyurtmasi yaratish",
-      "created": "Xarid buyurtmasi yaratildi",
-      "selectSupplierFirst": "Avval yetkazib beruvchini tanlang",
-      "selectWarehouseFirst": "Omborni tanlang",
-      "emptyLinesError": "Kamida bitta qator qo'shing"
-    },
-    "supplierDialog": {
-      "title": "Yangi yetkazib beruvchi",
-      "name": "Nomi",
-      "phone": "Telefon",
-      "address": "Manzil",
-      "nameRequired": "Nomini kiriting",
-      "submit": "Saqlash"
-    },
-    "receiveDialog": {
-      "title": "Mahsulotlarni qabul qilish",
-      "remaining": "Qolgan",
-      "enterAtLeastOne": "Kamida bitta mahsulot uchun miqdor kiriting",
-      "confirm": "Qabul qilish"
-    }
-  },
   "Users": {
     "title": "Foydalanuvchilar",
     "newUser": "Yangi foydalanuvchi",
@@ -581,7 +498,8 @@
       "cashSessions": "Kassa smenalari",
       "routes": "Marshrutlar",
       "visits": "Tashriflar",
-      "purchaseOrders": "Xaridlar",
+      "courierOrders": "Yetkazilgan buyurtmalar",
+      "courierRoutes": "Kuryer marshrutlari",
       "auditLogs": "Audit yozuvlari",
       "exportJobs": "Eksport vazifalari",
       "notifications": "Bildirishnomalar"
@@ -677,6 +595,7 @@
       "user_activate": "Foydalanuvchi faollashtirildi",
       "user_delete": "Foydalanuvchi o'chirildi",
       "user_soft_delete": "Foydalanuvchi o'chirildi",
+      "user_telegram_unlinked": "Telegram bog'lanishi uzildi",
       "customer_create": "Mijoz yaratildi",
       "customer_update": "Mijoz o'zgartirildi",
       "customer_block": "Mijoz bloklandi",
@@ -687,15 +606,12 @@
       "outlet_update": "Savdo nuqtasi o'zgartirildi",
       "outlet_delete": "Savdo nuqtasi o'chirildi",
       "company_update": "Kompaniya sozlamalari o'zgartirildi",
-      "purchaseOrder_create": "Yetkazib beruvchiga buyurtma yaratildi",
-      "purchaseOrder_submit": "Yetkazib beruvchiga buyurtma yuborildi",
-      "purchaseOrder_receive": "Yetkazib beruvchi buyurtmasi qabul qilindi",
-      "purchaseOrder_cancel": "Yetkazib beruvchi buyurtmasi bekor qilindi",
-      "supplier_create": "Yetkazib beruvchi yaratildi",
-      "supplier_update": "Yetkazib beruvchi o'zgartirildi",
-      "supplier_delete": "Yetkazib beruvchi o'chirildi",
+      "courier_create": "Kuryer yaratildi",
+      "courier_update": "Kuryer o'zgartirildi",
+      "courier_delete": "Kuryer o'chirildi",
       "order_create": "Buyurtma yaratildi",
       "order_confirm": "Buyurtma tasdiqlandi",
+      "order_assign_courier": "Kuryerga biriktirildi",
       "order_deliver": "Buyurtma yetkazib berildi",
       "order_close": "Buyurtma yopildi",
       "order_cancel": "Buyurtma bekor qilindi",
@@ -881,25 +797,24 @@
       "retry": "Qayta urinish",
       "assigneeType": "Kimga biriktiriladi",
       "assigneeTypeAgent": "Agent",
-      "assigneeTypeSupplier": "Yetkazib beruvchi",
-      "supplier": "Yetkazib beruvchi",
-      "selectSupplierFirst": "Avval yetkazib beruvchini tanlang"
+      "assigneeTypeCourier": "Kuryer",
+      "courier": "Kuryer",
+      "selectCourierFirst": "Avval kuryerni tanlang"
     },
     "assignee": "Biriktirilgan",
-    "allSuppliers": "Barcha yetkazib beruvchilar",
-    "supplier": "Yetkazib beruvchi"
+    "allCouriers": "Barcha kuryerlar",
+    "courier": "Kuryer"
   },
-  "Suppliers": {
-    "title": "Yetkazib beruvchilar",
-    "newSupplier": "Yangi yetkazib beruvchi",
+  "Couriers": {
+    "title": "Kuryerlar",
+    "newCourier": "Yangi kuryer",
     "searchPlaceholder": "Nomi yoki telefoni bo'yicha qidirish",
     "refresh": "Yangilash",
     "retry": "Qayta urinish",
     "emptySearch": "Bu qidiruv bo'yicha natija topilmadi",
-    "emptyState": "Hali yetkazib beruvchi yo'q — xaridni boshlash uchun qo'shing",
-    "name": "Nomi",
+    "emptyState": "Hali kuryer yo'q — «Kuryer» roli bilan foydalanuvchi qo'shing",
+    "name": "F.I.O.",
     "phone": "Telefon",
-    "address": "Manzil",
     "status": "Holat",
     "active": "Faol",
     "inactive": "Nofaol",
@@ -908,12 +823,15 @@
     "deactivate": "Faolsizlantirish",
     "activate": "Faollashtirish",
     "form": {
-      "createTitle": "Yangi yetkazib beruvchi",
-      "editTitle": "Yetkazib beruvchini tahrirlash",
-      "name": "Nomi",
+      "createTitle": "Yangi kuryer",
+      "editTitle": "Kuryerni tahrirlash",
+      "name": "F.I.O.",
+      "firstName": "Ismi",
+      "lastName": "Familiyasi",
       "phone": "Telefon",
-      "address": "Manzil",
-      "nameRequired": "Nomini kiriting"
+      "nameRequired": "F.I.O. kiriting",
+      "firstNameRequired": "Ismini kiriting",
+      "lastNameRequired": "Familiyasini kiriting"
     },
     "routes": "Marshrutlar",
     "orders": "Buyurtmalar",
@@ -925,27 +843,18 @@
       "column": "Telegram",
       "action": "Telegram",
       "title": "Telegram bog'lanishi",
-      "subtitle": "«{name}» uchun Telegram orqali buyurtma bildirishnomalari",
+      "subtitle": "«{name}» ning Telegram hisobi",
       "linked": "Bog'langan",
       "notLinked": "Bog'lanmagan",
       "statusLinked": "Bog'langan",
-      "statusNotLinked": "Bu yetkazib beruvchi hali Telegramga bog'lanmagan. Bog'lash kodini yarating va unga yuboring.",
+      "statusNotLinked": "Bu kuryer hali Telegramga bog'lanmagan. Kuryer kompaniya botini ochib, /start bossin va telefon raqamini ulashsin — raqam hisobidagi raqamga mos kelsa, bog'lanish avtomatik amalga oshadi.",
       "linkedAt": "{date} dan beri bog'langan",
-      "generateCode": "Bog'lash kodini yaratish",
-      "newCode": "Yangi kod yaratish",
-      "codeIssued": "Bog'lash kodi yaratildi",
-      "codeLabel": "Bog'lash kodi",
-      "expiresAt": "Amal qilish muddati: {date}",
-      "copy": "Nusxa olish",
-      "copyFailed": "Kodni nusxalab bo'lmadi",
-      "openBot": "Telegram botni ochish",
-      "noDeepLinkHint": "Bu kodni yetkazib beruvchiga yuboring — u botga /start buyrug'i bilan birga kiritsin.",
       "unlink": "Bog'lanishni uzish",
       "unlinkSuccess": "«{name}» Telegram bog'lanishi uzildi",
       "close": "Yopish",
       "confirmUnlink": {
         "title": "Telegram bog'lanishini uzish",
-        "description": "«{name}» Telegram orqali buyurtma bildirishnomalarini olishni to'xtatadi. Davom etasizmi?",
+        "description": "«{name}» Mini App'da buyurtmalarni ko'rmay qoladi, yana bog'lanmagunicha.",
         "confirm": "Uzish"
       }
     }
@@ -1233,27 +1142,28 @@
           }
         ]
       },
-      "suppliers": {
-        "title": "Yetkazib beruvchilar",
-        "intro": "Sizga mahsulot yetkazib beradigan kompaniyalar ro'yxati.",
+      "couriers": {
+        "title": "Kuryerlar",
+        "intro": "Buyurtmalarni mijozlarga yetkazib beradigan kompaniyangizning xodimalari.",
         "groups": [
           {
             "items": [
-              "Yetkazib beruvchini qo'shib, unga marshrut biriktirish mumkin.",
-              "Telegram bog'lanishi — bog'lash kodini yaratib yetkazib beruvchiga yuborasiz; u kodni botga kiritgach, unga buyurtmalar haqida bildirishnoma keladi.",
-              "Vaqtincha ishlamayotgan yetkazib beruvchini o'chirmasdan «faolsizlantirish» mumkin."
+              "Kuryer — bu «Kuryer» roli bilan yaratilgan foydalanuvchi hisobi.",
+              "Kuryerni qo'shib, unga marshrut biriktirish mumkin.",
+              "Telegram bog'lanishi — kuryer o'z Telegram hisobini bog'lash orqali Mini App'da o'ziga biriktirilgan buyurtmalarni ko'radi va ularni yetkazildi deb belgilaydi.",
+              "Vaqtincha ishlamayotgan kuryerni o'chirmasdan «faolsizlantirish» mumkin."
             ]
           }
         ]
       },
       "routes": {
         "title": "Marshrutlar",
-        "intro": "Marshrut — bitta hafta kunida bitta agent (yoki yetkazib beruvchi) aylanib chiqadigan nuqtalar ro'yxati va ularning tartibi.",
+        "intro": "Marshrut — bitta hafta kunida bitta agent (yoki kuryer) aylanib chiqadigan nuqtalar ro'yxati va ularning tartibi.",
         "groups": [
           {
             "heading": "Marshrut tuzish",
             "items": [
-              "Kimga biriktirilishini tanlang: agentga yoki yetkazib beruvchiga.",
+              "Kimga biriktirilishini tanlang: agentga yoki kuryerga.",
               "Hafta kunini belgilang — masalan, har seshanba.",
               "Nuqtalarni qo'shing: avval mijozni qidiring, keyin uning savdo nuqtasini tanlang.",
               "Strelkalar bilan tartibni o'zgartiring — agent aynan shu ketma-ketlikda yuradi."

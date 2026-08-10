@@ -71,6 +71,40 @@ export class AmbiguousWarehouseException extends AppException {
   }
 }
 
+/**
+ * A courier is an ordinary `User` carrying the fixed system role `COURIER`
+ * (rbac-catalog.ts), so "not found" here covers all three ways the id can be
+ * wrong: no such user in this tenant, deactivated, or an active user who
+ * simply isn't a courier. Deliberately one message for all three — the caller
+ * picks from `GET /users?roleCode=COURIER`, so anything else is a bad request,
+ * not a state the UI needs to distinguish.
+ */
+export class CourierNotFoundException extends AppException {
+  constructor() {
+    super(HttpStatus.BAD_REQUEST, 'COURIER_NOT_FOUND', {
+      uz: 'Kuryer topilmadi yoki faol emas',
+      ru: 'Курьер не найден или неактивен',
+      en: 'Courier not found or inactive',
+    });
+  }
+}
+
+/**
+ * A courier may only close out the deliveries actually handed to them.
+ * Deliberately a 403 rather than the "not found" an agent gets for someone
+ * else's order: the courier is looking at a real order (they may have just
+ * been un-assigned from it), so hiding its existence would only be confusing.
+ */
+export class OrderNotAssignedToCourierException extends AppException {
+  constructor() {
+    super(HttpStatus.FORBIDDEN, 'SALES_ORDER_NOT_ASSIGNED_TO_COURIER', {
+      uz: 'Bu buyurtma sizga biriktirilmagan',
+      ru: 'Этот заказ не закреплён за вами',
+      en: 'This order is not assigned to you',
+    });
+  }
+}
+
 export class CustomerBlockedException extends AppException {
   constructor(reason?: string | null) {
     super(HttpStatus.CONFLICT, 'SALES_CUSTOMER_BLOCKED', {

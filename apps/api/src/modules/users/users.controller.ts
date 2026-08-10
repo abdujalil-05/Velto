@@ -58,4 +58,13 @@ export class UsersController {
   activate(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.users.activate(id, user);
   }
+
+  // Revokes a Telegram link (the read side is `telegramLinked` on every user
+  // response). 'users.update', not 'users.delete': it edits an attribute of a
+  // user who stays, same as deactivate/activate above.
+  @Delete(':id/telegram')
+  @RequirePermission('users.update')
+  unlinkTelegram(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.users.unlinkTelegram(id, user);
+  }
 }

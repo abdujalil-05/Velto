@@ -4,7 +4,7 @@ import { useState, type FormEvent } from 'react';
 import { useTranslations } from 'next-intl';
 import { Loader2 } from 'lucide-react';
 import { useUsersQuery } from '@/lib/api/users';
-import { useSuppliersQuery } from '@/lib/api/suppliers';
+import { useCouriersQuery, courierName } from '@/lib/api/couriers';
 import type { RouteInput } from '@/lib/api/routes';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -15,11 +15,11 @@ import { cn } from '@/lib/utils';
 import { RouteStopEditor, type RouteStopDraft } from './route-stop-editor';
 
 const WEEKDAYS = [1, 2, 3, 4, 5, 6, 7] as const;
-type AssigneeType = 'agent' | 'supplier';
+type AssigneeType = 'agent' | 'courier';
 
 export interface RouteFormDefaults {
   agentId?: string;
-  supplierId?: string;
+  courierId?: string;
   weekday?: number;
   name?: string;
   stops?: RouteStopDraft[];
@@ -38,11 +38,11 @@ export function RouteForm({ mode, defaultValues, isSubmitting, submitError, onSu
   const tWeekday = useTranslations('Routes');
 
   const { data: agents, isLoading: agentsLoading } = useUsersQuery({ roleCode: 'SALES_AGENT', isActive: true, pageSize: 100 });
-  const { data: suppliers, isLoading: suppliersLoading } = useSuppliersQuery({ pageSize: 100 });
+  const { data: couriers, isLoading: couriersLoading } = useCouriersQuery({ pageSize: 100, isActive: true });
 
-  const [assigneeType, setAssigneeType] = useState<AssigneeType>(defaultValues?.supplierId ? 'supplier' : 'agent');
+  const [assigneeType, setAssigneeType] = useState<AssigneeType>(defaultValues?.courierId ? 'courier' : 'agent');
   const [agentId, setAgentId] = useState(defaultValues?.agentId ?? '');
-  const [supplierId, setSupplierId] = useState(defaultValues?.supplierId ?? '');
+  const [courierId, setCourierId] = useState(defaultValues?.courierId ?? '');
   const [weekday, setWeekday] = useState(defaultValues?.weekday ?? 1);
   const [name, setName] = useState(defaultValues?.name ?? '');
   const [stops, setStops] = useState<RouteStopDraft[]>(defaultValues?.stops ?? []);
@@ -56,8 +56,8 @@ export function RouteForm({ mode, defaultValues, isSubmitting, submitError, onSu
       setValidationError(t('selectAgentFirst'));
       return;
     }
-    if (assigneeType === 'supplier' && !supplierId) {
-      setValidationError(t('selectSupplierFirst'));
+    if (assigneeType === 'courier' && !courierId) {
+      setValidationError(t('selectCourierFirst'));
       return;
     }
     if (!name.trim()) {
@@ -71,7 +71,7 @@ export function RouteForm({ mode, defaultValues, isSubmitting, submitError, onSu
 
     onSubmit({
       agentId: assigneeType === 'agent' ? agentId : undefined,
-      supplierId: assigneeType === 'supplier' ? supplierId : undefined,
+      courierId: assigneeType === 'courier' ? courierId : undefined,
       weekday,
       name: name.trim(),
       stops: stops.map((s) => ({ outletId: s.outletId })),
@@ -83,7 +83,7 @@ export function RouteForm({ mode, defaultValues, isSubmitting, submitError, onSu
       <div className="space-y-2">
         <Label>{t('assigneeType')}</Label>
         <div className="flex gap-1 rounded-md border border-border p-1 sm:w-fit">
-          {(['agent', 'supplier'] as const).map((type) => (
+          {(['agent', 'courier'] as const).map((type) => (
             <button
               key={type}
               type="button"
@@ -93,7 +93,7 @@ export function RouteForm({ mode, defaultValues, isSubmitting, submitError, onSu
                 assigneeType === type ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent',
               )}
             >
-              {t(type === 'agent' ? 'assigneeTypeAgent' : 'assigneeTypeSupplier')}
+              {t(type === 'agent' ? 'assigneeTypeAgent' : 'assigneeTypeCourier')}
             </button>
           ))}
         </div>
@@ -114,12 +114,12 @@ export function RouteForm({ mode, defaultValues, isSubmitting, submitError, onSu
           </div>
         ) : (
           <div className="space-y-2">
-            <Label htmlFor="supplierId">{t('supplier')}</Label>
-            <Select id="supplierId" value={supplierId} onChange={(e) => setSupplierId(e.target.value)} disabled={suppliersLoading}>
+            <Label htmlFor="courierId">{t('courier')}</Label>
+            <Select id="courierId" value={courierId} onChange={(e) => setCourierId(e.target.value)} disabled={couriersLoading}>
               <option value="">—</option>
-              {suppliers?.data.map((supplier) => (
-                <option key={supplier.id} value={supplier.id}>
-                  {supplier.name}
+              {couriers?.data.map((courier) => (
+                <option key={courier.id} value={courier.id}>
+                  {courierName(courier)}
                 </option>
               ))}
             </Select>

@@ -28,6 +28,12 @@ export const SYSTEM_ROLES: { code: string; name: string }[] = [
   { code: 'OWNER', name: 'Admin' },
   { code: 'SALES_DIRECTOR', name: 'Director' },
   { code: 'SALES_AGENT', name: 'Agent' },
+  // Kuryer: the company's OWN delivery person, not an external counterparty —
+  // deliberately an ordinary `User` row with a system role rather than a
+  // separate entity, so couriers reuse the agent Telegram login
+  // (User.telegramId + POST /auth/telegram + Mini App) with zero new auth code.
+  // Replaces the removed Supplier ("yetkazib beruvchi") concept.
+  { code: 'COURIER', name: 'Kuryer' },
   { code: 'WAREHOUSE', name: 'Omborchi' },
   { code: 'CASHIER', name: 'Kassir' },
   { code: 'ACCOUNTANT', name: 'Buxgalter' },
@@ -40,13 +46,16 @@ export const PERMISSION_DEFS: { module: string; actions: string[] }[] = [
   { module: 'customers', actions: ['read', 'create', 'update', 'delete'] },
   { module: 'catalog', actions: ['read', 'create', 'update', 'delete'] },
   { module: 'stock', actions: ['read', 'receive', 'adjust'] },
-  { module: 'orders', actions: ['read', 'create', 'update', 'cancel'] },
+  // `deliver` is deliberately separate from `update`: `update` guards confirm/
+  // close/cancel/delete and courier assignment, so granting it to a courier
+  // would let them drive or delete any order in the tenant. `deliver` is the
+  // narrow "mark my delivery done" transition (CONFIRMED -> DELIVERED).
+  { module: 'orders', actions: ['read', 'create', 'update', 'cancel', 'deliver'] },
   { module: 'invoices', actions: ['read'] },
   { module: 'payments', actions: ['read', 'create'] },
   { module: 'cash', actions: ['read', 'open', 'close'] },
   { module: 'routes', actions: ['read', 'create', 'update'] },
   { module: 'field', actions: ['read', 'create'] },
-  { module: 'purchases', actions: ['read', 'create', 'update', 'receive'] },
   { module: 'reports', actions: ['read', 'export'] },
   { module: 'users', actions: ['read', 'create', 'update', 'delete'] },
   { module: 'roles', actions: ['read'] },
@@ -63,7 +72,7 @@ export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
   OWNER: 'ALL',
   SALES_DIRECTOR: [
     'customers.read', 'customers.update', 'catalog.read', 'stock.read',
-    'orders.read', 'orders.update', 'invoices.read', 'payments.read',
+    'orders.read', 'orders.update', 'orders.deliver', 'invoices.read', 'payments.read',
     'routes.read', 'routes.create', 'routes.update', 'field.read',
     'reports.read', 'reports.export', 'users.read', 'users.create',
     'users.update', 'users.delete', 'roles.read',
@@ -72,10 +81,18 @@ export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
     'customers.read', 'catalog.read', 'stock.read', 'orders.read',
     'orders.create', 'payments.create', 'payments.read', 'invoices.read', 'routes.read', 'field.read', 'field.create',
   ],
+  // Deliberately narrow: a courier only needs to find the customer, see what
+  // is on the order and mark their own delivery done. `orders.deliver`, not
+  // `orders.update` — the latter also guards confirm/cancel/delete and courier
+  // reassignment. No create/cancel, no stock, no payments. Restricting a
+  // courier to their OWN orders is enforced in the API on top of this.
+  COURIER: [
+    'customers.read', 'catalog.read', 'orders.read', 'orders.deliver',
+  ],
   WAREHOUSE: [
     'catalog.read', 'stock.read', 'stock.receive', 'stock.adjust',
-    'purchases.read', 'purchases.create', 'purchases.update', 'purchases.receive',
-    'orders.read', 'orders.update', // marks CONFIRMED orders as DELIVERED
+    'orders.read', 'orders.update',
+    'orders.deliver', // marks CONFIRMED orders as DELIVERED
   ],
   CASHIER: [
     'customers.read', 'invoices.read', 'payments.read', 'payments.create',

@@ -11,8 +11,8 @@ function isValidUuidIfSet(value: unknown): boolean {
 /**
  * "Exactly one of these two UUID properties must be provided" — apply to
  * both properties, each naming the other. Used by CreateRouteDto (9.x
- * supplier delivery flow): a route is served either by an own field agent
- * (`agentId`) or by a yetkazib beruvchi ("deliverer", `supplierId`), never
+ * courier delivery flow): a route is served either by an own field agent
+ * (`agentId`) or by a kuryer (`courierId`), never
  * both and never neither — the same invariant the DB enforces with a CHECK
  * constraint (see schema.prisma's `Route` model doc).
  *
@@ -49,7 +49,7 @@ export function ExactlyOneUuidOf(otherProperty: string, validationOptions?: Vali
 /**
  * "At most one of these two UUID properties may be provided" — the
  * partial-update counterpart of ExactlyOneUuidOf above: neither field
- * present means "leave the route's current agent/supplier assignment
+ * present means "leave the route's current agent/courier assignment
  * unchanged" (a valid no-op for a PATCH), but both present at once is still
  * rejected outright rather than left for the DB's CHECK constraint to 500
  * on. Same inline-UUID-check reasoning as ExactlyOneUuidOf re: `@IsOptional()`.

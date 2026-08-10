@@ -72,12 +72,6 @@ model Company {
   routes                    Route[]
   routeRuns                 RouteRun[]
   visits                    Visit[]
-  suppliers                 Supplier[]
-  supplierTelegramLinks     SupplierTelegramLink[]
-  supplierTelegramLinkCodes SupplierTelegramLinkCode[]
-  supplierRoutes            SupplierRoute[]
-  supplierRouteStops        SupplierRouteStop[]
-  purchaseOrders            PurchaseOrder[]
   auditLogs                 AuditLog[]
   outboxEvents              OutboxEvent[]
   importJobs                ImportJob[]
@@ -104,19 +98,21 @@ model User {
 
   company Company @relation(fields: [companyId], references: [id])
 
-  roles                     UserRole[]
-  refreshTokens             RefreshToken[]
-  agentOrders               SalesOrder[]               @relation("AgentOrders")
-  paymentsCollected         Payment[]                  @relation("PaymentsCollected")
-  cashSessions              CashSession[]
-  agentRoutes               Route[]                    @relation("AgentRoutes")
-  agentVisits               Visit[]                    @relation("AgentVisits")
-  auditLogs                 AuditLog[]
-  purchaseOrders            PurchaseOrder[]            @relation("PurchaseOrderCreatedBy")
-  exportJobs                ExportJob[]
-  notifications             Notification[]
-  // One-time Telegram link codes this admin generated for suppliers (M09).
-  supplierTelegramLinkCodes SupplierTelegramLinkCode[] @relation("SupplierTelegramLinkCodeCreatedBy")
+  roles             UserRole[]
+  refreshTokens     RefreshToken[]
+  agentOrders       SalesOrder[]   @relation("AgentOrders")
+  // Delivery work assigned to this user as a kuryer (role code COURIER). A
+  // courier is an ordinary User, so the same row can in principle appear on
+  // both sides; in practice the two roles are held by different people.
+  courierOrders     SalesOrder[]   @relation("CourierOrders")
+  paymentsCollected Payment[]      @relation("PaymentsCollected")
+  cashSessions      CashSession[]
+  agentRoutes       Route[]        @relation("AgentRoutes")
+  courierRoutes     Route[]        @relation("CourierRoutes")
+  agentVisits       Visit[]        @relation("AgentVisits")
+  auditLogs         AuditLog[]
+  exportJobs        ExportJob[]
+  notifications     Notification[]
 
   @@unique([companyId, phone])
   // Scoped per-company like every other natural key here: a global unique on
@@ -333,7 +329,6 @@ model Product {
   stockMovements     StockMovement[]
   orderLines         SalesOrderLine[]
   invoiceLines       InvoiceLine[]
-  purchaseOrderLines PurchaseOrderLine[]
 
   // Same partial-unique-index note as Customer.code above — see
   // prisma/migrations/*_soft_delete_partial_unique.
@@ -412,7 +407,6 @@ model Warehouse {
   company        Company         @relation(fields: [companyId], references: [id])
   stockLevels    StockLevel[]
   stockMovements StockMovement[]
-  purchaseOrders PurchaseOrder[]
   salesOrders    SalesOrder[]
 
   @@index([companyId])
@@ -479,12 +473,13 @@ model SalesOrder {
   customerId  String      @db.Uuid
   outletId    String?     @db.Uuid
   agentId     String?     @db.Uuid
-  /// Yetkazib beruvchi ("deliverer"): the Supplier contracted to physically
-  /// deliver this order. Optional — most orders ship from an own warehouse
-  /// (`warehouseId`) with no third party involved. `onDelete: SetNull` because
-  /// an order's history must survive the supplier record being removed; the
-  /// order itself is never deleted as a side effect of supplier cleanup.
-  supplierId  String?     @db.Uuid
+  /// Kuryer: the company's own delivery person (a `User` holding the COURIER
+  /// system role) who takes this order from the warehouse to the customer.
+  /// Optional — an order is not assigned to anyone until it is dispatched, and
+  /// agent-delivered orders never get a courier. `onDelete: SetNull` because an
+  /// order's history must survive the courier's user record being removed; the
+  /// order itself is never deleted as a side effect of user cleanup.
+  courierId   String?     @db.Uuid
   // Not in the TZ's 6.6 schema, but stock reservation (8.3) is inherently
   // per-warehouse (StockLevel/StockMovement are keyed by warehouseId) —
   // required infrastructure the doc's schema section omitted.
@@ -503,7 +498,7 @@ model SalesOrder {
   agent     User?     @relation("AgentOrders", fields: [agentId], references: [id])
   warehouse Warehouse @relation(fields: [warehouseId], references: [id])
 
-  deliverySupplier Supplier? @relation("SupplierDeliveryOrders", fields: [supplierId], references: [id], onDelete: SetNull)
+  courier   User?     @relation("CourierOrders", fields: [courierId], references: [id], onDelete: SetNull)
 
   lines    SalesOrderLine[]
   invoices Invoice[]
@@ -514,7 +509,7 @@ model SalesOrder {
   @@index([companyId, agentId, createdAt])
   @@index([companyId, outletId])
   @@index([companyId, warehouseId])
-  @@index([companyId, supplierId])
+  @@index([companyId, courierId])
 }
 
 model SalesOrderLine {
@@ -672,32 +667,32 @@ model CashSession {
 model Route {
   id         String   @id @default(uuid()) @db.Uuid
   companyId  String   @db.Uuid
-  /// Exactly one of `agentId` / `supplierId` is set — a route is served either
-  /// by an own field agent or by a yetkazib beruvchi ("deliverer"), never both
-  /// and never neither. Prisma's DSL cannot express that, so it is enforced by
-  /// the `Route_agent_xor_supplier_check` CHECK constraint added in
-  /// 20260810130000_route_agent_or_supplier (same technique as
-  /// `SupplierRoute_weekday_check`); both columns are nullable here only
-  /// because the constraint lives in SQL.
+  /// Exactly one of `agentId` / `courierId` is set — a route is served either
+  /// by an own field agent or by a kuryer (a `User` holding the COURIER system
+  /// role), never both and never neither. Prisma's DSL cannot express that, so
+  /// it is enforced by the `Route_agent_xor_courier_check` CHECK constraint
+  /// (renamed from `Route_agent_xor_supplier_check` in
+  /// 20260810170000_couriers_replace_suppliers); both columns are nullable here
+  /// only because the constraint lives in SQL.
   agentId    String?  @db.Uuid
   /// Both FKs below are RESTRICT, not SetNull: nulling a served route's
-  /// `supplierId` (or `agentId`) as a side effect of deleting the parent would
-  /// leave the row with neither owner and violate the XOR. `SalesOrder` keeps
-  /// SetNull because an order has no such invariant.
-  supplierId String?  @db.Uuid
+  /// `courierId` (or `agentId`) as a side effect of deleting the parent user
+  /// would leave the row with neither owner and violate the XOR. `SalesOrder`
+  /// keeps SetNull because an order has no such invariant.
+  courierId  String?  @db.Uuid
   weekday    Int // 1-7
   name       String
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  company          Company     @relation(fields: [companyId], references: [id])
-  agent            User?       @relation("AgentRoutes", fields: [agentId], references: [id], onDelete: Restrict)
-  deliverySupplier Supplier?   @relation("SupplierRoutesServed", fields: [supplierId], references: [id], onDelete: Restrict)
-  stops            RouteStop[]
-  runs             RouteRun[]
+  company Company     @relation(fields: [companyId], references: [id])
+  agent   User?       @relation("AgentRoutes", fields: [agentId], references: [id], onDelete: Restrict)
+  courier User?       @relation("CourierRoutes", fields: [courierId], references: [id], onDelete: Restrict)
+  stops   RouteStop[]
+  runs    RouteRun[]
 
   @@index([companyId, agentId])
-  @@index([companyId, supplierId])
+  @@index([companyId, courierId])
 }
 
 /**
@@ -764,253 +759,6 @@ model Visit {
   @@unique([companyId, clientId])
   @@index([companyId, agentId, startedAt])
   @@index([companyId, outletId])
-}
-
-// ---------------------------------------------------------------------------
-// 6.x Xaridlar (M09) — sxema 6-bo'limda berilmagan, 5.3/9.2 qamroviga ko'ra
-// soddalashtirilgan holda shu yerda qo'shildi (yetkazib beruvchi, xarid
-// buyurtmasi, qabul).
-// ---------------------------------------------------------------------------
-
-model Supplier {
-  id        String    @id @default(uuid()) @db.Uuid
-  companyId String    @db.Uuid
-  name      String
-  phone     String?
-  // Legal/correspondence address. `pickupAddress` below is where goods are
-  // actually collected, which is frequently a different warehouse or bazaar
-  // stall than the address on the contract.
-  address   String?
-  isActive  Boolean   @default(true)
-  deletedAt DateTime?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-
-  // Where a PurchaseOrder is physically picked up. Coordinates use the same
-  // Decimal(10,7) shape as Visit.latitude/longitude so the existing
-  // GPS-radius helpers can be reused unchanged; both are nullable because a
-  // supplier may only ever be reachable by address text.
-  pickupAddress   String?
-  pickupLatitude  Decimal? @db.Decimal(10, 7)
-  pickupLongitude Decimal? @db.Decimal(10, 7)
-
-  company           Company                    @relation(fields: [companyId], references: [id])
-  purchaseOrders    PurchaseOrder[]
-  telegramLink      SupplierTelegramLink?
-  telegramLinkCodes SupplierTelegramLinkCode[]
-  pickupRoutes      SupplierRoute[]
-  // Outbound delivery work assigned to this supplier. Distinct from
-  // `pickupRoutes` (SupplierRoute = inbound collection *from* the supplier).
-  deliveryOrders    SalesOrder[]               @relation("SupplierDeliveryOrders")
-  routes            Route[]                    @relation("SupplierRoutesServed")
-
-  @@index([companyId, name])
-}
-
-/// Supplier <-> Telegram account link (M09 purchases + 5.3 "In-app + Telegram").
-///
-/// Suppliers are external counterparties, not `User` rows: they have no
-/// password, no Role and must never pass `JwtAuthGuard`, so their Telegram id
-/// cannot live on `User.telegramId` without also making them a tenant user.
-/// Hence a separate 1:1 side table rather than a column on Supplier — it keeps
-/// "is this Telegram account a Velto user?" and "is this Telegram account a
-/// supplier contact?" as two disjoint lookups, so a supplier can never be
-/// resolved by the login path in auth.service.ts.
-///
-/// `telegramId` is scoped per company for exactly the reason documented on
-/// User.telegramId: a global unique would let tenant A's write collide with —
-/// and thereby probe the existence of — a row in tenant B. The "one Telegram
-/// account = one supplier contact" invariant is therefore an application-layer
-/// check that must fail closed on >1 match, the same as the phone-lookup path.
-model SupplierTelegramLink {
-  id         String   @id @default(uuid()) @db.Uuid
-  companyId  String   @db.Uuid
-  supplierId String   @db.Uuid
-  telegramId BigInt
-  // Telegram @username at link time, for display only — it is user-mutable and
-  // must never be used to identify the account.
-  username   String?
-  isActive   Boolean  @default(true)
-  linkedAt   DateTime @default(now())
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-
-  company  Company  @relation(fields: [companyId], references: [id])
-  supplier Supplier @relation(fields: [supplierId], references: [id])
-
-  // One link row per supplier, full stop — this is what enforces "one active
-  // link per supplier". Deliberately NOT a partial unique on
-  // (supplierId) WHERE "isActive": re-linking a supplier to a new Telegram
-  // account must reuse/overwrite the single row, so deactivation history is
-  // never a way to accumulate rows that a `findFirst({ isActive: true })`
-  // reader (sales.service.ts, notifications.service.ts) could pick between
-  // non-deterministically. supplierId is a uuid PK of an already tenant-scoped
-  // row, so a global unique here leaks nothing (unlike telegramId below).
-  @@unique([supplierId])
-  @@unique([companyId, telegramId])
-  @@index([companyId])
-}
-
-/// One-time code that links a supplier's Telegram account (M09 purchases,
-/// 5.3 "In-app + Telegram").
-///
-/// Flow: an admin generates a code in the web UI -> the supplier sends
-/// `/start <code>` to the bot -> the webhook redeems it and creates the
-/// `SupplierTelegramLink`. Nothing else writes `SupplierTelegramLink`.
-///
-/// `code` is GLOBALLY unique (plain `@unique`, not `@@unique([companyId, code])`)
-/// because the webhook must resolve it BEFORE any companyId is known: a Telegram
-/// update carries only a chat id and the code text, so there is no tenant to
-/// scope the lookup to. Exactly the same cross-tenant constraint as the phone
-/// lookup at login (auth.service.ts, TZ 15.2), and it must be handled the same
-/// way — resolve via `systemPrisma` (BYPASSRLS), then switch to
-/// `withTenant(row.companyId, ...)` for the redemption write.
-///
-/// This is the one place a global unique is acceptable despite the probing
-/// argument documented on `User.telegramId` / `SupplierTelegramLink.telegramId`:
-/// those are attacker-supplied natural keys, whereas `code` is a high-entropy,
-/// short-lived, single-use secret that WE generate. There is nothing to guess,
-/// and the row is dead after `expiresAt`. The generator must therefore keep it
-/// high-entropy (CSPRNG, not a counter or a 4-digit PIN) — a guessable code
-/// would turn this unique into a cross-tenant existence oracle.
-model SupplierTelegramLinkCode {
-  id          String    @id @default(uuid()) @db.Uuid
-  companyId   String    @db.Uuid
-  supplierId  String    @db.Uuid
-  /// The literal value the supplier sends as `/start <code>`.
-  code        String    @unique
-  expiresAt   DateTime
-  /// Null until redeemed. Single-use: the webhook must reject a non-null
-  /// `usedAt` rather than re-link, so a leaked code can't be replayed.
-  usedAt      DateTime?
-  /// The admin who generated the code (audit trail, TZ 15.6).
-  createdById String    @db.Uuid
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-
-  company   Company  @relation(fields: [companyId], references: [id])
-  // Cascade: a pending code is worthless once its supplier is gone, and it
-  // must not outlive it as a danglingly-redeemable secret. This is the one
-  // Supplier FK in the schema that is not RESTRICT — the others guard real
-  // business documents (PurchaseOrder, Route, SupplierRoute), which must never
-  // vanish silently.
-  supplier  Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
-  createdBy User     @relation("SupplierTelegramLinkCodeCreatedBy", fields: [createdById], references: [id])
-
-  @@index([companyId, supplierId])
-  // Unindexed FK columns force seq scans under RLS and make parent
-  // deletes/updates lock-heavy (same reasoning as 20260808120000 §2).
-  @@index([createdById])
-}
-
-/// Recurring inbound pickup run at a supplier (M09 purchases).
-///
-/// Deliberately a separate table from `Route`/`RouteStop` rather than a
-/// `type`/`kind` discriminator on them: `Route` is outbound field-agent work —
-/// it is keyed on `agentId`, its stops are `Outlet` rows, and `RouteRun`/`Visit`
-/// plus every existing reader (routes service, miniapp sync, 9.4 route-finish
-/// completion rule) assume exactly that shape. Adding supplier pickups into it
-/// would either force `agentId`/`outletId` nullable — silently weakening those
-/// readers' assumptions — or make them start returning rows they have never
-/// seen. An independent pair of tables keeps all existing behaviour byte-for-byte
-/// unchanged.
-model SupplierRoute {
-  id         String   @id @default(uuid()) @db.Uuid
-  companyId  String   @db.Uuid
-  supplierId String   @db.Uuid
-  /// ISO-8601 weekday, 1 = Monday .. 7 = Sunday. Same encoding as Route.weekday
-  /// so the existing weekday helpers/labels can be reused unchanged.
-  weekday    Int
-  name       String
-  isActive   Boolean  @default(true)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-
-  company  Company             @relation(fields: [companyId], references: [id])
-  supplier Supplier            @relation(fields: [supplierId], references: [id])
-  stops    SupplierRouteStop[]
-
-  @@index([companyId, supplierId])
-  @@index([companyId, weekday])
-}
-
-/// One pickup point on a `SupplierRoute`.
-///
-/// Unlike `RouteStop` (which joins an `Outlet` and therefore inherits its
-/// company through a subquery policy), a pickup point is free-form: a bazaar
-/// stall or a third-party warehouse that is not a Velto entity. So it carries
-/// its own address/coordinates and its own `companyId`, which lets RLS use the
-/// cheaper direct-column policy; the cross-tenant FK guard trigger is what stops
-/// `routeId` pointing at another tenant's SupplierRoute.
-model SupplierRouteStop {
-  id            String   @id @default(uuid()) @db.Uuid
-  companyId     String   @db.Uuid
-  routeId       String   @db.Uuid
-  /// Visit order within the route, 1-based.
-  sequence      Int
-  pickupAddress String
-  /// Decimal(10,7) — identical shape to Visit/Supplier pickup coordinates, so
-  /// the existing GPS-radius helpers apply as-is. Nullable: an address-only
-  /// pickup point is valid.
-  latitude      Decimal? @db.Decimal(10, 7)
-  longitude     Decimal? @db.Decimal(10, 7)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-
-  company Company       @relation(fields: [companyId], references: [id])
-  route   SupplierRoute @relation(fields: [routeId], references: [id])
-
-  @@unique([routeId, sequence])
-  @@index([companyId, routeId])
-  @@index([companyId, latitude, longitude])
-}
-
-enum PurchaseOrderStatus {
-  DRAFT
-  ORDERED
-  PARTIALLY_RECEIVED
-  RECEIVED
-  CANCELLED
-}
-
-model PurchaseOrder {
-  id          String              @id @default(uuid()) @db.Uuid
-  companyId   String              @db.Uuid
-  number      String // PO-2026-000027
-  supplierId  String              @db.Uuid
-  warehouseId String              @db.Uuid
-  createdById String?             @db.Uuid
-  status      PurchaseOrderStatus @default(DRAFT)
-  note        String?
-  createdAt   DateTime            @default(now())
-  updatedAt   DateTime            @updatedAt
-
-  company   Company   @relation(fields: [companyId], references: [id])
-  supplier  Supplier  @relation(fields: [supplierId], references: [id])
-  warehouse Warehouse @relation(fields: [warehouseId], references: [id])
-  createdBy User?     @relation("PurchaseOrderCreatedBy", fields: [createdById], references: [id])
-
-  lines PurchaseOrderLine[]
-
-  @@unique([companyId, number])
-  @@index([companyId, supplierId])
-  @@index([companyId, warehouseId])
-}
-
-model PurchaseOrderLine {
-  id              String   @id @default(uuid()) @db.Uuid
-  purchaseOrderId String   @db.Uuid
-  productId       String   @db.Uuid
-  qty             Decimal  @db.Decimal(18, 3)
-  qtyReceived     Decimal  @default(0) @db.Decimal(18, 3)
-  unitPrice       Decimal  @db.Decimal(18, 2)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id])
-  product       Product       @relation(fields: [productId], references: [id])
-
-  @@index([purchaseOrderId])
 }
 
 // ---------------------------------------------------------------------------

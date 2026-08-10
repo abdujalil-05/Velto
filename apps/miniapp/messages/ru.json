@@ -97,6 +97,34 @@
     "noOrderConfirmDescription": "Визит закроется со статусом «без заказа» и попадёт в отчёт за сегодня. Переоткрыть его нельзя.",
     "noOrderConfirmAction": "Да, завершить"
   },
+  "Courier": {
+    "title": "Доставки",
+    "orderNumber": "Заказ №{number}",
+    "emptyState": "На вас не назначено ни одной доставки",
+    "loadError": "Не удалось загрузить доставки",
+    "notFound": "Заказ не найден",
+    "customer": "Клиент",
+    "unknownCustomer": "Клиент не указан",
+    "address": "Адрес",
+    "noAddress": "Адрес не указан",
+    "phone": "Телефон",
+    "noPhone": "Телефон не указан",
+    "total": "Сумма",
+    "markDelivered": "Доставлено",
+    "deliveredSuccess": "Заказ доставлен",
+    "alreadyDelivered": "Этот заказ уже закрыт",
+    "deliverConfirmTitle": "Заказ доставлен?",
+    "deliverConfirmDescription": "Заказ будет отмечен как доставленный. Отменить это действие нельзя.",
+    "status": {
+      "DRAFT": "Черновик",
+      "SUBMITTED": "Отправлен",
+      "CONFIRMED": "Подтверждён",
+      "SHIPPED": "Отгружен",
+      "DELIVERED": "Доставлен",
+      "CLOSED": "Закрыт",
+      "CANCELLED": "Отменён"
+    }
+  },
   "NotFound": {
     "title": "Такой страницы не существует",
     "description": "Запрошенная страница не найдена или была перемещена.",

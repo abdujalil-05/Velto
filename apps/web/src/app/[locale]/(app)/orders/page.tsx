@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { toast } from 'sonner';
 import { Plus, RefreshCw, ShoppingCart, X } from 'lucide-react';
@@ -8,7 +8,7 @@ import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
 import { useOrdersQuery, useDeleteOrderMutation, type SalesOrder } from '@/lib/api/orders';
 import { useCustomersQuery, type Customer, type OrderStatus } from '@/lib/api/customers';
-import { useSupplierQuery } from '@/lib/api/suppliers';
+import { useUserQuery } from '@/lib/api/users';
 import { errorMessage } from '@/lib/api/client';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
 import { useSort } from '@/lib/hooks/use-sort';
@@ -41,11 +41,11 @@ export default function OrdersPage() {
   const debouncedCustomerQuery = useDebouncedValue(customerQuery, 300);
   const { sort, toggle: toggleSort } = useSort();
 
-  // Deep-linked from the suppliers list ("N orders" link). GET /orders has no supplierId filter
-  // (only customerId/agentId/status/date-range), so this switches the page into a client-filtered
-  // mode: fetch a generous unpaginated page and filter by supplierId in the browser.
-  const supplierIdFilter = useInitialQueryParam('supplierId');
-  const { data: filterSupplier } = useSupplierQuery(supplierIdFilter, !!supplierIdFilter);
+  // Deep-linked from the couriers list ("N orders" link) — `GET /orders` filters
+  // on courierId server-side, so this only swaps the status/customer filter bar
+  // for a "showing courier X" banner.
+  const courierIdFilter = useInitialQueryParam('courierId');
+  const { data: filterCourier } = useUserQuery(courierIdFilter);
 
   const { data: customerOptions, isLoading: customersLoading } = useCustomersQuery({
     page: 1,
@@ -53,9 +53,9 @@ export default function OrdersPage() {
     search: debouncedCustomerQuery || undefined,
   });
 
-  const { data: rawData, isLoading, isError, error, refetch, isFetching } = useOrdersQuery(
-    supplierIdFilter
-      ? { page: 1, pageSize: 200, sortBy: 'createdAt', sortDir: 'desc' }
+  const { data, isLoading, isError, error, refetch, isFetching } = useOrdersQuery(
+    courierIdFilter
+      ? { page, pageSize: 25, courierId: courierIdFilter, sortBy: 'createdAt', sortDir: 'desc' }
       : {
           page,
           pageSize: 25,
@@ -65,12 +65,6 @@ export default function OrdersPage() {
           sortDir: sort.sortDir,
         },
   );
-
-  const data = useMemo(() => {
-    if (!rawData || !supplierIdFilter) return rawData;
-    const filtered = rawData.data.filter((o) => o.supplierId === supplierIdFilter);
-    return { data: filtered, meta: { ...rawData.meta, total: filtered.length, totalPages: 1, page: 1 } };
-  }, [rawData, supplierIdFilter]);
 
   const deleteMutation = useDeleteOrderMutation();
   const [pendingDelete, setPendingDelete] = useState<SalesOrder | null>(null);
@@ -88,7 +82,7 @@ export default function OrdersPage() {
     }
   }
 
-  const hasFilters = status !== 'all' || !!customer || !!supplierIdFilter;
+  const hasFilters = status !== 'all' || !!customer || !!courierIdFilter;
 
   function handleExport() {
     if (!data) return;
@@ -113,13 +107,17 @@ export default function OrdersPage() {
         )}
       </div>
 
-      {supplierIdFilter ? (
+      {courierIdFilter ? (
         <Alert>
           <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
-            <span>{t('supplierFilterBanner', { name: filterSupplier?.name ?? '…' })}</span>
+            <span>
+              {t('courierFilterBanner', {
+                name: filterCourier ? `${filterCourier.firstName} ${filterCourier.lastName}` : '…',
+              })}
+            </span>
             <Link href="/orders" className="inline-flex items-center gap-1 text-sm text-primary hover:underline">
               <X className="h-3.5 w-3.5" />
-              {t('clearSupplierFilter')}
+              {t('clearCourierFilter')}
             </Link>
           </AlertDescription>
         </Alert>

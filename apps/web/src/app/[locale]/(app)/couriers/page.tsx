@@ -1,18 +1,17 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { toast } from 'sonner';
 import { Plus, RefreshCw, Search, Truck } from 'lucide-react';
 import { useAuth } from '@/lib/auth/auth-context';
 import {
-  useSuppliersQuery,
-  useDeleteSupplierMutation,
-  useActivateSupplierMutation,
-  useUnlinkSupplierTelegramMutation,
-  type Supplier,
-} from '@/lib/api/suppliers';
-import { useOrdersQuery } from '@/lib/api/orders';
+  useCouriersQuery,
+  useUnlinkCourierTelegramMutation,
+  courierName,
+  type Courier,
+} from '@/lib/api/couriers';
+import { useActivateUserMutation, useDeactivateUserMutation } from '@/lib/api/users';
 import { errorMessage } from '@/lib/api/client';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
 import { useSort } from '@/lib/hooks/use-sort';
@@ -24,29 +23,29 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { PaginationBar } from '@/components/shared/pagination-bar';
 import { ExportCsvButton } from '@/components/shared/export-csv-button';
-import { SuppliersTable } from '@/components/suppliers/suppliers-table';
-import { SupplierFormDialog } from '@/components/suppliers/supplier-form-dialog';
-import { SupplierTelegramDialog } from '@/components/suppliers/supplier-telegram-dialog';
+import { CouriersTable } from '@/components/couriers/couriers-table';
+import { CourierFormDialog } from '@/components/couriers/courier-form-dialog';
+import { CourierTelegramDialog } from '@/components/couriers/courier-telegram-dialog';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { cn } from '@/lib/utils';
 
-export default function SuppliersPage() {
-  const t = useTranslations('Suppliers');
-  const tTelegram = useTranslations('Suppliers.telegram');
+export default function CouriersPage() {
+  const t = useTranslations('Couriers');
+  const tTelegram = useTranslations('Couriers.telegram');
   const tCommon = useTranslations('Common');
   const locale = useLocale();
   const { hasPermission } = useAuth();
-  const canCreate = hasPermission('purchases.create');
-  const canUpdate = hasPermission('purchases.update');
-  const canSeeOrders = hasPermission('orders.read');
-  const canReadTelegram = hasPermission('purchases.read');
+  // A courier is a User carrying the COURIER role, so the users permissions gate this screen.
+  const canCreate = hasPermission('users.create');
+  const canUpdate = hasPermission('users.update');
+  const canReadTelegram = hasPermission('users.read');
 
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const debouncedSearch = useDebouncedValue(search, 300);
   const { sort, toggle: toggleSort } = useSort();
 
-  const { data, isLoading, isError, error, refetch, isFetching } = useSuppliersQuery({
+  const { data, isLoading, isError, error, refetch, isFetching } = useCouriersQuery({
     page,
     pageSize: 25,
     search: debouncedSearch || undefined,
@@ -54,53 +53,36 @@ export default function SuppliersPage() {
     sortDir: sort.sortDir,
   });
 
-  // GET /orders has no supplierId filter (only agentId/customerId/status/date-range) — pull a
-  // generous page and derive per-supplier "assigned as deliverer" counts client-side. Orders only
-  // ever carry a supplierId once shipped straight to a deliverer, so this stays a small set in practice.
-  const { data: ordersForSupplierCounts } = useOrdersQuery(
-    { page: 1, pageSize: 200, sortBy: 'createdAt', sortDir: 'desc' },
-    canSeeOrders,
-  );
-  const orderCountBySupplierId = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const order of ordersForSupplierCounts?.data ?? []) {
-      if (!order.supplierId) continue;
-      map.set(order.supplierId, (map.get(order.supplierId) ?? 0) + 1);
-    }
-    return map;
-  }, [ordersForSupplierCounts]);
-
   function handleExport() {
     if (!data) return;
-    exportToCsv(`yetkazib-beruvchilar-${new Date().toISOString().slice(0, 10)}.csv`, data.data, [
-      { header: t('name'), value: (s) => s.name },
-      { header: t('phone'), value: (s) => s.phone ?? '' },
-      { header: t('address'), value: (s) => s.address ?? '' },
-      { header: t('status'), value: (s) => (s.isActive ? t('active') : t('inactive')) },
+    exportToCsv(`kuryerlar-${new Date().toISOString().slice(0, 10)}.csv`, data.data, [
+      { header: t('name'), value: (c) => courierName(c) },
+      { header: t('phone'), value: (c) => c.phone ?? '' },
+      { header: t('status'), value: (c) => (c.isActive ? t('active') : t('inactive')) },
     ]);
   }
 
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
+  const [editingCourier, setEditingCourier] = useState<Courier | null>(null);
 
-  const deleteMutation = useDeleteSupplierMutation();
-  const activateMutation = useActivateSupplierMutation();
+  const deactivateMutation = useDeactivateUserMutation();
+  const activateMutation = useActivateUserMutation();
   const [togglingId, setTogglingId] = useState<string | undefined>();
-  const [pendingDeactivate, setPendingDeactivate] = useState<Supplier | null>(null);
+  const [pendingDeactivate, setPendingDeactivate] = useState<Courier | null>(null);
   const [deactivateError, setDeactivateError] = useState<string | null>(null);
 
   // Telegram link management. The unlink ConfirmDialog lives here rather than
-  // inside SupplierTelegramDialog because `Dialog` doesn't support nesting —
+  // inside CourierTelegramDialog because `Dialog` doesn't support nesting —
   // so opening the confirmation closes the Telegram dialog first.
-  const [telegramSupplier, setTelegramSupplier] = useState<Supplier | null>(null);
-  const [pendingUnlink, setPendingUnlink] = useState<Supplier | null>(null);
+  const [telegramCourier, setTelegramCourier] = useState<Courier | null>(null);
+  const [pendingUnlink, setPendingUnlink] = useState<Courier | null>(null);
   const [unlinkError, setUnlinkError] = useState<string | null>(null);
-  const unlinkTelegramMutation = useUnlinkSupplierTelegramMutation();
+  const unlinkTelegramMutation = useUnlinkCourierTelegramMutation();
 
-  function requestUnlinkTelegram(supplier: Supplier) {
-    setTelegramSupplier(null);
+  function requestUnlinkTelegram(courier: Courier) {
+    setTelegramCourier(null);
     setUnlinkError(null);
-    setPendingUnlink(supplier);
+    setPendingUnlink(courier);
   }
 
   async function confirmUnlinkTelegram() {
@@ -108,7 +90,7 @@ export default function SuppliersPage() {
     setUnlinkError(null);
     try {
       await unlinkTelegramMutation.mutateAsync(pendingUnlink.id);
-      toast.success(tTelegram('unlinkSuccess', { name: pendingUnlink.name }));
+      toast.success(tTelegram('unlinkSuccess', { name: courierName(pendingUnlink) }));
       setPendingUnlink(null);
     } catch (err) {
       setUnlinkError(errorMessage(err, locale));
@@ -116,25 +98,25 @@ export default function SuppliersPage() {
   }
 
   function openCreate() {
-    setEditingSupplier(null);
+    setEditingCourier(null);
     setDialogOpen(true);
   }
 
-  function openEdit(supplier: Supplier) {
-    setEditingSupplier(supplier);
+  function openEdit(courier: Courier) {
+    setEditingCourier(courier);
     setDialogOpen(true);
   }
 
-  // Deactivation is destructive (DELETE /suppliers/:id) — always confirm first.
-  // Re-activation is harmless, so it fires straight away.
-  async function toggleActive(supplier: Supplier) {
-    if (supplier.isActive) {
-      setPendingDeactivate(supplier);
+  // Deactivation locks the courier out — always confirm first. Re-activation is
+  // harmless, so it fires straight away.
+  async function toggleActive(courier: Courier) {
+    if (courier.isActive) {
+      setPendingDeactivate(courier);
       return;
     }
-    setTogglingId(supplier.id);
+    setTogglingId(courier.id);
     try {
-      await activateMutation.mutateAsync(supplier.id);
+      await activateMutation.mutateAsync(courier.id);
     } catch (err) {
       toast.error(errorMessage(err, locale));
     } finally {
@@ -147,7 +129,7 @@ export default function SuppliersPage() {
     setDeactivateError(null);
     setTogglingId(pendingDeactivate.id);
     try {
-      await deleteMutation.mutateAsync(pendingDeactivate.id);
+      await deactivateMutation.mutateAsync(pendingDeactivate.id);
       setPendingDeactivate(null);
     } catch (err) {
       setDeactivateError(errorMessage(err, locale));
@@ -165,7 +147,7 @@ export default function SuppliersPage() {
         {canCreate && (
           <Button size="sm" onClick={openCreate}>
             <Plus className="mr-2 h-4 w-4" />
-            {t('newSupplier')}
+            {t('newCourier')}
           </Button>
         )}
       </div>
@@ -224,7 +206,7 @@ export default function SuppliersPage() {
                 {canCreate && (
                   <Button size="sm" onClick={openCreate}>
                     <Plus className="mr-2 h-4 w-4" />
-                    {t('newSupplier')}
+                    {t('newCourier')}
                   </Button>
                 )}
               </>
@@ -236,31 +218,30 @@ export default function SuppliersPage() {
       {data && data.data.length > 0 && (
         <Card>
           <CardContent className="pt-6">
-            <SuppliersTable
-              suppliers={data.data}
+            <CouriersTable
+              couriers={data.data}
               canUpdate={canUpdate}
               canReadTelegram={canReadTelegram}
               onEdit={openEdit}
               onToggleActive={toggleActive}
-              onOpenTelegram={setTelegramSupplier}
+              onOpenTelegram={setTelegramCourier}
               togglingId={togglingId}
               sort={sort}
               onSort={toggleSort}
-              orderCountBySupplierId={orderCountBySupplierId}
             />
             <PaginationBar meta={data.meta} onPageChange={setPage} />
           </CardContent>
         </Card>
       )}
 
-      <SupplierFormDialog open={dialogOpen} onOpenChange={setDialogOpen} supplier={editingSupplier} />
+      <CourierFormDialog open={dialogOpen} onOpenChange={setDialogOpen} courier={editingCourier} />
 
-      <SupplierTelegramDialog
-        open={telegramSupplier !== null}
+      <CourierTelegramDialog
+        open={telegramCourier !== null}
         onOpenChange={(open) => {
-          if (!open) setTelegramSupplier(null);
+          if (!open) setTelegramCourier(null);
         }}
-        supplier={telegramSupplier}
+        courier={telegramCourier}
         canUpdate={canUpdate}
         onRequestUnlink={requestUnlinkTelegram}
       />
@@ -274,7 +255,7 @@ export default function SuppliersPage() {
           }
         }}
         title={tTelegram('confirmUnlink.title')}
-        description={tTelegram('confirmUnlink.description', { name: pendingUnlink?.name ?? '' })}
+        description={tTelegram('confirmUnlink.description', { name: pendingUnlink ? courierName(pendingUnlink) : '' })}
         confirmLabel={tTelegram('confirmUnlink.confirm')}
         error={unlinkError}
         isPending={unlinkTelegramMutation.isPending}
@@ -290,10 +271,12 @@ export default function SuppliersPage() {
           }
         }}
         title={tCommon('confirmDeactivate.title')}
-        description={tCommon('confirmDeactivate.description', { name: pendingDeactivate?.name ?? '' })}
+        description={tCommon('confirmDeactivate.description', {
+          name: pendingDeactivate ? courierName(pendingDeactivate) : '',
+        })}
         confirmLabel={tCommon('confirmDeactivate.confirm')}
         error={deactivateError}
-        isPending={deleteMutation.isPending}
+        isPending={deactivateMutation.isPending}
         onConfirm={confirmDeactivate}
       />
     </div>

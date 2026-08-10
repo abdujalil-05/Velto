@@ -23,13 +23,13 @@ export class CreateOrderDto {
   @IsUUID()
   agentId?: string;
 
-  // Yetkazib beruvchi ("deliverer") to hand this order's delivery to, known
-  // up front (e.g. an office-entered order the distributor never touches
-  // physically). When given, the order skips straight to SHIPPED instead of
-  // the usual SUBMITTED — see SalesService.create().
+  // Kuryer — the own delivery staff User (COURIER role) to hand this order's
+  // delivery to, known up front (e.g. an office-entered order routed to a
+  // courier immediately). When given, the order skips straight to SHIPPED
+  // instead of the usual SUBMITTED — see SalesService.create().
   @IsOptional()
   @IsUUID()
-  supplierId?: string;
+  courierId?: string;
 
   @IsOptional()
   @IsString()

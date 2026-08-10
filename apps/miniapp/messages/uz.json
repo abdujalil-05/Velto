@@ -97,6 +97,34 @@
     "noOrderConfirmDescription": "Tashrif «buyurtmasiz» deb yopiladi va bugungi hisobotga shu holda tushadi. Qayta ochib bo'lmaydi.",
     "noOrderConfirmAction": "Ha, yakunlash"
   },
+  "Courier": {
+    "title": "Yetkazishlar",
+    "orderNumber": "Buyurtma №{number}",
+    "emptyState": "Sizga yetkazish uchun buyurtma biriktirilmagan",
+    "loadError": "Yetkazishlarni yuklab bo'lmadi",
+    "notFound": "Buyurtma topilmadi",
+    "customer": "Mijoz",
+    "unknownCustomer": "Mijoz ko'rsatilmagan",
+    "address": "Manzil",
+    "noAddress": "Manzil ko'rsatilmagan",
+    "phone": "Telefon",
+    "noPhone": "Telefon ko'rsatilmagan",
+    "total": "Summa",
+    "markDelivered": "Yetkazildi",
+    "deliveredSuccess": "Buyurtma yetkazildi",
+    "alreadyDelivered": "Bu buyurtma yopilgan",
+    "deliverConfirmTitle": "Buyurtma yetkazildimi?",
+    "deliverConfirmDescription": "Buyurtma yetkazilgan deb belgilanadi. Buni ortga qaytara olmaysiz.",
+    "status": {
+      "DRAFT": "Qoralama",
+      "SUBMITTED": "Yuborilgan",
+      "CONFIRMED": "Tasdiqlangan",
+      "SHIPPED": "Jo'natilgan",
+      "DELIVERED": "Yetkazilgan",
+      "CLOSED": "Yopilgan",
+      "CANCELLED": "Bekor qilingan"
+    }
+  },
   "NotFound": {
     "title": "Bunday sahifa mavjud emas",
     "description": "Siz izlagan sahifa topilmadi yoki ko'chirilgan.",

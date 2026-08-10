@@ -14,15 +14,15 @@ export interface RouteStop {
 export interface Route {
   id: string;
   companyId: string;
-  /** Exactly one of `agentId` / `supplierId` is set — a route is served either by an own field agent or a deliverer supplier. */
+  /** Exactly one of `agentId` / `courierId` is set — a route is served either by a sales agent or a courier. */
   agentId: string | null;
-  supplierId: string | null;
+  courierId: string | null;
   weekday: number; // 1 (Mon) – 7 (Sun), ISO
   name: string;
   createdAt: string;
   updatedAt: string;
   agent: { id: string; firstName: string; lastName: string } | null;
-  deliverySupplier: { id: string; name: string } | null;
+  courier: { id: string; firstName: string; lastName: string } | null;
   stops: RouteStop[];
 }
 
@@ -30,7 +30,7 @@ export interface ListRoutesParams {
   page?: number;
   pageSize?: number;
   agentId?: string;
-  supplierId?: string;
+  courierId?: string;
   weekday?: number;
   [key: string]: string | number | undefined;
 }
@@ -52,9 +52,9 @@ export function useRouteQuery(id: string) {
 }
 
 export interface RouteInput {
-  /** Exactly one of `agentId` / `supplierId` — enforced in the form, mirrors the API's CHECK constraint. */
+  /** Exactly one of `agentId` / `courierId` — enforced in the form, mirrors the API's CHECK constraint. */
   agentId?: string;
-  supplierId?: string;
+  courierId?: string;
   weekday: number;
   name: string;
   stops: { outletId: string }[];

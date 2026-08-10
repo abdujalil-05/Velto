@@ -16,18 +16,8 @@ export interface NotifyInput {
   entityId?: string;
 }
 
-/** Contact details of the buyer placing a new PurchaseOrder — sent to the supplier so they know who to prepare stock for. */
-export interface SupplierOrderNotice {
-  companyName: string;
-  contactFirstName: string;
-  contactLastName: string;
-  address: string | null;
-  phone: string | null;
-  orderNumber: string;
-}
-
-/** SalesOrder → deliverer-Supplier assignment notice (F-M0x supplier delivery flow). */
-export interface SupplierOrderAssignedNotice {
+/** SalesOrder → Courier assignment notice (the kuryer delivery flow). */
+export interface CourierOrderAssignedNotice {
   companyName: string;
   orderNumber: string;
 }
@@ -118,41 +108,15 @@ export class NotificationsService {
   }
 
   /**
-   * Suppliers are not `User` rows (see `SupplierTelegramLink`'s doc comment)
-   * so they can never be a `notify()` recipient — this is the Telegram-only
-   * counterpart of that method for the one thing a Supplier needs pushed to
-   * it: a newly placed PurchaseOrder. Best-effort/silent, same as `notify()`'s
-   * Telegram leg: returns false (no throw) when the bot isn't configured or
-   * the supplier hasn't linked Telegram, so the caller can still record an
-   * accurate audit-log entry either way.
-   */
-  async notifySupplierNewOrder(tx: TenantClient, supplierId: string, notice: SupplierOrderNotice): Promise<boolean> {
-    const link = await tx.supplierTelegramLink.findFirst({ where: { supplierId, isActive: true } });
-    if (!link) return false;
-
-    const lines = [
-      `Yangi buyurtma: ${notice.orderNumber}`,
-      `Kompaniya: ${notice.companyName}`,
-      `Kontakt: ${notice.contactFirstName} ${notice.contactLastName}`,
-      notice.address ? `Manzil: ${notice.address}` : undefined,
-      notice.phone ? `Telefon: ${notice.phone}` : undefined,
-    ].filter((line): line is string => Boolean(line));
-
-    await this.sendTelegram(link.telegramId, lines.join('\n'));
-    return true;
-  }
-
-  /**
-   * Best-effort Telegram push telling a Supplier they've been assigned as
-   * the deliverer of a SalesOrder (either at order-creation time or later,
-   * via SalesService.assignSupplier()). Deliberately takes an
-   * already-resolved `telegramId` instead of `(tx, supplierId)` like
-   * notifySupplierNewOrder above — the caller looks up the active
-   * SupplierTelegramLink itself inside its own transaction and defers this
+   * Best-effort Telegram push telling a Courier they've been assigned a
+   * SalesOrder to deliver (either at order-creation time or later, via
+   * SalesService.assignCourier()). Deliberately takes an already-resolved
+   * `telegramId` instead of `(tx, courierId)` like `notify()` above — the
+   * caller reads `User.telegramId` inside its own transaction and defers this
    * call via `TenantContext.afterCommit()`, by which point that transaction
    * (and its `tx`) is gone, so this method can't do its own lookup.
    */
-  async notifySupplierOrderAssigned(telegramId: bigint, notice: SupplierOrderAssignedNotice): Promise<void> {
+  async notifyCourierOrderAssigned(telegramId: bigint, notice: CourierOrderAssignedNotice): Promise<void> {
     const lines = [`Sizga yetkazib berish uchun buyurtma biriktirildi: ${notice.orderNumber}`, `Kompaniya: ${notice.companyName}`];
     await this.sendTelegram(telegramId, lines.join('\n'));
   }

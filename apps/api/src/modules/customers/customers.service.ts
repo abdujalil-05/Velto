@@ -300,7 +300,7 @@ export class CustomersService {
   }
 
   /**
-   * DELETE /customers/:id — soft delete, same shape as SuppliersService.remove()
+   * DELETE /customers/:id — soft delete, same shape as the other soft-deleting resources
    * and OutletsService.remove(): Customer carries `deletedAt`, and its orders /
    * invoices / payments keep pointing at the row, so it's never physically
    * removed. The `code` becomes reusable immediately thanks to the partial

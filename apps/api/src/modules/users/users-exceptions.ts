@@ -141,3 +141,18 @@ export class LastOwnerException extends AppException {
     });
   }
 }
+
+/**
+ * Revoking a Telegram link that isn't there. A 409 rather than a silent no-op:
+ * the admin is acting on a stale "Linked" badge, so the UI needs to know its
+ * view is out of date, not that the revoke succeeded.
+ */
+export class TelegramNotLinkedException extends AppException {
+  constructor() {
+    super(HttpStatus.CONFLICT, 'USER_TELEGRAM_NOT_LINKED', {
+      uz: "Bu foydalanuvchida bog'langan Telegram akkaunt yo'q",
+      ru: 'У этого пользователя нет привязанного Telegram-аккаунта',
+      en: 'This user has no linked Telegram account',
+    });
+  }
+}

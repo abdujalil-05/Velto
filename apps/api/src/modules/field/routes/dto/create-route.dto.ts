@@ -5,16 +5,16 @@ import { RouteStopInputDto } from './route-stop-input.dto';
 
 /**
  * 9.2 "/routes ... Marshrut yaratish/tahrirlash, nuqta biriktirish".
- * Exactly one of `agentId` / `supplierId` — a route is served either by an
- * own field agent or handed to a yetkazib beruvchi ("deliverer"), matching
- * the DB's `Route_agent_xor_supplier_check` CHECK constraint.
+ * Exactly one of `agentId` / `courierId` — a route is served either by an
+ * own field agent or by a kuryer (own delivery staff), matching the DB's
+ * `Route_agent_xor_courier_check` CHECK constraint.
  */
 export class CreateRouteDto {
-  @ExactlyOneUuidOf('supplierId')
+  @ExactlyOneUuidOf('courierId')
   agentId?: string;
 
   @ExactlyOneUuidOf('agentId')
-  supplierId?: string;
+  courierId?: string;
 
   // 6.8: "weekday Int /* 1-7 */"
   @Type(() => Number)

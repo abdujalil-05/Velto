@@ -12,34 +12,53 @@ import { CustomersService } from '../customers/customers.service';
 import { OutletNotFoundException } from '../customers/customers-exceptions';
 import { AgentNotFoundException } from '../field/field-exceptions';
 import { NotificationsService } from '../notifications/notifications.service';
-import { SuppliersService } from '../purchases/suppliers/suppliers.service';
 import { WarehouseNotFoundException } from '../stock/stock-exceptions';
 import { StockService } from '../stock/stock.service';
-import type { AssignSupplierDto } from './dto/assign-supplier.dto';
+import type { AssignCourierDto } from './dto/assign-courier.dto';
 import type { CancelOrderDto } from './dto/cancel-order.dto';
 import type { CreateOrderDto } from './dto/create-order.dto';
 import type { ListOrdersQueryDto } from './dto/list-orders.query';
 import {
   AmbiguousWarehouseException,
+  CourierNotFoundException,
   CustomerBlockedException,
   EmptyOrderException,
   InvalidOrderTransitionException,
+  OrderNotAssignedToCourierException,
   PackagingMismatchException,
   PriceNotFoundException,
   SalesOrderNotFoundException,
 } from './sales-exceptions';
 
-// Customer/outlet/agent/warehouse/supplier are included alongside lines so
+// Customer/outlet/agent/warehouse/courier are included alongside lines so
 // the web UI (9.2 "/orders", "/orders/:id") can render a full row/card
-// without an extra round-trip per order.
+// without an extra round-trip per order. The courier carries `phone` on top
+// of the agent's fields because the warehouse/cashier screens need to be able
+// to call the person currently holding the goods.
 const ORDER_INCLUDE = {
   lines: { include: { product: true, packaging: true } },
-  customer: { select: { id: true, name: true, code: true } },
-  outlet: { select: { id: true, name: true } },
+  // `phone`/`address` are here for the courier Mini App screen, which is
+  // online-only (a courier syncs no customer data to the device) and so has
+  // no other source for "who to call / where to drop it off". Both nullable.
+  customer: { select: { id: true, name: true, code: true, phone: true } },
+  outlet: { select: { id: true, name: true, address: true } },
   agent: { select: { id: true, firstName: true, lastName: true } },
   warehouse: { select: { id: true, name: true } },
-  deliverySupplier: { select: { id: true, name: true } },
+  courier: { select: { id: true, firstName: true, lastName: true, phone: true } },
 } satisfies Prisma.SalesOrderInclude;
+
+/**
+ * Roles that may act on any order in the tenant, whoever is carrying it.
+ * A user holding one of these *and* COURIER (a warehouse keeper who also does
+ * runs) keeps the wide view — the self-scoping below is for the courier who
+ * has no other role, i.e. the Mini App session.
+ */
+const ORDER_SUPERVISOR_ROLES = ['OWNER', 'SALES_DIRECTOR', 'WAREHOUSE'];
+
+/** SEC-023, courier half: a courier-only session is confined to its own deliveries, exactly as a SALES_AGENT is to its own orders. */
+function isCourierOnly(user: AuthenticatedUser): boolean {
+  return user.roles.includes('COURIER') && !user.roles.some((role) => ORDER_SUPERVISOR_ROLES.includes(role));
+}
 
 @Injectable()
 export class SalesService {
@@ -49,7 +68,6 @@ export class SalesService {
     private readonly customers: CustomersService,
     private readonly stock: StockService,
     private readonly docNumbering: DocumentNumberingService,
-    private readonly suppliers: SuppliersService,
     private readonly notifications: NotificationsService,
   ) {}
 
@@ -59,9 +77,14 @@ export class SalesService {
     // overrides whatever `agentId` they passed, so they can't page through
     // the rest of the company's orders by guessing other agents' ids.
     const scopedAgentId = user.roles.includes('SALES_AGENT') ? user.id : query.agentId;
+    // Same override for a courier-only session: it sees the orders handed to
+    // it and nothing else, so `courierId` can't be used to browse the
+    // company's whole order book (with customers, prices and totals).
+    const scopedCourierId = isCourierOnly(user) ? user.id : query.courierId;
     const where: Prisma.SalesOrderWhereInput = {
       ...(query.customerId ? { customerId: query.customerId } : {}),
       ...(scopedAgentId ? { agentId: scopedAgentId } : {}),
+      ...(scopedCourierId ? { courierId: scopedCourierId } : {}),
       ...(query.status ? { status: query.status } : {}),
       ...(query.from || query.to
         ? {
@@ -100,8 +123,11 @@ export class SalesService {
     // SEC-023: same object-level scoping as list() — an agent requesting
     // another agent's order id gets the same "not found" as a bad id,
     // rather than leaking that the order exists.
-    const scopedAgentId = user.roles.includes('SALES_AGENT') ? user.id : undefined;
-    return withTotal(await this.getRawOrder(this.tenantPrisma.client, id, scopedAgentId));
+    const scope = {
+      ...(user.roles.includes('SALES_AGENT') ? { agentId: user.id } : {}),
+      ...(isCourierOnly(user) ? { courierId: user.id } : {}),
+    };
+    return withTotal(await this.getRawOrder(this.tenantPrisma.client, id, scope));
   }
 
   /**
@@ -127,11 +153,11 @@ export class SalesService {
     const outletId = await this.resolveOutlet(tx, dto.customerId, dto.outletId);
     const warehouseId = await this.resolveWarehouse(tx, dto.warehouseId);
     const agentId = user.roles.includes('SALES_AGENT') ? user.id : await this.resolveAgent(tx, dto.agentId);
-    // A supplierId known up front means the order was never meant to leave
-    // from an own warehouse in the first place — it goes straight to
-    // "yetkazilmoqda" (SHIPPED) instead of the usual SUBMITTED, same as
-    // assignSupplier() does for an order that gets one attached later.
-    const supplier = dto.supplierId ? await this.suppliers.findActiveOrThrow(tx, dto.supplierId) : null;
+    // A courierId known up front means the order is handed to a kuryer the
+    // moment it's created — it goes straight to "yetkazilmoqda" (SHIPPED)
+    // instead of the usual SUBMITTED, same as assignCourier() does for an
+    // order that gets one attached later.
+    const courierId = dto.courierId ? await this.resolveCourier(tx, dto.courierId) : null;
 
     const priceListId = customer.priceListId ?? (await this.defaultPriceListId(tx));
 
@@ -212,8 +238,8 @@ export class SalesService {
             outletId,
             agentId,
             warehouseId,
-            supplierId: supplier?.id,
-            status: supplier ? OrderStatus.SHIPPED : OrderStatus.SUBMITTED,
+            courierId,
+            status: courierId ? OrderStatus.SHIPPED : OrderStatus.SUBMITTED,
             clientId: dto.clientId,
             note: dto.note,
             lines: { create: lines },
@@ -234,13 +260,13 @@ export class SalesService {
       throw err;
     }
 
-    if (supplier) {
+    if (courierId) {
       // Jumping straight to SHIPPED skips confirm()'s usual reservation
       // step, but deliver() still expects one to consume (stock.issue()
       // decrements `reserved`) — reserve here so that invariant holds
       // regardless of which path got the order to SHIPPED.
       await this.reserveOrderStock(tx, order, user);
-      await this.scheduleSupplierAssignedNotification(tx, supplier.id, order.number, user.companyId);
+      await this.scheduleCourierAssignedNotification(tx, courierId, order.number, user.companyId);
     }
 
     await this.auditLog.log(tx, {
@@ -291,16 +317,23 @@ export class SalesService {
   }
 
   /**
-   * CONFIRMED → DELIVERED, or SHIPPED → DELIVERED for a supplier-delivered
+   * CONFIRMED → DELIVERED, or SHIPPED → DELIVERED for a courier-delivered
    * order ("yetkazilmoqda" → "yetkazildi") — the plain PICKING step is still
-   * skipped in MVP (8.7), SHIPPED only exists as the supplier-assignment
+   * skipped in MVP (8.7), SHIPPED only exists as the courier-assignment
    * state. Issues stock (consumes the reservation, made either by confirm()
-   * or up front by create()/assignSupplier() for a supplier order) and
+   * or up front by create()/assignCourier() for a courier order) and
    * creates the invoice — 6.6: "MVP'da 1 order = 1 invoice soddalashtirilgan".
    */
   async deliver(id: string, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
     const order = await this.getRawOrder(tx, id);
+
+    // 'orders.deliver' says "may close out a delivery", not "may close out
+    // anyone's delivery" — a courier-only session is held to the orders
+    // actually assigned to it. Warehouse/director/owner deliver any order.
+    if (isCourierOnly(user) && order.courierId !== user.id) {
+      throw new OrderNotAssignedToCourierException();
+    }
 
     if (order.status !== OrderStatus.CONFIRMED && order.status !== OrderStatus.SHIPPED) {
       throw new InvalidOrderTransitionException(order.status, OrderStatus.DELIVERED);
@@ -395,7 +428,7 @@ export class SalesService {
     return withTotal(updated);
   }
 
-  /** Releases any reservation (if CONFIRMED, or SHIPPED — a supplier-assigned order also carries one, see reserveOrderStock()) — never allowed once DELIVERED/CLOSED. */
+  /** Releases any reservation (if CONFIRMED, or SHIPPED — a courier-assigned order also carries one, see reserveOrderStock()) — never allowed once DELIVERED/CLOSED. */
   async cancel(id: string, dto: CancelOrderDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
     const order = await this.getRawOrder(tx, id);
@@ -444,14 +477,14 @@ export class SalesService {
   }
 
   /**
-   * Attaches a deliverer Supplier to an already-created order and moves it
-   * straight to SHIPPED — the same jump `create()` takes when `supplierId`
+   * Attaches a delivery Courier to an already-created order and moves it
+   * straight to SHIPPED — the same jump `create()` takes when `courierId`
    * is known up front. Blocked once the order is DELIVERED/CLOSED/CANCELLED
    * (nothing left to deliver); allowed from DRAFT/SUBMITTED/CONFIRMED and
    * even from SHIPPED itself (re-pointing an already-assigned order at a
-   * different supplier).
+   * different courier).
    */
-  async assignSupplier(id: string, dto: AssignSupplierDto, user: AuthenticatedUser) {
+  async assignCourier(id: string, dto: AssignCourierDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
     const order = await this.getRawOrder(tx, id);
 
@@ -463,7 +496,7 @@ export class SalesService {
       throw new InvalidOrderTransitionException(order.status, OrderStatus.SHIPPED);
     }
 
-    const supplier = await this.suppliers.findActiveOrThrow(tx, dto.supplierId);
+    const courierId = await this.resolveCourier(tx, dto.courierId);
 
     // Only reserve if nothing has been reserved for this order yet — a
     // CONFIRMED (or already-SHIPPED) order already carries one, and
@@ -474,21 +507,21 @@ export class SalesService {
 
     const updated = await tx.salesOrder.update({
       where: { id },
-      data: { supplierId: supplier.id, status: OrderStatus.SHIPPED },
+      data: { courierId, status: OrderStatus.SHIPPED },
       include: ORDER_INCLUDE,
     });
 
     await this.auditLog.log(tx, {
       companyId: user.companyId,
       userId: user.id,
-      action: 'order.assignSupplier',
+      action: 'order.assignCourier',
       entity: 'SalesOrder',
       entityId: id,
-      oldValue: toAuditJson({ status: order.status, supplierId: order.supplierId }),
-      newValue: toAuditJson({ status: OrderStatus.SHIPPED, supplierId: supplier.id }),
+      oldValue: toAuditJson({ status: order.status, courierId: order.courierId }),
+      newValue: toAuditJson({ status: OrderStatus.SHIPPED, courierId }),
     });
 
-    await this.scheduleSupplierAssignedNotification(tx, supplier.id, updated.number, user.companyId);
+    await this.scheduleCourierAssignedNotification(tx, courierId, updated.number, user.companyId);
 
     return withTotal(updated);
   }
@@ -520,7 +553,7 @@ export class SalesService {
     });
   }
 
-  /** Reserves every line of `order` (8.3) — shared by confirm(), create() (supplier-known-up-front) and assignSupplier(). */
+  /** Reserves every line of `order` (8.3) — shared by confirm(), create() (courier-known-up-front) and assignCourier(). */
   private async reserveOrderStock(
     tx: TenantClient,
     order: { id: string; warehouseId: string; lines: { productId: string; qty: Prisma.Decimal }[] },
@@ -539,33 +572,53 @@ export class SalesService {
   }
 
   /**
-   * Best-effort Telegram push to the Supplier just assigned as an order's
-   * deliverer. The SupplierTelegramLink lookup runs here, inside the caller's
-   * transaction, but the actual send is deferred to `TenantContext.afterCommit`
-   * so a Telegram outage can never roll back or fail the order
-   * create/assign request — matches NotificationsService's own "in-app
-   * always, Telegram best-effort" split (class doc there).
+   * Best-effort Telegram push to the Courier just assigned an order. A courier
+   * is an ordinary `User`, so the chat id comes straight off `User.telegramId`
+   * — the same field `NotificationsService.notify()` reads for agents, linked
+   * by the same contact-share webhook flow. A courier who hasn't linked
+   * Telegram yet simply gets nothing: the assignment itself must still succeed.
+   *
+   * The lookup runs here, inside the caller's transaction, but the actual send
+   * is deferred to `TenantContext.afterCommit` so a Telegram outage can never
+   * roll back or fail the order create/assign request.
    */
-  private async scheduleSupplierAssignedNotification(
+  private async scheduleCourierAssignedNotification(
     tx: TenantClient,
-    supplierId: string,
+    courierId: string,
     orderNumber: string,
     companyId: string,
   ): Promise<void> {
-    const link = await tx.supplierTelegramLink.findFirst({ where: { supplierId, isActive: true } });
-    if (!link) return;
+    const courier = await tx.user.findUnique({ where: { id: courierId }, select: { telegramId: true } });
+    if (!courier?.telegramId) return;
 
     const company = await tx.company.findUnique({ where: { id: companyId }, select: { name: true } });
-    const telegramId = link.telegramId;
+    const telegramId = courier.telegramId;
     const companyName = company?.name ?? '';
     TenantContext.afterCommit(() =>
-      this.notifications.notifySupplierOrderAssigned(telegramId, { orderNumber, companyName }),
+      this.notifications.notifyCourierOrderAssigned(telegramId, { orderNumber, companyName }),
     );
   }
 
-  private async getRawOrder(tx: TenantClient, id: string, scopedAgentId?: string) {
+  /**
+   * Couriers are plain `User` rows carrying the fixed `COURIER` system role
+   * (rbac-catalog.ts) — deliberately, so they reuse the agent Telegram login.
+   * The role check is what stops an arbitrary user id (say, an accountant, or
+   * a stale id from a since-demoted courier) being written into
+   * `SalesOrder.courierId`, which the FK alone would happily accept.
+   */
+  private async resolveCourier(tx: TenantClient, courierId: string): Promise<string> {
+    const courier = await tx.user.findFirst({
+      where: { id: courierId, isActive: true, roles: { some: { role: { code: 'COURIER' } } } },
+      select: { id: true },
+    });
+    if (!courier) throw new CourierNotFoundException();
+    return courier.id;
+  }
+
+  /** `scope` narrows the lookup for self-scoped callers (agent's own orders, courier's own deliveries) so a foreign id reads as "not found" rather than leaking. */
+  private async getRawOrder(tx: TenantClient, id: string, scope?: { agentId?: string; courierId?: string }) {
     const order = await tx.salesOrder.findFirst({
-      where: { id, ...(scopedAgentId ? { agentId: scopedAgentId } : {}) },
+      where: { id, ...scope },
       include: ORDER_INCLUDE,
     });
     if (!order) throw new SalesOrderNotFoundException();

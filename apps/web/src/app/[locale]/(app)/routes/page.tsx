@@ -7,7 +7,7 @@ import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
 import { useRoutesQuery, type Route } from '@/lib/api/routes';
 import { useUsersQuery } from '@/lib/api/users';
-import { useSuppliersQuery } from '@/lib/api/suppliers';
+import { useCouriersQuery, courierName } from '@/lib/api/couriers';
 import { useInitialQueryParam } from '@/lib/hooks/use-initial-query-param';
 import { errorMessage } from '@/lib/api/client';
 import { exportToCsv } from '@/lib/export-csv';
@@ -29,11 +29,11 @@ export default function RoutesPage() {
   const { hasPermission } = useAuth();
   const canCreate = hasPermission('routes.create');
 
-  // Deep-linked from the agents/suppliers list ("N routes" link) — synced once on mount.
+  // Deep-linked from the agents/couriers list ("N routes" link) — synced once on mount.
   const initialAgentId = useInitialQueryParam('agentId');
-  const initialSupplierId = useInitialQueryParam('supplierId');
+  const initialCourierId = useInitialQueryParam('courierId');
   const [agentId, setAgentId] = useState('');
-  const [supplierId, setSupplierId] = useState('');
+  const [courierId, setCourierId] = useState('');
   const [weekday, setWeekday] = useState('');
   const [page, setPage] = useState(1);
 
@@ -41,23 +41,23 @@ export default function RoutesPage() {
     if (initialAgentId) setAgentId(initialAgentId);
   }, [initialAgentId]);
   useEffect(() => {
-    if (initialSupplierId) setSupplierId(initialSupplierId);
-  }, [initialSupplierId]);
+    if (initialCourierId) setCourierId(initialCourierId);
+  }, [initialCourierId]);
 
   const { data: agents } = useUsersQuery({ roleCode: 'SALES_AGENT', isActive: true, pageSize: 100 });
-  const { data: suppliers } = useSuppliersQuery({ pageSize: 100 });
+  const { data: couriers } = useCouriersQuery({ pageSize: 100, isActive: true });
   const { data, isLoading, isError, error, refetch, isFetching } = useRoutesQuery({
     page,
     pageSize: 25,
     agentId: agentId || undefined,
-    supplierId: supplierId || undefined,
+    courierId: courierId || undefined,
     weekday: weekday ? Number(weekday) : undefined,
   });
 
-  const hasFilters = !!agentId || !!supplierId || !!weekday;
+  const hasFilters = !!agentId || !!courierId || !!weekday;
 
   function assigneeLabel(r: Route) {
-    return r.agent ? `${r.agent.firstName} ${r.agent.lastName}` : r.deliverySupplier ? r.deliverySupplier.name : '';
+    return r.agent ? `${r.agent.firstName} ${r.agent.lastName}` : r.courier ? courierName(r.courier) : '';
   }
 
   function handleExport() {
@@ -87,7 +87,7 @@ export default function RoutesPage() {
           value={agentId}
           onChange={(e) => {
             setAgentId(e.target.value);
-            setSupplierId('');
+            setCourierId('');
             setPage(1);
           }}
           className="w-auto"
@@ -100,18 +100,18 @@ export default function RoutesPage() {
           ))}
         </Select>
         <Select
-          value={supplierId}
+          value={courierId}
           onChange={(e) => {
-            setSupplierId(e.target.value);
+            setCourierId(e.target.value);
             setAgentId('');
             setPage(1);
           }}
           className="w-auto"
         >
-          <option value="">{t('allSuppliers')}</option>
-          {suppliers?.data.map((supplier) => (
-            <option key={supplier.id} value={supplier.id}>
-              {supplier.name}
+          <option value="">{t('allCouriers')}</option>
+          {couriers?.data.map((courier) => (
+            <option key={courier.id} value={courier.id}>
+              {courierName(courier)}
             </option>
           ))}
         </Select>

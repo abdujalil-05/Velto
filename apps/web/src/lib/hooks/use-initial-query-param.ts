@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 /**
  * Reads a single `?key=value` query param once, right after mount, as the
  * initial value for a piece of local filter state (deep-linking, e.g. the
- * agents/suppliers list "N routes" link into `/routes?agentId=...`).
+ * agents/couriers list "N routes" link into `/routes?agentId=...`).
  * Deliberately not `next/navigation`'s `useSearchParams` — that forces every
  * page that calls it into a Suspense boundary at build time; these filter
  * pages are plain client-rendered local state, so a one-time

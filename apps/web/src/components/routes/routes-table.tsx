@@ -41,8 +41,8 @@ export function RoutesTable({ routes }: { routes: Route[] }) {
               <td className="py-2 pr-3 text-muted-foreground">
                 {route.agent
                   ? `${route.agent.firstName} ${route.agent.lastName}`
-                  : route.deliverySupplier
-                    ? `${route.deliverySupplier.name} (${t('supplier')})`
+                  : route.courier
+                    ? `${route.courier.firstName} ${route.courier.lastName} (${t('courier')})`
                     : '—'}
               </td>
               <td className="py-2 pr-3 text-muted-foreground">

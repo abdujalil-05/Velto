@@ -134,6 +134,7 @@ async function main() {
     await seedHistory(tx, company.id, {
       warehouseId: warehouse.id,
       agents: users.agents,
+      courierId: users.courier.id,
       outlets,
       products,
       packagingsByProduct,
@@ -208,12 +209,18 @@ async function seedUsers(
   const agent2 = await createUser('Sardor', 'Ergashev', '+998901110005', 'SALES_AGENT');
   const warehouseUser = await createUser('Jasur', 'Xolmatov', '+998901110006', 'WAREHOUSE');
   const cashier = await createUser('Feruza', 'Sodiqova', '+998901110007', 'CASHIER');
+  // Kuryer — an ordinary user with the COURIER role, not a separate entity.
+  // +998901110006 (the number this demo courier was specified with) already
+  // belongs to the warehouse user above and @@unique([companyId, phone]) would
+  // reject it, so the courier takes the next free number in the block.
+  const courier = await createUser('Jasur', 'Qodirov', '+998901110008', 'COURIER');
 
   return {
     owner,
     salesDirector,
     warehouseUser,
     cashier,
+    courier,
     agents: [agent1, agent2],
   };
 }
@@ -410,6 +417,7 @@ async function seedHistory(
   ctx: {
     warehouseId: string;
     agents: { id: string }[];
+    courierId: string;
     outlets: { id: string; customerId: string }[];
     products: { id: string; vatRate: number }[];
     packagingsByProduct: Record<string, { id: string; qtyInBaseUnit: number }[]>;
@@ -495,6 +503,9 @@ async function seedHistory(
         if (lines.length === 0) continue;
 
         const orderTotal = round2(lines.reduce((sum, l) => sum + l.lineTotal, 0));
+        // Every third delivered order was handed to the kuryer instead of
+        // being delivered by the agent, so the courier screens have data.
+        const deliveredByCourier = soSeq % 3 === 0;
         const order = await tx.salesOrder.create({
           data: {
             companyId,
@@ -502,6 +513,7 @@ async function seedHistory(
             customerId: outlet.customerId,
             outletId: outlet.id,
             agentId: agent.id,
+            courierId: deliveredByCourier ? ctx.courierId : null,
             warehouseId: ctx.warehouseId,
             status: OrderStatus.DELIVERED,
             createdAt: startedAt,

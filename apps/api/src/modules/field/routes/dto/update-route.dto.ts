@@ -10,15 +10,15 @@ export class UpdateRouteDto {
   @MaxLength(100)
   name?: string;
 
-  // Omit both to leave the route's current agent/supplier assignment
+  // Omit both to leave the route's current agent/courier assignment
   // unchanged; set exactly one to reassign it — never both (the DB's
-  // `Route_agent_xor_supplier_check` CHECK constraint would reject that
+  // `Route_agent_xor_courier_check` CHECK constraint would reject that
   // anyway, this just fails fast with a proper AppException instead).
-  @AtMostOneUuidOf('supplierId')
+  @AtMostOneUuidOf('courierId')
   agentId?: string;
 
   @AtMostOneUuidOf('agentId')
-  supplierId?: string;
+  courierId?: string;
 
   @IsOptional()
   @Type(() => Number)

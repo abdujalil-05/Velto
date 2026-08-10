@@ -12,6 +12,10 @@ export interface User {
   isActive: boolean;
   lastLoginAt: string | null;
   createdAt: string;
+  /** Whether the user has linked their Telegram account (they /start the bot and share their phone; no admin-issued code exists). */
+  telegramLinked: boolean;
+  /** Optional — only sent by endpoints that carry the link timestamp. */
+  telegramLinkedAt?: string | null;
   roles: { id: string; code: string; name: string }[];
 }
 
@@ -99,7 +103,8 @@ export interface UserReferences {
   cashSessions?: number;
   routes?: number;
   visits?: number;
-  purchaseOrders?: number;
+  courierOrders?: number;
+  courierRoutes?: number;
   auditLogs?: number;
   exportJobs?: number;
   notifications?: number;

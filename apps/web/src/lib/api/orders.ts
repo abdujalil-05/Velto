@@ -30,13 +30,13 @@ export interface SalesOrder {
   createdAt: string;
   lines: SalesOrderLine[];
   total: string;
-  supplierId: string | null;
+  courierId: string | null;
   customer: { id: string; name: string; code: string };
   outlet: { id: string; name: string } | null;
   agent: { id: string; firstName: string; lastName: string } | null;
   warehouse: { id: string; name: string };
-  /** Set only once `supplierId` is — the deliverer, when the order was created/assigned straight to SHIPPED. */
-  deliverySupplier: { id: string; name: string } | null;
+  /** Set only once `courierId` is — the delivering courier (a User with the COURIER role), when the order was created/assigned straight to SHIPPED. */
+  courier: { id: string; firstName: string; lastName: string; phone: string } | null;
 }
 
 export interface ListOrdersParams {
@@ -45,6 +45,7 @@ export interface ListOrdersParams {
   status?: OrderStatus;
   customerId?: string;
   agentId?: string;
+  courierId?: string;
   sortBy?: string;
   sortDir?: 'asc' | 'desc';
   [key: string]: string | number | undefined;
@@ -79,8 +80,8 @@ export interface CreateOrderInput {
   outletId?: string;
   warehouseId?: string;
   note?: string;
-  /** When set, the order is created directly in status SHIPPED with this supplier as deliverer. */
-  supplierId?: string;
+  /** When set, the order is created directly in status SHIPPED with this courier as deliverer. */
+  courierId?: string;
   lines: CreateOrderLineInput[];
 }
 
@@ -124,6 +125,16 @@ export function useCloseOrderMutation(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () => apiFetch<SalesOrder>(`/orders/${id}/close`, { method: 'POST' }),
+    onSuccess: () => invalidateOrder(queryClient, id),
+  });
+}
+
+/** Assigns a courier as deliverer — the API moves the order straight to SHIPPED. */
+export function useAssignCourierMutation(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (courierId: string) =>
+      apiFetch<SalesOrder>(`/orders/${id}/assign-courier`, { method: 'POST', body: { courierId } }),
     onSuccess: () => invalidateOrder(queryClient, id),
   });
 }

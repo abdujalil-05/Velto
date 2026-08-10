@@ -11,6 +11,12 @@ export class ListOrdersQueryDto extends PaginationQueryDto {
   @IsUUID()
   agentId?: string;
 
+  // Kuryer filter, mirroring `agentId` above — the courier is an own User
+  // (COURIER role) the order's delivery was handed to.
+  @IsOptional()
+  @IsUUID()
+  courierId?: string;
+
   @IsOptional()
   @IsEnum(OrderStatus)
   status?: OrderStatus;

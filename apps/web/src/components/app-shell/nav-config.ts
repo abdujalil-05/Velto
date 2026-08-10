@@ -1,7 +1,6 @@
 import {
   BarChart3,
   BookOpen,
-  Building2,
   History,
   IdCard,
   LayoutDashboard,
@@ -9,6 +8,7 @@ import {
   Route,
   Settings as SettingsIcon,
   ShoppingCart,
+  Truck,
   UserCog,
   Users,
   Wallet,
@@ -24,7 +24,7 @@ export interface NavItem {
     | 'products'
     | 'cash'
     | 'stock'
-    | 'suppliers'
+    | 'couriers'
     | 'users'
     | 'routes'
     | 'agents'
@@ -42,10 +42,12 @@ export interface NavItem {
 // ship, one line each — everything else stays unlinked rather than a dead
 // or "coming soon" nav entry (0-bo'lim rule 5).
 //
-// priceLists, purchases, import, onboarding: pages/backend still exist but
-// are intentionally unlinked here — descoped for this deployment (pricing
-// is now a single field on the product, not a separate module; purchase
-// orders, bulk import and the setup wizard aren't used). receivables: fully
+// priceLists, import, onboarding: pages/backend still exist but are
+// intentionally unlinked here — descoped for this deployment (pricing is now
+// a single field on the product, not a separate module; bulk import and the
+// setup wizard aren't used). purchases/suppliers: removed outright — the
+// company doesn't track inbound supply; couriers (own delivery staff, User
+// rows with the COURIER role) replaced them. receivables: fully
 // removed — it duplicated the Reports "aging" tab exactly. payments: merged
 // into the "cash" screen (Kassa) rather than being its own page.
 export const NAV_ITEMS: NavItem[] = [
@@ -55,7 +57,7 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'products', href: '/products', icon: Package, permission: 'catalog.read' },
   { key: 'cash', href: '/cash', icon: Wallet, permission: 'payments.read' },
   { key: 'stock', href: '/stock', icon: Warehouse, permission: 'stock.read' },
-  { key: 'suppliers', href: '/suppliers', icon: Building2, permission: 'purchases.read' },
+  { key: 'couriers', href: '/couriers', icon: Truck, permission: 'users.read' },
   { key: 'users', href: '/users', icon: IdCard, permission: 'users.read' },
   { key: 'agents', href: '/agents', icon: UserCog, permission: 'users.read' },
   { key: 'routes', href: '/routes', icon: Route, permission: 'routes.read' },

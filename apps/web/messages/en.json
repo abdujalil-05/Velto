@@ -36,7 +36,7 @@
     "customers": "Customers",
     "products": "Products",
     "stock": "Stock",
-    "suppliers": "Suppliers",
+    "couriers": "Couriers",
     "users": "Users",
     "agents": "Agents",
     "routes": "Routes",
@@ -91,7 +91,8 @@
       "SALES_AGENT": "Agent",
       "WAREHOUSE": "Warehouse",
       "CASHIER": "Cashier",
-      "ACCOUNTANT": "Accountant"
+      "ACCOUNTANT": "Accountant",
+      "COURIER": "Courier"
     },
     "theme": {
       "light": "Light mode (click for dark)",
@@ -289,7 +290,7 @@
       "cancelReasonLabel": "Reason (optional)",
       "cancelConfirm": "Cancel order",
       "cancelKeep": "Keep order",
-      "deliverer": "Deliverer"
+      "courier": "Courier"
     },
     "form": {
       "title": "New order",
@@ -313,12 +314,12 @@
       "created": "Order created",
       "selectCustomerFirst": "Select a customer first",
       "emptyLinesError": "Add at least one line",
-      "supplier": "Supplier",
-      "supplierOptional": "Optional",
-      "supplierHint": "Choosing a supplier moves the order straight to \"Shipped\""
+      "courier": "Courier",
+      "courierOptional": "Optional",
+      "courierHint": "Choosing a courier moves the order straight to \"Shipped\""
     },
-    "supplierFilterBanner": "Orders assigned to supplier \"{name}\"",
-    "clearSupplierFilter": "Clear filter"
+    "courierFilterBanner": "Orders assigned to courier \"{name}\"",
+    "clearCourierFilter": "Clear filter"
   },
   "Receivables": {
     "customer": "Customer",
@@ -461,90 +462,6 @@
       "received": "Stock received"
     }
   },
-  "PurchaseOrderStatus": {
-    "DRAFT": "Draft",
-    "ORDERED": "Ordered",
-    "PARTIALLY_RECEIVED": "Partially received",
-    "RECEIVED": "Received",
-    "CANCELLED": "Cancelled"
-  },
-  "Purchases": {
-    "title": "Purchases",
-    "newPurchase": "New purchase",
-    "refresh": "Refresh",
-    "retry": "Retry",
-    "emptyState": "No purchase orders yet",
-    "number": "Number",
-    "supplier": "Supplier",
-    "date": "Date",
-    "total": "Total",
-    "status": "Status",
-    "filter": {
-      "all": "All",
-      "DRAFT": "Draft",
-      "ORDERED": "Ordered",
-      "PARTIALLY_RECEIVED": "Partially received",
-      "RECEIVED": "Received",
-      "CANCELLED": "Cancelled"
-    },
-    "detail": {
-      "backToList": "Back to purchases",
-      "retry": "Retry",
-      "notFound": "Purchase order not found",
-      "supplier": "Supplier",
-      "warehouse": "Warehouse",
-      "note": "Note",
-      "lines": "Lines",
-      "product": "Product",
-      "qty": "Ordered qty",
-      "qtyReceived": "Received",
-      "unitPrice": "Unit price",
-      "lineTotal": "Total",
-      "orderTotal": "Order total",
-      "submit": "Submit to supplier",
-      "submitSuccess": "Order submitted to supplier",
-      "receive": "Receive goods",
-      "receiveSuccess": "Goods received",
-      "cancel": "Cancel",
-      "cancelSuccess": "Purchase order cancelled"
-    },
-    "form": {
-      "title": "New purchase order",
-      "backToList": "Back to purchases",
-      "supplier": "Supplier",
-      "newSupplier": "New",
-      "searchSupplier": "Search by name or phone",
-      "noSuppliers": "No suppliers found",
-      "warehouse": "Warehouse",
-      "lines": "Lines",
-      "addLine": "Add line",
-      "removeLine": "Remove line",
-      "searchProduct": "Search product",
-      "noProducts": "No products found",
-      "qty": "Qty",
-      "unitPrice": "Unit price",
-      "note": "Note",
-      "submit": "Create purchase order",
-      "created": "Purchase order created",
-      "selectSupplierFirst": "Select a supplier first",
-      "selectWarehouseFirst": "Select a warehouse",
-      "emptyLinesError": "Add at least one line"
-    },
-    "supplierDialog": {
-      "title": "New supplier",
-      "name": "Name",
-      "phone": "Phone",
-      "address": "Address",
-      "nameRequired": "Enter a name",
-      "submit": "Save"
-    },
-    "receiveDialog": {
-      "title": "Receive goods",
-      "remaining": "Remaining",
-      "enterAtLeastOne": "Enter a quantity for at least one item",
-      "confirm": "Receive"
-    }
-  },
   "Users": {
     "title": "Users",
     "newUser": "New user",
@@ -581,7 +498,8 @@
       "cashSessions": "Cash sessions",
       "routes": "Routes",
       "visits": "Visits",
-      "purchaseOrders": "Purchase orders",
+      "courierOrders": "Delivered orders",
+      "courierRoutes": "Courier routes",
       "auditLogs": "Audit log entries",
       "exportJobs": "Export jobs",
       "notifications": "Notifications"
@@ -677,6 +595,7 @@
       "user_activate": "Activated user",
       "user_delete": "Deleted user",
       "user_soft_delete": "Deleted user",
+      "user_telegram_unlinked": "Telegram link revoked",
       "customer_create": "Created customer",
       "customer_update": "Updated customer",
       "customer_block": "Blocked customer",
@@ -687,15 +606,12 @@
       "outlet_update": "Updated outlet",
       "outlet_delete": "Deleted outlet",
       "company_update": "Updated company settings",
-      "purchaseOrder_create": "Created purchase order",
-      "purchaseOrder_submit": "Submitted purchase order",
-      "purchaseOrder_receive": "Received purchase order",
-      "purchaseOrder_cancel": "Cancelled purchase order",
-      "supplier_create": "Created supplier",
-      "supplier_update": "Updated supplier",
-      "supplier_delete": "Deleted supplier",
+      "courier_create": "Created courier",
+      "courier_update": "Updated courier",
+      "courier_delete": "Deleted courier",
       "order_create": "Created order",
       "order_confirm": "Confirmed order",
+      "order_assign_courier": "Assigned to courier",
       "order_deliver": "Delivered order",
       "order_close": "Closed order",
       "order_cancel": "Cancelled order",
@@ -881,25 +797,24 @@
       "retry": "Retry",
       "assigneeType": "Assign to",
       "assigneeTypeAgent": "Agent",
-      "assigneeTypeSupplier": "Supplier",
-      "supplier": "Supplier",
-      "selectSupplierFirst": "Select a supplier first"
+      "assigneeTypeCourier": "Courier",
+      "courier": "Courier",
+      "selectCourierFirst": "Select a courier first"
     },
     "assignee": "Assigned to",
-    "allSuppliers": "All suppliers",
-    "supplier": "Supplier"
+    "allCouriers": "All couriers",
+    "courier": "Courier"
   },
-  "Suppliers": {
-    "title": "Suppliers",
-    "newSupplier": "New supplier",
+  "Couriers": {
+    "title": "Couriers",
+    "newCourier": "New courier",
     "searchPlaceholder": "Search by name or phone",
     "refresh": "Refresh",
     "retry": "Retry",
     "emptySearch": "No results for this search",
-    "emptyState": "No suppliers yet — add one to start purchasing",
-    "name": "Name",
+    "emptyState": "No couriers yet — add a user with the Courier role",
+    "name": "Full name",
     "phone": "Phone",
-    "address": "Address",
     "status": "Status",
     "active": "Active",
     "inactive": "Inactive",
@@ -908,12 +823,15 @@
     "deactivate": "Deactivate",
     "activate": "Activate",
     "form": {
-      "createTitle": "New supplier",
-      "editTitle": "Edit supplier",
-      "name": "Name",
+      "createTitle": "New courier",
+      "editTitle": "Edit courier",
+      "name": "Full name",
+      "firstName": "First name",
+      "lastName": "Last name",
       "phone": "Phone",
-      "address": "Address",
-      "nameRequired": "Enter a name"
+      "nameRequired": "Enter a name",
+      "firstNameRequired": "Enter a first name",
+      "lastNameRequired": "Enter a last name"
     },
     "routes": "Routes",
     "orders": "Orders",
@@ -924,28 +842,19 @@
     "telegram": {
       "column": "Telegram",
       "action": "Telegram",
-      "title": "Telegram link",
-      "subtitle": "Telegram order notifications for “{name}”",
+      "title": "Telegram account",
+      "subtitle": "{name} Telegram account",
       "linked": "Linked",
       "notLinked": "Not linked",
       "statusLinked": "Linked",
-      "statusNotLinked": "This supplier is not linked to Telegram yet. Generate a link code and send it to them.",
+      "statusNotLinked": "This courier is not linked to Telegram yet. They should open the company bot, press /start, and share their phone number — if it matches the account phone, the link is made automatically.",
       "linkedAt": "Linked since {date}",
-      "generateCode": "Generate link code",
-      "newCode": "Generate a new code",
-      "codeIssued": "Link code generated",
-      "codeLabel": "Link code",
-      "expiresAt": "Expires: {date}",
-      "copy": "Copy",
-      "copyFailed": "Could not copy the code",
-      "openBot": "Open Telegram bot",
-      "noDeepLinkHint": "Send this code to the supplier — they enter it with the bot's /start command.",
       "unlink": "Unlink",
-      "unlinkSuccess": "Telegram unlinked for “{name}”",
+      "unlinkSuccess": "Telegram unlinked for {name}",
       "close": "Close",
       "confirmUnlink": {
         "title": "Unlink Telegram",
-        "description": "“{name}” will stop receiving Telegram order notifications. Continue?",
+        "description": "{name} will no longer see their deliveries in the Mini App until they link again.",
         "confirm": "Unlink"
       }
     }
@@ -1233,27 +1142,28 @@
           }
         ]
       },
-      "suppliers": {
-        "title": "Suppliers",
-        "intro": "The companies that deliver goods to you.",
+      "couriers": {
+        "title": "Couriers",
+        "intro": "Your company's delivery staff who take orders to customers.",
         "groups": [
           {
             "items": [
-              "You can add a supplier and assign a route to them.",
-              "Telegram link — you generate a link code and send it to the supplier; once they enter it in the bot, they start receiving order notifications.",
-              "A supplier you are not working with for now can be deactivated instead of deleted."
+              "A courier is a user account with the Courier role.",
+              "You can add a courier and assign a route to them.",
+              "Telegram link — the courier links their own Telegram account and then sees the deliveries assigned to them in the Mini App and marks them delivered.",
+              "A courier you are not working with for now can be deactivated instead of deleted."
             ]
           }
         ]
       },
       "routes": {
         "title": "Routes",
-        "intro": "A route is the list of outlets, in order, that one agent (or supplier) covers on a given weekday.",
+        "intro": "A route is the list of outlets, in order, that one agent (or courier) covers on a given weekday.",
         "groups": [
           {
             "heading": "Building a route",
             "items": [
-              "Choose who it belongs to: an agent or a supplier.",
+              "Choose who it belongs to: an agent or a courier.",
               "Pick the weekday — for example, every Tuesday.",
               "Add stops: search for the customer first, then choose their outlet.",
               "Reorder with the arrows — the agent travels in exactly this sequence."

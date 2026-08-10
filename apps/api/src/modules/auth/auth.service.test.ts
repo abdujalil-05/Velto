@@ -268,10 +268,10 @@ describe('AuthService.linkTelegramContact (integration, real Postgres + RLS)', (
     expect(updated?.telegramId).toBe(BigInt(tgId));
   });
 
-  // The webhook now multiplexes two flows (contact-share -> User,
-  // "/start <code>" -> Supplier) through handleTelegramUpdate(); these two
-  // pin down that the original contact-share path is unchanged and that a
-  // bare "/start" is still the no-op it always was.
+  // handleTelegramUpdate() carries exactly one flow: contact-share -> User
+  // (agents and couriers alike). These two pin down that the contact-share
+  // path works and that any other update — a bare "/start" included — is a
+  // no-op rather than a throw (Telegram would retry a non-2xx forever).
   it('handleTelegramUpdate still links a shared contact', async () => {
     const phone = uniquePhone();
     const user = await createUser(phone);

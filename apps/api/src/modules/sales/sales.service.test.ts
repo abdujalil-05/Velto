@@ -8,10 +8,15 @@ import { DocumentNumberingService } from '../../common/document-numbering/docume
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { CustomersService } from '../customers/customers.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { SuppliersService } from '../purchases/suppliers/suppliers.service';
 import { InsufficientStockException } from '../stock/stock-exceptions';
 import { StockService } from '../stock/stock.service';
-import { CustomerBlockedException, InvalidOrderTransitionException, SalesOrderNotFoundException } from './sales-exceptions';
+import {
+  CourierNotFoundException,
+  CustomerBlockedException,
+  InvalidOrderTransitionException,
+  OrderNotAssignedToCourierException,
+  SalesOrderNotFoundException,
+} from './sales-exceptions';
 import { SalesService } from './sales.service';
 
 describe('SalesService (integration, real Postgres + RLS)', () => {
@@ -20,16 +25,16 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
   let warehouseId: string;
   let productId: string;
   let packagingId: string;
-  let supplierId: string;
+  let courierId: string;
+  let courierUser: AuthenticatedUser;
 
   const tenantPrisma = new TenantPrismaService();
   const auditLog = new AuditLogService();
   const customers = new CustomersService(tenantPrisma, auditLog);
   const stock = new StockService(tenantPrisma, auditLog);
   const docNumbering = new DocumentNumberingService();
-  const suppliers = new SuppliersService(tenantPrisma, auditLog);
   const notifications = new NotificationsService(tenantPrisma, new ConfigService());
-  const sales = new SalesService(tenantPrisma, auditLog, customers, stock, docNumbering, suppliers, notifications);
+  const sales = new SalesService(tenantPrisma, auditLog, customers, stock, docNumbering, notifications);
 
   beforeAll(async () => {
     const tenant = await systemPrisma.tenant.create({
@@ -60,8 +65,30 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
       const priceList = await tx.priceList.create({ data: { companyId, name: 'Default', isDefault: true } });
       await tx.priceListItem.create({ data: { priceListId: priceList.id, productId: product.id, price: '10000' } });
 
-      const supplier = await tx.supplier.create({ data: { companyId, name: 'Sales Test Supplier' } });
-      supplierId = supplier.id;
+      // A courier is an ordinary User carrying the COURIER system role — the
+      // role row has to exist here because this test builds its tenant by
+      // hand rather than through seed.ts's RBAC catalog.
+      const courierRole = await tx.role.create({
+        data: { companyId, code: 'COURIER', name: 'Kuryer', isSystem: true },
+      });
+      const courier = await tx.user.create({
+        data: {
+          companyId,
+          firstName: 'Kuryer',
+          lastName: 'Test',
+          phone: `+9989000${Math.floor(Math.random() * 90000) + 10000}`,
+          roles: { create: { roleId: courierRole.id } },
+        },
+      });
+      courierId = courier.id;
+      courierUser = {
+        id: courier.id,
+        companyId,
+        firstName: 'Kuryer',
+        lastName: 'Test',
+        roles: ['COURIER'],
+        permissions: ['orders.read', 'orders.deliver'],
+      };
     });
 
     await tenantPrisma.run(companyId, () => stock.receive({ productId, warehouseId, qty: 1000 }, user));
@@ -258,15 +285,15 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     );
   });
 
-  it('creating with a supplierId skips straight to SHIPPED, reserves stock, and deliver() works from there', async () => {
+  it('creating with a courierId skips straight to SHIPPED, reserves stock, and deliver() works from there', async () => {
     const before = await getReserved();
     const customerId = await createCustomer();
     const order = await tenantPrisma.run(companyId, () =>
-      sales.create({ customerId, supplierId, lines: [{ productId, packagingId, qty: 2 }] }, user),
+      sales.create({ customerId, courierId, lines: [{ productId, packagingId, qty: 2 }] }, user),
     );
     expect(order.status).toBe('SHIPPED');
-    expect(order.supplierId).toBe(supplierId);
-    expect(order.deliverySupplier?.id).toBe(supplierId);
+    expect(order.courierId).toBe(courierId);
+    expect(order.courier?.id).toBe(courierId);
     expect((await getReserved()).minus(before).toString()).toBe('2');
 
     const delivered = await tenantPrisma.run(companyId, () => sales.deliver(order.id, user));
@@ -274,7 +301,7 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     expect((await getReserved()).toString()).toBe(before.toString());
   });
 
-  it('assignSupplier() on a SUBMITTED order reserves stock and moves it to SHIPPED', async () => {
+  it('assignCourier() on a SUBMITTED order reserves stock and moves it to SHIPPED', async () => {
     const before = await getReserved();
     const customerId = await createCustomer();
     const order = await tenantPrisma.run(companyId, () =>
@@ -282,13 +309,13 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     );
     expect(order.status).toBe('SUBMITTED');
 
-    const assigned = await tenantPrisma.run(companyId, () => sales.assignSupplier(order.id, { supplierId }, user));
+    const assigned = await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId }, user));
     expect(assigned.status).toBe('SHIPPED');
-    expect(assigned.supplierId).toBe(supplierId);
+    expect(assigned.courierId).toBe(courierId);
     expect((await getReserved()).minus(before).toString()).toBe('1');
   });
 
-  it('assignSupplier() on a CONFIRMED order does not double-reserve, and is rejected once DELIVERED', async () => {
+  it('assignCourier() on a CONFIRMED order does not double-reserve, and is rejected once DELIVERED', async () => {
     const customerId = await createCustomer();
     const order = await tenantPrisma.run(companyId, () =>
       sales.create({ customerId, lines: [{ productId, packagingId, qty: 1 }] }, user),
@@ -296,7 +323,7 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     await tenantPrisma.run(companyId, () => sales.confirm(order.id, user));
     const before = await getReserved();
 
-    const assigned = await tenantPrisma.run(companyId, () => sales.assignSupplier(order.id, { supplierId }, user));
+    const assigned = await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId }, user));
     expect(assigned.status).toBe('SHIPPED');
     expect((await getReserved()).toString()).toBe(before.toString());
 
@@ -304,8 +331,72 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     expect(delivered.status).toBe('DELIVERED');
 
     await expect(
-      tenantPrisma.run(companyId, () => sales.assignSupplier(order.id, { supplierId }, user)),
+      tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId }, user)),
     ).rejects.toBeInstanceOf(InvalidOrderTransitionException);
+  });
+
+  it('assignCourier() rejects a user who does not hold the COURIER role', async () => {
+    const customerId = await createCustomer();
+    const order = await tenantPrisma.run(companyId, () =>
+      sales.create({ customerId, lines: [{ productId, packagingId, qty: 1 }] }, user),
+    );
+
+    // `user` is a real, active User in this tenant — but a WAREHOUSE one, so
+    // only the role check (not the FK) can reject it.
+    await expect(
+      tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId: user.id }, user)),
+    ).rejects.toBeInstanceOf(CourierNotFoundException);
+  });
+
+  it('a courier cannot deliver an order that is not assigned to them', async () => {
+    const customerId = await createCustomer();
+    const order = await tenantPrisma.run(companyId, () =>
+      sales.create({ customerId, lines: [{ productId, packagingId, qty: 1 }] }, user),
+    );
+    await tenantPrisma.run(companyId, () => sales.confirm(order.id, user));
+
+    // CONFIRMED and deliverable — the only thing stopping this courier is
+    // that `courierId` is still null.
+    await expect(
+      tenantPrisma.run(companyId, () => sales.deliver(order.id, courierUser)),
+    ).rejects.toBeInstanceOf(OrderNotAssignedToCourierException);
+
+    // ...and warehouse is unaffected by the courier guard.
+    const delivered = await tenantPrisma.run(companyId, () => sales.deliver(order.id, user));
+    expect(delivered.status).toBe('DELIVERED');
+  });
+
+  it('a courier delivers their own assigned order, and list()/getById() are scoped to it', async () => {
+    const customerId = await createCustomer();
+    const mine = await tenantPrisma.run(companyId, () =>
+      sales.create({ customerId, courierId, lines: [{ productId, packagingId, qty: 1 }] }, user),
+    );
+    const someoneElses = await tenantPrisma.run(companyId, () =>
+      sales.create({ customerId, lines: [{ productId, packagingId, qty: 1 }] }, user),
+    );
+
+    const listed = await tenantPrisma.run(companyId, () => sales.list({ page: 1, pageSize: 100 }, courierUser));
+    const ids = listed.data.map((o) => o.id);
+    expect(ids).toContain(mine.id);
+    expect(ids).not.toContain(someoneElses.id);
+    // A courierId in the query can't widen that scope back out, nor narrow it
+    // to nothing — it is ignored outright for a courier session.
+    const spoofed = await tenantPrisma.run(companyId, () =>
+      sales.list({ page: 1, pageSize: 100, courierId: randomUUID() }, courierUser),
+    );
+    expect(spoofed.data.map((o) => o.id)).toContain(mine.id);
+    expect(spoofed.data.map((o) => o.id)).not.toContain(someoneElses.id);
+
+    await expect(
+      tenantPrisma.run(companyId, () => sales.getById(someoneElses.id, courierUser)),
+    ).rejects.toBeInstanceOf(SalesOrderNotFoundException);
+
+    const delivered = await tenantPrisma.run(companyId, () => sales.deliver(mine.id, courierUser));
+    expect(delivered.status).toBe('DELIVERED');
+
+    // Warehouse still sees both orders — self-scoping is courier-only.
+    const asWarehouse = await tenantPrisma.run(companyId, () => sales.list({ page: 1, pageSize: 100 }, user));
+    expect(asWarehouse.data.map((o) => o.id)).toEqual(expect.arrayContaining([mine.id, someoneElses.id]));
   });
 
   it('remove() rejects deleting anything past SUBMITTED', async () => {

@@ -64,9 +64,8 @@ export class AuthController {
   // Registered with Telegram via `setWebhook`'s secret_token param — every
   // call must carry that same secret back in this header, or it isn't
   // actually Telegram calling. Always 200s (Telegram retries non-2xx
-  // responses); handleTelegramUpdate() never throws. One route for both
-  // linking flows (agent contact-share, supplier `/start <code>`) because
-  // Telegram allows a bot exactly one webhook URL.
+  // responses); handleTelegramUpdate() never throws. Carries the contact-share
+  // linking flow for every Telegram-logging-in User (agents and couriers).
   @Public()
   @HttpCode(HttpStatus.OK)
   @Post('telegram/webhook')

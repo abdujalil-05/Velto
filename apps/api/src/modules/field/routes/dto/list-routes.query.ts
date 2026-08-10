@@ -9,7 +9,7 @@ export class ListRoutesQueryDto extends PaginationQueryDto {
 
   @IsOptional()
   @IsUUID()
-  supplierId?: string;
+  courierId?: string;
 
   @IsOptional()
   @Type(() => Number)

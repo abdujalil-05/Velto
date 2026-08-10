@@ -24,7 +24,6 @@ import { FinanceModule } from './modules/finance/finance.module';
 import { FieldModule } from './modules/field/field.module';
 import { SettingsModule } from './modules/settings/settings.module';
 import { SyncModule } from './modules/sync/sync.module';
-import { PurchasesModule } from './modules/purchases/purchases.module';
 import { UsersModule } from './modules/users/users.module';
 
 @Module({
@@ -52,7 +51,6 @@ import { UsersModule } from './modules/users/users.module';
     FinanceModule,
     FieldModule,
     SyncModule,
-    PurchasesModule,
     UsersModule,
     AnalyticsModule,
     AuditModule,

@@ -47,6 +47,9 @@ describe('E2E: order → confirm → deliver → payment → balance (real HTTP)
       { module: 'orders', code: 'create' },
       { module: 'orders', code: 'read' },
       { module: 'orders', code: 'update' },
+      // Separate from 'update' since couriers hold only this one — the E2E
+      // operator stands in for a warehouse user, who holds both.
+      { module: 'orders', code: 'deliver' },
       { module: 'payments', code: 'create' },
       { module: 'payments', code: 'read' },
       { module: 'customers', code: 'read' },

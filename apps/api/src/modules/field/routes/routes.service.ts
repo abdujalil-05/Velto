@@ -6,7 +6,11 @@ import { paginate } from '../../../common/pagination/pagination.dto';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import { endOfDay, isoWeekday, startOfDay } from '../../analytics/report-utils';
 import { OutletNotFoundException } from '../../customers/customers-exceptions';
-import { SuppliersService } from '../../purchases/suppliers/suppliers.service';
+// A courier is the same concept in both modules (a User holding COURIER), so
+// the exception is defined once, next to its primary caller, rather than
+// duplicated here — same cross-module import style as SalesService reusing
+// AgentNotFoundException from field-exceptions.
+import { CourierNotFoundException } from '../../sales/sales-exceptions';
 import {
   AgentNotFoundException,
   RouteNotFoundException,
@@ -20,7 +24,7 @@ import type { UpdateRouteDto } from './dto/update-route.dto';
 
 const ROUTE_INCLUDE = {
   agent: { select: { id: true, firstName: true, lastName: true } },
-  deliverySupplier: { select: { id: true, name: true } },
+  courier: { select: { id: true, firstName: true, lastName: true, phone: true } },
   stops: {
     orderBy: { sortOrder: 'asc' },
     include: {
@@ -34,7 +38,6 @@ export class RoutesService {
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     private readonly auditLog: AuditLogService,
-    private readonly suppliers: SuppliersService,
   ) {}
 
   // 7.2 groups this as "GET /routes/:agentId" — kept here as a query filter
@@ -45,7 +48,7 @@ export class RoutesService {
     const tx = this.tenantPrisma.client;
     const where: Prisma.RouteWhereInput = {
       ...(query.agentId ? { agentId: query.agentId } : {}),
-      ...(query.supplierId ? { supplierId: query.supplierId } : {}),
+      ...(query.courierId ? { courierId: query.courierId } : {}),
       ...(query.weekday ? { weekday: query.weekday } : {}),
     };
 
@@ -87,7 +90,7 @@ export class RoutesService {
 
     const today = startOfDay(new Date());
     const outletIds = route.stops.map((s) => s.outletId);
-    // A supplier-served route (`agentId` null) has no GPS-tracked agent to
+    // A courier-served route (`agentId` null) has no GPS-tracked agent to
     // log a Visit in the first place — the "every stop has a verified visit"
     // gate below is agent-route-only in MVP, so it just never finds one
     // finished (falls straight to RouteNotReadyException) rather than
@@ -130,17 +133,17 @@ export class RoutesService {
   async create(dto: CreateRouteDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
     // CreateRouteDto's ExactlyOneOf decorators already guarantee exactly one
-    // of agentId/supplierId reaches here — these just turn a bad id into the
+    // of agentId/courierId reaches here — these just turn a bad id into the
     // right 404-ish AppException instead of a raw FK-violation 500.
     if (dto.agentId) await this.assertAgentExists(tx, dto.agentId);
-    if (dto.supplierId) await this.suppliers.findActiveOrThrow(tx, dto.supplierId);
+    if (dto.courierId) await this.assertCourierExists(tx, dto.courierId);
     await this.assertOutletsExist(tx, dto.stops);
 
     const route = await tx.route.create({
       data: {
         companyId: user.companyId,
         agentId: dto.agentId,
-        supplierId: dto.supplierId,
+        courierId: dto.courierId,
         weekday: dto.weekday,
         name: dto.name,
         stops: { create: dto.stops.map((stop, index) => ({ outletId: stop.outletId, sortOrder: index + 1 })) },
@@ -164,11 +167,11 @@ export class RoutesService {
    * 9.2 "tahrirlash, nuqta biriktirish" — `stops`, when given, fully
    * replaces the existing stop list (same pattern as PriceLists.upsertItems).
    *
-   * `agentId`/`supplierId`: UpdateRouteDto's AtMostOneUuidOf decorators only
+   * `agentId`/`courierId`: UpdateRouteDto's AtMostOneUuidOf decorators only
    * reject the two arriving *together* in this request — they don't know
    * about the row already in the DB, so reassigning to one explicitly clears
    * the other here (rather than leaving both set, which would violate the
-   * DB's `Route_agent_xor_supplier_check` CHECK). Omitting both leaves the
+   * DB's `Route_agent_xor_courier_check` CHECK). Omitting both leaves the
    * route's current assignment untouched. Uses the *Unchecked* input (raw
    * scalar FK columns) instead of `agent: {connect/disconnect}` so both
    * columns land in a single UPDATE statement — two separate relation
@@ -193,10 +196,10 @@ export class RoutesService {
     if (dto.agentId) {
       await this.assertAgentExists(tx, dto.agentId);
       data.agentId = dto.agentId;
-      data.supplierId = null;
-    } else if (dto.supplierId) {
-      await this.suppliers.findActiveOrThrow(tx, dto.supplierId);
-      data.supplierId = dto.supplierId;
+      data.courierId = null;
+    } else if (dto.courierId) {
+      await this.assertCourierExists(tx, dto.courierId);
+      data.courierId = dto.courierId;
       data.agentId = null;
     }
 
@@ -222,6 +225,20 @@ export class RoutesService {
   private async assertAgentExists(tx: TenantClient, agentId: string) {
     const agent = await tx.user.findFirst({ where: { id: agentId, isActive: true } });
     if (!agent) throw new AgentNotFoundException();
+  }
+
+  /**
+   * Stricter than assertAgentExists above: a courier is a User carrying the
+   * fixed COURIER system role, and the FK on `Route.courierId` points at
+   * `User` generally, so without this role check any user id at all would be
+   * accepted as a route's kuryer.
+   */
+  private async assertCourierExists(tx: TenantClient, courierId: string) {
+    const courier = await tx.user.findFirst({
+      where: { id: courierId, isActive: true, roles: { some: { role: { code: 'COURIER' } } } },
+      select: { id: true },
+    });
+    if (!courier) throw new CourierNotFoundException();
   }
 
   private async assertOutletsExist(tx: TenantClient, stops: RouteStopInputDto[]) {

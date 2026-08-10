@@ -7,7 +7,6 @@ import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { AuditLogService } from '../../../common/audit/audit-log.service';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import { OutletNotFoundException } from '../../customers/customers-exceptions';
-import { SuppliersService } from '../../purchases/suppliers/suppliers.service';
 import { AgentNotFoundException, RouteNotFoundException } from '../field-exceptions';
 import { CreateRouteDto } from './dto/create-route.dto';
 import { RoutesService } from './routes.service';
@@ -16,13 +15,12 @@ describe('RoutesService (integration, real Postgres + RLS)', () => {
   let companyId: string;
   let user: AuthenticatedUser;
   let agentId: string;
-  let supplierId: string;
+  let courierId: string;
   let outletIds: string[];
 
   const tenantPrisma = new TenantPrismaService();
   const auditLog = new AuditLogService();
-  const suppliers = new SuppliersService(tenantPrisma, auditLog);
-  const routes = new RoutesService(tenantPrisma, auditLog, suppliers);
+  const routes = new RoutesService(tenantPrisma, auditLog);
 
   beforeAll(async () => {
     const tenant = await systemPrisma.tenant.create({
@@ -57,8 +55,21 @@ describe('RoutesService (integration, real Postgres + RLS)', () => {
       const outlet3 = await tx.outlet.create({ data: { companyId, customerId: customer.id, name: 'Stop 3' } });
       outletIds = [outlet1.id, outlet2.id, outlet3.id];
 
-      const supplier = await tx.supplier.create({ data: { companyId, name: 'Routes Test Supplier' } });
-      supplierId = supplier.id;
+      // A courier is an ordinary User holding the COURIER system role; this
+      // tenant is built by hand, so the role row has to be created too.
+      const courierRole = await tx.role.create({
+        data: { companyId, code: 'COURIER', name: 'Kuryer', isSystem: true },
+      });
+      const courier = await tx.user.create({
+        data: {
+          companyId,
+          firstName: 'Kuryer',
+          lastName: 'One',
+          phone: '+998900000032',
+          roles: { create: { roleId: courierRole.id } },
+        },
+      });
+      courierId = courier.id;
     });
   });
 
@@ -120,50 +131,50 @@ describe('RoutesService (integration, real Postgres + RLS)', () => {
     ).rejects.toBeInstanceOf(RouteNotFoundException);
   });
 
-  it('creates a route with a supplierId instead of an agentId — agent stays null, deliverySupplier is populated', async () => {
+  it('creates a route with a courierId instead of an agentId — agent stays null, courier is populated', async () => {
     const route = await tenantPrisma.run(companyId, () =>
-      routes.create({ supplierId, weekday: 4, name: 'Route E (supplier)', stops: [{ outletId: outletIds[0]! }] }, user),
+      routes.create({ courierId, weekday: 4, name: 'Route E (courier)', stops: [{ outletId: outletIds[0]! }] }, user),
     );
     expect(route.agentId).toBeNull();
-    expect(route.supplierId).toBe(supplierId);
-    expect(route.deliverySupplier?.id).toBe(supplierId);
+    expect(route.courierId).toBe(courierId);
+    expect(route.courier?.id).toBe(courierId);
   });
 
-  it('list() filters by supplierId the same way it filters by agentId', async () => {
+  it('list() filters by courierId the same way it filters by agentId', async () => {
     const route = await tenantPrisma.run(companyId, () =>
-      routes.create({ supplierId, weekday: 5, name: 'Route F (supplier)', stops: [{ outletId: outletIds[0]! }] }, user),
+      routes.create({ courierId, weekday: 5, name: 'Route F (courier)', stops: [{ outletId: outletIds[0]! }] }, user),
     );
-    const bySupplier = await tenantPrisma.run(companyId, () => routes.list({ page: 1, pageSize: 100, supplierId }));
-    expect(bySupplier.data.map((r) => r.id)).toContain(route.id);
+    const byCourier = await tenantPrisma.run(companyId, () => routes.list({ page: 1, pageSize: 100, courierId }));
+    expect(byCourier.data.map((r) => r.id)).toContain(route.id);
 
-    const byOtherSupplier = await tenantPrisma.run(companyId, () =>
-      routes.list({ page: 1, pageSize: 100, supplierId: randomUUID() }),
+    const byOtherCourier = await tenantPrisma.run(companyId, () =>
+      routes.list({ page: 1, pageSize: 100, courierId: randomUUID() }),
     );
-    expect(byOtherSupplier.data.map((r) => r.id)).not.toContain(route.id);
+    expect(byOtherCourier.data.map((r) => r.id)).not.toContain(route.id);
   });
 
-  it('update() reassigning agentId -> supplierId clears the previous agent (DB XOR guard)', async () => {
+  it('update() reassigning agentId -> courierId clears the previous agent (DB XOR guard)', async () => {
     const route = await tenantPrisma.run(companyId, () =>
       routes.create({ agentId, weekday: 6, name: 'Route G', stops: [{ outletId: outletIds[0]! }] }, user),
     );
-    const reassigned = await tenantPrisma.run(companyId, () => routes.update(route.id, { supplierId }, user));
+    const reassigned = await tenantPrisma.run(companyId, () => routes.update(route.id, { courierId }, user));
     expect(reassigned.agentId).toBeNull();
-    expect(reassigned.supplierId).toBe(supplierId);
+    expect(reassigned.courierId).toBe(courierId);
   });
 
-  it('CreateRouteDto: exactly one of agentId/supplierId is enforced at the DTO level', async () => {
+  it('CreateRouteDto: exactly one of agentId/courierId is enforced at the DTO level', async () => {
     const base = { weekday: 1, name: 'X', stops: [{ outletId: outletIds[0]! }] };
 
     const neither = plainToInstance(CreateRouteDto, base);
     expect(await validate(neither)).not.toHaveLength(0);
 
-    const both = plainToInstance(CreateRouteDto, { ...base, agentId, supplierId });
+    const both = plainToInstance(CreateRouteDto, { ...base, agentId, courierId });
     expect(await validate(both)).not.toHaveLength(0);
 
     const onlyAgent = plainToInstance(CreateRouteDto, { ...base, agentId });
     expect(await validate(onlyAgent)).toHaveLength(0);
 
-    const onlySupplier = plainToInstance(CreateRouteDto, { ...base, supplierId });
-    expect(await validate(onlySupplier)).toHaveLength(0);
+    const onlyCourier = plainToInstance(CreateRouteDto, { ...base, courierId });
+    expect(await validate(onlyCourier)).toHaveLength(0);
   });
 });

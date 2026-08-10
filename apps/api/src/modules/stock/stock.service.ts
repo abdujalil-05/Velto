@@ -153,7 +153,7 @@ export class StockService {
 
   /**
    * Same on-hand increment as receive(), but tagged with a reference
-   * document (e.g. a PurchaseOrder) instead of 'Manual' — for other modules
+   * document (e.g. an inbound receipt) instead of 'Manual' — for other modules
    * to call (11.2: "Modullar bir-biriga faqat servis interfeysi orqali
    * murojaat qiladi"), mirroring reserve/release/issue below.
    */

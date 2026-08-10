@@ -71,7 +71,7 @@ export default function EditRoutePage({ params }: { params: Promise<{ id: string
             mode="edit"
             defaultValues={{
               agentId: route.agentId ?? undefined,
-              supplierId: route.supplierId ?? undefined,
+              courierId: route.courierId ?? undefined,
               weekday: route.weekday,
               name: route.name,
               stops: route.stops.map((s) => ({

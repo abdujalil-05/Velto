@@ -7,26 +7,25 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { SortableHeader } from '@/components/shared/sortable-header';
 import { useRoutesQuery } from '@/lib/api/routes';
+import { useOrdersQuery } from '@/lib/api/orders';
 import type { SortState } from '@/lib/hooks/use-sort';
-import { useSupplierTelegramQuery, type Supplier } from '@/lib/api/suppliers';
+import { courierName, type Courier } from '@/lib/api/couriers';
 
-interface SuppliersTableProps {
-  suppliers: Supplier[];
+interface CouriersTableProps {
+  couriers: Courier[];
   canUpdate: boolean;
-  /** `purchases.read` — gates the Telegram column and the dialog trigger. */
+  /** `users.read` — gates the Telegram column and the dialog trigger. */
   canReadTelegram: boolean;
-  onEdit: (supplier: Supplier) => void;
-  onToggleActive: (supplier: Supplier) => void;
-  onOpenTelegram: (supplier: Supplier) => void;
+  onEdit: (courier: Courier) => void;
+  onToggleActive: (courier: Courier) => void;
+  onOpenTelegram: (courier: Courier) => void;
   togglingId?: string;
   sort: SortState;
   onSort: (column: string) => void;
-  /** Orders where this supplier is the deliverer, keyed by supplier id — computed page-side (see suppliers/page.tsx: `GET /orders` has no `supplierId` filter). */
-  orderCountBySupplierId: Map<string, number>;
 }
 
-export function SuppliersTable({
-  suppliers,
+export function CouriersTable({
+  couriers,
   canUpdate,
   canReadTelegram,
   onEdit,
@@ -35,9 +34,8 @@ export function SuppliersTable({
   togglingId,
   sort,
   onSort,
-  orderCountBySupplierId,
-}: SuppliersTableProps) {
-  const t = useTranslations('Suppliers');
+}: CouriersTableProps) {
+  const t = useTranslations('Couriers');
   const showActions = canUpdate || canReadTelegram;
 
   return (
@@ -45,11 +43,10 @@ export function SuppliersTable({
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-border text-left text-xs text-muted-foreground">
-            <SortableHeader column="name" sort={sort} onSort={onSort}>
+            <SortableHeader column="firstName" sort={sort} onSort={onSort}>
               {t('name')}
             </SortableHeader>
             <th className="pb-2 pr-3 font-medium">{t('phone')}</th>
-            <th className="pb-2 pr-3 font-medium">{t('address')}</th>
             <th className="pb-2 pr-3 font-medium">{t('routes')}</th>
             <th className="pb-2 pr-3 font-medium">{t('orders')}</th>
             {canReadTelegram && <th className="pb-2 pr-3 font-medium">{t('telegram.column')}</th>}
@@ -58,25 +55,28 @@ export function SuppliersTable({
           </tr>
         </thead>
         <tbody className="divide-y divide-border">
-          {suppliers.map((supplier) => (
-            <tr key={supplier.id} className="hover:bg-accent/50">
-              <td className="py-2 pr-3 font-medium">{supplier.name}</td>
-              <td className="py-2 pr-3 text-muted-foreground">{supplier.phone || '—'}</td>
-              <td className="py-2 pr-3 text-muted-foreground">{supplier.address || '—'}</td>
+          {couriers.map((courier) => (
+            <tr key={courier.id} className="hover:bg-accent/50">
+              <td className="py-2 pr-3 font-medium">{courierName(courier)}</td>
+              <td className="py-2 pr-3 text-muted-foreground">{courier.phone || '—'}</td>
               <td className="py-2 pr-3">
-                <SupplierRouteCount supplierId={supplier.id} />
+                <CourierRouteCount courierId={courier.id} />
               </td>
               <td className="py-2 pr-3">
-                <SupplierOrderCount count={orderCountBySupplierId.get(supplier.id) ?? 0} supplierId={supplier.id} />
+                <CourierOrderCount courierId={courier.id} />
               </td>
               {canReadTelegram && (
                 <td className="py-2 pr-3">
-                  <SupplierTelegramCell supplierId={supplier.id} />
+                  {courier.telegramLinked ? (
+                    <Badge variant="success">{t('telegram.linked')}</Badge>
+                  ) : (
+                    <span className="text-muted-foreground">{t('telegram.notLinked')}</span>
+                  )}
                 </td>
               )}
               <td className="py-2 pr-3">
-                <Badge variant={supplier.isActive ? 'success' : 'outline'}>
-                  {supplier.isActive ? t('active') : t('inactive')}
+                <Badge variant={courier.isActive ? 'success' : 'outline'}>
+                  {courier.isActive ? t('active') : t('inactive')}
                 </Badge>
               </td>
               {showActions && (
@@ -86,7 +86,7 @@ export function SuppliersTable({
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => onOpenTelegram(supplier)}
+                        onClick={() => onOpenTelegram(courier)}
                         aria-label={t('telegram.action')}
                       >
                         <Send className="h-4 w-4" />
@@ -94,17 +94,17 @@ export function SuppliersTable({
                     )}
                     {canUpdate && (
                       <>
-                        <Button variant="ghost" size="sm" onClick={() => onEdit(supplier)} aria-label={t('edit')}>
+                        <Button variant="ghost" size="sm" onClick={() => onEdit(courier)} aria-label={t('edit')}>
                           <Pencil className="h-4 w-4" />
                         </Button>
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => onToggleActive(supplier)}
-                          disabled={togglingId === supplier.id}
-                          aria-label={supplier.isActive ? t('deactivate') : t('activate')}
+                          onClick={() => onToggleActive(courier)}
+                          disabled={togglingId === courier.id}
+                          aria-label={courier.isActive ? t('deactivate') : t('activate')}
                         >
-                          <Power className={supplier.isActive ? 'h-4 w-4 text-destructive' : 'h-4 w-4 text-success'} />
+                          <Power className={courier.isActive ? 'h-4 w-4 text-destructive' : 'h-4 w-4 text-success'} />
                         </Button>
                       </>
                     )}
@@ -119,14 +119,14 @@ export function SuppliersTable({
   );
 }
 
-function SupplierRouteCount({ supplierId }: { supplierId: string }) {
-  const t = useTranslations('Suppliers');
-  const { data, isLoading } = useRoutesQuery({ supplierId, page: 1, pageSize: 1 });
+function CourierRouteCount({ courierId }: { courierId: string }) {
+  const t = useTranslations('Couriers');
+  const { data, isLoading } = useRoutesQuery({ courierId, page: 1, pageSize: 1 });
 
   if (isLoading) return <span className="text-muted-foreground">…</span>;
   const count = data?.meta.total ?? 0;
   return count > 0 ? (
-    <Link href={{ pathname: '/routes', query: { supplierId } }} className="text-primary hover:underline">
+    <Link href={{ pathname: '/routes', query: { courierId } }} className="text-primary hover:underline">
       {t('routeCount', { count })}
     </Link>
   ) : (
@@ -134,26 +134,15 @@ function SupplierRouteCount({ supplierId }: { supplierId: string }) {
   );
 }
 
-/**
- * `GET /suppliers` doesn't carry link state, so each row asks for its own —
- * same per-row fetch shape as `SupplierRouteCount` above.
- */
-function SupplierTelegramCell({ supplierId }: { supplierId: string }) {
-  const t = useTranslations('Suppliers');
-  const { data, isLoading } = useSupplierTelegramQuery(supplierId);
+/** `GET /orders?courierId=…` with `pageSize: 1` — only `meta.total` is used. */
+function CourierOrderCount({ courierId }: { courierId: string }) {
+  const t = useTranslations('Couriers');
+  const { data, isLoading } = useOrdersQuery({ courierId, page: 1, pageSize: 1 });
 
   if (isLoading) return <span className="text-muted-foreground">…</span>;
-  if (!data?.linked) return <span className="text-muted-foreground">{t('telegram.notLinked')}</span>;
-
-  return (
-    <Badge variant="success">{data.username ? `@${data.username}` : (data.telegramId ?? t('telegram.linked'))}</Badge>
-  );
-}
-
-function SupplierOrderCount({ count, supplierId }: { count: number; supplierId: string }) {
-  const t = useTranslations('Suppliers');
+  const count = data?.meta.total ?? 0;
   return count > 0 ? (
-    <Link href={{ pathname: '/orders', query: { supplierId } }} className="text-primary hover:underline">
+    <Link href={{ pathname: '/orders', query: { courierId } }} className="text-primary hover:underline">
       {t('orderCount', { count })}
     </Link>
   ) : (

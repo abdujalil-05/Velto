@@ -97,6 +97,34 @@
     "noOrderConfirmDescription": "The visit will be closed as “no order” and shown that way in today's report. It can't be reopened.",
     "noOrderConfirmAction": "Yes, finish"
   },
+  "Courier": {
+    "title": "Deliveries",
+    "orderNumber": "Order #{number}",
+    "emptyState": "No deliveries assigned to you",
+    "loadError": "Couldn't load the deliveries",
+    "notFound": "Order not found",
+    "customer": "Customer",
+    "unknownCustomer": "Customer not specified",
+    "address": "Address",
+    "noAddress": "No address on file",
+    "phone": "Phone",
+    "noPhone": "No phone on file",
+    "total": "Total",
+    "markDelivered": "Delivered",
+    "deliveredSuccess": "Order delivered",
+    "alreadyDelivered": "This order is already closed",
+    "deliverConfirmTitle": "Mark as delivered?",
+    "deliverConfirmDescription": "The order will be marked as delivered. This can't be undone.",
+    "status": {
+      "DRAFT": "Draft",
+      "SUBMITTED": "Submitted",
+      "CONFIRMED": "Confirmed",
+      "SHIPPED": "Shipped",
+      "DELIVERED": "Delivered",
+      "CLOSED": "Closed",
+      "CANCELLED": "Cancelled"
+    }
+  },
   "NotFound": {
     "title": "This page does not exist",
     "description": "The page you are looking for was not found or has been moved.",
