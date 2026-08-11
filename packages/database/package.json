@@ -13,6 +13,7 @@
     "seed": "tsx src/seed.ts",
     "rename-system-roles": "tsx src/rename-system-roles.ts",
     "backfill-permissions": "tsx src/backfill-permissions.ts",
+    "sync-system-roles": "tsx src/sync-system-roles.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src"
