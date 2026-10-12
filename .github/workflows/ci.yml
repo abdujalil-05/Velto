@@ -7,12 +7,13 @@ on:
     branches: [main]
 
 env:
-  # In CI, `velto` is the Postgres bootstrap role (superuser), unlike the
-  # least-privilege setup docs describe for real environments — acceptable
-  # here since the whole container is thrown away after the run. This lets
-  # scripts/provision-roles.sql (ALTER DEFAULT PRIVILEGES FOR ROLE velto ...)
-  # work unmodified.
-  DATABASE_URL: postgresql://velto:velto@localhost:5432/velto_ci?schema=public
+  # `velto` is the container's bootstrap SUPERUSER and is used ONLY to run
+  # scripts/provision-roles.sql. A superuser skips RLS even with FORCE, so
+  # the app/tests run as velto_app (NOBYPASSRLS) and migrations as the
+  # schema owner velto_owner — same role model as local dev (TZ 10.4/16.3).
+  DATABASE_ADMIN_URL: postgresql://velto:velto@localhost:5432/velto_ci
+  DATABASE_URL: postgresql://velto_app:velto_app@localhost:5432/velto_ci?schema=public
+  DATABASE_MIGRATE_URL: postgresql://velto_owner:velto_owner@localhost:5432/velto_ci?schema=public
   DATABASE_SYSTEM_URL: postgresql://velto_system:velto_system@localhost:5432/velto_ci?schema=public
   REDIS_URL: redis://localhost:6379
   JWT_ACCESS_SECRET: ci-only-secret-not-for-real-use-min-32-chars
@@ -70,11 +71,11 @@ jobs:
       - name: Generate Prisma client
         run: pnpm --filter @velto/database run generate
 
+      - name: Provision database roles (owner / app / system)
+        run: psql "$DATABASE_ADMIN_URL" -v ON_ERROR_STOP=1 -f packages/database/scripts/provision-roles.sql
+
       - name: Run migrations
         run: pnpm --filter @velto/database exec prisma migrate deploy
-
-      - name: Provision BYPASSRLS system role
-        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/scripts/provision-roles.sql
 
       - name: Lint
         run: pnpm run lint

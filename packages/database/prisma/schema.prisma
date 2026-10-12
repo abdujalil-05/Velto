@@ -12,7 +12,11 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  // Runtime: RLS-bound app role `velto_app` (never superuser/BYPASSRLS).
+  url       = env("DATABASE_URL")
+  // Prisma CLI (migrate/introspect) only: schema owner `velto_owner`.
+  // See scripts/provision-roles.sql for the role model.
+  directUrl = env("DATABASE_MIGRATE_URL")
 }
 
 // ---------------------------------------------------------------------------

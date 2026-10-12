@@ -6,7 +6,8 @@ import { PrismaClient, Prisma } from '../generated/client';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * RLS-bound client (Postgres role `velto`). All per-tenant reads/writes must
+ * RLS-bound client (Postgres role `velto_app`: not superuser, NOBYPASSRLS —
+ * see scripts/provision-roles.sql). All per-tenant reads/writes must
  * go through `withTenant()` below — a bare `prisma.customer.findMany()` etc.
  * outside a tenant transaction will see zero rows (6.10 fails closed, not
  * open) because `app.current_company_id` was never set on that connection.

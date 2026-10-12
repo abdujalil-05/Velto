@@ -32,10 +32,12 @@ pnpm install
 cp .env.example .env
 docker-compose up -d   # host ports: postgres:5433 (container 5432), redis:6380 (container 6379), minio:9000/9001
 
-# One-time per database, must run as a Postgres superuser (not the app role).
-# Creates the BYPASSRLS `velto_system` role used for phone-lookup login and
-# cross-tenant background jobs.
-psql "$DATABASE_URL" -f packages/database/scripts/provision-roles.sql
+# Roles (packages/database/scripts/provision-roles.sql; docker runs it on first
+# init): velto_owner = schema owner, migrations (DATABASE_MIGRATE_URL);
+# velto_app = RLS-bound app/test role (DATABASE_URL, never superuser/BYPASSRLS);
+# velto_system = BYPASSRLS, login-by-phone + cross-tenant jobs only.
+# Re-run as superuser on a pre-existing volume and after `prisma migrate reset`:
+psql "postgresql://velto:velto@localhost:5433/velto_dev" -f packages/database/scripts/provision-roles.sql
 
 pnpm db:migrate    # prisma migrate dev
 pnpm db:seed       # demo tenant "Demo Distribution" — refuses to run if NODE_ENV=production
@@ -68,7 +70,7 @@ pnpm --filter @velto/database exec prisma migrate dev --name <description>
 ```
 
 `apps/web` currently has no `test` script/suite. CI (`.github/workflows/ci.yml`) is the source of truth
-for exact setup order: install → `prisma generate` → `migrate deploy` → provision-roles.sql → lint →
+for exact setup order: install → `prisma generate` → provision-roles.sql → `migrate deploy` → lint →
 typecheck → test → `pnpm audit --prod` → build, plus a separate Semgrep SAST job. Reproduce that order
 locally when a test needs a real DB — most API and database-package tests are **integration tests against
 real Postgres with RLS enabled**, not mocked.

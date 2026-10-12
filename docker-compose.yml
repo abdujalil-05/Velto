@@ -5,13 +5,17 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
+      # `velto` is the bootstrap SUPERUSER — admin only (provisioning). The
+      # app connects as velto_app, migrations as velto_owner (see
+      # packages/database/scripts/provision-roles.sql, run on first init).
       POSTGRES_USER: velto
       POSTGRES_PASSWORD: velto
-      POSTGRES_DB: velto
+      POSTGRES_DB: velto_dev
     ports:
       - "5433:5432"
     volumes:
       - velto_postgres_data:/var/lib/postgresql/data
+      - ./packages/database/scripts/provision-roles.sql:/docker-entrypoint-initdb.d/10-provision-roles.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U velto"]
       interval: 5s

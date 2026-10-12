@@ -52,9 +52,13 @@ pnpm install
 cp .env.example .env
 docker-compose up -d        # host ports: postgres:5433 (container 5432), redis:6380 (container 6379), minio:9000/9001
 
-# Har bir baza uchun bir marta, Postgres superuser sifatida (ilova roli emas).
-# Login va fon ishlar uchun BYPASSRLS `velto_system` rolini yaratadi.
-psql "$DATABASE_URL" -f packages/database/scripts/provision-roles.sql
+# Rollar (packages/database/scripts/provision-roles.sql; docker birinchi init'da
+# o'zi ishga tushiradi): velto_owner — sxema egasi, migratsiyalar
+# (DATABASE_MIGRATE_URL); velto_app — RLS'ga bo'ysunuvchi ilova/test roli
+# (DATABASE_URL, hech qachon superuser/BYPASSRLS emas); velto_system — BYPASSRLS,
+# faqat telefon bo'yicha login va cross-tenant fon ishlar.
+# Eski volume'da va `prisma migrate reset`dan keyin superuser sifatida qayta ishga tushiring:
+psql "postgresql://velto:velto@localhost:5433/velto_dev" -f packages/database/scripts/provision-roles.sql
 
 pnpm db:migrate             # prisma migrate dev
 pnpm db:seed                # demo tenant "Demo Distribution" (production'da ishlamaydi)
@@ -88,7 +92,7 @@ pnpm --filter @velto/api exec vitest run src/modules/sales/sales.service.test.ts
 pnpm --filter @velto/database exec vitest run src/__tests__/tenant-isolation.test.ts
 ```
 
-Testlarning ko'pi mock'siz, RLS yoqilgan haqiqiy Postgres'ga qarshi integratsiya testlari. CI tartibi (`.github/workflows/ci.yml`): install → `prisma generate` → `migrate deploy` → provision-roles.sql → lint → typecheck → test → `pnpm audit --prod` → build, alohida Semgrep SAST ishi bilan.
+Testlarning ko'pi mock'siz, RLS yoqilgan haqiqiy Postgres'ga qarshi integratsiya testlari. CI tartibi (`.github/workflows/ci.yml`): install → `prisma generate` → provision-roles.sql → `migrate deploy` → lint → typecheck → test → `pnpm audit --prod` → build, alohida Semgrep SAST ishi bilan.
 
 ## Arxitektura qisqacha
 

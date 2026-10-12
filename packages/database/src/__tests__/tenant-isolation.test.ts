@@ -8,7 +8,20 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { prisma, systemPrisma, withTenant } from '../client';
 
+// The runtime roles hold no TRUNCATE privilege (TRUNCATE ignores RLS — see
+// scripts/provision-roles.sql), so the grant layer rejects it before the
+// append-only statement trigger would. Either rejection is acceptable.
+const TRUNCATE_REJECTED = /append-only|permission denied/i;
+
 describe('tenant isolation (RLS)', () => {
+  // TZ 10.4 / 16.3: a superuser or BYPASSRLS role skips RLS even with FORCE,
+  // which would make every case below pass/fail for the wrong reason.
+  it('runs as an RLS-bound app role (not superuser, not BYPASSRLS)', async () => {
+    const [role] = await prisma.$queryRaw<{ rolsuper: boolean; rolbypassrls: boolean }[]>`
+      SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`;
+    expect(role).toEqual({ rolsuper: false, rolbypassrls: false });
+  });
+
   let tenantId: string;
   let otherTenantId: string;
   let companyAId: string;
@@ -436,7 +449,7 @@ describe('tenant isolation (RLS)', () => {
     ).rejects.toThrow(/append-only/i);
     await expect(
       withTenant(companyAId, (tx) => tx.$executeRawUnsafe('TRUNCATE TABLE "GoodsReceiptLine"')),
-    ).rejects.toThrow(/append-only/i);
+    ).rejects.toThrow(TRUNCATE_REJECTED);
 
     // BYPASSRLS does not skip triggers: velto_system is blocked too.
     await expect(
@@ -446,7 +459,7 @@ describe('tenant isolation (RLS)', () => {
       systemPrisma.goodsReceiptLine.deleteMany({ where: { goodsReceiptId: goodsReceiptAId } }),
     ).rejects.toThrow(/append-only/i);
     await expect(systemPrisma.$executeRawUnsafe('TRUNCATE TABLE "GoodsReceipt" CASCADE')).rejects.toThrow(
-      /append-only/i,
+      TRUNCATE_REJECTED,
     );
 
     // A receipt's referenced PO line can no longer be removed out from under
@@ -884,7 +897,7 @@ describe('tenant isolation (RLS)', () => {
     // UPDATE/DELETE guard above doesn't cover it on its own (20260730224500).
     await expect(
       withTenant(companyAId, (tx) => tx.$executeRawUnsafe('TRUNCATE TABLE "AuditLog"')),
-    ).rejects.toThrow(/append-only/i);
+    ).rejects.toThrow(TRUNCATE_REJECTED);
 
     // No cleanup: the row is append-only by design, even for the BYPASSRLS
     // role — this one test log entry is expected to remain in dev/test data.
