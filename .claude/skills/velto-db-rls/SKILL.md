@@ -13,7 +13,7 @@ Money Decimal(18,2), qty Decimal(18,3), pct Decimal(5,2); never Float. Documents
 `SO|INV|PAY|PO-{YYYY}-{6 digits}` from transaction-safe `DocumentSequence` (company+type+year); cancelled numbers are never reused. Reservation/allocation/transition protected by `SELECT … FOR UPDATE` or serializable tx; no long transactions.
 
 # Migrations (§17)
-Forward-only, backward-compatible, never edit committed ones. Destructive drop = separate release + backup + recovery plan. Pool must not leak `app.current_company_id` between requests (test it). App DB role is not superuser/BYPASSRLS; `velto_system` only for login/provisioning/cross-tenant jobs.
+Forward-only, backward-compatible, never edit committed ones. Destructive drop = separate release + backup + recovery plan. Pool must not leak `app.current_company_id` between requests (test it). Roles: `velto_owner` (owns objects, runs migrations via `DATABASE_MIGRATE_URL`, NOBYPASSRLS), `velto_app` (runtime DML only, NOBYPASSRLS), none superuser; `velto_system` (BYPASSRLS, DML) only for login/provisioning/cross-tenant jobs.
 
 # Roles (§4, ADR-003)
 OWNER, SALES_DIRECTOR, SALES_AGENT, WAREHOUSE, CASHIER, ACCOUNTANT (+ PLATFORM_ADMIN separate). Audit seed/DB for ACCOUNTANT before changing; never delete an existing role; add via backward-compatible migration + permission tests. ACCOUNTANT cannot edit posted payments/invoices/stock movements. Catalog is single-sourced in `src/rbac-catalog.ts` (seed + bootstrap-owner import it); seed refuses production. Repo also has COURIER (not in TZ) — pending decision, see docs/STATUS.md.

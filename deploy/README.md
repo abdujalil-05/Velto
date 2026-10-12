@@ -45,8 +45,12 @@ pnpm db:generate
 #    telefon bo'yicha login va cross-tenant fon vazifalari ishlamaydi.
 #    ⚠️ Bu hostda skript AYNAN shu holida ishlatilmagan — pastdagi
 #    "Postgres rollari" bo'limiga qarang.
+#    TARTIB: avval rollar (provision-roles.sql), keyin migratsiya.
+#    migrate deploy DATABASE_MIGRATE_URL (schema egasi roli) talab qiladi.
+#    Mavjud production bazasi uchun pastdagi "Rol modelini production'ga
+#    o'tkazish" runbook'iga qarang.
+psql "$DATABASE_ADMIN_URL" -v ON_ERROR_STOP=1 -f packages/database/scripts/provision-roles.sql
 pnpm --filter @velto/database exec prisma migrate deploy
-psql "$DATABASE_URL" -f packages/database/scripts/provision-roles.sql
 
 # 3. Build (barcha workspace'lar)
 pnpm build
@@ -69,7 +73,7 @@ cd /root/projects/parviz_aka/Velto
 git pull
 pnpm install
 pnpm db:generate
-pnpm --filter @velto/database exec prisma migrate deploy   # migratsiya bo'lsa
+pnpm --filter @velto/database exec prisma migrate deploy   # migratsiya bo'lsa; DATABASE_MIGRATE_URL kerak (yoki ./deploy/deploy.sh)
 pnpm build
 pm2 restart velto-api velto-web velto-miniapp
 ```
@@ -91,6 +95,95 @@ berardi. Shuning uchun bu deploy uchun alohida rollar ishlatilgan:
 `velto`/`velto_system` rollari bu bazaga umuman ulana olmaydi.
 
 Skript boshqa hostda ishlatilsa (nomlar bo'sh bo'lsa) o'zgartirishsiz ishlaydi.
+
+## Rol modeli (yangi) va env
+
+| Env | Rol | Kim ishlatadi |
+| --- | --- | --- |
+| `DATABASE_URL` | ilova roli (DML, NOBYPASSRLS) | `velto-api` runtime |
+| `DATABASE_SYSTEM_URL` | BYPASSRLS, DML | `velto-api` (login, fon vazifalari), `pg_dump` zaxira |
+| `DATABASE_MIGRATE_URL` | schema egasi (NOSUPERUSER NOBYPASSRLS) | FAQAT `prisma migrate deploy` (`deploy.sh` ishga tushirgach `unset` qiladi, `ecosystem.config.js` API env'idan olib tashlaydi) |
+| `DATABASE_ADMIN_URL` | superuser | FAQAT bir martalik `provision-roles.sql`; serverda doimiy saqlanmaydi |
+
+Bu hostda nomlar: ilova `velto_app`, system `velto_app_system`, egasi — yangi
+`velto_app_owner` (pastdagi runbook). `.env.production.local` ga
+`DATABASE_MIGRATE_URL` qo'shiladi (chmod 600).
+
+## Rol modelini production'ga o'tkazish (bir martalik runbook)
+
+⚠️ `provision-roles.sql` ni production'da AYNAN shu holida ishlatmang: u
+`velto_owner/velto_app/velto_system` nomlarini qattiq yozadi (eski begona
+`velto_system` ga BYPASSRLS + DML berardi), hamda yangi rollarga default
+parol (`=rol nomi`) qo'yadi. Avval hozirgi holatni tekshiring (faqat o'qish).
+
+### 0. Tekshiruv (read-only, `psql` superuser sifatida, prod bazaga)
+
+```sql
+-- hozir ilova ishlatayotgan rol(lar) atributlari
+SELECT rolname, rolsuper, rolbypassrls, rolcreaterole, rolcanlogin
+  FROM pg_roles WHERE rolname ~ '^velto' ORDER BY 1;
+SELECT current_user, session_user;   -- DATABASE_URL bilan ulanib ham ishga tushiring
+-- obyekt egalari
+SELECT pg_get_userbyid(datdba) AS db_owner FROM pg_database WHERE datname = current_database();
+SELECT pg_get_userbyid(nspowner) AS schema_owner FROM pg_namespace WHERE nspname = 'public';
+SELECT pg_get_userbyid(relowner) AS owner, relkind, count(*)
+  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = 'public' AND relkind IN ('r','p','S','v') GROUP BY 1,2;
+SELECT pg_get_userbyid(proowner) AS owner, count(*) FROM pg_proc p
+  JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' GROUP BY 1;
+-- RLS haqiqatan majburiymi
+SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = 'public' AND relkind = 'r' AND NOT (relrowsecurity AND relforcerowsecurity);
+```
+
+Kutiladi: `velto_app` rolsuper=f, rolbypassrls=f. Agar ilova roli superuser
+yoki BYPASSRLS bo'lsa — RLS hozir ishlamayapti; bu alohida incident, davom
+etishdan oldin to'xtating va xabar bering. Jadvallar egasi odatda `velto_app`
+bo'ladi (migratsiyalar shu rol bilan yurgan) — skript egalikni yangi owner'ga
+o'tkazadi.
+
+### 1. Zaxira (majburiy, o'zgartirishdan OLDIN)
+
+```bash
+pg_dump "${DATABASE_SYSTEM_URL%%\?*}" -Fc -f /root/velto-pre-roles-$(date +%Y%m%d-%H%M%S).dump
+pg_dumpall --globals-only -f /root/velto-globals-$(date +%Y%m%d-%H%M%S).sql   # rollar/atributlar (superuser)
+```
+
+Dump hajmi/o'qilishini tekshiring (`pg_restore -l <dump> | head`).
+
+### 2. Skript nusxasi (host nomlari bilan) va ishga tushirish
+
+```bash
+sed -e 's/velto_owner/velto_app_owner/g' -e 's/velto_system/velto_app_system/g' \
+  packages/database/scripts/provision-roles.sql > /root/provision-roles.prod.sql
+grep -c 'velto_system' /root/provision-roles.prod.sql   # 0 bo'lishi shart
+psql "$DATABASE_ADMIN_URL" -v ON_ERROR_STOP=1 -f /root/provision-roles.prod.sql
+psql "$DATABASE_ADMIN_URL" -c "ALTER ROLE velto_app_owner PASSWORD '<kuchli-parol>'"
+rm /root/provision-roles.prod.sql
+```
+
+Mavjud `velto_app` / `velto_app_system` parollari saqlanadi (skript faqat
+yo'q rolni yaratadi). `.env.production.local` ga qo'shing:
+`DATABASE_MIGRATE_URL=postgresql://velto_app_owner:<parol>@127.0.0.1:5432/<baza>?schema=public`.
+Eski begona `velto`/`velto_system` rollariga bu skript tegmaydi (nomlar almashtirilgan).
+
+### 3. Tekshiruv va deploy
+
+Qayta 0-bo'limdagi so'rovlarni ishga tushiring: barcha obyektlar egasi
+`velto_app_owner`, `velto_app` NOBYPASSRLS, RLS qatorlari 0. Keyin
+`./deploy/deploy.sh` (u ham yangi `DATABASE_MIGRATE_URL` ni talab qiladi).
+Smoke: login, `/velto/api/health`, bitta tenant ro'yxati.
+
+### Rollback
+
+Skript faqat egalik/grant/atributlarni o'zgartiradi (ma'lumotga tegmaydi).
+Qaytarish: `ALTER DATABASE/SCHEMA/TABLE ... OWNER TO velto_app` (egalik
+konvergensiyasini teskari — 0-bo'limdagi eski egalar jadvaliga qarab), yangi
+rolni `DROP OWNED BY velto_app_owner; DROP ROLE velto_app_owner;` (egalik
+qaytarilgandan keyin). To'liq buzilsa: `pg_restore --clean --if-exists` yuqoridagi
+dump'dan, `velto-api`ni to'xtatib (downtime). Staging'da sinovsiz "5 daqiqada
+qaytarish" va'da qilinmaydi.
 
 ## Ma'lum kamchiliklar
 

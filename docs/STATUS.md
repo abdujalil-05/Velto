@@ -8,7 +8,7 @@
 
 | Faza | Holat |
 |---|---|
-| F0 Poydevor va baseline (baza, testlar, M08 tasdiq) | **Jarayonda** — kod tayyor; foydalanuvchi Docker/bazani ko'tarishi kutilmoqda |
+| F0 Poydevor va baseline (baza, testlar, M08 tasdiq) | **Deyarli tayyor** — lokal baza ko'tarildi, migratsiyalar qo'llandi, **274/274 test o'tdi** (database 29, api 223, miniapp 22; lint/typecheck/build toza, 2026-10-12). Qoldi: production rol modeli (foydalanuvchi tekshiradi), web testi yo'q, MinIO image yuklanmadi |
 | F1 Xavfsizlik va shartnoma (traceId, auth P0, idempotentlik) | **Jarayonda** — F1.1 traceId kodda tayyor (branch `feat/f1-1-trace-id`, review+security PASS, bazasiz 17 test o'tgan; DB testlari kutilmoqda). F1.2–F1.5 boshlanmagan |
 | F2 Ombor va moliya yadrosi | Boshlanmagan |
 | F3 Dala savdosi va kuryer | Boshlanmagan |
@@ -33,7 +33,7 @@ MVP kodining katta qismi yozilgan. Asosiy bo'shliqlar: **M08 Xarid yo'q**, **rev
 | M05 | Sotuv | Tayyor | `modules/sales`, `common/document-numbering`, `test/order-flow.e2e.test.ts` | 5 qatorli VAT/chegirma P0 ssenariysi aniq emas |
 | M06 | To'lov/qarzdorlik | Qisman | `modules/finance/*` | reversal, avans ko'rinishi (hozir "unallocated"), aging va invoices testlari |
 | M07 | Dala savdosi | Qisman | `modules/field/{routes,visits}`, `geo.ts` | GPS no-permission / low-accuracy natijalari |
-| M08 | Xarid | **Qisman — kod tayyor, bazada tekshirilmagan (ADR-011)** | `modules/purchases` (13 test yozilgan), migratsiya `20261012120000_restore_purchasing`, web `/purchases/*` | testlar real DB'da ishlamagan; ad-hoc qabullar ro'yxati (`GET /purchases/receipts`) yo'q; GoodsReceipt uchun DB append-only trigger yo'q; mavjud tenantlar uchun `backfill-permissions.ts` |
+| M08 | Xarid | **Tayyor (kod+real DB testlari, ADR-011)** | `modules/purchases` (13 test yozilgan), migratsiya `20261012120000_restore_purchasing`, web `/purchases/*` | 14 test real DB'da o'tdi; ad-hoc qabullar ro'yxati va append-only trigger qo'shildi; qoldi: mavjud tenantlar uchun `backfill-permissions.ts`, web e2e |
 | M09 | Hisobot | Qisman | `modules/analytics`, finance aging/export | eksport ↔ ekrandagi filtr moslik testi |
 | M10 | Integratsiya | Qisman | `integrations/export-1c` (CommerceML+Excel, 4 test), notifications | pilot 1C konfiguratsiyasida qabul |
 | M11 | Audit/bildirishnoma | Qisman | `modules/audit`, `notifications` | audit testi, job/xato holati UI |
@@ -61,7 +61,9 @@ MVP kodining katta qismi yozilgan. Asosiy bo'shliqlar: **M08 Xarid yo'q**, **rev
 
 ## Texnik qarzlar / bloker
 
-- **Bloker:** lokal `velto_dev` bazasi yo'q (`localhost:5432` da boshqa loyiha Postgres'i). Migratsiya qo'llanmagan; M08 testlari va `tenant-isolation.test.ts` ishga tushmagan. Hal qilish: truckshop Postgres'ini to'xtatib `docker-compose up -d` yoki Velto'ga boshqa port.
+- **Hal qilindi (2026-10-12):** lokal baza Docker'da (Postgres 5433, Redis 6380). 102 ta test yiqilishi sababi — ilova roli superuser edi (RLS chetlab o'tilardi); yangi rollar: `velto_owner` (migratsiya), `velto_app` (runtime), `velto_system` (BYPASSRLS). CI ham shu modelga o'tkazildi.
+- **Production xavfi (foydalanuvchi bajaradi):** productionda ilova roli superuser emasligi va obyektlar egasi tekshirilmagan; `DATABASE_MIGRATE_URL` kerak. Runbook: `deploy/README.md`.
+- **MinIO** image'i yuklanmadi (`pull access denied`) — S3 kerak bo'ladigan oqimlar lokal tekshirilmagan.
 - `stock.receiveForRef` → `ensureStockLevelRow` (upsert): yangi product/ombor juftligiga parallel birinchi kirimda P2002 bo'lishi mumkin (mavjud stock moduli).
 - M08: `GET /purchases/receipts` ro'yxati va GoodsReceipt(+Line) uchun UPDATE/DELETE taqiqlovchi trigger (LOW).
 

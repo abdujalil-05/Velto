@@ -30,13 +30,16 @@ if [[ "${1:-}" == "--pull" ]]; then
 fi
 
 step "Loading env"
-# Root env holds DATABASE_URL / DATABASE_SYSTEM_URL. The NEXT_PUBLIC_* vars live
+# Root env holds DATABASE_URL (velto_app, runtime), DATABASE_SYSTEM_URL (BYPASSRLS)
+# and DATABASE_MIGRATE_URL (schema owner, used ONLY by `prisma migrate deploy`). The NEXT_PUBLIC_* vars live
 # in apps/{web,miniapp}/.env.production.local and are read by `next build` itself.
 [[ -f .env.production.local ]] || { echo "missing .env.production.local" >&2; exit 1; }
 set -a
 # shellcheck disable=SC1091
 source .env.production.local
 set +a
+: "${DATABASE_MIGRATE_URL:?DATABASE_MIGRATE_URL (schema-owner role) is required for prisma migrate deploy}"
+[[ "$DATABASE_MIGRATE_URL" != "$DATABASE_URL" ]] || { echo "DATABASE_MIGRATE_URL must differ from DATABASE_URL (owner vs app role)" >&2; exit 1; }
 
 step "Backing up the database"
 # pg_dump must run as velto_system: the app role is subject to FORCE ROW LEVEL
@@ -53,6 +56,8 @@ pnpm --filter @velto/database exec prisma generate
 
 step "Applying migrations"
 pnpm --filter @velto/database exec prisma migrate deploy
+# Owner credentials must not leak into the API process via `pm2 --update-env`.
+unset DATABASE_MIGRATE_URL DATABASE_ADMIN_URL
 
 step "Building"
 pnpm build

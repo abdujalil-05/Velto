@@ -43,6 +43,10 @@ const env = {
   ...readEnvFile(path.join(root, '.env.production.local')),
   NODE_ENV: 'production',
 };
+// Schema-owner / admin credentials are for `prisma migrate deploy` only (see
+// deploy.sh) — the running API must never hold them.
+delete env.DATABASE_MIGRATE_URL;
+delete env.DATABASE_ADMIN_URL;
 
 // The two Next.js processes get NONE of the above. They need nothing from it:
 // every value they read is a NEXT_PUBLIC_* one, inlined into the bundle at
