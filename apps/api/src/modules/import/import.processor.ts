@@ -2,6 +2,7 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import type { Job } from 'bullmq';
 import { Prisma, type TenantClient } from '@velto/database';
 import { AuditLogService, toAuditJson } from '../../common/audit/audit-log.service';
+import { runJobWithTrace } from '../../common/queue/trace-job';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { IMPORT_QUEUE, type ImportJobData, type ImportJobReport, type RowError } from './import.constants';
 import type { CustomerImportRow } from './parsers/customers-parser';
@@ -31,7 +32,11 @@ export class ImportProcessor extends WorkerHost {
     super();
   }
 
-  async process(job: Job<ImportJobData>): Promise<void> {
+  process(job: Job<ImportJobData>): Promise<void> {
+    return runJobWithTrace(job, () => this.handle(job));
+  }
+
+  private async handle(job: Job<ImportJobData>): Promise<void> {
     const { importJobId, companyId } = job.data;
 
     try {

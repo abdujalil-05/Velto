@@ -1,6 +1,7 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
+import { traceMiddleware } from './common/trace/trace.middleware';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 
 /**
@@ -11,6 +12,7 @@ import { AllExceptionsFilter } from './common/filters/http-exception.filter';
  * that could silently drift from what main.ts actually configures.
  */
 export function configureApp(app: INestApplication, corsOrigins: string[]): void {
+  app.use(traceMiddleware);
   app.use(helmet());
   app.use(cookieParser());
   // credentials: true is required alongside an explicit origin allowlist

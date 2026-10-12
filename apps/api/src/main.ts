@@ -4,10 +4,11 @@ import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import * as Sentry from '@sentry/node';
 import { AppModule } from './app.module';
+import { TraceLogger } from './common/trace/trace-logger';
 import { configureApp } from './bootstrap';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { logger: new TraceLogger() });
   const config = app.get(ConfigService);
 
   // Behind nginx on the same host: trust only the loopback hop for

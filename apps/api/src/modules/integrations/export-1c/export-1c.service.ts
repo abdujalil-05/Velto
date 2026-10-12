@@ -8,6 +8,7 @@ import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.servic
 import { ExportJobNotFoundException, InvalidExportPeriodException } from '../integrations-exceptions';
 import type { CreateExportDto } from './dto/create-export.dto';
 import type { ListExportsQueryDto } from './dto/list-exports.query';
+import { addTracedJob } from '../../../common/queue/trace-job';
 import { EXPORT_1C_QUEUE, type Export1cJobData } from './export-1c.constants';
 
 function startOfDay(date: Date): Date {
@@ -52,7 +53,7 @@ export class Export1cService {
     // here immediately would let the worker dequeue and query for this
     // ExportJob row before the surrounding TenantPrismaService.run()
     // transaction (TenantContextInterceptor wraps the whole request) commits.
-    TenantContext.afterCommit(() => this.queue.add('export', { exportJobId: job.id, companyId: user.companyId }));
+    TenantContext.afterCommit(() => addTracedJob(this.queue, 'export', { exportJobId: job.id, companyId: user.companyId }));
     return job;
   }
 

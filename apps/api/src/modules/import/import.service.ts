@@ -9,6 +9,7 @@ import { TenantContext } from '../../common/tenant/tenant-context';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import type { ListImportsQueryDto } from './dto/list-imports.query';
 import { ImportAlreadyConfirmedException, ImportJobNotFoundException, InvalidImportFileException } from './import-exceptions';
+import { addTracedJob } from '../../common/queue/trace-job';
 import { IMPORT_QUEUE, type ImportJobData, type ImportJobReport, type ImportType } from './import.constants';
 import { parseCustomersWorkbook, type CustomerImportRow } from './parsers/customers-parser';
 import { parseProductsWorkbook, type ProductImportRow } from './parsers/products-parser';
@@ -105,7 +106,7 @@ export class ImportService {
     const updated = await tx.importJob.update({ where: { id }, data: { status: 'PROCESSING' } });
     // Deferred until this request's transaction actually commits — same
     // enqueue-before-commit race as Export1cService.create().
-    TenantContext.afterCommit(() => this.queue.add('commit', { importJobId: id, companyId: user.companyId }));
+    TenantContext.afterCommit(() => addTracedJob(this.queue, 'commit', { importJobId: id, companyId: user.companyId }));
     return updated;
   }
 }

@@ -9,7 +9,7 @@
 | Faza | Holat |
 |---|---|
 | F0 Poydevor va baseline (baza, testlar, M08 tasdiq) | **Jarayonda** — kod tayyor; foydalanuvchi Docker/bazani ko'tarishi kutilmoqda |
-| F1 Xavfsizlik va shartnoma (traceId, auth P0, idempotentlik) | Boshlanmagan |
+| F1 Xavfsizlik va shartnoma (traceId, auth P0, idempotentlik) | **Jarayonda** — F1.1 traceId kodda tayyor (branch `feat/f1-1-trace-id`, review+security PASS, bazasiz 17 test o'tgan; DB testlari kutilmoqda). F1.2–F1.5 boshlanmagan |
 | F2 Ombor va moliya yadrosi | Boshlanmagan |
 | F3 Dala savdosi va kuryer | Boshlanmagan |
 | F4 Offline/sync | Boshlanmagan |
@@ -48,7 +48,7 @@ MVP kodining katta qismi yozilgan. Asosiy bo'shliqlar: **M08 Xarid yo'q**, **rev
 
 ## TZ ↔ kod nomuvofiqliklari
 
-- **traceId:** TZ xato shaklida talab qiladi; audit bo'yicha kodda yo'q (`http-exception.filter.ts`, korrelyatsiya ID yo'q).
+- **traceId:** F1.1 da qo'shildi (xato javobi, `X-Request-Id`, loglar, BullMQ joblari, `AuditLog.traceId`). Qoldirilgan: `AuditLog.userAgent` ustuni yo'q (TZ §11.4 "kerak bo'lganda") — qaror kerak bo'lsa alohida migratsiya.
 - **Rollar:** `rbac-catalog.ts` da 7 ta (OWNER, SALES_DIRECTOR, SALES_AGENT, **COURIER**, WAREHOUSE, CASHIER, ACCOUNTANT). TZ: 6 operatsion + `PLATFORM_ADMIN`. COURIER TZ da yo'q, `PLATFORM_ADMIN` roli yo'q. Katalog bitta joyda (`rbac-catalog.ts`), seed va bootstrap-owner uni import qiladi.
 - **Idempotentlik:** `clientId` unique faqat SalesOrder, Payment, Visit da. confirm/deliver/cash-session close da `Idempotency-Key` yo'q.
 - **COURIER (ADR-003a, qoladi):** COURIER roli, kuryer marshrut/`assign-courier`, miniapp `delivery/[id]`, web couriers — §5.2 "to'liq logistika" chegarasida.

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { getTraceId } from '../trace/trace-context';
 import type { Prisma, TenantClient } from '@velto/database';
 
 export interface AuditLogEntry {
@@ -35,6 +36,7 @@ export class AuditLogService {
         oldValue: entry.oldValue,
         newValue: entry.newValue,
         ip: entry.ip,
+        traceId: getTraceId() ?? null,
       },
     });
   }

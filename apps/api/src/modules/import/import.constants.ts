@@ -1,8 +1,10 @@
+import type { TraceableJobData } from '../../common/queue/trace-job';
+
 export const IMPORT_QUEUE = 'import-commit';
 
 export type ImportType = 'customers' | 'products';
 
-export interface ImportJobData {
+export interface ImportJobData extends TraceableJobData {
   importJobId: string;
   companyId: string;
 }

@@ -4,6 +4,7 @@ import type { Queue } from 'bullmq';
 import { prisma, systemPrisma } from '@velto/database';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { StorageService } from '../../common/storage/storage.service';
+import { runWithTraceId } from '../../common/trace/trace-context';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { ImportAlreadyConfirmedException, ImportJobNotFoundException, InvalidImportFileException } from './import-exceptions';
 import type { ImportJobData, ImportJobReport } from './import.constants';
@@ -90,9 +91,11 @@ describe('ImportService (integration, real Postgres + RLS)', () => {
     const buffer = await buildTestWorkbook(CUSTOMER_HEADERS, [['C-2', 'Another Customer']]);
     const created = await tenantPrisma.run(companyId, () => importService.uploadAndValidate('customers', buffer, user));
 
-    const confirmed = await tenantPrisma.run(companyId, () => importService.confirm(created.id, user));
+    const confirmed = await runWithTraceId('known-trace-id-123', () =>
+      tenantPrisma.run(companyId, () => importService.confirm(created.id, user)),
+    );
     expect(confirmed.status).toBe('PROCESSING');
-    expect(queueAdd).toHaveBeenCalledWith('commit', { importJobId: created.id, companyId });
+    expect(queueAdd).toHaveBeenCalledWith('commit', { importJobId: created.id, companyId, traceId: 'known-trace-id-123' });
 
     await expect(tenantPrisma.run(companyId, () => importService.confirm(created.id, user))).rejects.toBeInstanceOf(
       ImportAlreadyConfirmedException,

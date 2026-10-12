@@ -1,6 +1,7 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import type { Job } from 'bullmq';
 import { InvoiceStatus, type TenantClient } from '@velto/database';
+import { runJobWithTrace } from '../../../common/queue/trace-job';
 import { StorageService } from '../../../common/storage/storage.service';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import { buildCommerceMlXml, type CommerceMlCustomer, type CommerceMlDocument } from './commerce-ml';
@@ -51,7 +52,11 @@ export class Export1cProcessor extends WorkerHost {
     super();
   }
 
-  async process(job: Job<Export1cJobData>): Promise<void> {
+  process(job: Job<Export1cJobData>): Promise<void> {
+    return runJobWithTrace(job, () => this.handle(job));
+  }
+
+  private async handle(job: Job<Export1cJobData>): Promise<void> {
     const { exportJobId, companyId } = job.data;
 
     const exportJob = await this.tenantPrisma.run(companyId, async (tx) => {

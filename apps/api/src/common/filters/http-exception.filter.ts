@@ -2,6 +2,7 @@ import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus, Logge
 import * as Sentry from '@sentry/node';
 import { Prisma } from '@velto/database';
 import type { Response } from 'express';
+import { getTraceId } from '../trace/trace-context';
 import type { ApiErrorBody, LocalizedMessage } from '../errors/app-exception';
 
 const GENERIC_MESSAGES: Record<number, LocalizedMessage> = {
@@ -125,7 +126,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     if (exception instanceof HttpException) {
       const status = exception.getStatus();
       const body = exception.getResponse();
-      response.status(status).json(this.normalize(status, body));
+      response.status(status).json(this.withTrace(this.normalize(status, body)));
       return;
     }
 
@@ -133,10 +134,9 @@ export class AllExceptionsFilter implements ExceptionFilter {
     // nor logged as an error — it is a routine client-input rejection.
     if (isNumericOutOfRange(exception)) {
       this.logger.warn(`Rejected out-of-range numeric input (SQLSTATE 22003): ${describeOverflow(exception)}`);
-      response.status(HttpStatus.BAD_REQUEST).json({
-        code: 'NUMERIC_OUT_OF_RANGE',
-        message: NUMERIC_OUT_OF_RANGE_MESSAGE,
-      } satisfies ApiErrorBody);
+      response.status(HttpStatus.BAD_REQUEST).json(
+        this.withTrace({ code: 'NUMERIC_OUT_OF_RANGE', message: NUMERIC_OUT_OF_RANGE_MESSAGE }),
+      );
       return;
     }
 
@@ -144,7 +144,12 @@ export class AllExceptionsFilter implements ExceptionFilter {
     // No-op if SENTRY_DSN wasn't set at bootstrap (main.ts) — only truly
     // unexpected errors are reported, not routine 4xx HttpExceptions above.
     Sentry.captureException(exception);
-    response.status(HttpStatus.INTERNAL_SERVER_ERROR).json(this.normalize(HttpStatus.INTERNAL_SERVER_ERROR, null));
+    response.status(HttpStatus.INTERNAL_SERVER_ERROR).json(this.withTrace(this.normalize(HttpStatus.INTERNAL_SERVER_ERROR, null)));
+  }
+
+  private withTrace(body: ApiErrorBody): ApiErrorBody {
+    const traceId = getTraceId();
+    return traceId ? { ...body, traceId } : body;
   }
 
   private normalize(status: number, body: unknown): ApiErrorBody {

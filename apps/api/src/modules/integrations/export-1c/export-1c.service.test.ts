@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Queue } from 'bullmq';
 import { prisma, systemPrisma } from '@velto/database';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
+import { runWithTraceId } from '../../../common/trace/trace-context';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import { ExportJobNotFoundException, InvalidExportPeriodException } from '../integrations-exceptions';
 import type { Export1cJobData } from './export-1c.constants';
@@ -36,10 +37,12 @@ describe('Export1cService (integration, real Postgres + RLS)', () => {
   });
 
   it('creates a PENDING job and enqueues it for the worker', async () => {
-    const job = await tenantPrisma.run(companyId, () => export1c.create({ from: '2026-07-01', to: '2026-07-31' }, user));
+    const job = await runWithTraceId('known-trace-id-123', () =>
+      tenantPrisma.run(companyId, () => export1c.create({ from: '2026-07-01', to: '2026-07-31' }, user)),
+    );
     expect(job.status).toBe('PENDING');
     expect(job.format).toBe('XML'); // default per 11.1
-    expect(queueAdd).toHaveBeenCalledWith('export', { exportJobId: job.id, companyId });
+    expect(queueAdd).toHaveBeenCalledWith('export', { exportJobId: job.id, companyId, traceId: 'known-trace-id-123' });
   });
 
   it('accepts an explicit EXCEL format', async () => {

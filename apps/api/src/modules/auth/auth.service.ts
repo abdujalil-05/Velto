@@ -391,15 +391,13 @@ export class AuthService {
 
     await tx.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
 
-    await tx.auditLog.create({
-      data: {
-        companyId: user.companyId,
-        userId: user.id,
-        action: auditAction,
-        entity: 'User',
-        entityId: user.id,
-        ip: meta.ip,
-      },
+    await this.auditLog.log(tx, {
+      companyId: user.companyId,
+      userId: user.id,
+      action: auditAction,
+      entity: 'User',
+      entityId: user.id,
+      ip: meta.ip,
     });
 
     return {
