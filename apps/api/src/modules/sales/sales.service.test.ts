@@ -479,4 +479,28 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
       SalesOrderNotFoundException,
     );
   });
+  it('SEC-023: courier self-scoping depends on the role code — COURIER+WAREHOUSE and non-courier keep the wide view', async () => {
+    const customerId = await createCustomer();
+    const order = await tenantPrisma.run(companyId, () =>
+      sales.create({ customerId, lines: [{ productId, packagingId, qty: 1 }] }, user),
+    );
+    await tenantPrisma.run(companyId, () => sales.confirm(order.id, user));
+
+    // Same identity, only the role codes differ.
+    const courierOnly = { ...courierUser, roles: ['COURIER'] };
+    const courierWarehouse = { ...courierUser, roles: ['COURIER', 'WAREHOUSE'] };
+    const noCourierRole = { ...courierUser, roles: ['ACCOUNTANT'] };
+
+    await expect(
+      tenantPrisma.run(companyId, () => sales.getById(order.id, courierOnly)),
+    ).rejects.toBeInstanceOf(SalesOrderNotFoundException);
+    const wide = await tenantPrisma.run(companyId, () => sales.getById(order.id, courierWarehouse));
+    expect(wide.id).toBe(order.id);
+    const plain = await tenantPrisma.run(companyId, () => sales.getById(order.id, noCourierRole));
+    expect(plain.id).toBe(order.id);
+
+    await expect(
+      tenantPrisma.run(companyId, () => sales.deliver(order.id, courierOnly)),
+    ).rejects.toBeInstanceOf(OrderNotAssignedToCourierException);
+  });
 });

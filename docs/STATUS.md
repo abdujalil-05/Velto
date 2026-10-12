@@ -9,7 +9,7 @@
 | Faza | Holat |
 |---|---|
 | F0 Poydevor va baseline (baza, testlar, M08 tasdiq) | **Deyarli tayyor** — lokal baza ko'tarildi, migratsiyalar qo'llandi, **274/274 test o'tdi** (database 29, api 223, miniapp 22; lint/typecheck/build toza, 2026-10-12). Qoldi: production rol modeli (foydalanuvchi tekshiradi), web testi yo'q, MinIO image yuklanmadi |
-| F1 Xavfsizlik va shartnoma (traceId, auth P0, idempotentlik) | **Jarayonda** — F1.1 traceId ✅ (branch `feat/f1-1-trace-id`); F1.2 auth P0 ✅ (branch `test/f1-2-auth-p0`: refresh-reuse audit, initData 10 daq oyna + 20 foydalanish limiti, constant-time HMAC, 403+audit testlari; 295/295 test). F1.3 idempotentlik ✅ (branch `feat/f1-3-idempotency`: `IdempotencyRecord` + RLS, `@Idempotent()` interceptor (Idempotency-Key ixtiyoriy, 72 soat), order `FOR UPDATE`, stock `ON CONFLICT`, web/miniapp kalit; 312/312 test). Qoldi: F1.4 rollar ADR + ACCOUNTANT cheklovi testi, F1.5 audit testi + CI secret/dependency scan |
+| F1 Xavfsizlik va shartnoma (traceId, auth P0, idempotentlik) | **Jarayonda** — F1.1 traceId ✅ (branch `feat/f1-1-trace-id`); F1.2 auth P0 ✅ (branch `test/f1-2-auth-p0`: refresh-reuse audit, initData 10 daq oyna + 20 foydalanish limiti, constant-time HMAC, 403+audit testlari; 295/295 test). F1.3 idempotentlik ✅ (branch `feat/f1-3-idempotency`: `IdempotencyRecord` + RLS, `@Idempotent()` interceptor (Idempotency-Key ixtiyoriy, 72 soat), order `FOR UPDATE`, stock `ON CONFLICT`, web/miniapp kalit; 312/312 test). F1.4 rollar ADR + ACCOUNTANT cheklovi testi ✅ (branch `test/f1-4-roles-accountant`). Qoldi: F1.5 audit testi + CI secret/dependency scan |
 | F2 Ombor va moliya yadrosi | Boshlanmagan |
 | F3 Dala savdosi va kuryer | Boshlanmagan |
 | F4 Offline/sync | Boshlanmagan |
@@ -58,6 +58,8 @@ MVP kodining katta qismi yozilgan. Asosiy bo'shliqlar: **M08 Xarid yo'q**, **rev
 
 - **2026-10-12 — ADR-011:** M08 Xarid MVP da QOLADI va tiklanadi (Supplier, PurchaseOrder(+line), GoodsReceipt(+line), qabul → `StockMovement RECEIVE`). Supplier o'chirilishi bekor qilinadi.
 - **2026-10-12 — ADR-003a:** COURIER roli va kuryer marshrutlari MVP da QOLADI ("oddiy yetkazish" doirasi, M05). TZ §5.2 dagi to'liq logistika (reys, ekspeditor GPS, dalolatnoma) qurilmaydi. TZ ga ADR sifatida kiritilishi kerak.
+
+- **2026-10-12 — ADR-003a/b/c (F1.4):** COURIER qoladi; `PLATFORM_ADMIN` MVP'da rol emas (faqat `velto_system` skriptlari, support access yo'q); ACCOUNTANT faqat o'qish/eksport, `audit.read` yo'q. TZ §4.1 va §19 ga kiritildi; testlar: `rbac-catalog.test.ts`, `accountant-restrictions.e2e.test.ts` (branch `test/f1-4-roles-accountant`).
 
 ## Texnik qarzlar / bloker
 
