@@ -108,7 +108,11 @@ export function useCreateOrderMutation() {
 export function useConfirmOrderMutation(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => apiFetch<SalesOrder>(`/orders/${id}/confirm`, { method: 'POST' }),
+    mutationFn: (idempotencyKey: string) =>
+      apiFetch<SalesOrder>(`/orders/${id}/confirm`, {
+        method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey },
+      }),
     onSuccess: () => invalidateOrder(queryClient, id),
   });
 }
@@ -116,7 +120,11 @@ export function useConfirmOrderMutation(id: string) {
 export function useDeliverOrderMutation(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => apiFetch<SalesOrder>(`/orders/${id}/deliver`, { method: 'POST' }),
+    mutationFn: (idempotencyKey: string) =>
+      apiFetch<SalesOrder>(`/orders/${id}/deliver`, {
+        method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey },
+      }),
     onSuccess: () => invalidateOrder(queryClient, id),
   });
 }

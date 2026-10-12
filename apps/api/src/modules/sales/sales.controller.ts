@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Query } from
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { Idempotent } from '../../common/idempotency/idempotent.decorator';
 import { AssignCourierDto } from './dto/assign-courier.dto';
 import { CancelOrderDto } from './dto/cancel-order.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -31,6 +32,7 @@ export class SalesController {
   }
 
   @Post(':id/confirm')
+  @Idempotent()
   @RequirePermission('orders.update')
   confirm(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.sales.confirm(id, user);
@@ -40,6 +42,7 @@ export class SalesController {
   // it can mark its own deliveries done without also being able to confirm,
   // cancel or delete anyone's orders (the rest of this controller).
   @Post(':id/deliver')
+  @Idempotent()
   @RequirePermission('orders.deliver')
   deliver(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.sales.deliver(id, user);

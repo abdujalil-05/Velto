@@ -283,11 +283,15 @@ export class StockService {
   }
 
   private async ensureStockLevelRow(tx: TenantClient, productId: string, warehouseId: string) {
-    await tx.stockLevel.upsert({
-      where: { productId_warehouseId: { productId, warehouseId } },
-      update: {},
-      create: { productId, warehouseId, onHand: 0, reserved: 0 },
-    });
+    // Raw INSERT ... ON CONFLICT DO NOTHING instead of Prisma upsert: two
+    // concurrent first receipts for the same (product, warehouse) would both
+    // miss in upsert's SELECT and the loser would hit P2002. Here the loser
+    // just waits on the winner's row and no-ops; callers then lock/update it.
+    await tx.$executeRaw(Prisma.sql`
+      INSERT INTO "StockLevel" ("productId", "warehouseId", "onHand", "reserved", "updatedAt")
+      VALUES (${productId}::uuid, ${warehouseId}::uuid, 0, 0, CURRENT_TIMESTAMP)
+      ON CONFLICT ("productId", "warehouseId") DO NOTHING
+    `);
   }
 
   private async lockStockLevel(tx: TenantClient, productId: string, warehouseId: string) {

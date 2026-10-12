@@ -289,7 +289,7 @@ export class SalesService {
    */
   async confirm(id: string, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
-    const order = await this.getRawOrder(tx, id);
+    const order = await this.getRawOrderForUpdate(tx, id);
 
     if (order.status !== OrderStatus.SUBMITTED) {
       throw new InvalidOrderTransitionException(order.status, OrderStatus.CONFIRMED);
@@ -326,7 +326,7 @@ export class SalesService {
    */
   async deliver(id: string, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
-    const order = await this.getRawOrder(tx, id);
+    const order = await this.getRawOrderForUpdate(tx, id);
 
     // 'orders.deliver' says "may close out a delivery", not "may close out
     // anyone's delivery" — a courier-only session is held to the orders
@@ -404,7 +404,7 @@ export class SalesService {
   /** DELIVERED → CLOSED — administrative close, no further side effects in MVP. */
   async close(id: string, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
-    const order = await this.getRawOrder(tx, id);
+    const order = await this.getRawOrderForUpdate(tx, id);
     if (order.status !== OrderStatus.DELIVERED) {
       throw new InvalidOrderTransitionException(order.status, OrderStatus.CLOSED);
     }
@@ -431,7 +431,7 @@ export class SalesService {
   /** Releases any reservation (if CONFIRMED, or SHIPPED — a courier-assigned order also carries one, see reserveOrderStock()) — never allowed once DELIVERED/CLOSED. */
   async cancel(id: string, dto: CancelOrderDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
-    const order = await this.getRawOrder(tx, id);
+    const order = await this.getRawOrderForUpdate(tx, id);
 
     if (
       order.status === OrderStatus.DELIVERED ||
@@ -486,7 +486,7 @@ export class SalesService {
    */
   async assignCourier(id: string, dto: AssignCourierDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
-    const order = await this.getRawOrder(tx, id);
+    const order = await this.getRawOrderForUpdate(tx, id);
 
     if (
       order.status === OrderStatus.DELIVERED ||
@@ -534,7 +534,7 @@ export class SalesService {
    */
   async remove(id: string, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
-    const order = await this.getRawOrder(tx, id);
+    const order = await this.getRawOrderForUpdate(tx, id);
 
     if (order.status !== OrderStatus.SUBMITTED) {
       throw new InvalidOrderTransitionException(order.status, 'DELETED');
@@ -623,6 +623,21 @@ export class SalesService {
     });
     if (!order) throw new SalesOrderNotFoundException();
     return order;
+  }
+
+  /**
+   * Same as getRawOrder(), but first takes a row lock (`SELECT ... FOR UPDATE`)
+   * on the SalesOrder so concurrent status transitions on one order serialize:
+   * the loser re-reads the committed status and fails the state-machine check
+   * instead of double-reserving / double-issuing / double-invoicing. Lock
+   * order is always SalesOrder → StockLevel, so it can't deadlock with itself.
+   */
+  private async getRawOrderForUpdate(tx: TenantClient, id: string, scope?: { agentId?: string; courierId?: string }) {
+    const locked = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+      SELECT "id" FROM "SalesOrder" WHERE "id" = ${id}::uuid FOR UPDATE
+    `);
+    if (locked.length === 0) throw new SalesOrderNotFoundException();
+    return this.getRawOrder(tx, id, scope);
   }
 
   private async resolveOutlet(tx: TenantClient, customerId: string, outletId: string | undefined) {

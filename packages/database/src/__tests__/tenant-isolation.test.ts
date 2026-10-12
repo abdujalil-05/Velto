@@ -123,6 +123,20 @@ describe('tenant isolation (RLS)', () => {
     });
     recipientId = recipient.id;
     await withTenant(companyAId, (tx) =>
+      tx.idempotencyRecord.create({
+        data: {
+          companyId: companyAId,
+          key: 'iso-key-1',
+          userId: recipientId,
+          route: 'POST /orders',
+          requestHash: 'h',
+          responseStatus: 201,
+          responseBody: {},
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+      }),
+    );
+    await withTenant(companyAId, (tx) =>
       tx.notification.create({
         data: {
           companyId: companyAId,
@@ -257,6 +271,7 @@ describe('tenant isolation (RLS)', () => {
     await systemPrisma.exportJob.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
     await systemPrisma.documentCounter.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
     await systemPrisma.notification.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
+    await systemPrisma.idempotencyRecord.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
     await systemPrisma.routeRun.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
     await systemPrisma.routeStop.deleteMany({ where: { routeId: routeAId } });
     await systemPrisma.route.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
@@ -326,6 +341,39 @@ describe('tenant isolation (RLS)', () => {
 
     expect(seenFromA).toHaveLength(1);
     expect(seenFromB).toHaveLength(0);
+  });
+
+  it('a direct-companyId table (IdempotencyRecord, F1.3) is scoped per tenant and rejects a cross-tenant userId', async () => {
+    const seenFromA = await withTenant(companyAId, (tx) => tx.idempotencyRecord.findMany());
+    const seenFromB = await withTenant(companyBId, (tx) => tx.idempotencyRecord.findMany());
+
+    expect(seenFromA.map((r) => r.key)).toEqual(['iso-key-1']);
+    expect(seenFromB).toHaveLength(0);
+    // Outside withTenant: zero rows or the '' ::uuid cast error — both fail
+    // closed (see the 'fails closed' case below).
+    try {
+      expect(await prisma.idempotencyRecord.findMany()).toHaveLength(0);
+    } catch (err) {
+      expect(String(err)).toMatch(/uuid/i);
+    }
+
+    // FK guard trigger: company B cannot store company A's user.
+    await expect(
+      withTenant(companyBId, (tx) =>
+        tx.idempotencyRecord.create({
+          data: {
+            companyId: companyBId,
+            key: 'iso-key-1',
+            userId: recipientId, // company A's user
+            route: 'POST /orders',
+            requestHash: 'h',
+            responseStatus: 201,
+            responseBody: {},
+            expiresAt: new Date(Date.now() + 60_000),
+          },
+        }),
+      ),
+    ).rejects.toThrow();
   });
 
   it('a direct-companyId table (RouteRun, 9.4 route finish) is scoped per tenant', async () => {

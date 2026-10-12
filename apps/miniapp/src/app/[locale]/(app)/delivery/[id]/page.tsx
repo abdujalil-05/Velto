@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
 import { toast } from 'sonner';
@@ -44,9 +44,14 @@ export default function DeliveryDetailPage() {
   const phone = order?.customer?.phone ?? null;
   const alreadyClosed = order ? ['DELIVERED', 'CLOSED', 'CANCELLED'].includes(order.status) : false;
 
+  // One key per delivery action, reused on every retry until the server accepts it.
+  const idempotencyKey = useRef<string | null>(null);
+
   async function handleDeliver() {
     try {
-      await deliver.mutateAsync(orderId);
+      idempotencyKey.current ??= crypto.randomUUID();
+      await deliver.mutateAsync({ orderId, idempotencyKey: idempotencyKey.current });
+      idempotencyKey.current = null;
       setConfirmOpen(false);
       toast.success(t('deliveredSuccess'));
       router.push('/');

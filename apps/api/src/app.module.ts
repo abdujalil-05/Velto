@@ -6,6 +6,7 @@ import { validateEnv } from './common/config/env.schema';
 import { AuditLogService } from './common/audit/audit-log.service';
 import { JwtAuthGuard } from './common/auth/jwt-auth.guard';
 import { TenantContextInterceptor } from './common/auth/tenant-context.interceptor';
+import { IdempotencyModule } from './common/idempotency/idempotency.module';
 import { QueueModule } from './common/queue/queue.module';
 import { RedisModule } from './common/redis/redis.module';
 import { TenantModule } from './common/tenant/tenant.module';
@@ -43,6 +44,7 @@ import { UsersModule } from './modules/users/users.module';
     RedisModule,
     QueueModule,
     TenantModule,
+    IdempotencyModule,
     AuthModule,
     CatalogModule,
     CustomersModule,

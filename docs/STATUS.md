@@ -9,7 +9,7 @@
 | Faza | Holat |
 |---|---|
 | F0 Poydevor va baseline (baza, testlar, M08 tasdiq) | **Deyarli tayyor** — lokal baza ko'tarildi, migratsiyalar qo'llandi, **274/274 test o'tdi** (database 29, api 223, miniapp 22; lint/typecheck/build toza, 2026-10-12). Qoldi: production rol modeli (foydalanuvchi tekshiradi), web testi yo'q, MinIO image yuklanmadi |
-| F1 Xavfsizlik va shartnoma (traceId, auth P0, idempotentlik) | **Jarayonda** — F1.1 traceId ✅ (branch `feat/f1-1-trace-id`); F1.2 auth P0 ✅ (branch `test/f1-2-auth-p0`: refresh-reuse audit, initData 10 daq oyna + 20 foydalanish limiti, constant-time HMAC, 403+audit testlari; 295/295 test). Qoldi: F1.3 idempotentlik (confirm/deliver/cash close, stock P2002 race), F1.4 rollar ADR + ACCOUNTANT cheklovi testi, F1.5 audit testi + CI secret/dependency scan |
+| F1 Xavfsizlik va shartnoma (traceId, auth P0, idempotentlik) | **Jarayonda** — F1.1 traceId ✅ (branch `feat/f1-1-trace-id`); F1.2 auth P0 ✅ (branch `test/f1-2-auth-p0`: refresh-reuse audit, initData 10 daq oyna + 20 foydalanish limiti, constant-time HMAC, 403+audit testlari; 295/295 test). F1.3 idempotentlik ✅ (branch `feat/f1-3-idempotency`: `IdempotencyRecord` + RLS, `@Idempotent()` interceptor (Idempotency-Key ixtiyoriy, 72 soat), order `FOR UPDATE`, stock `ON CONFLICT`, web/miniapp kalit; 312/312 test). Qoldi: F1.4 rollar ADR + ACCOUNTANT cheklovi testi, F1.5 audit testi + CI secret/dependency scan |
 | F2 Ombor va moliya yadrosi | Boshlanmagan |
 | F3 Dala savdosi va kuryer | Boshlanmagan |
 | F4 Offline/sync | Boshlanmagan |
@@ -66,6 +66,9 @@ MVP kodining katta qismi yozilgan. Asosiy bo'shliqlar: **M08 Xarid yo'q**, **rev
 - **Production (F7.0, hozir yopiq — qaror 2026-10-12: avval localhost, prod oxirida):** productionda ilova roli superuser emasligi va obyektlar egasi tekshirilmagan; `DATABASE_MIGRATE_URL` kerak. Runbook: `deploy/README.md`.
 - **MinIO** image'i yuklanmadi (`pull access denied`) — S3 kerak bo'ladigan oqimlar lokal tekshirilmagan.
 - `stock.receiveForRef` → `ensureStockLevelRow` (upsert): yangi product/ombor juftligiga parallel birinchi kirimda P2002 bo'lishi mumkin (mavjud stock moduli).
+- **F1.3 qarori (ADR-012):** create'larda scoped `clientId`; holat o'tishlarida (confirm/deliver/cash close) Postgres `IdempotencyRecord` (RLS, tx ichida, unique(companyId,key), 72 soat). Redis ishlatilmaydi. Header ixtiyoriy, row lock har doim.
+- F1.3 qarzlar (LOW): unique `(companyId,key)` da `userId` yo'q (boshqa user kalitni band qilib DoS qilishi mumkin); hash'ga query string kirmaydi; `/stock/receive`, `/stock/adjust` da `clientId`/idempotentlik borligi tekshirilmagan; `pnpm audit --prod`: 44 ziyofa (3 kritik, 21 yuqori) — ko'rib chiqilmagan.
+- **Hodisa (2026-10-12):** `prisma migrate diff` xato shadow URL bilan `velto_dev` ni reset qildi; qo'lda kiritilgan dev ma'lumot yo'qoldi (sxema tiklandi, `pnpm db:seed` kerak).
 - M08: `GET /purchases/receipts` ro'yxati va GoodsReceipt(+Line) uchun UPDATE/DELETE taqiqlovchi trigger (LOW).
 
 ## Keyingi qadamlar (ustuvorlik bilan)

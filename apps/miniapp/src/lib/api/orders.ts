@@ -94,7 +94,8 @@ export function useCourierOrdersQuery(courierId: string | null | undefined) {
 export function useDeliverOrderMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (orderId: string) => apiFetch<Order>(`/orders/${orderId}/deliver`, { method: 'POST' }),
+    mutationFn: ({ orderId, idempotencyKey }: { orderId: string; idempotencyKey: string }) =>
+      apiFetch<Order>(`/orders/${orderId}/deliver`, { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey } }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['orders'] }),
   });
 }

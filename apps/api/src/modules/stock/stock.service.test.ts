@@ -51,6 +51,31 @@ describe('StockService (integration, real Postgres + RLS)', () => {
     expect(level?.available.toString()).toBe('100');
   });
 
+  it('parallel first receipts for a fresh product/warehouse both succeed (ON CONFLICT DO NOTHING, no P2002)', async () => {
+    const freshProductId = await tenantPrisma.run(companyId, async (tx) => {
+      const p = await tx.product.create({
+        data: { companyId, sku: `STOCK-RACE-${Date.now()}`, name: 'Race Product', baseUnit: 'dona', vatRate: 12 },
+      });
+      return p.id;
+    });
+
+    const results = await Promise.allSettled(
+      [10, 20, 30, 40].map((qty) =>
+        tenantPrisma.run(companyId, () => stock.receive({ productId: freshProductId, warehouseId, qty }, user)),
+      ),
+    );
+    expect(results.filter((r) => r.status === 'rejected')).toEqual([]);
+
+    const level = await tenantPrisma.run(companyId, (tx) =>
+      tx.stockLevel.findUnique({ where: { productId_warehouseId: { productId: freshProductId, warehouseId } } }),
+    );
+    expect(level?.onHand.toString()).toBe('100');
+    const movements = await tenantPrisma.run(companyId, (tx) =>
+      tx.stockMovement.count({ where: { productId: freshProductId, warehouseId, type: 'RECEIVE' } }),
+    );
+    expect(movements).toBe(4);
+  });
+
   it('adjust() applies a signed correction and refuses to take on-hand negative', async () => {
     const level = await tenantPrisma.run(companyId, () =>
       stock.adjust({ productId, warehouseId, qty: -20, reason: 'damaged stock' }, user),

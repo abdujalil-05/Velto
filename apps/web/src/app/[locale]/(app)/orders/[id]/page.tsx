@@ -1,6 +1,6 @@
 'use client';
 
-import { use, useState } from 'react';
+import { use, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { toast } from 'sonner';
 import { ArrowLeft, CheckCircle2, PackageCheck, Ban, XCircle } from 'lucide-react';
@@ -32,6 +32,9 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const { data: order, isLoading, isError, error, refetch } = useOrderQuery(id);
   const confirmMutation = useConfirmOrderMutation(id);
   const deliverMutation = useDeliverOrderMutation(id);
+  // One key per action, reused on retry until the server accepts it.
+  const confirmKey = useRef<string | null>(null);
+  const deliverKey = useRef<string | null>(null);
   const closeMutation = useCloseOrderMutation(id);
   const cancelMutation = useCancelOrderMutation(id);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
@@ -90,8 +93,11 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
             <Button
               size="sm"
               onClick={() =>
-                confirmMutation.mutate(undefined, {
-                  onSuccess: () => toast.success(t('confirmSuccess')),
+                confirmMutation.mutate((confirmKey.current ??= crypto.randomUUID()), {
+                  onSuccess: () => {
+                    confirmKey.current = null;
+                    toast.success(t('confirmSuccess'));
+                  },
                   onError: (err) => toast.error(errorMessage(err, locale)),
                 })
               }
@@ -105,8 +111,11 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
             <Button
               size="sm"
               onClick={() =>
-                deliverMutation.mutate(undefined, {
-                  onSuccess: () => toast.success(t('deliverSuccess')),
+                deliverMutation.mutate((deliverKey.current ??= crypto.randomUUID()), {
+                  onSuccess: () => {
+                    deliverKey.current = null;
+                    toast.success(t('deliverSuccess'));
+                  },
                   onError: (err) => toast.error(errorMessage(err, locale)),
                 })
               }

@@ -252,6 +252,63 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     expect((await getReserved()).toString()).toBe(before.toString());
   });
 
+  it('two parallel confirms of one order reserve exactly once (order row lock)', async () => {
+    const before = await getReserved();
+    const customerId = await createCustomer();
+    const order = await tenantPrisma.run(companyId, () =>
+      sales.create({ customerId, lines: [{ productId, packagingId, qty: 6 }] }, user),
+    );
+
+    const results = await Promise.allSettled(
+      [0, 1].map(() => tenantPrisma.run(companyId, () => sales.confirm(order.id, user))),
+    );
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.reason).toBeInstanceOf(InvalidOrderTransitionException);
+
+    expect((await getReserved()).minus(before).toString()).toBe('6');
+    const reserves = await tenantPrisma.run(companyId, (tx) =>
+      tx.stockMovement.count({ where: { refId: order.id, type: 'RESERVE' } }),
+    );
+    expect(reserves).toBe(1);
+  });
+
+  it('two parallel delivers of one order issue stock once and create exactly one invoice', async () => {
+    const before = await getReserved();
+    const customerId = await createCustomer();
+    const order = await tenantPrisma.run(companyId, () =>
+      sales.create({ customerId, lines: [{ productId, packagingId, qty: 2 }] }, user),
+    );
+    await tenantPrisma.run(companyId, () => sales.confirm(order.id, user));
+    const onHandBefore = (
+      await tenantPrisma.run(companyId, (tx) =>
+        tx.stockLevel.findUnique({ where: { productId_warehouseId: { productId, warehouseId } } }),
+      )
+    )!.onHand;
+
+    const results = await Promise.allSettled(
+      [0, 1].map(() => tenantPrisma.run(companyId, () => sales.deliver(order.id, user))),
+    );
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.reason).toBeInstanceOf(InvalidOrderTransitionException);
+
+    const [invoices, issues, level] = await tenantPrisma.run(companyId, (tx) =>
+      Promise.all([
+        tx.invoice.count({ where: { orderId: order.id } }),
+        tx.stockMovement.count({ where: { refId: order.id, type: 'ISSUE' } }),
+        tx.stockLevel.findUnique({ where: { productId_warehouseId: { productId, warehouseId } } }),
+      ]),
+    );
+    expect(invoices).toBe(1);
+    expect(issues).toBe(1);
+    expect(onHandBefore.minus(level!.onHand).toString()).toBe('2');
+    expect(level!.reserved.toString()).toBe(before.toString());
+  });
+
   it('list() filters by from/to (createdAt), leaving unbounded callers unaffected', async () => {
     const customerId = await createCustomer();
     const order = await tenantPrisma.run(companyId, () =>

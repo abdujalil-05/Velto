@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { toast } from 'sonner';
 import { CreditCard, Plus, RefreshCw, Wallet } from 'lucide-react';
@@ -55,6 +55,8 @@ function CashSection() {
   const history = useCashSessionsQuery({ page, pageSize: 25 });
   const openMutation = useOpenCashSessionMutation();
   const closeMutation = useCloseCashSessionMutation();
+  // One key per close action, reused on retry until the server accepts it.
+  const closeKey = useRef<string | null>(null);
 
   function handleExport() {
     if (!history.data) return;
@@ -101,9 +103,12 @@ function CashSection() {
               onSubmit={(closeAmount) => {
                 setActionError(null);
                 closeMutation.mutate(
-                  { id: current.data!.id, closeAmount },
+                  { id: current.data!.id, closeAmount, idempotencyKey: (closeKey.current ??= crypto.randomUUID()) },
                   {
-                    onSuccess: () => toast.success(t('closed')),
+                    onSuccess: () => {
+                      closeKey.current = null;
+                      toast.success(t('closed'));
+                    },
                     onError: (error) => setActionError(errorMessage(error, locale)),
                   },
                 );

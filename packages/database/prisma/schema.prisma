@@ -11,7 +11,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider  = "postgresql"
   // Runtime: RLS-bound app role `velto_app` (never superuser/BYPASSRLS).
   url       = env("DATABASE_URL")
   // Prisma CLI (migrate/introspect) only: schema owner `velto_owner`.
@@ -81,6 +81,7 @@ model Company {
   importJobs         ImportJob[]
   exportJobs         ExportJob[]
   documentCounters   DocumentCounter[]
+  idempotencyRecords IdempotencyRecord[]
   notifications      Notification[]
   suppliers          Supplier[]
   purchaseOrders     PurchaseOrder[]
@@ -107,23 +108,24 @@ model User {
 
   company Company @relation(fields: [companyId], references: [id])
 
-  roles             UserRole[]
-  refreshTokens     RefreshToken[]
-  agentOrders       SalesOrder[]    @relation("AgentOrders")
+  roles              UserRole[]
+  refreshTokens      RefreshToken[]
+  agentOrders        SalesOrder[]        @relation("AgentOrders")
   // Delivery work assigned to this user as a kuryer (role code COURIER). A
   // courier is an ordinary User, so the same row can in principle appear on
   // both sides; in practice the two roles are held by different people.
-  courierOrders     SalesOrder[]    @relation("CourierOrders")
-  paymentsCollected Payment[]       @relation("PaymentsCollected")
-  cashSessions      CashSession[]
-  agentRoutes       Route[]         @relation("AgentRoutes")
-  courierRoutes     Route[]         @relation("CourierRoutes")
-  agentVisits       Visit[]         @relation("AgentVisits")
-  auditLogs         AuditLog[]
-  exportJobs        ExportJob[]
-  notifications     Notification[]
-  purchaseOrders    PurchaseOrder[] @relation("PurchaseOrderCreatedBy")
-  goodsReceipts     GoodsReceipt[]  @relation("GoodsReceiptReceivedBy")
+  courierOrders      SalesOrder[]        @relation("CourierOrders")
+  paymentsCollected  Payment[]           @relation("PaymentsCollected")
+  cashSessions       CashSession[]
+  agentRoutes        Route[]             @relation("AgentRoutes")
+  courierRoutes      Route[]             @relation("CourierRoutes")
+  agentVisits        Visit[]             @relation("AgentVisits")
+  auditLogs          AuditLog[]
+  exportJobs         ExportJob[]
+  notifications      Notification[]
+  purchaseOrders     PurchaseOrder[]     @relation("PurchaseOrderCreatedBy")
+  goodsReceipts      GoodsReceipt[]      @relation("GoodsReceiptReceivedBy")
+  idempotencyRecords IdempotencyRecord[]
 
   @@unique([companyId, phone])
   // Scoped per-company like every other natural key here: a global unique on
@@ -1059,4 +1061,28 @@ model DocumentCounter {
   company Company @relation(fields: [companyId], references: [id])
 
   @@id([companyId, docType, year])
+}
+
+// F1.3 / §10.5: HTTP `Idempotency-Key` replay store. A retried mutating
+// request with the same key returns the stored response instead of
+// re-executing. Scoped per company (a global unique would let tenant A probe
+// tenant B's keys). `requestHash` detects key reuse with a different payload.
+// Rows are ephemeral: a cleanup job deletes them after `expiresAt`.
+model IdempotencyRecord {
+  id             String   @id @default(uuid()) @db.Uuid
+  companyId      String   @db.Uuid
+  key            String
+  userId         String   @db.Uuid
+  route          String // "POST /orders"
+  requestHash    String
+  responseStatus Int
+  responseBody   Json
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+
+  company Company @relation(fields: [companyId], references: [id])
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, key])
+  @@index([expiresAt])
 }
