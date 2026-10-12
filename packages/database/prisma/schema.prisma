@@ -946,6 +946,7 @@ model AuditLog {
   oldValue  Json?
   newValue  Json?
   ip        String?
+  traceId   String? // TZ 11.4: request trace ID (null for pre-F1.1b rows)
   createdAt DateTime @default(now())
 
   company Company @relation(fields: [companyId], references: [id])
