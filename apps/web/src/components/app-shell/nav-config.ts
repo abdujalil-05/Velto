@@ -1,6 +1,7 @@
 import {
   BarChart3,
   BookOpen,
+  ClipboardList,
   History,
   IdCard,
   LayoutDashboard,
@@ -24,6 +25,7 @@ export interface NavItem {
     | 'products'
     | 'cash'
     | 'stock'
+    | 'purchases'
     | 'couriers'
     | 'users'
     | 'routes'
@@ -57,6 +59,7 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'products', href: '/products', icon: Package, permission: 'catalog.read' },
   { key: 'cash', href: '/cash', icon: Wallet, permission: 'payments.read' },
   { key: 'stock', href: '/stock', icon: Warehouse, permission: 'stock.read' },
+  { key: 'purchases', href: '/purchases', icon: ClipboardList, permission: 'purchases.read' },
   { key: 'couriers', href: '/couriers', icon: Truck, permission: 'users.read' },
   { key: 'users', href: '/users', icon: IdCard, permission: 'users.read' },
   { key: 'agents', href: '/agents', icon: UserCog, permission: 'users.read' },
