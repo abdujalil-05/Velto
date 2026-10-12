@@ -26,7 +26,7 @@ MVP kodining katta qismi yozilgan. Asosiy bo'shliqlar: **M08 Xarid yo'q**, **rev
 | # | Modul | Holat | Dalil | Yetishmaydi |
 |---|---|---|---|---|
 | M00 | Platform/tenant | Qisman | `modules/settings`, web `settings` | trial holati, settings testi, `PLATFORM_ADMIN` oqimi (faqat skript) |
-| M01 | Auth/RBAC | Qisman | `modules/auth`, `telegram-init-data.ts`, `database/src/rbac-catalog.ts` | refresh-reuse va initData (valid/invalid/expired/replay) testlari, 403+audit testi |
+| M01 | Auth/RBAC | Deyarli tayyor | `modules/auth`, `telegram-init-data.ts`, `rbac-catalog.ts`; testlar: refresh rotation/reuse, initData valid/invalid/expired/replay, 403+audit | logout-all alohida endpoint yo'q; login limitining HTTP orqali 10 urinish zanjiri testlanmagan; ACCOUNTANT cheklovi testi |
 | M02 | Mijozlar/nuqtalar | Tayyor | `modules/customers`, `duplicate-detection.ts` | tarix ko'rinishi tekshirilmagan |
 | M03 | Katalog/narx | Tayyor | `modules/catalog/*`, `minPrice` | rasm yuklash tekshirilmagan |
 | M04 | Ombor | Qisman | `modules/stock`, concurrent rezerv testi | alohida chiqim endpointi (deliver orqali), reversal/correction |
