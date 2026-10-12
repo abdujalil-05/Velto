@@ -8,6 +8,7 @@ import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.servic
 import { ExportJobNotFoundException, InvalidExportPeriodException } from '../integrations-exceptions';
 import type { CreateExportDto } from './dto/create-export.dto';
 import type { ListExportsQueryDto } from './dto/list-exports.query';
+import { AuditLogService, toAuditJson } from '../../../common/audit/audit-log.service';
 import { addTracedJob } from '../../../common/queue/trace-job';
 import { EXPORT_1C_QUEUE, type Export1cJobData } from './export-1c.constants';
 
@@ -29,6 +30,7 @@ export class Export1cService {
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     @InjectQueue(EXPORT_1C_QUEUE) private readonly queue: Queue<Export1cJobData>,
+    private readonly auditLog: AuditLogService,
   ) {}
 
   async create(dto: CreateExportDto, user: AuthenticatedUser) {
@@ -47,6 +49,15 @@ export class Export1cService {
         status: 'PENDING',
         requestedBy: user.id,
       },
+    });
+
+    await this.auditLog.log(tx, {
+      companyId: user.companyId,
+      userId: user.id,
+      action: 'export.create',
+      entity: 'ExportJob',
+      entityId: job.id,
+      newValue: toAuditJson({ type: job.type, format: job.format, periodFrom, periodTo }),
     });
 
     // Deferred until this request's transaction actually commits — enqueuing

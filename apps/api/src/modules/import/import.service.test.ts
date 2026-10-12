@@ -1,3 +1,4 @@
+import { AuditLogService } from '../../common/audit/audit-log.service';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Queue } from 'bullmq';
@@ -21,7 +22,7 @@ describe('ImportService (integration, real Postgres + RLS)', () => {
   const fakeStorage = { upload } as unknown as StorageService;
   const queueAdd = vi.fn().mockResolvedValue(undefined);
   const fakeQueue = { add: queueAdd } as unknown as Queue<ImportJobData>;
-  const importService = new ImportService(tenantPrisma, fakeStorage, fakeQueue);
+  const importService = new ImportService(tenantPrisma, fakeStorage, fakeQueue, new AuditLogService());
 
   beforeAll(async () => {
     const tenant = await systemPrisma.tenant.create({ data: { slug: `test-import-${Date.now()}`, name: 'Import Test Tenant' } });
@@ -95,7 +96,7 @@ describe('ImportService (integration, real Postgres + RLS)', () => {
       tenantPrisma.run(companyId, () => importService.confirm(created.id, user)),
     );
     expect(confirmed.status).toBe('PROCESSING');
-    expect(queueAdd).toHaveBeenCalledWith('commit', { importJobId: created.id, companyId, traceId: 'known-trace-id-123' });
+    expect(queueAdd).toHaveBeenCalledWith('commit', { importJobId: created.id, companyId, userId: user.id, traceId: 'known-trace-id-123' });
 
     await expect(tenantPrisma.run(companyId, () => importService.confirm(created.id, user))).rejects.toBeInstanceOf(
       ImportAlreadyConfirmedException,

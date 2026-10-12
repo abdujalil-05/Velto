@@ -1,3 +1,4 @@
+import { AuditLogService } from '../../../common/audit/audit-log.service';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Queue } from 'bullmq';
@@ -16,7 +17,7 @@ describe('Export1cService (integration, real Postgres + RLS)', () => {
   const tenantPrisma = new TenantPrismaService();
   const queueAdd = vi.fn().mockResolvedValue(undefined);
   const fakeQueue = { add: queueAdd } as unknown as Queue<Export1cJobData>;
-  const export1c = new Export1cService(tenantPrisma, fakeQueue);
+  const export1c = new Export1cService(tenantPrisma, fakeQueue, new AuditLogService());
 
   beforeAll(async () => {
     const tenant = await systemPrisma.tenant.create({

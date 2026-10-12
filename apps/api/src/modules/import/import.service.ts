@@ -1,3 +1,4 @@
+import { AuditLogService, toAuditJson } from '../../common/audit/audit-log.service';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable } from '@nestjs/common';
 import type { Queue } from 'bullmq';
@@ -23,6 +24,7 @@ export class ImportService {
     private readonly tenantPrisma: TenantPrismaService,
     private readonly storage: StorageService,
     @InjectQueue(IMPORT_QUEUE) private readonly queue: Queue<ImportJobData>,
+    private readonly auditLog: AuditLogService,
   ) {}
 
   /** Uploads the raw file (audit record, matching ImportJob.fileUrl being required) then validates it synchronously — 1000-2000 rows (11.4) is fast enough not to need a queue for this half of the flow. */
@@ -104,9 +106,17 @@ export class ImportService {
     if (job.status !== 'PENDING') throw new ImportAlreadyConfirmedException();
 
     const updated = await tx.importJob.update({ where: { id }, data: { status: 'PROCESSING' } });
+    await this.auditLog.log(tx, {
+      companyId: user.companyId,
+      userId: user.id,
+      action: 'import.confirm',
+      entity: 'ImportJob',
+      entityId: id,
+      newValue: toAuditJson({ type: job.type }),
+    });
     // Deferred until this request's transaction actually commits — same
     // enqueue-before-commit race as Export1cService.create().
-    TenantContext.afterCommit(() => addTracedJob(this.queue, 'commit', { importJobId: id, companyId: user.companyId }));
+    TenantContext.afterCommit(() => addTracedJob(this.queue, 'commit', { importJobId: id, companyId: user.companyId, userId: user.id }));
     return updated;
   }
 }

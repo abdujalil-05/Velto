@@ -150,11 +150,10 @@ export class PaymentsService {
       throw err;
     }
 
-    if (dto.allocations?.length) {
-      await this.allocateManual(tx, { id: payment.id, customerId: payment.customerId, amount }, dto.allocations);
-    } else {
-      await this.allocateFifo(tx, { id: payment.id, customerId: payment.customerId, amount });
-    }
+    const mode = dto.allocations?.length ? 'MANUAL' : 'FIFO';
+    const allocations = dto.allocations?.length
+      ? await this.allocateManual(tx, { id: payment.id, customerId: payment.customerId, amount }, dto.allocations)
+      : await this.allocateFifo(tx, { id: payment.id, customerId: payment.customerId, amount });
 
     // 6.7: "hech qachon to'g'ridan-to'g'ri UPDATE qilinmaydi" outside of a
     // recompute from the ledger — done here, inside the same transaction.
@@ -172,13 +171,27 @@ export class PaymentsService {
       newValue: toAuditJson(full),
     });
 
+    // TZ 11.4: allocation is its own mandatory audit event, separate from
+    // payment.create. Skipped when nothing was allocated (pure advance).
+    if (allocations.length) {
+      await this.auditLog.log(tx, {
+        companyId: user.companyId,
+        userId: user.id,
+        action: 'payment.allocate',
+        entity: 'Payment',
+        entityId: payment.id,
+        newValue: toAuditJson({ mode, allocations }),
+      });
+    }
+
     return full;
   }
 
   private async allocateFifo(
     tx: TenantClient,
     payment: { id: string; customerId: string; amount: Prisma.Decimal },
-  ): Promise<void> {
+  ): Promise<AllocationResult[]> {
+    const results: AllocationResult[] = [];
     let remaining = payment.amount;
     const openInvoiceIds = await tx.invoice.findMany({
       where: { customerId: payment.customerId, status: { in: [InvoiceStatus.OPEN, InvoiceStatus.PARTIALLY_PAID] } },
@@ -202,15 +215,18 @@ export class PaymentsService {
 
       const toAllocate = outstanding.lessThan(remaining) ? outstanding : remaining;
       await this.applyAllocation(tx, payment.id, invoice.id, toAllocate, outstanding);
+      results.push({ invoiceId: invoice.id, invoiceNumber: invoice.number, amount: toAllocate.toString() });
       remaining = remaining.minus(toAllocate);
     }
+    return results;
   }
 
   private async allocateManual(
     tx: TenantClient,
     payment: { id: string; customerId: string; amount: Prisma.Decimal },
     inputs: PaymentAllocationInputDto[],
-  ): Promise<void> {
+  ): Promise<AllocationResult[]> {
+    const results: AllocationResult[] = [];
     const requestedTotal = inputs.reduce((sum, a) => sum.plus(a.amount), new Prisma.Decimal(0));
     if (requestedTotal.greaterThan(payment.amount)) {
       throw new AllocationExceedsPaymentException(payment.amount.toString(), requestedTotal.toString());
@@ -232,7 +248,9 @@ export class PaymentsService {
       }
 
       await this.applyAllocation(tx, payment.id, invoice.id, requested, outstanding);
+      results.push({ invoiceId: invoice.id, invoiceNumber: invoice.number, amount: requested.toString() });
     }
+    return results;
   }
 
   /**
@@ -263,6 +281,12 @@ export class PaymentsService {
       data: { status: remainder.isZero() ? InvoiceStatus.PAID : InvoiceStatus.PARTIALLY_PAID },
     });
   }
+}
+
+interface AllocationResult {
+  invoiceId: string;
+  invoiceNumber: string;
+  amount: string;
 }
 
 function outstandingOf(invoice: InvoiceWithAllocations): Prisma.Decimal {

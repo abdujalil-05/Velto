@@ -37,7 +37,7 @@ export class ImportProcessor extends WorkerHost {
   }
 
   private async handle(job: Job<ImportJobData>): Promise<void> {
-    const { importJobId, companyId } = job.data;
+    const { importJobId, companyId, userId } = job.data;
 
     try {
       await this.tenantPrisma.run(companyId, async (tx) => {
@@ -54,6 +54,7 @@ export class ImportProcessor extends WorkerHost {
 
         await this.auditLog.log(tx, {
           companyId,
+          userId,
           action: importJob.type === 'customers' ? 'customer.import' : 'product.import',
           entity: importJob.type === 'customers' ? 'Customer' : 'Product',
           entityId: importJob.id,

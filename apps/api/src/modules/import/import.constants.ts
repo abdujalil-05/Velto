@@ -7,6 +7,8 @@ export type ImportType = 'customers' | 'products';
 export interface ImportJobData extends TraceableJobData {
   importJobId: string;
   companyId: string;
+  /** Actor who confirmed the import (ImportJob has no creator column); used for the audit row. */
+  userId?: string;
 }
 
 /** Shared shape for a single row's problems, regardless of import type. */
