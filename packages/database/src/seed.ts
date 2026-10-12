@@ -128,6 +128,7 @@ async function main() {
     });
     const { products, packagingsByProduct } = await seedCatalog(tx, company.id);
     const stockLedger = await receiveInitialStock(tx, company.id, warehouse.id, products);
+    await seedSuppliers(tx, company.id);
     const priceLists = await seedPriceLists(tx, company.id, products);
     const { outlets } = await seedCustomers(tx, company.id, priceLists);
     const routes = await seedRoutes(tx, company.id, users.agents, outlets);
@@ -301,6 +302,19 @@ async function receiveInitialStock(
     });
   }
   return ledger;
+}
+
+// M08 Xarid (ADR-011): a few demo counterparties only — no POs/receipts, so
+// the demo PO-{YYYY} DocumentCounter stays untouched for the API to start at 1.
+async function seedSuppliers(tx: TenantClient, companyId: string) {
+  const suppliers = [
+    { name: 'Toshkent Oziq-Ovqat MChJ', inn: '301234567', phone: '+998712000101', address: 'Toshkent sh., Sergeli tumani' },
+    { name: 'Samarqand Ichimliklar MChJ', inn: '302345678', phone: '+998662000202', address: 'Samarqand sh.' },
+    { name: 'Farg‘ona Savdo XK', inn: '303456789', phone: '+998732000303', address: 'Farg‘ona sh.' },
+  ];
+  for (const s of suppliers) {
+    await tx.supplier.create({ data: { companyId, ...s } });
+  }
 }
 
 async function seedPriceLists(tx: TenantClient, companyId: string, products: { id: string }[]) {

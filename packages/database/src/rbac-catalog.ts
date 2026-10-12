@@ -46,6 +46,11 @@ export const PERMISSION_DEFS: { module: string; actions: string[] }[] = [
   { module: 'customers', actions: ['read', 'create', 'update', 'delete'] },
   { module: 'catalog', actions: ['read', 'create', 'update', 'delete'] },
   { module: 'stock', actions: ['read', 'receive', 'adjust'] },
+  // M08 Xarid (ADR-011): suppliers + purchase orders + goods receipts.
+  // `receive` posts a GoodsReceipt (and its StockMovement RECEIVE rows) — kept
+  // separate from `create` so a warehouse keeper can receive without being
+  // able to raise or edit POs.
+  { module: 'purchases', actions: ['read', 'create', 'receive'] },
   // `deliver` is deliberately separate from `update`: `update` guards confirm/
   // close/cancel/delete and courier assignment, so granting it to a courier
   // would let them drive or delete any order in the tenant. `deliver` is the
@@ -72,6 +77,7 @@ export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
   OWNER: 'ALL',
   SALES_DIRECTOR: [
     'customers.read', 'customers.update', 'catalog.read', 'stock.read',
+    'purchases.read', 'purchases.create',
     'orders.read', 'orders.update', 'orders.deliver', 'invoices.read', 'payments.read',
     'routes.read', 'routes.create', 'routes.update', 'field.read',
     'reports.read', 'reports.export', 'users.read', 'users.create',
@@ -91,6 +97,7 @@ export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
   ],
   WAREHOUSE: [
     'catalog.read', 'stock.read', 'stock.receive', 'stock.adjust',
+    'purchases.read', 'purchases.receive',
     'orders.read', 'orders.update',
     'orders.deliver', // marks CONFIRMED orders as DELIVERED
   ],
@@ -100,7 +107,7 @@ export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
   ],
   ACCOUNTANT: [
     'customers.read', 'invoices.read', 'payments.read', 'cash.read', 'reports.read',
-    'reports.export', 'integrations.export1c',
+    'reports.export', 'integrations.export1c', 'purchases.read',
   ],
 };
 

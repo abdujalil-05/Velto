@@ -4,6 +4,7 @@
 // direct-companyId tables (Customer) and parent-subquery child tables
 // (RolePermission, isolated via its Role's companyId), plus the fail-closed
 // default and the AuditLog append-only trigger.
+import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { prisma, systemPrisma, withTenant } from '../client';
 
@@ -29,6 +30,11 @@ describe('tenant isolation (RLS)', () => {
   let userBId: string;
   let deliveryOrderAId: string;
   let deliveryRouteAId: string;
+  let supplierAId: string;
+  let supplierBId: string;
+  let purchaseOrderAId: string;
+  let purchaseOrderLineAId: string;
+  let goodsReceiptAId: string;
 
   beforeAll(async () => {
     const stamp = Date.now();
@@ -162,6 +168,64 @@ describe('tenant isolation (RLS)', () => {
     );
     deliveryOrderAId = deliveryOrderA.id;
 
+    // M08 Purchasing (20261012120000_restore_purchasing, ADR-011): one full
+    // Supplier -> PurchaseOrder -> line -> GoodsReceipt -> line chain in
+    // company A, plus a company-B supplier as a cross-tenant FK target.
+    const supplierB = await withTenant(companyBId, (tx) =>
+      tx.supplier.create({ data: { companyId: companyBId, name: 'Supplier B' } }),
+    );
+    supplierBId = supplierB.id;
+    await withTenant(companyAId, async (tx) => {
+      const supplier = await tx.supplier.create({ data: { companyId: companyAId, name: 'Supplier A' } });
+      supplierAId = supplier.id;
+      const po = await tx.purchaseOrder.create({
+        data: {
+          companyId: companyAId,
+          number: 'PO-ISO-A',
+          supplierId: supplierAId,
+          warehouseId: warehouseAId,
+          createdById: recipientId,
+        },
+      });
+      purchaseOrderAId = po.id;
+      const poLine = await tx.purchaseOrderLine.create({
+        data: {
+          companyId: companyAId,
+          purchaseOrderId: po.id,
+          productId: productAId,
+          productName: 'Product A',
+          productSku: 'ISO-A',
+          unit: 'dona',
+          qty: 10,
+          unitPrice: 1000,
+          lineTotal: 10000,
+        },
+      });
+      purchaseOrderLineAId = poLine.id;
+      const receipt = await tx.goodsReceipt.create({
+        data: {
+          companyId: companyAId,
+          warehouseId: warehouseAId,
+          purchaseOrderId: po.id,
+          supplierId: supplierAId,
+          clientId: randomUUID(),
+        },
+      });
+      goodsReceiptAId = receipt.id;
+      await tx.goodsReceiptLine.create({
+        data: {
+          companyId: companyAId,
+          goodsReceiptId: receipt.id,
+          purchaseOrderLineId: poLine.id,
+          productId: productAId,
+          productName: 'Product A',
+          productSku: 'ISO-A',
+          unit: 'dona',
+          qty: 4,
+        },
+      });
+    });
+
     await withTenant(companyAId, async (tx) => {
       const role = await tx.role.create({ data: { companyId: companyAId, code: 'ISO_TEST', name: 'Isolation Test Role' } });
       await tx.rolePermission.create({ data: { roleId: role.id, permissionId } });
@@ -187,14 +251,29 @@ describe('tenant isolation (RLS)', () => {
     // Orders before users: "SalesOrder"."courierId" is ON DELETE SET NULL, but
     // deleting the rows outright keeps the fixture cleanup exact.
     await systemPrisma.salesOrder.deleteMany({ where: scopedCompanies });
+    // GoodsReceipt/GoodsReceiptLine are append-only (DB triggers, even for
+    // velto_system) and their FKs are RESTRICT, so — like the AuditLog row —
+    // company A's receipt chain (receipt, its PO/line/supplier, warehouse A,
+    // product A) is left behind; only unreferenced rows are deleted.
+    await systemPrisma.purchaseOrderLine.deleteMany({ where: { ...scopedCompanies, receiptLines: { none: {} } } });
+    await systemPrisma.purchaseOrder.deleteMany({
+      where: { ...scopedCompanies, goodsReceipts: { none: {} }, lines: { none: {} } },
+    });
+    await systemPrisma.supplier.deleteMany({
+      where: { ...scopedCompanies, purchaseOrders: { none: {} }, goodsReceipts: { none: {} } },
+    });
     await systemPrisma.user.delete({ where: { id: recipientId } });
     await systemPrisma.user.delete({ where: { id: courierAId } });
     await systemPrisma.user.delete({ where: { id: userBId } });
     await systemPrisma.priceListItem.deleteMany({ where: { priceListId: priceListAId } });
     await systemPrisma.stockLevel.deleteMany({ where: { warehouseId: { in: [warehouseAId, warehouseBId] } } });
     await systemPrisma.productCategory.deleteMany({ where: scopedCompanies });
-    await systemPrisma.product.deleteMany({ where: scopedCompanies });
-    await systemPrisma.warehouse.deleteMany({ where: scopedCompanies });
+    await systemPrisma.product.deleteMany({
+      where: { ...scopedCompanies, goodsReceiptLines: { none: {} }, purchaseOrderLines: { none: {} } },
+    });
+    await systemPrisma.warehouse.deleteMany({
+      where: { ...scopedCompanies, goodsReceipts: { none: {} }, purchaseOrders: { none: {} } },
+    });
     await systemPrisma.outlet.deleteMany({ where: scopedCompanies });
     await systemPrisma.customer.updateMany({ where: scopedCompanies, data: { priceListId: null } });
     await systemPrisma.priceList.deleteMany({ where: scopedCompanies });
@@ -252,6 +331,137 @@ describe('tenant isolation (RLS)', () => {
     // see neither.
     expect(new Set(seenFromA.map((r) => r.id))).toEqual(new Set([routeAId, deliveryRouteAId]));
     expect(seenFromB).toHaveLength(0);
+  });
+
+  it('M08 purchasing tables (Supplier/PurchaseOrder/PurchaseOrderLine/GoodsReceipt/GoodsReceiptLine) are scoped per tenant', async () => {
+    const read = (companyId: string) =>
+      withTenant(companyId, async (tx) => ({
+        suppliers: await tx.supplier.findMany(),
+        orders: await tx.purchaseOrder.findMany(),
+        orderLines: await tx.purchaseOrderLine.findMany(),
+        receipts: await tx.goodsReceipt.findMany(),
+        receiptLines: await tx.goodsReceiptLine.findMany(),
+      }));
+    const fromA = await read(companyAId);
+    const fromB = await read(companyBId);
+
+    expect(fromA.suppliers.map((s) => s.id)).toEqual([supplierAId]);
+    expect(fromA.orders.map((o) => o.id)).toEqual([purchaseOrderAId]);
+    expect(fromA.orderLines.map((l) => l.id)).toEqual([purchaseOrderLineAId]);
+    expect(fromA.receipts.map((r) => r.id)).toEqual([goodsReceiptAId]);
+    expect(fromA.receiptLines).toHaveLength(1);
+
+    expect(fromB.suppliers.map((s) => s.id)).toEqual([supplierBId]);
+    expect(fromB.orders).toHaveLength(0);
+    expect(fromB.orderLines).toHaveLength(0);
+    expect(fromB.receipts).toHaveLength(0);
+    expect(fromB.receiptLines).toHaveLength(0);
+
+    // Writes aimed at A's purchasing rows from B match nothing.
+    const updated = await withTenant(companyBId, (tx) =>
+      tx.purchaseOrder.updateMany({ where: { id: purchaseOrderAId }, data: { note: 'Hijacked' } }),
+    );
+    expect(updated.count).toBe(0);
+  });
+
+  it('rejects purchasing rows that reference another tenant’s supplier/warehouse/product/PO', async () => {
+    await expect(
+      systemPrisma.purchaseOrder.create({
+        data: { companyId: companyAId, number: 'PO-ISO-XT-1', supplierId: supplierBId, warehouseId: warehouseAId },
+      }),
+    ).rejects.toThrow(/cross-tenant/i);
+    await expect(
+      systemPrisma.purchaseOrder.create({
+        data: { companyId: companyAId, number: 'PO-ISO-XT-2', supplierId: supplierAId, warehouseId: warehouseBId },
+      }),
+    ).rejects.toThrow(/cross-tenant/i);
+
+    const line = { productName: 'X', productSku: 'X', unit: 'dona', qty: 1, unitPrice: 1, lineTotal: 1 };
+    await expect(
+      systemPrisma.purchaseOrderLine.create({
+        data: { ...line, companyId: companyAId, purchaseOrderId: purchaseOrderAId, productId: productBId },
+      }),
+    ).rejects.toThrow(/cross-tenant/i);
+    // A company-B line smuggled onto company A's PO.
+    await expect(
+      systemPrisma.purchaseOrderLine.create({
+        data: { ...line, companyId: companyBId, purchaseOrderId: purchaseOrderAId, productId: productBId },
+      }),
+    ).rejects.toThrow(/cross-tenant/i);
+
+    await expect(
+      systemPrisma.goodsReceipt.create({
+        data: {
+          companyId: companyBId,
+          warehouseId: warehouseBId,
+          purchaseOrderId: purchaseOrderAId,
+          clientId: randomUUID(),
+        },
+      }),
+    ).rejects.toThrow(/cross-tenant/i);
+    await expect(
+      systemPrisma.goodsReceiptLine.create({
+        data: {
+          companyId: companyAId,
+          goodsReceiptId: goodsReceiptAId,
+          productId: productBId,
+          productName: 'X',
+          productSku: 'X',
+          unit: 'dona',
+          qty: 1,
+        },
+      }),
+    ).rejects.toThrow(/cross-tenant/i);
+  });
+
+  it('GoodsReceipt/GoodsReceiptLine are append-only — UPDATE/DELETE/TRUNCATE rejected, even for velto_system', async () => {
+    // Owning tenant through the app role.
+    await expect(
+      withTenant(companyAId, (tx) =>
+        tx.$executeRaw`UPDATE "GoodsReceipt" SET note = 'changed' WHERE id = ${goodsReceiptAId}::uuid`,
+      ),
+    ).rejects.toThrow(/append-only/i);
+    await expect(
+      withTenant(companyAId, (tx) => tx.$executeRaw`DELETE FROM "GoodsReceipt" WHERE id = ${goodsReceiptAId}::uuid`),
+    ).rejects.toThrow(/append-only/i);
+    await expect(
+      withTenant(companyAId, (tx) =>
+        tx.$executeRaw`UPDATE "GoodsReceiptLine" SET qty = 5 WHERE "goodsReceiptId" = ${goodsReceiptAId}::uuid`,
+      ),
+    ).rejects.toThrow(/append-only/i);
+    await expect(
+      withTenant(companyAId, (tx) =>
+        tx.$executeRaw`DELETE FROM "GoodsReceiptLine" WHERE "goodsReceiptId" = ${goodsReceiptAId}::uuid`,
+      ),
+    ).rejects.toThrow(/append-only/i);
+    await expect(
+      withTenant(companyAId, (tx) => tx.$executeRawUnsafe('TRUNCATE TABLE "GoodsReceiptLine"')),
+    ).rejects.toThrow(/append-only/i);
+
+    // BYPASSRLS does not skip triggers: velto_system is blocked too.
+    await expect(
+      systemPrisma.goodsReceipt.update({ where: { id: goodsReceiptAId }, data: { note: 'changed' } }),
+    ).rejects.toThrow(/append-only/i);
+    await expect(
+      systemPrisma.goodsReceiptLine.deleteMany({ where: { goodsReceiptId: goodsReceiptAId } }),
+    ).rejects.toThrow(/append-only/i);
+    await expect(systemPrisma.$executeRawUnsafe('TRUNCATE TABLE "GoodsReceipt" CASCADE')).rejects.toThrow(
+      /append-only/i,
+    );
+
+    // A receipt's referenced PO line can no longer be removed out from under
+    // it (RESTRICT, not a SET NULL cascade that would rewrite history).
+    await expect(
+      systemPrisma.purchaseOrderLine.delete({ where: { id: purchaseOrderLineAId } }),
+    ).rejects.toThrow();
+
+    // History intact.
+    const after = await withTenant(companyAId, (tx) =>
+      tx.goodsReceipt.findUnique({ where: { id: goodsReceiptAId }, include: { lines: true } }),
+    );
+    expect(after?.note).toBeNull();
+    expect(after?.lines).toHaveLength(1);
+    expect(after?.lines[0]?.qty.toString()).toBe('4');
   });
 
   // 20260808120000_tenant_scoped_keys_and_fk_guards: Tenant was the last table

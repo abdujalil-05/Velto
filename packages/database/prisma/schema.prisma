@@ -56,28 +56,33 @@ model Company {
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
 
-  users                     User[]
-  roles                     Role[]
-  customers                 Customer[]
-  outlets                   Outlet[]
-  productCategories         ProductCategory[]
-  products                  Product[]
-  priceLists                PriceList[]
-  warehouses                Warehouse[]
-  stockMovements            StockMovement[]
-  salesOrders               SalesOrder[]
-  invoices                  Invoice[]
-  payments                  Payment[]
-  cashSessions              CashSession[]
-  routes                    Route[]
-  routeRuns                 RouteRun[]
-  visits                    Visit[]
-  auditLogs                 AuditLog[]
-  outboxEvents              OutboxEvent[]
-  importJobs                ImportJob[]
-  exportJobs                ExportJob[]
-  documentCounters          DocumentCounter[]
-  notifications             Notification[]
+  users              User[]
+  roles              Role[]
+  customers          Customer[]
+  outlets            Outlet[]
+  productCategories  ProductCategory[]
+  products           Product[]
+  priceLists         PriceList[]
+  warehouses         Warehouse[]
+  stockMovements     StockMovement[]
+  salesOrders        SalesOrder[]
+  invoices           Invoice[]
+  payments           Payment[]
+  cashSessions       CashSession[]
+  routes             Route[]
+  routeRuns          RouteRun[]
+  visits             Visit[]
+  auditLogs          AuditLog[]
+  outboxEvents       OutboxEvent[]
+  importJobs         ImportJob[]
+  exportJobs         ExportJob[]
+  documentCounters   DocumentCounter[]
+  notifications      Notification[]
+  suppliers          Supplier[]
+  purchaseOrders     PurchaseOrder[]
+  purchaseOrderLines PurchaseOrderLine[]
+  goodsReceipts      GoodsReceipt[]
+  goodsReceiptLines  GoodsReceiptLine[]
 
   @@index([tenantId])
 }
@@ -100,19 +105,21 @@ model User {
 
   roles             UserRole[]
   refreshTokens     RefreshToken[]
-  agentOrders       SalesOrder[]   @relation("AgentOrders")
+  agentOrders       SalesOrder[]    @relation("AgentOrders")
   // Delivery work assigned to this user as a kuryer (role code COURIER). A
   // courier is an ordinary User, so the same row can in principle appear on
   // both sides; in practice the two roles are held by different people.
-  courierOrders     SalesOrder[]   @relation("CourierOrders")
-  paymentsCollected Payment[]      @relation("PaymentsCollected")
+  courierOrders     SalesOrder[]    @relation("CourierOrders")
+  paymentsCollected Payment[]       @relation("PaymentsCollected")
   cashSessions      CashSession[]
-  agentRoutes       Route[]        @relation("AgentRoutes")
-  courierRoutes     Route[]        @relation("CourierRoutes")
-  agentVisits       Visit[]        @relation("AgentVisits")
+  agentRoutes       Route[]         @relation("AgentRoutes")
+  courierRoutes     Route[]         @relation("CourierRoutes")
+  agentVisits       Visit[]         @relation("AgentVisits")
   auditLogs         AuditLog[]
   exportJobs        ExportJob[]
   notifications     Notification[]
+  purchaseOrders    PurchaseOrder[] @relation("PurchaseOrderCreatedBy")
+  goodsReceipts     GoodsReceipt[]  @relation("GoodsReceiptReceivedBy")
 
   @@unique([companyId, phone])
   // Scoped per-company like every other natural key here: a global unique on
@@ -329,6 +336,8 @@ model Product {
   stockMovements     StockMovement[]
   orderLines         SalesOrderLine[]
   invoiceLines       InvoiceLine[]
+  purchaseOrderLines PurchaseOrderLine[]
+  goodsReceiptLines  GoodsReceiptLine[]
 
   // Same partial-unique-index note as Customer.code above — see
   // prisma/migrations/*_soft_delete_partial_unique.
@@ -408,6 +417,8 @@ model Warehouse {
   stockLevels    StockLevel[]
   stockMovements StockMovement[]
   salesOrders    SalesOrder[]
+  purchaseOrders PurchaseOrder[]
+  goodsReceipts  GoodsReceipt[]
 
   @@index([companyId])
 }
@@ -451,6 +462,166 @@ model StockMovement {
 // Qoida (F-M03): konkurent operatsiyalarda ortiqcha sotishni oldini olish —
 // row-level lock (`SELECT ... FOR UPDATE`) majburiy rezerv operatsiyasida
 // (apps/api stock module'da amalga oshiriladi).
+
+// ---------------------------------------------------------------------------
+// M08 Xarid (5.1 M08, 6.2) — restored per ADR-011 after
+// 20260810170000_couriers_replace_suppliers dropped it. Supplier here is a
+// plain external counterparty (no Telegram link / pickup routes — those stay
+// removed; outbound delivery remains the COURIER role).
+//
+// Every table carries its own companyId (incl. line tables) so each FK can be
+// guarded by velto_assert_child_company_matches_parent and RLS is a direct
+// companyId policy — see migration *_restore_purchasing.
+//
+// Stock truth: a GoodsReceiptLine produces exactly one StockMovement
+// (type RECEIVE, qty > 0, refType "GoodsReceipt", refId = GoodsReceipt.id)
+// in the same transaction; StockLevel is then a rebuildable projection.
+// Receipts are posted documents — never updated/deleted; corrections go
+// through StockMovement ADJUST.
+// ---------------------------------------------------------------------------
+
+model Supplier {
+  id        String    @id @default(uuid()) @db.Uuid
+  companyId String    @db.Uuid
+  name      String
+  legalName String?
+  inn       String?
+  phone     String?
+  address   String?
+  note      String?
+  isActive  Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  company        Company         @relation(fields: [companyId], references: [id])
+  purchaseOrders PurchaseOrder[]
+  goodsReceipts  GoodsReceipt[]
+
+  @@index([companyId, name])
+  @@index([companyId, inn])
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  ORDERED
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CANCELLED
+}
+
+model PurchaseOrder {
+  id          String              @id @default(uuid()) @db.Uuid
+  companyId   String              @db.Uuid
+  number      String // PO-2026-000027 (DocumentCounter docType "PO")
+  supplierId  String              @db.Uuid
+  warehouseId String              @db.Uuid
+  status      PurchaseOrderStatus @default(DRAFT)
+  expectedAt  DateTime?
+  // Server-computed sum of lines' lineTotal; never client-supplied.
+  totalAmount Decimal             @default(0) @db.Decimal(18, 2)
+  note        String?
+  createdById String?             @db.Uuid
+  orderedAt   DateTime?
+  cancelledAt DateTime?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  company   Company   @relation(fields: [companyId], references: [id])
+  supplier  Supplier  @relation(fields: [supplierId], references: [id])
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id])
+  createdBy User?     @relation("PurchaseOrderCreatedBy", fields: [createdById], references: [id])
+
+  lines         PurchaseOrderLine[]
+  goodsReceipts GoodsReceipt[]
+
+  @@unique([companyId, number])
+  @@index([companyId, supplierId])
+  @@index([companyId, warehouseId])
+  @@index([companyId, status])
+}
+
+model PurchaseOrderLine {
+  id              String   @id @default(uuid()) @db.Uuid
+  companyId       String   @db.Uuid
+  purchaseOrderId String   @db.Uuid
+  productId       String   @db.Uuid
+  // Snapshots at creation (6.1) — later catalog edits must not rewrite history.
+  productName     String
+  productSku      String
+  unit            String
+  qty             Decimal  @db.Decimal(18, 3)
+  // Running sum of posted GoodsReceiptLine.qty for this line (projection;
+  // rebuildable from GoodsReceiptLine).
+  qtyReceived     Decimal  @default(0) @db.Decimal(18, 3)
+  unitPrice       Decimal  @db.Decimal(18, 2)
+  vatRate         Decimal  @default(0) @db.Decimal(5, 2)
+  lineTotal       Decimal  @db.Decimal(18, 2) // serverda hisoblanadi
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  company       Company            @relation(fields: [companyId], references: [id])
+  purchaseOrder PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id])
+  product       Product            @relation(fields: [productId], references: [id])
+  receiptLines  GoodsReceiptLine[]
+
+  @@index([companyId, purchaseOrderId])
+  @@index([companyId, productId])
+}
+
+model GoodsReceipt {
+  id              String   @id @default(uuid()) @db.Uuid
+  companyId       String   @db.Uuid
+  warehouseId     String   @db.Uuid
+  // Optional: a receipt may arrive without a prior PO (ad-hoc delivery).
+  purchaseOrderId String?  @db.Uuid
+  supplierId      String?  @db.Uuid
+  receivedById    String?  @db.Uuid
+  receivedAt      DateTime @default(now())
+  // Idempotency key (NFR-REL-007, 16.3): client-generated UUID, required.
+  // Scoped per-company, not globally unique — see SalesOrder.clientId.
+  clientId        String
+  note            String?
+  createdAt       DateTime @default(now())
+
+  company       Company        @relation(fields: [companyId], references: [id])
+  warehouse     Warehouse      @relation(fields: [warehouseId], references: [id])
+  // Append-only (DB triggers, TZ 6.1/6.4): optional FKs are Restrict, not the
+  // SetNull default — a SET NULL cascade would be an UPDATE on this table.
+  purchaseOrder PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: Restrict)
+  supplier      Supplier?      @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  receivedBy    User?          @relation("GoodsReceiptReceivedBy", fields: [receivedById], references: [id], onDelete: Restrict)
+
+  lines GoodsReceiptLine[]
+
+  @@unique([companyId, clientId])
+  @@index([companyId, warehouseId, receivedAt])
+  @@index([companyId, purchaseOrderId])
+  @@index([companyId, supplierId])
+}
+
+model GoodsReceiptLine {
+  id                  String   @id @default(uuid()) @db.Uuid
+  companyId           String   @db.Uuid
+  goodsReceiptId      String   @db.Uuid
+  purchaseOrderLineId String?  @db.Uuid
+  productId           String   @db.Uuid
+  productName         String
+  productSku          String
+  unit                String
+  qty                 Decimal  @db.Decimal(18, 3) // > 0, base unit
+  unitCost            Decimal? @db.Decimal(18, 2)
+  createdAt           DateTime @default(now())
+
+  company           Company            @relation(fields: [companyId], references: [id])
+  goodsReceipt      GoodsReceipt       @relation(fields: [goodsReceiptId], references: [id])
+  purchaseOrderLine PurchaseOrderLine? @relation(fields: [purchaseOrderLineId], references: [id], onDelete: Restrict)
+  product           Product            @relation(fields: [productId], references: [id])
+
+  @@index([companyId, goodsReceiptId])
+  @@index([companyId, purchaseOrderLineId])
+  @@index([companyId, productId])
+}
 
 // ---------------------------------------------------------------------------
 // 6.6 Sotish
@@ -498,7 +669,7 @@ model SalesOrder {
   agent     User?     @relation("AgentOrders", fields: [agentId], references: [id])
   warehouse Warehouse @relation(fields: [warehouseId], references: [id])
 
-  courier   User?     @relation("CourierOrders", fields: [courierId], references: [id], onDelete: SetNull)
+  courier User? @relation("CourierOrders", fields: [courierId], references: [id], onDelete: SetNull)
 
   lines    SalesOrderLine[]
   invoices Invoice[]
@@ -665,8 +836,8 @@ model CashSession {
 // ---------------------------------------------------------------------------
 
 model Route {
-  id         String   @id @default(uuid()) @db.Uuid
-  companyId  String   @db.Uuid
+  id        String   @id @default(uuid()) @db.Uuid
+  companyId String   @db.Uuid
   /// Exactly one of `agentId` / `courierId` is set — a route is served either
   /// by an own field agent or by a kuryer (a `User` holding the COURIER system
   /// role), never both and never neither. Prisma's DSL cannot express that, so
@@ -674,16 +845,16 @@ model Route {
   /// (renamed from `Route_agent_xor_supplier_check` in
   /// 20260810170000_couriers_replace_suppliers); both columns are nullable here
   /// only because the constraint lives in SQL.
-  agentId    String?  @db.Uuid
+  agentId   String?  @db.Uuid
   /// Both FKs below are RESTRICT, not SetNull: nulling a served route's
   /// `courierId` (or `agentId`) as a side effect of deleting the parent user
   /// would leave the row with neither owner and violate the XOR. `SalesOrder`
   /// keeps SetNull because an order has no such invariant.
-  courierId  String?  @db.Uuid
-  weekday    Int // 1-7
-  name       String
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  courierId String?  @db.Uuid
+  weekday   Int // 1-7
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   company Company     @relation(fields: [companyId], references: [id])
   agent   User?       @relation("AgentRoutes", fields: [agentId], references: [id], onDelete: Restrict)
