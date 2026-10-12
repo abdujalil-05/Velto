@@ -9,7 +9,7 @@
 | Faza | Holat |
 |---|---|
 | F0 Poydevor va baseline (baza, testlar, M08 tasdiq) | **Deyarli tayyor** — lokal baza ko'tarildi, migratsiyalar qo'llandi, **274/274 test o'tdi** (database 29, api 223, miniapp 22; lint/typecheck/build toza, 2026-10-12). Qoldi: production rol modeli (foydalanuvchi tekshiradi), web testi yo'q, MinIO image yuklanmadi |
-| F1 Xavfsizlik va shartnoma (traceId, auth P0, idempotentlik) | **Jarayonda** — F1.1 traceId kodda tayyor (branch `feat/f1-1-trace-id`, review+security PASS, bazasiz 17 test o'tgan; DB testlari kutilmoqda). F1.2–F1.5 boshlanmagan |
+| F1 Xavfsizlik va shartnoma (traceId, auth P0, idempotentlik) | **Jarayonda** — F1.1 traceId ✅ (branch `feat/f1-1-trace-id`); F1.2 auth P0 ✅ (branch `test/f1-2-auth-p0`: refresh-reuse audit, initData 10 daq oyna + 20 foydalanish limiti, constant-time HMAC, 403+audit testlari; 295/295 test). Qoldi: F1.3 idempotentlik (confirm/deliver/cash close, stock P2002 race), F1.4 rollar ADR + ACCOUNTANT cheklovi testi, F1.5 audit testi + CI secret/dependency scan |
 | F2 Ombor va moliya yadrosi | Boshlanmagan |
 | F3 Dala savdosi va kuryer | Boshlanmagan |
 | F4 Offline/sync | Boshlanmagan |
@@ -61,6 +61,7 @@ MVP kodining katta qismi yozilgan. Asosiy bo'shliqlar: **M08 Xarid yo'q**, **rev
 
 ## Texnik qarzlar / bloker
 
+- **Qaror (2026-10-12) initData:** `auth_date` oynasi 10 daq (`TELEGRAM_INITDATA_MAX_AGE_SECONDS`), bir `hash` oyna ichida ko'pi bilan 20 marta (`TELEGRAM_INITDATA_MAX_USES`), Redis ishlamasa login rad etiladi (fail-closed). Sabab: Mini App bir launch'da bir xil initData ni qayta yuboradi (telefon polling, /auth/me retry, logout-reload).
 - **Hal qilindi (2026-10-12):** lokal baza Docker'da (Postgres 5433, Redis 6380). 102 ta test yiqilishi sababi — ilova roli superuser edi (RLS chetlab o'tilardi); yangi rollar: `velto_owner` (migratsiya), `velto_app` (runtime), `velto_system` (BYPASSRLS). CI ham shu modelga o'tkazildi.
 - **Production (F7.0, hozir yopiq — qaror 2026-10-12: avval localhost, prod oxirida):** productionda ilova roli superuser emasligi va obyektlar egasi tekshirilmagan; `DATABASE_MIGRATE_URL` kerak. Runbook: `deploy/README.md`.
 - **MinIO** image'i yuklanmadi (`pull access denied`) — S3 kerak bo'ladigan oqimlar lokal tekshirilmagan.

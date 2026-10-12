@@ -36,6 +36,26 @@ export class LoginRateLimiterService {
     }
   }
 
+  /**
+   * Telegram initData replay policy (TZ 7.4/11.1/16.3). Strictly single-use would break
+   * legitimate Mini App flows that re-submit the same initData (phone-link polling, retry
+   * after /auth/me failure, logout+reload), so instead: initData is fresh for 10 min
+   * (TELEGRAM_INITDATA_MAX_AGE_SECONDS; a stolen string dies quickly) and one signed
+   * initData (keyed by its hash) may log in at most 20 times (TELEGRAM_INITDATA_MAX_USES;
+   * covers ~9 polls + retries + reloads with headroom, still bounds replay).
+   * INCR+EXPIRE run in one Lua script so the TTL is set atomically on the first use.
+   * Returns the use count so far (caller compares it to the cap). Redis errors propagate (caller fails closed).
+   */
+  async recordTelegramInitDataUse(hash: string, windowSeconds: number): Promise<number> {
+    const count = await this.redis.eval(
+      "local c = redis.call('INCR', KEYS[1]) if c == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end return c",
+      1,
+      `tg:initdata:${hash}`,
+      windowSeconds,
+    );
+    return Number(count);
+  }
+
   async recordSuccess(phone: string): Promise<void> {
     await this.redis.del(this.key(phone));
   }

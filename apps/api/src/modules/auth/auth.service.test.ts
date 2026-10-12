@@ -1,11 +1,18 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { createHmac, randomUUID } from 'node:crypto';
 import argon2 from 'argon2';
 import Redis from 'ioredis';
 import { prisma, systemPrisma } from '@velto/database';
 import { AuditLogService } from '../../common/audit/audit-log.service';
-import { AccountBlockedException, InvalidCredentialsException } from '../../common/auth/auth-exceptions';
+import {
+  AccountBlockedException,
+  InvalidCredentialsException,
+  SessionExpiredException,
+  TelegramAuthUnavailableException,
+  TelegramReplayRejectedException,
+} from '../../common/auth/auth-exceptions';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { AuthService } from './auth.service';
 import { LoginRateLimiterService } from './login-rate-limiter.service';
@@ -311,5 +318,320 @@ describe('AuthService.linkTelegramContact (integration, real Postgres + RLS)', (
 
     expect((await systemPrisma.user.findUnique({ where: { id: userA.id } }))?.telegramId).toBeNull();
     expect((await systemPrisma.user.findUnique({ where: { id: userB.id } }))?.telegramId).toBeNull();
+  });
+});
+
+// TZ 11.1/11.2 + 16.3 (P0 security): refresh rotation / reuse => family revoked.
+describe('AuthService refresh tokens (§16.3: refresh reuse => family revoked)', () => {
+  let companyId: string;
+  let phone: string;
+  const password = 'CorrectHorseBattery9'; // nosemgrep: ajinabraham.njsscan.generic.hardcoded_secrets.node_password
+  const tenantPrisma = new TenantPrismaService();
+  const auditLog = new AuditLogService();
+  const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
+  const jwt = new JwtService({ secret: 'test-secret', signOptions: { expiresIn: '15m' } });
+  const auth = new AuthService(jwt, new ConfigService(), tenantPrisma, new LoginRateLimiterService(redis), auditLog);
+
+  beforeAll(async () => {
+    const tenant = await systemPrisma.tenant.create({ data: { slug: `test-rt-${Date.now()}`, name: 'RT Tenant' } });
+    companyId = (await systemPrisma.company.create({ data: { tenantId: tenant.id, name: 'RT Co' } })).id;
+    phone = uniquePhone();
+    await systemPrisma.user.create({
+      data: {
+        companyId,
+        firstName: 'Rt',
+        lastName: 'User',
+        phone,
+        passwordHash: await argon2.hash(password, { type: argon2.argon2id }),
+      },
+    });
+  });
+
+  afterAll(async () => {
+    redis.disconnect();
+    await prisma.$disconnect();
+    await systemPrisma.$disconnect();
+  });
+
+  const login = () => auth.login({ phone, password }, { ip: '10.1.0.1' });
+
+  async function auditActions(): Promise<string[]> {
+    const rows = await tenantPrisma.run(companyId, (tx) =>
+      tx.auditLog.findMany({ where: { entity: 'User' }, orderBy: { createdAt: 'asc' } }),
+    );
+    return rows.map((r) => r.action);
+  }
+
+  it('refresh rotates: new token works, the old one is marked revoked, same family', async () => {
+    const first = await login();
+    const second = await auth.refresh({ refreshToken: first.refreshToken }, {});
+    expect(second.refreshToken).not.toBe(first.refreshToken);
+    const rows = await systemPrisma.refreshToken.findMany({ where: { userId: first.user.id } });
+    const old = rows.find((r) => r.revokedAt && r.tokenHash !== undefined);
+    expect(old).toBeTruthy();
+    const third = await auth.refresh({ refreshToken: second.refreshToken }, {});
+    expect(third.accessToken).toBeTruthy();
+  });
+
+  it('§16.3: replaying a used refresh token revokes the whole family (newest token fails too)', async () => {
+    const first = await login();
+    const second = await auth.refresh({ refreshToken: first.refreshToken }, {});
+    const third = await auth.refresh({ refreshToken: second.refreshToken }, {});
+
+    await expect(auth.refresh({ refreshToken: first.refreshToken }, {})).rejects.toBeInstanceOf(
+      SessionExpiredException,
+    );
+    await expect(auth.refresh({ refreshToken: third.refreshToken }, {})).rejects.toBeInstanceOf(
+      SessionExpiredException,
+    );
+  });
+
+  it('§16.3: family revocation does not touch another session (another family) of the same user', async () => {
+    const a = await login();
+    const b = await login();
+    const a2 = await auth.refresh({ refreshToken: a.refreshToken }, {});
+    await expect(auth.refresh({ refreshToken: a.refreshToken }, {})).rejects.toBeTruthy();
+    await expect(auth.refresh({ refreshToken: a2.refreshToken }, {})).rejects.toBeTruthy();
+    await expect(auth.refresh({ refreshToken: b.refreshToken }, {})).resolves.toBeTruthy();
+  });
+
+  it('SEC-054: refresh-token reuse (theft signal) is audited', async () => {
+    const first = await login();
+    await auth.refresh({ refreshToken: first.refreshToken }, {});
+    const before = (await auditActions()).length;
+    await expect(auth.refresh({ refreshToken: first.refreshToken }, {})).rejects.toBeTruthy();
+    const actions = (await auditActions()).slice(before);
+    expect(actions).toContain('auth.refresh_reuse_detected');
+    const row = await tenantPrisma.run(companyId, (tx) =>
+      tx.auditLog.findFirstOrThrow({ where: { action: 'auth.refresh_reuse_detected' }, orderBy: { createdAt: 'desc' } }),
+    );
+    const familyId = (await systemPrisma.refreshToken.findFirstOrThrow({ where: { userId: first.user.id }, orderBy: { createdAt: 'desc' } })).familyId;
+    expect((row.newValue as { familyId: string }).familyId).toBe(familyId);
+  });
+
+  it('an unknown refresh token is rejected', async () => {
+    await expect(auth.refresh({ refreshToken: 'f'.repeat(64) }, {})).rejects.toBeInstanceOf(SessionExpiredException);
+  });
+
+  it('logout revokes the refresh token; later refresh fails; logout is idempotent', async () => {
+    const t = await login();
+    await auth.logout({ refreshToken: t.refreshToken });
+    await expect(auth.refresh({ refreshToken: t.refreshToken }, {})).rejects.toBeInstanceOf(SessionExpiredException);
+    await expect(auth.logout({ refreshToken: t.refreshToken })).resolves.toBeUndefined();
+  });
+
+  it('logout allDevices revokes every active session of the user', async () => {
+    const a = await login();
+    const b = await login();
+    await auth.logout({ refreshToken: a.refreshToken, allDevices: true });
+    await expect(auth.refresh({ refreshToken: a.refreshToken }, {})).rejects.toBeInstanceOf(SessionExpiredException);
+    await expect(auth.refresh({ refreshToken: b.refreshToken }, {})).rejects.toBeInstanceOf(SessionExpiredException);
+  });
+});
+
+// TZ 11.2 / 16.3: Telegram initData valid / invalid / expired / replayed.
+describe('AuthService.telegramLogin (§16.3: initData valid/invalid/expired/replayed)', () => {
+  const botToken = '123456:SYNTHETIC-BOT-TOKEN-FOR-TESTS'; // nosemgrep: ajinabraham.njsscan.generic.hardcoded_secrets.node_password
+  const tenantPrisma = new TenantPrismaService();
+  const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
+  const settings: Record<string, unknown> = {
+    TELEGRAM_BOT_TOKEN: botToken,
+    TELEGRAM_INITDATA_MAX_AGE_SECONDS: 600,
+    TELEGRAM_INITDATA_MAX_USES: 20,
+  };
+  const config = {
+    get: (k: string, d?: unknown) => settings[k] ?? d ?? undefined,
+    getOrThrow: (k: string) => settings[k],
+  };
+  const jwt = new JwtService({ secret: 'test-secret', signOptions: { expiresIn: '15m' } });
+  const auth = new AuthService(
+    jwt,
+    config as unknown as ConfigService,
+    tenantPrisma,
+    new LoginRateLimiterService(redis),
+    new AuditLogService(),
+  );
+  const telegramId = BigInt(Math.floor(5_000_000_000 + Math.random() * 1_000_000_000));
+  const inactiveUserTgId = telegramId + 1n;
+  const inactiveCompanyTgId = telegramId + 2n;
+
+  beforeAll(async () => {
+    const tenant = await systemPrisma.tenant.create({ data: { slug: `test-tg-${Date.now()}`, name: 'TG Tenant' } });
+    const company = await systemPrisma.company.create({ data: { tenantId: tenant.id, name: 'TG Co' } });
+    await systemPrisma.user.create({
+      data: { companyId: company.id, firstName: 'Tg', lastName: 'Agent', phone: uniquePhone(), passwordHash: 'x', telegramId },
+    });
+    await systemPrisma.user.create({
+      data: {
+        companyId: company.id,
+        firstName: 'Tg',
+        lastName: 'Inactive',
+        phone: uniquePhone(),
+        passwordHash: 'x',
+        telegramId: inactiveUserTgId,
+        isActive: false,
+      },
+    });
+    const deadCompany = await systemPrisma.company.create({
+      data: { tenantId: tenant.id, name: 'TG Dead Co', isActive: false },
+    });
+    await systemPrisma.user.create({
+      data: {
+        companyId: deadCompany.id,
+        firstName: 'Tg',
+        lastName: 'DeadCo',
+        phone: uniquePhone(),
+        passwordHash: 'x',
+        telegramId: inactiveCompanyTgId,
+      },
+    });
+  });
+
+  afterAll(async () => {
+    redis.disconnect();
+    await prisma.$disconnect();
+    await systemPrisma.$disconnect();
+  });
+
+  function sign(fields: Record<string, string>, token = botToken): string {
+    const check = Object.entries(fields)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k}=${v}`)
+      .join('\n');
+    const secret = createHmac('sha256', 'WebAppData').update(token).digest();
+    const hash = createHmac('sha256', secret).update(check).digest('hex');
+    return new URLSearchParams({ ...fields, hash }).toString();
+  }
+  const fresh = (ageSec = 10, nonce = randomUUID()) =>
+    ({ query_id: nonce, user: JSON.stringify({ id: Number(telegramId), first_name: 'Tg' }), auth_date: String(Math.floor(Date.now() / 1000) - ageSec) });
+
+  it('valid initData is accepted and issues tokens (audit auth.login.telegram)', async () => {
+    const res = await auth.telegramLogin({ initData: sign(fresh()) } as never, { ip: '10.2.0.1' });
+    expect(res.accessToken).toBeTruthy();
+    expect(res.refreshToken).toBeTruthy();
+  });
+
+  it('tampered initData (payload changed after signing) is rejected', async () => {
+    const params = new URLSearchParams(sign(fresh()));
+    params.set('user', JSON.stringify({ id: Number(telegramId) + 1, first_name: 'Evil' }));
+    await expect(auth.telegramLogin({ initData: params.toString() } as never, {})).rejects.toBeInstanceOf(
+      InvalidCredentialsException,
+    );
+  });
+
+  it('initData with a wrong hash / missing hash is rejected', async () => {
+    const params = new URLSearchParams(sign(fresh()));
+    params.set('hash', '0'.repeat(64));
+    await expect(auth.telegramLogin({ initData: params.toString() } as never, {})).rejects.toBeInstanceOf(
+      InvalidCredentialsException,
+    );
+    params.delete('hash');
+    await expect(auth.telegramLogin({ initData: params.toString() } as never, {})).rejects.toBeInstanceOf(
+      InvalidCredentialsException,
+    );
+  });
+
+  it('a tampered hash of the right length (64 hex) is rejected', async () => {
+    const params = new URLSearchParams(sign(fresh()));
+    const hash = params.get('hash') as string;
+    params.set('hash', hash.slice(0, 63) + (hash.endsWith('0') ? '1' : '0'));
+    await expect(auth.telegramLogin({ initData: params.toString() } as never, {})).rejects.toBeInstanceOf(
+      InvalidCredentialsException,
+    );
+  });
+
+  it('a wrong-length or non-hex hash is rejected with the same error', async () => {
+    for (const bad of ['ab', 'a'.repeat(65), 'z'.repeat(64), 'A'.repeat(64)]) {
+      const params = new URLSearchParams(sign(fresh()));
+      params.set('hash', bad);
+      await expect(auth.telegramLogin({ initData: params.toString() } as never, {})).rejects.toBeInstanceOf(
+        InvalidCredentialsException,
+      );
+    }
+  });
+
+  it('auth_date in the future: +120 s is rejected, +30 s (clock skew) is accepted', async () => {
+    await expect(auth.telegramLogin({ initData: sign(fresh(-120)) } as never, {})).rejects.toBeInstanceOf(
+      InvalidCredentialsException,
+    );
+    const res = await auth.telegramLogin({ initData: sign(fresh(-30)) } as never, {});
+    expect(res.accessToken).toBeTruthy();
+  });
+
+  it('unlinked gets InvalidCredentials, inactive user/company get AccountBlocked, none consume a Redis counter', async () => {
+    const cases: Array<[number, new () => Error]> = [
+      [Number(telegramId) + 99, InvalidCredentialsException],
+      [Number(inactiveUserTgId), AccountBlockedException],
+      [Number(inactiveCompanyTgId), AccountBlockedException],
+    ];
+    for (const [id, expectedClass] of cases) {
+      const f = { ...fresh(), user: JSON.stringify({ id, first_name: 'X' }) };
+      const initData = sign(f);
+      const err = await auth.telegramLogin({ initData } as never, {}).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(expectedClass);
+      const hash = new URLSearchParams(initData).get('hash');
+      expect(await redis.exists(`tg:initdata:${hash}`)).toBe(0);
+    }
+  });
+
+  it('initData signed with a different bot token is rejected', async () => {
+    await expect(
+      auth.telegramLogin({ initData: sign(fresh(), '999:OTHER-BOT') } as never, {}),
+    ).rejects.toBeInstanceOf(InvalidCredentialsException);
+  });
+
+  it('expired auth_date (older than the 10 min freshness limit) is rejected', async () => {
+    await expect(
+      auth.telegramLogin({ initData: sign(fresh(10 * 60 + 30)) } as never, {}),
+    ).rejects.toBeInstanceOf(InvalidCredentialsException);
+  });
+
+  it('initData for an unlinked telegram user is rejected', async () => {
+    const f = { ...fresh(), user: JSON.stringify({ id: 1, first_name: 'Nobody' }) };
+    await expect(auth.telegramLogin({ initData: sign(f) } as never, {})).rejects.toBeInstanceOf(
+      InvalidCredentialsException,
+    );
+  });
+
+  it('§16.3: the same initData is accepted up to the cap, then cap+1 is rejected as replay and audited', async () => {
+    const initData = sign(fresh());
+    const hash = new URLSearchParams(initData).get('hash') as string;
+    await auth.telegramLogin({ initData } as never, {});
+    const ttl = await redis.ttl(`tg:initdata:${hash}`);
+    expect(ttl).toBeGreaterThan(0);
+    expect(ttl).toBeLessThanOrEqual(600);
+    for (let i = 1; i < 20; i++) {
+      await auth.telegramLogin({ initData } as never, {});
+    }
+    // 5 attempts over the cap: all rejected, but only ONE audit row is written.
+    for (let i = 0; i < 5; i++) {
+      await expect(auth.telegramLogin({ initData } as never, { ip: '10.2.0.9' })).rejects.toBeInstanceOf(
+        TelegramReplayRejectedException,
+      );
+    }
+    const user = await systemPrisma.user.findFirstOrThrow({ where: { telegramId } });
+    const rows = await systemPrisma.auditLog.findMany({
+      where: { userId: user.id, action: 'auth.telegram_replay_rejected', newValue: { path: ['initDataHashPrefix'], equals: hash.slice(0, 8) } },
+    });
+    expect(rows).toHaveLength(1);
+    const dump = JSON.stringify([rows[0].newValue, rows[0].oldValue]);
+    expect(dump).not.toContain(initData);
+    expect(dump).not.toContain(hash);
+    expect(dump).not.toContain(botToken);
+    expect(dump).toContain(hash.slice(0, 8));
+  });
+
+  it('§16.3: Redis failure rejects login (fail-closed)', async () => {
+    const downLimiter = { recordTelegramInitDataUse: () => Promise.reject(new Error('redis down')) };
+    const failClosed = new AuthService(
+      jwt,
+      config as unknown as ConfigService,
+      tenantPrisma,
+      downLimiter as unknown as LoginRateLimiterService,
+      new AuditLogService(),
+    );
+    await expect(failClosed.telegramLogin({ initData: sign(fresh()) } as never, {})).rejects.toBeInstanceOf(
+      TelegramAuthUnavailableException,
+    );
   });
 });

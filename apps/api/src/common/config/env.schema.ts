@@ -15,6 +15,9 @@ export const envSchema = z.object({
   JWT_ACCESS_TTL: z.string().default('15m'),
   JWT_REFRESH_TTL: z.string().default('30d'),
   TELEGRAM_BOT_TOKEN: z.string().default(''),
+  // Telegram initData replay policy — rationale next to LoginRateLimiterService.recordTelegramInitDataUse.
+  TELEGRAM_INITDATA_MAX_AGE_SECONDS: z.coerce.number().int().positive().default(600),
+  TELEGRAM_INITDATA_MAX_USES: z.coerce.number().int().positive().default(20),
   // Verified against Telegram's `X-Telegram-Bot-Api-Secret-Token` header on
   // every /auth/telegram/webhook call (set via setWebhook's secret_token) —
   // empty means the webhook route always rejects, same fail-closed default

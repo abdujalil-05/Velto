@@ -100,3 +100,24 @@ export class PasswordResetCooldownException extends AppException {
     );
   }
 }
+
+export class TelegramReplayRejectedException extends AppException {
+  constructor() {
+    super(HttpStatus.UNAUTHORIZED, 'AUTH_TELEGRAM_REPLAY', {
+      uz: "Telegram so'rovi qayta ishlatilgan. Mini App'ni qayta oching",
+      ru: 'Данные Telegram уже использованы. Откройте Mini App заново',
+      en: 'Telegram login data was reused too many times. Reopen the Mini App',
+    });
+  }
+}
+
+/** Replay protection needs Redis; without it login fails closed (503, retryable) rather than skipping the check. */
+export class TelegramAuthUnavailableException extends AppException {
+  constructor() {
+    super(HttpStatus.SERVICE_UNAVAILABLE, 'AUTH_TELEGRAM_UNAVAILABLE', {
+      uz: "Kirish vaqtincha mavjud emas. Birozdan so'ng qayta urining",
+      ru: 'Вход временно недоступен. Повторите чуть позже',
+      en: 'Login is temporarily unavailable. Please retry shortly',
+    });
+  }
+}

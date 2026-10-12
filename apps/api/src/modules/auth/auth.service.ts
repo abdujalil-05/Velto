@@ -10,6 +10,8 @@ import {
   AccountBlockedException,
   InvalidCredentialsException,
   SessionExpiredException,
+  TelegramAuthUnavailableException,
+  TelegramReplayRejectedException,
 } from '../../common/auth/auth-exceptions';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import type { LoginDto } from './dto/login.dto';
@@ -143,10 +145,16 @@ export class AuthService {
       throw new Error('TELEGRAM_BOT_TOKEN is not configured');
     }
 
+    // Defaults live in env.schema.ts only.
+    const maxAgeSeconds = Number(this.configService.getOrThrow('TELEGRAM_INITDATA_MAX_AGE_SECONDS'));
+    const maxUses = Number(this.configService.getOrThrow('TELEGRAM_INITDATA_MAX_USES'));
+
     let telegramId: bigint;
+    let initDataHash: string;
     try {
-      const tgUser = verifyTelegramInitData(dto.initData, botToken);
+      const { user: tgUser, hash } = verifyTelegramInitData(dto.initData, botToken, maxAgeSeconds);
       telegramId = BigInt(tgUser.id);
+      initDataHash = hash;
     } catch {
       throw new InvalidCredentialsException();
     }
@@ -164,15 +172,42 @@ export class AuthService {
       throw new InvalidCredentialsException();
     }
     const [user] = candidates;
+
     if (!user.isActive) {
       await this.logFailedLogin([user], meta);
-      throw new InvalidCredentialsException();
+      throw new AccountBlockedException();
     }
 
     const company = await systemPrisma.company.findUnique({ where: { id: user.companyId } });
     if (!company?.isActive) {
       await this.logFailedLogin([user], meta);
       throw new AccountBlockedException();
+    }
+
+    // Counted only after signature, freshness and user/company checks passed (garbage can't burn a cap).
+    // Fail-closed: if Redis is down the replay check can't run, so login is refused.
+    let useCount: number;
+    try {
+      useCount = await this.rateLimiter.recordTelegramInitDataUse(initDataHash, maxAgeSeconds);
+    } catch {
+      throw new TelegramAuthUnavailableException();
+    }
+    if (useCount > maxUses) {
+      // Audit once per hash per window (append-only table must not be floodable).
+      if (useCount === maxUses + 1) {
+        await this.tenantPrisma.run(user.companyId, (tx) =>
+          this.auditLog.log(tx, {
+            companyId: user.companyId,
+            userId: user.id,
+            action: 'auth.telegram_replay_rejected',
+            entity: 'User',
+            entityId: user.id,
+            newValue: { initDataHashPrefix: initDataHash.slice(0, 8) },
+            ip: meta.ip,
+          }),
+        );
+      }
+      throw new TelegramReplayRejectedException();
     }
 
     return this.tenantPrisma.run(user.companyId, (tx) =>
@@ -300,12 +335,23 @@ export class AuthService {
     if (existing.revokedAt) {
       // Reuse of an already-rotated token is a theft signal (15.2: "qayta
       // ishlatilsa butun oila bekor bo'ladi") — kill every token in the family.
-      await this.tenantPrisma.run(existing.user.companyId, (tx) =>
-        tx.refreshToken.updateMany({
+      // SEC-054: audited in the same (separately committed) transaction as the
+      // revocation, before the SessionExpired error below is thrown.
+      await this.tenantPrisma.run(existing.user.companyId, async (tx) => {
+        await tx.refreshToken.updateMany({
           where: { familyId: existing.familyId, revokedAt: null },
           data: { revokedAt: new Date() },
-        }),
-      );
+        });
+        await this.auditLog.log(tx, {
+          companyId: existing.user.companyId,
+          userId: existing.userId,
+          action: 'auth.refresh_reuse_detected',
+          entity: 'User',
+          entityId: existing.userId,
+          newValue: { familyId: existing.familyId },
+          ip: meta.ip,
+        });
+      });
       throw new SessionExpiredException();
     }
 
