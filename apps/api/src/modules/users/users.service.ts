@@ -346,6 +346,7 @@ export class UsersService {
       auditLogs,
       exportJobs,
       notifications,
+      goodsReceipts,
     ] = await Promise.all([
       tx.salesOrder.count({ where: { agentId: userId } }),
       // Counted separately from `salesOrders` because the same user can be
@@ -361,6 +362,7 @@ export class UsersService {
       tx.auditLog.count({ where: { userId } }),
       tx.exportJob.count({ where: { requestedBy: userId } }),
       tx.notification.count({ where: { recipientId: userId } }),
+      tx.goodsReceipt.count({ where: { receivedById: userId } }),
     ]);
 
     const all = {
@@ -374,6 +376,7 @@ export class UsersService {
       auditLogs,
       exportJobs,
       notifications,
+      goodsReceipts,
     };
     return Object.fromEntries(Object.entries(all).filter(([, count]) => count > 0));
   }
