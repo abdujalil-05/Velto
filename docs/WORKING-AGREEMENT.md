@@ -54,6 +54,11 @@ Agentlar token tejash qoidasi va o'zbekcha qisqa hisobot formati o'z fayllarida 
 - Men `git pull`/`push`/branch/commit bajaraman. **Push — faqat feature branch** (`origin` = `github.com/abdujalil-05/Velto`). `main` ga merge, force-push, tag, prod deploy — faqat foydalanuvchining aniq roziligi bilan.
 - Har sessiya boshida `git status` + `git pull --ff-only` (konflikt bo'lsa to'xtab, foydalanuvchiga aytaman).
 
+## 6a. Deploy va production (2026-10-12 qaror)
+
+- **Hozir deploy va production mavzusi yopiq.** Faqat localhost'da ishlaymiz; production'ga chiqish — MVP tugagandan keyin (faza F7). `devops`, `deploy/`, ssh/pm2, production rol modeli bo'yicha ishlar shu paytgacha boshlanmaydi (tayyor runbook `deploy/README.md` da turadi).
+- `main` ga merge qilish shart emas: ish feature branch'larda (stacked) yuritiladi va push qilinadi. Merge — foydalanuvchi so'raganda.
+
 ## 7. Token tejash
 
 - Katta fayllarni to'liq o'qimaymiz (TZ — faqat kerakli bo'lim; `grep -n '^#'`).

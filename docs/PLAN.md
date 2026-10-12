@@ -52,6 +52,7 @@ Boshlang'ich holat: kod bazasi katta qismi yozilgan (audit 2026-10-12, `STATUS.m
 
 ## Faza 7 — Chiniqtirish va reliz (TZ §12, §16.4, §17)
 - F7.1 E2E (order→confirm→issue→invoice→payment→report), yuk testi (50/100 agent, NFR-PERF).
+- F7.0 **Production'ga chiqish** (hozir yopiq, faqat F0–F6 tugagach): production rol modeli o'tkazish (`deploy/README.md` runbook), deploy, `main` ga merge.
 - F7.2 Backup/restore mashqi (RPO/RTO), `/health/live|ready`, monitoring/alert, deploy tekshiruvi (port 3101 va PM2 haqiqiy konfiguratsiya bilan).
 - F7.3 a11y, i18n CI tekshiruvi, hardcoded string tekshiruvi, performance hisoboti.
 - F7.4 Reliz oldi checklist (§16 hammasi), TZ ↔ kod nomuvofiqliklarini yopish, hujjatlar (OpenAPI).

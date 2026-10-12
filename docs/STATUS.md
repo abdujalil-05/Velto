@@ -62,7 +62,7 @@ MVP kodining katta qismi yozilgan. Asosiy bo'shliqlar: **M08 Xarid yo'q**, **rev
 ## Texnik qarzlar / bloker
 
 - **Hal qilindi (2026-10-12):** lokal baza Docker'da (Postgres 5433, Redis 6380). 102 ta test yiqilishi sababi — ilova roli superuser edi (RLS chetlab o'tilardi); yangi rollar: `velto_owner` (migratsiya), `velto_app` (runtime), `velto_system` (BYPASSRLS). CI ham shu modelga o'tkazildi.
-- **Production xavfi (foydalanuvchi bajaradi):** productionda ilova roli superuser emasligi va obyektlar egasi tekshirilmagan; `DATABASE_MIGRATE_URL` kerak. Runbook: `deploy/README.md`.
+- **Production (F7.0, hozir yopiq — qaror 2026-10-12: avval localhost, prod oxirida):** productionda ilova roli superuser emasligi va obyektlar egasi tekshirilmagan; `DATABASE_MIGRATE_URL` kerak. Runbook: `deploy/README.md`.
 - **MinIO** image'i yuklanmadi (`pull access denied`) — S3 kerak bo'ladigan oqimlar lokal tekshirilmagan.
 - `stock.receiveForRef` → `ensureStockLevelRow` (upsert): yangi product/ombor juftligiga parallel birinchi kirimda P2002 bo'lishi mumkin (mavjud stock moduli).
 - M08: `GET /purchases/receipts` ro'yxati va GoodsReceipt(+Line) uchun UPDATE/DELETE taqiqlovchi trigger (LOW).
