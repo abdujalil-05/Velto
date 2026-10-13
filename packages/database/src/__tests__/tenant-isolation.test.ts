@@ -1469,5 +1469,32 @@ describe('tenant isolation (RLS)', () => {
         ).rejects.toThrow(CHECK);
       }
     });
+
+    // 20261013190000_visit_route_fk_guards: FK guards fire for every writer,
+    // including BYPASSRLS velto_system.
+    it('rejects a Visit/Route/RouteRun referencing another tenant’s user/outlet/route (even via velto_system)', async () => {
+      const CROSS = /cross-tenant/i;
+      for (const data of [
+        { ...base(), agentId: userBId, outcome: 'NO_ORDER' as const },
+        { ...base(), outletId: outletBId, outcome: 'NO_ORDER' as const },
+      ]) {
+        await expect(withTenant(companyAId, (tx) => tx.visit.create({ data }))).rejects.toThrow(CROSS);
+        await expect(systemPrisma.visit.create({ data })).rejects.toThrow(CROSS);
+      }
+      const ok = await systemPrisma.visit.create({ data: { ...base(), outcome: 'NO_ORDER' } });
+      await expect(
+        systemPrisma.visit.update({ where: { id: ok.id }, data: { agentId: userBId } }),
+      ).rejects.toThrow(CROSS);
+      await expect(
+        systemPrisma.visit.update({ where: { id: ok.id }, data: { outletId: outletBId } }),
+      ).rejects.toThrow(CROSS);
+
+      await expect(
+        systemPrisma.route.create({ data: { companyId: companyAId, agentId: userBId, weekday: 2, name: 'x' } }),
+      ).rejects.toThrow(CROSS);
+      await expect(
+        systemPrisma.routeRun.create({ data: { companyId: companyBId, routeId: routeAId, date: new Date('2026-08-09') } }),
+      ).rejects.toThrow(CROSS);
+    });
   });
 });
