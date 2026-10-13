@@ -9,6 +9,8 @@ import { getTelegramWebApp } from '@/lib/telegram/webapp';
 import { clearOfflineDb } from '@/lib/offline/db';
 import { clearDeviceKey } from '@/lib/offline/crypto';
 import { queueRepository } from '@/lib/offline/queue';
+import { setOfflineSession } from '@/lib/offline/session';
+import { resetPreparedSession } from '@/lib/offline/session-bootstrap';
 import { clearTokens, getAccessToken, getRefreshToken, setTokens } from './tokens';
 
 // 'no-telegram-context': no stored session AND no Telegram initData —
@@ -24,7 +26,8 @@ type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated' | 'no-telegram
 interface AuthContextValue {
   user: AuthenticatedUser | null;
   status: AuthStatus;
-  logout: () => Promise<void>;
+  /** Blocked while any unsynced document exists on the device (any owner). `force` is only for the explicit export/discard flow, after the user exported or discarded — it also wipes other users' unsent documents. */
+  logout: (opts?: { force?: boolean }) => Promise<void>;
   hasPermission: (code: string) => boolean;
   linkPhone: () => Promise<void>;
   linking: boolean;
@@ -54,6 +57,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
       setTokens(tokens.accessToken, tokens.refreshToken);
       const me = await apiFetch<AuthenticatedUser>('/auth/me');
+      setOfflineSession({ userId: me.id, companyId: me.companyId });
       setUser(me);
       setStatus('authenticated');
       return true;
@@ -92,6 +96,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         try {
           const me = await apiFetch<AuthenticatedUser>('/auth/me');
           if (!cancelled) {
+            setOfflineSession({ userId: me.id, companyId: me.companyId });
             setUser(me);
             setStatus('authenticated');
           }
@@ -156,13 +161,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(
     () =>
       onUnauthorized(() => {
+        setOfflineSession(null);
         setUser(null);
         setStatus('unauthenticated');
       }),
     [],
   );
 
-  const logout = useCallback(async () => {
+  const logout = useCallback(async (opts?: { force?: boolean }) => {
     // 10.3's "asosiy tamoyil" (a document that reached local storage is
     // never silently lost) extends to logout: wiping the offline DB while
     // unsynced orders/visits/payments sit in the queue would discard real
@@ -170,9 +176,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // shared device) must not start with a stale queue trying to sync
     // under the wrong session either — so logout is blocked, not silently
     // deferred, until the queue is actually empty.
-    const pending = await queueRepository.listAll();
-    const unsynced = pending.filter((e) => e.status !== 'SYNCED').length;
-    if (unsynced > 0) {
+    const unsynced = await queueRepository.unsyncedCountAllOwners();
+    if (unsynced > 0 && !opts?.force) {
       toast.error(t('logoutBlockedPendingSync', { count: unsynced }));
       return;
     }
@@ -186,6 +191,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // stays readable under it. Safe here specifically because the queue is
     // provably empty by this point — see the guard above.
     clearDeviceKey();
+    setOfflineSession(null);
+    resetPreparedSession();
     setUser(null);
     setStatus('unauthenticated');
     if (refreshToken) {

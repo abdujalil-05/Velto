@@ -182,8 +182,13 @@
     "queueStatus": {
       "PENDING": "Pending",
       "SYNCED": "Sent",
-      "FAILED": "Failed"
+      "FAILED": "Failed",
+      "SYNCING": "Sending",
+      "CONFLICT": "Needs confirmation"
     },
+    "storageWarning": "Storage is over 80% full. Unsent documents are kept; old cache may be cleared.",
+    "storageFull": "Device storage is full - the document was NOT saved. Free up space and retry.",
+    "savedOnDevice": "Saved on this device (not yet sent to the server)",
     "confirmSheet": {
       "delete": "Delete",
       "working": "Working…",

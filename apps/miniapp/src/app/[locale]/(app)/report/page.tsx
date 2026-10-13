@@ -25,6 +25,8 @@ const QUEUE_STATUS_VARIANT: Record<QueueStatus, 'default' | 'secondary' | 'destr
   PENDING: 'secondary',
   SYNCED: 'default',
   FAILED: 'destructive',
+  SYNCING: 'secondary',
+  CONFLICT: 'destructive',
 };
 
 export default function DailyReportPage() {

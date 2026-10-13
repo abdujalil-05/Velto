@@ -93,6 +93,15 @@ export class EncryptedStore<T extends object, Key> {
     return out;
   }
 
+  async delete(key: Key): Promise<void> {
+    await this.table.delete(key);
+  }
+
+  async bulkDelete(keys: Key[]): Promise<void> {
+    if (keys.length === 0) return;
+    await this.table.bulkDelete(keys);
+  }
+
   async count(): Promise<number> {
     return this.table.count();
   }

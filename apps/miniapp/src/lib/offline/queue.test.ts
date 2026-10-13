@@ -2,12 +2,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { db } from './db';
 import { EncryptedStore } from './encrypted-store';
 import { queueRepository, type QueueEntry } from './queue';
+import { setOfflineSession } from './session';
 
 // Direct access to backdate a row's `createdAt` — real IndexedDB (even
 // fake-indexeddb) doesn't get along with vi.useFakeTimers() (Dexie's
 // internal scheduling relies on real timers/microtasks), so tests
 // "age" an entry by overwriting it after the fact instead of mocking time.
-const rawQueueStore = new EncryptedStore<QueueEntry, string>(db.queue as never, ['clientId', 'type', 'status', 'createdAt']);
+const rawQueueStore = new EncryptedStore<QueueEntry, string>(db.queue as never, ['clientId', 'type', 'status', 'createdAt', 'userId', 'companyId']);
 async function backdate(clientId: string, isoDate: string): Promise<void> {
   const entry = await rawQueueStore.get(clientId);
   if (!entry) throw new Error(`no queue entry ${clientId}`);
@@ -16,6 +17,7 @@ async function backdate(clientId: string, isoDate: string): Promise<void> {
 
 describe('queueRepository (10.3 guaranteed delivery)', () => {
   beforeEach(async () => {
+    setOfflineSession({ userId: 'u1', companyId: 'c1' });
     await db.queue.clear();
   });
 
@@ -64,7 +66,7 @@ describe('queueRepository (10.3 guaranteed delivery)', () => {
     const byId = new Map(all.map((e) => [e.clientId, e]));
     expect(byId.get(a)?.status).toBe('SYNCED');
     expect(byId.get(b)?.status).toBe('FAILED');
-    expect(byId.get(b)?.error?.code).toBe('SYNC_REJECTED');
+    expect(byId.get(b)?.lastError?.code).toBe('SYNC_REJECTED');
   });
 
   it('pruneOld() never removes PENDING rows regardless of age (10.3: "asosiy tamoyil")', async () => {
@@ -77,7 +79,13 @@ describe('queueRepository (10.3 guaranteed delivery)', () => {
     expect(all.map((e) => e.clientId)).toContain(oldPending);
   });
 
-  it('pruneOld() removes SYNCED/FAILED rows from a previous day but keeps today\'s', async () => {
+  it('pruneOld() removes only SYNCED rows from a previous day; FAILED/CONFLICT/SYNCING survive, today\'s too', async () => {
+    const staleFailed = await queueRepository.enqueue('order', {});
+    await queueRepository.markFailed(staleFailed, { code: 'X', message: 'x' });
+    await backdate(staleFailed, '2020-01-01T00:00:00.000Z');
+    const staleConflict = await queueRepository.enqueue('order', {});
+    await queueRepository.markConflict(staleConflict, { code: 'PRICE_CHANGED', message: 'x' });
+    await backdate(staleConflict, '2020-01-01T00:00:00.000Z');
     const staleSynced = await queueRepository.enqueue('order', {});
     await queueRepository.markSynced(staleSynced);
     await backdate(staleSynced, '2020-01-01T00:00:00.000Z');
@@ -90,6 +98,8 @@ describe('queueRepository (10.3 guaranteed delivery)', () => {
     const remaining = (await queueRepository.listAll()).map((e) => e.clientId);
     expect(remaining).not.toContain(staleSynced);
     expect(remaining).toContain(freshSynced);
+    expect(remaining).toContain(staleFailed);
+    expect(remaining).toContain(staleConflict);
   });
 
   it('todayByType() returns today\'s non-FAILED entries of the given type', async () => {
@@ -114,5 +124,34 @@ describe('queueRepository (10.3 guaranteed delivery)', () => {
     expect(byId.get(withAcc)?.payload).toMatchObject({ accuracyM: 9, capturedAt: '2026-10-13T08:00:00.000Z' });
     expect(byId.get(legacy)?.payload).toMatchObject({ latitude: 1, longitude: 2 });
     expect(byId.get(legacy)?.status).toBe('PENDING');
+  });
+
+  it('resolveConflictResubmit rewrites expectedUnitPrice with the server price, keeps clientId, back to PENDING', async () => {
+    const id = await queueRepository.enqueue('order', { lines: [{ productId: 'p', packagingId: 'k', qty: 1, expectedUnitPrice: '10.00' }] });
+    await queueRepository.markConflict(id, {
+      code: 'PRICE_CHANGED',
+      message: 'narx',
+      details: { lines: [{ lineIndex: 0, productId: 'p', packagingId: 'k', expectedUnitPrice: '10.00', serverUnitPrice: '12.00' }], expectedTotal: '10', serverTotal: '12' },
+    });
+    await expect(queueRepository.discardFailedItem('nope')).rejects.toThrow();
+    const totals = await queueRepository.resolveConflictResubmit(id);
+    expect(totals.serverTotal).toBe('12');
+    const [e] = await queueRepository.listPending();
+    expect(e).toMatchObject({ clientId: id, status: 'PENDING', attemptCount: 0 });
+    expect((e?.payload.lines as { expectedUnitPrice: string }[])[0]?.expectedUnitPrice).toBe('12.00');
+    await expect(queueRepository.discardFailedItem(id)).rejects.toThrow(); // PENDING is not discardable
+  });
+
+  it('discardFailedItem removes only FAILED/CONFLICT; exportPendingToJson lists unsent docs', async () => {
+    const failed = await queueRepository.enqueue('order', { x: 1 });
+    const pending = await queueRepository.enqueue('visit', { y: 2 });
+    const synced = await queueRepository.enqueue('payment', {});
+    await queueRepository.markFailed(failed, { code: 'X', message: 'x' });
+    await queueRepository.markSynced(synced, 'srv');
+    const exported = JSON.parse(await queueRepository.exportPendingToJson());
+    expect(exported.items.map((i: { clientId: string }) => i.clientId).sort()).toEqual([failed, pending].sort());
+    await queueRepository.discardFailedItem(failed);
+    const counts = await queueRepository.countByStatus();
+    expect(counts).toMatchObject({ PENDING: 1, FAILED: 0, SYNCED: 1, unsynced: 1 });
   });
 });

@@ -92,8 +92,36 @@ export interface SyncBalance {
   updatedAt: string;
 }
 
+export type SyncTombstoneEntity =
+  | 'Product'
+  | 'ProductPackaging'
+  | 'PriceListItem'
+  | 'Customer'
+  | 'Outlet'
+  | 'StockLevel'
+  | 'ProductCategory';
+
+/** entityKey: PriceListItem {priceListId,productId}; StockLevel {productId,warehouseId} (entityId "p:w"); otherwise null. */
+export interface SyncTombstone {
+  entity: SyncTombstoneEntity;
+  entityId: string;
+  entityKey: Record<string, string> | null;
+  deletedAt: string;
+  changeSeq: string;
+}
+
+/** SALES_AGENT only (null for other roles): the full set of customers/outlets this agent may hold locally. */
+export interface SyncScope {
+  customerIds: string[];
+  outletIds: string[];
+}
+
+/** Mirrors apps/api sync.service.ts pull() (F4: changeSeq cursor, tombstones, scope). Rows may carry an optional `changeSeq` string. */
 export interface SyncPullResult {
+  /** Opaque — store exactly as returned (may be lower than a previously seen seq; the server resends a window, so upserts are idempotent). */
   cursor: string;
+  hasMore: boolean;
+  fullResync: boolean;
   products: SyncProduct[];
   packagings: SyncPackaging[];
   prices: SyncPriceItem[];
@@ -102,14 +130,16 @@ export interface SyncPullResult {
   stock: SyncStock[];
   categories: SyncCategory[];
   balances: SyncBalance[];
+  tombstones: SyncTombstone[];
   routes: SyncRoute[];
   routeStops: SyncRouteStop[];
   defaultPriceListId: string | null;
+  scope: SyncScope | null;
 }
 
-/** Imperative (non-hook) pull for the offline sync engine, which drives fetches on its own interval/reconnect schedule rather than a component's render. */
-export function pullSync(since?: string): Promise<SyncPullResult> {
-  return apiFetch<SyncPullResult>(`/sync/pull${toQueryString({ since })}`);
+/** Imperative (non-hook) pull. No cursor (or an invalid one) = full snapshot. */
+export function pullSync(cursor?: string, limit?: number): Promise<SyncPullResult> {
+  return apiFetch<SyncPullResult>(`/sync/pull${toQueryString({ cursor, limit })}`);
 }
 
 // Mirrors apps/api/src/modules/sync/dto/sync-push.dto.ts's SyncDocType and
@@ -123,7 +153,7 @@ export interface SyncPushDocument {
   payload: Record<string, unknown>;
 }
 
-export type SyncDocStatus = 'ACCEPTED' | 'DUPLICATE' | 'REJECTED';
+export type SyncDocStatus = 'ACCEPTED' | 'DUPLICATE' | 'REJECTED' | 'CONFLICT' | 'RETRY';
 
 export interface SyncPushResultItem {
   clientId: string;
@@ -132,7 +162,7 @@ export interface SyncPushResultItem {
   /** Visit entries only: server-computed GPS verdict. */
   gpsStatus?: GpsStatus;
   distanceM?: string | null;
-  error?: { code: string; message: string };
+  error?: { code: string; message: string; messages?: { uz: string; ru: string; en: string }; details?: unknown };
 }
 
 /** 10.3: up to 20 queued documents per push — the queue engine (offline/sync-engine.tsx) enforces the batch-size cap before calling this. */

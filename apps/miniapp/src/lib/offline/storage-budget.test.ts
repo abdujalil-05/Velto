@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from './db';
 import { offlineRepository } from './repository';
 import { queueRepository } from './queue';
+import { setOfflineSession } from './session';
 import { enforceStorageBudget } from './storage-budget';
 
 function mockUsage(bytes: number | null): void {
@@ -16,6 +17,7 @@ const OVER_BUDGET = 60 * 1024 * 1024; // 60MB — over the 50MB cap (10.2)
 
 describe('enforceStorageBudget (10.2: "50 MB ... eski ma\'lumot tozalanadi")', () => {
   beforeEach(async () => {
+    setOfflineSession({ userId: 'u1', companyId: 'c1' });
     await db.transaction(
       'rw',
       [db.products, db.packagings, db.prices, db.stock, db.customers, db.outlets, db.balances, db.queue],

@@ -6,6 +6,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useAuth } from '@/lib/auth/auth-context';
 import { queueRepository } from './queue';
+import { getLastStorageStatus, onStorageStatus, publishStorageStatus, type StorageStatus } from './storage-budget';
 import { runPull, runPush } from './sync-engine-core';
 
 const FLUSH_INTERVAL_MS = 30_000;
@@ -17,6 +18,13 @@ interface SyncEngineValue {
   isSyncing: boolean;
   pendingCount: number;
   failedCount: number;
+  conflictCount: number;
+  /** PENDING + SYNCING + FAILED + CONFLICT — documents still only on this device. */
+  unsyncedCount: number;
+  /** Device storage vs the 50 MB budget; `level === 'warning'` from 80%. */
+  storage: StorageStatus;
+  /** True after a 401 survived refresh: sync is paused until the user signs in again. */
+  authPaused: boolean;
   lastSyncAt: Date | null;
   /** Screens call this right after `queueRepository.enqueue(...)` so the badge updates immediately and a push is attempted without waiting for the next interval tick. */
   notifyQueueChanged: () => void;
@@ -35,6 +43,11 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
   const [isSyncing, setIsSyncing] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
   const [failedCount, setFailedCount] = useState(0);
+  const [conflictCount, setConflictCount] = useState(0);
+  const [unsyncedCount, setUnsyncedCount] = useState(0);
+  const [storage, setStorage] = useState<StorageStatus>(getLastStorageStatus);
+  const [authPaused, setAuthPaused] = useState(false);
+  const nextDelayRef = useRef<number | undefined>(undefined);
   const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
 
   const backoffRef = useRef(MIN_BACKOFF_MS);
@@ -42,9 +55,16 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
   const runningRef = useRef(false);
 
   const refreshCounts = useCallback(async () => {
-    const all = await queueRepository.listAll();
-    setPendingCount(all.filter((e) => e.status === 'PENDING').length);
-    setFailedCount(all.filter((e) => e.status === 'FAILED').length);
+    const counts = await queueRepository.countByStatus();
+    setPendingCount(counts.PENDING + counts.SYNCING);
+    setFailedCount(counts.FAILED);
+    setConflictCount(counts.CONFLICT);
+    setUnsyncedCount(counts.unsynced);
+  }, []);
+
+  useEffect(() => {
+    void publishStorageStatus().catch(() => {});
+    return onStorageStatus(setStorage);
   }, []);
 
   const cycle = useCallback(
@@ -81,8 +101,14 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
           await runPull();
           didPull = true;
         }
-        backoffRef.current = MIN_BACKOFF_MS;
-        setLastSyncAt(new Date());
+        setAuthPaused(outcome.paused === 'AUTH');
+        nextDelayRef.current = outcome.nextRetryInMs;
+        if (outcome.paused === 'NETWORK') {
+          backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
+        } else {
+          backoffRef.current = MIN_BACKOFF_MS;
+          if (outcome.paused === null) setLastSyncAt(new Date());
+        }
       } catch {
         backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
       } finally {
@@ -98,7 +124,8 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
 
   const scheduleNext = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
-    const delay = backoffRef.current > MIN_BACKOFF_MS ? backoffRef.current : FLUSH_INTERVAL_MS;
+    const base = backoffRef.current > MIN_BACKOFF_MS ? backoffRef.current : FLUSH_INTERVAL_MS;
+    const delay = nextDelayRef.current !== undefined ? Math.min(base, nextDelayRef.current) : base;
     timerRef.current = setTimeout(() => void cycle({ pull: false }), delay);
   }, [cycle]);
 
@@ -151,7 +178,7 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
 
   return (
     <SyncEngineContext.Provider
-      value={{ isOnline, isSyncing, pendingCount, failedCount, lastSyncAt, notifyQueueChanged, forceSyncNow }}
+      value={{ isOnline, isSyncing, pendingCount, failedCount, conflictCount, unsyncedCount, storage, authPaused, lastSyncAt, notifyQueueChanged, forceSyncNow }}
     >
       {children}
     </SyncEngineContext.Provider>

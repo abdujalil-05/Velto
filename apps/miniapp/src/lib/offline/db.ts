@@ -27,7 +27,10 @@ class VeltoOfflineDb extends Dexie {
   balances!: Table<RawRow & { customerId: string }, string>;
   routes!: Table<RawRow & { id: string; weekday: number }, string>;
   routeStops!: Table<RawRow & { id: string; routeId: string; outletId: string }, string>;
-  queue!: Table<RawRow & { clientId: string; type: string; status: string; createdAt: string }, string>;
+  queue!: Table<
+    RawRow & { clientId: string; type: string; status: string; createdAt: string; userId: string; companyId: string },
+    string
+  >;
   meta!: Table<{ key: string; value: unknown }, string>;
 
   constructor() {
@@ -49,6 +52,17 @@ class VeltoOfflineDb extends Dexie {
     // v2: INN (tin) dropped from the product — no longer synced or indexed.
     this.version(2).stores({
       customers: 'id, code, name',
+    });
+    // v3 (F4, additive): queue gains plaintext owner indexes (userId/companyId)
+    // so the engine can scope pushes to the current user. No `.upgrade()` data
+    // rewrite on purpose — existing v2 rows (incl. PENDING) are left byte-for-
+    // byte intact; their missing owner/attemptCount fields are normalised on
+    // read (queue.ts `normalize`) and legacy rows are adopted by the first
+    // user to log in (session-bootstrap.ts). Encryption can't run inside a
+    // Dexie upgrade transaction, which is the other reason not to rewrite.
+    // Pull cursor + scope live in `meta` under `pull:<company>:<user>`.
+    this.version(3).stores({
+      queue: 'clientId, type, status, createdAt, userId, companyId',
     });
   }
 }

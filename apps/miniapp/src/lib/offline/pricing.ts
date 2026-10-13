@@ -56,3 +56,21 @@ export function estimateOrderTotal(
   }
   return total;
 }
+
+/**
+ * Order composition (F4): stamps every line with the base-unit price the agent
+ * saw on screen (`resolvePrice`) as `expectedUnitPrice`, so the server can
+ * answer CONFLICT/PRICE_CHANGED instead of silently re-pricing. A line whose
+ * price is unknown locally (nothing was shown) is sent without it.
+ */
+export function withExpectedUnitPrices<L extends { productId: string }>(
+  lines: L[],
+  customerPriceListId: string | null,
+  defaultPriceListId: string | null,
+  prices: SyncPriceItem[],
+): (L & { expectedUnitPrice?: string })[] {
+  return lines.map((l) => {
+    const price = resolvePrice(l.productId, customerPriceListId, defaultPriceListId, prices);
+    return price === undefined ? l : { ...l, expectedUnitPrice: price };
+  });
+}

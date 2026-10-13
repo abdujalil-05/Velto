@@ -16,7 +16,7 @@ import {
   useOfflineProducts,
   useOfflineStock,
 } from '@/lib/offline/use-offline-data';
-import { estimateOrderTotal, resolvePrice } from '@/lib/offline/pricing';
+import { estimateOrderTotal, resolvePrice, withExpectedUnitPrices } from '@/lib/offline/pricing';
 import type { SyncPackaging } from '@/lib/api/sync';
 import { enqueue } from '@/lib/offline/queue';
 import { useSyncEngine } from '@/lib/offline/sync-engine';
@@ -200,7 +200,7 @@ export default function NewOrderPage() {
         customerId,
         outletId: outlet?.id,
         clientId: '',
-        lines: cartLineInputs,
+        lines: withExpectedUnitPrices(cartLineInputs, customer?.priceListId ?? null, defaultPriceListId.data ?? null, prices.data ?? []),
       };
       await enqueue('order', orderPayload as unknown as Record<string, unknown>);
 

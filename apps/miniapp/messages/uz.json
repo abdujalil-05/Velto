@@ -182,8 +182,13 @@
     "queueStatus": {
       "PENDING": "Kutilmoqda",
       "SYNCED": "Yuborildi",
-      "FAILED": "Xatolik"
+      "FAILED": "Xatolik",
+      "SYNCING": "Yuborilmoqda",
+      "CONFLICT": "Tasdiqlash kerak"
     },
+    "storageWarning": "Xotira 80% dan oshdi. Yuborilmagan hujjatlar saqlanadi; eski keshni tozalash mumkin.",
+    "storageFull": "Qurilma xotirasi to‘ldi — hujjat SAQLANMADI. Joy bo‘shating va qayta urining.",
+    "savedOnDevice": "Hujjat qurilmada saqlandi (serverga hali yuborilmagan)",
     "confirmSheet": {
       "delete": "O'chirish",
       "working": "Bajarilmoqda…",

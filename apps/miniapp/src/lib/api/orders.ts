@@ -105,6 +105,8 @@ export interface CreateOrderLineInput {
   packagingId: string;
   qty: number;
   discountPct?: number;
+  /** Base-unit price (decimal string) the agent saw when composing — sent for every offline line so the server can detect PRICE_CHANGED. */
+  expectedUnitPrice?: string;
 }
 
 export interface CreateOrderInput {
