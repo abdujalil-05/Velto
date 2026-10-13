@@ -196,10 +196,15 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
         ),
       );
       expect(results.map((r) => r.status)).toEqual(['ACCEPTED', 'ACCEPTED']);
+      expect(results[0]?.gpsStatus).toBe('OUTSIDE_RADIUS');
+      expect(Number(results[0]?.distanceM)).toBeGreaterThan(0);
+      expect(results[1]?.gpsStatus).toBe('NO_PERMISSION');
       const stored = await tenantPrisma.run(companyId, (tx) => tx.visit.findUnique({ where: { companyId_clientId: { companyId, clientId: far } } }));
       expect(stored?.gpsStatus).toBe('OUTSIDE_RADIUS');
       const again = await tenantPrisma.run(companyId, () => sync.push([doc], user));
       expect(again.results[0]?.status).toBe('DUPLICATE');
+      expect(again.results[0]?.gpsStatus).toBe('OUTSIDE_RADIUS');
+      expect(again.results[0]?.distanceM).toBe(results[0]?.distanceM);
     });
 
     it('reports DUPLICATE when the same clientId is pushed twice', async () => {

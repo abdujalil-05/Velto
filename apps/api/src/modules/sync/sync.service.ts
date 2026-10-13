@@ -18,6 +18,10 @@ export interface SyncPushResultItem {
   clientId: string;
   status: SyncDocStatus;
   id?: string;
+  /** Visit entries only: server-computed GPS verdict (stored value for DUPLICATE). */
+  gpsStatus?: string;
+  /** Visit entries only: decimal string metres from the outlet, null when not computable. */
+  distanceM?: string | null;
   error?: { code: string; message: string };
 }
 
@@ -184,7 +188,13 @@ export class SyncService {
             const alreadyExisted = (await tx.visit.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: doc.clientId } } })) !== null;
             const dto = await validatePayload(CreateVisitDto, { ...doc.payload, clientId: doc.clientId });
             const visit = await this.visits.create(dto, user);
-            return { clientId: doc.clientId, id: visit.id, status: alreadyExisted ? 'DUPLICATE' : 'ACCEPTED' };
+            return {
+              clientId: doc.clientId,
+              id: visit.id,
+              status: alreadyExisted ? 'DUPLICATE' : 'ACCEPTED',
+              gpsStatus: visit.gpsStatus,
+              distanceM: visit.distanceM?.toString() ?? null,
+            };
           }
           case SyncDocType.PAYMENT: {
             const alreadyExisted = (await tx.payment.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: doc.clientId } } })) !== null;

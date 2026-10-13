@@ -1,3 +1,4 @@
+import type { GpsStatus } from '@/lib/gps-payload';
 import { apiFetch } from './client';
 import { toQueryString } from './query-string';
 
@@ -128,6 +129,9 @@ export interface SyncPushResultItem {
   clientId: string;
   status: SyncDocStatus;
   id?: string;
+  /** Visit entries only: server-computed GPS verdict. */
+  gpsStatus?: GpsStatus;
+  distanceM?: string | null;
   error?: { code: string; message: string };
 }
 

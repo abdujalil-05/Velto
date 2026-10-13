@@ -28,6 +28,7 @@ const SyncEngineContext = createContext<SyncEngineValue | null>(null);
 export function SyncEngineProvider({ children }: { children: React.ReactNode }) {
   const { status } = useAuth();
   const t = useTranslations('Common');
+  const tVisit = useTranslations('Visit');
   const queryClient = useQueryClient();
 
   const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine));
@@ -70,6 +71,9 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
           didPull = true;
         }
         const outcome = await runPush();
+        for (const v of outcome.visitGps) {
+          if (v.gpsStatus !== 'VERIFIED') toast.warning(tVisit(`gpsStatus.${v.gpsStatus}`));
+        }
         if (outcome.accepted > 0) {
           // Freshly-confirmed docs can change stock/balances (e.g. a
           // just-approved order reserving stock) — pull again so the next
@@ -89,7 +93,7 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
         scheduleNext();
       }
     },
-    [status, t, refreshCounts, queryClient],
+    [status, t, tVisit, refreshCounts, queryClient],
   );
 
   const scheduleNext = useCallback(() => {

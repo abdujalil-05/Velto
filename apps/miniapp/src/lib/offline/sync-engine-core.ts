@@ -1,3 +1,4 @@
+import type { GpsStatus } from '@/lib/gps-payload';
 import { pullSync, pushSync } from '@/lib/api/sync';
 import { applyPull, getCursor } from './repository';
 import { queueRepository } from './queue';
@@ -16,6 +17,8 @@ export async function runPull(): Promise<void> {
 export interface PushOutcome {
   accepted: number;
   rejected: number;
+  /** Server GPS verdicts of just-synced visits (only entries where the server sent one). */
+  visitGps: { clientId: string; gpsStatus: GpsStatus; distanceM: string | null }[];
 }
 
 /** 10.3's per-request cap: at most 20 documents per `/sync/push` call. */
@@ -37,7 +40,7 @@ const MAX_BATCHES_PER_CYCLE = 4;
  * (replay is idempotent on clientId).
  */
 export async function runPush(): Promise<PushOutcome> {
-  const outcome: PushOutcome = { accepted: 0, rejected: 0 };
+  const outcome: PushOutcome = { accepted: 0, rejected: 0, visitGps: [] };
 
   for (let batch = 0; batch < MAX_BATCHES_PER_CYCLE; batch++) {
     const pending = await queueRepository.listPending(PUSH_BATCH_SIZE);
@@ -55,6 +58,7 @@ export async function runPush(): Promise<PushOutcome> {
         case 'DUPLICATE':
           await queueRepository.markSynced(result.clientId);
           outcome.accepted += 1;
+          if (result.gpsStatus) outcome.visitGps.push({ clientId: result.clientId, gpsStatus: result.gpsStatus, distanceM: result.distanceM ?? null });
           resolved += 1;
           break;
         case 'REJECTED':
