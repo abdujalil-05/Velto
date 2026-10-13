@@ -21,6 +21,7 @@ import { ImportModule } from './modules/import/import.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { StockModule } from './modules/stock/stock.module';
 import { PurchasesModule } from './modules/purchases/purchases.module';
+import { ReconciliationModule } from './modules/reconciliation/reconciliation.module';
 import { SalesModule } from './modules/sales/sales.module';
 import { FinanceModule } from './modules/finance/finance.module';
 import { FieldModule } from './modules/field/field.module';
@@ -53,6 +54,7 @@ import { UsersModule } from './modules/users/users.module';
     PurchasesModule,
     SalesModule,
     FinanceModule,
+    ReconciliationModule,
     FieldModule,
     SyncModule,
     UsersModule,

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { withTenant, type TenantClient } from '@velto/database';
+import { withTenant, type TenantClient, type TenantTxOptions } from '@velto/database';
 import { TenantContext } from './tenant-context';
 
 @Injectable()
@@ -11,10 +11,19 @@ export class TenantPrismaService {
    * `withTenant()` call has resolved — i.e. strictly after COMMIT — so they
    * can safely assume every write `fn` made is durably visible to any other
    * connection (e.g. a BullMQ worker on a separate connection).
+   * `options` (isolation level / timeout) are passed through to withTenant().
    */
-  async run<T>(companyId: string, fn: (tx: TenantClient) => Promise<T>): Promise<T> {
+  async run<T>(
+    companyId: string,
+    fn: (tx: TenantClient) => Promise<T>,
+    options?: TenantTxOptions,
+  ): Promise<T> {
     const afterCommit: Array<() => unknown> = [];
-    const result = await withTenant(companyId, (tx) => TenantContext.run({ companyId, tx, afterCommit }, () => fn(tx)));
+    const result = await withTenant(
+      companyId,
+      (tx) => TenantContext.run({ companyId, tx, afterCommit }, () => fn(tx)),
+      options,
+    );
     for (const cb of afterCommit) {
       await cb();
     }
