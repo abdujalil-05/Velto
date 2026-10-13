@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import type { Prisma } from '@velto/database';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { paginate } from '../../common/pagination/pagination.dto';
@@ -11,6 +11,8 @@ import { ReconciliationService } from './reconciliation.service';
 /** Request-facing reads + manual run; detection/fix logic stays in ReconciliationService. */
 @Injectable()
 export class ReconciliationAdminService {
+  private readonly logger = new Logger(ReconciliationAdminService.name);
+
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     private readonly reconciliation: ReconciliationService,
@@ -68,7 +70,12 @@ export class ReconciliationAdminService {
       trigger: 'MANUAL',
       triggeredById: user.id,
     });
-    await this.alerts.alertIfDrift(user.companyId, result);
+    // Run + findings are already committed: an alert failure must not turn this into a 500 (clients would retry and create extra runs).
+    try {
+      await this.alerts.alertIfDrift(user.companyId, result);
+    } catch (e) {
+      this.logger.error(`reconciliation alert failed company=${user.companyId}: ${(e as Error).message}`);
+    }
     return result;
   }
 }

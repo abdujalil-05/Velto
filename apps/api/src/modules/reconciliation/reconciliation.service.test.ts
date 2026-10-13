@@ -393,6 +393,29 @@ describe('ReconciliationService (integration, real Postgres + RLS)', () => {
     expect(r.stockFindings).toBe(0);
   });
 
+  it('fix() while detect holds the exclusive lock → ReconciliationBusy immediately (no waiting)', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let acquired!: () => void;
+    const ready = new Promise<void>((r) => (acquired = r));
+    const holder = tenantPrisma.run(companyId, async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext('velto.reconciliation'), hashtext(current_setting('app.current_company_id')))::text`;
+      acquired();
+      await held;
+    });
+    await ready;
+    try {
+      const t0 = Date.now();
+      await expect(
+        tenantPrisma.run(companyId, () => recon.fix(randomUUID(), user)),
+      ).rejects.toBeInstanceOf(ReconciliationBusyException);
+      expect(Date.now() - t0).toBeLessThan(5000);
+    } finally {
+      release();
+      await holder;
+    }
+  });
+
   it('race: parallel detections — one wins or both serialize, never duplicate OPEN findings', async () => {
     await systemPrisma.customer.update({
       where: { id: customerId },

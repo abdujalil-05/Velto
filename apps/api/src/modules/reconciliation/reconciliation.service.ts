@@ -256,9 +256,10 @@ export class ReconciliationService {
    */
   async fix(findingId: string, user: AuthenticatedUser): Promise<FixResult> {
     const tx = this.tenantPrisma.client;
-    await tx.$queryRaw(Prisma.sql`
-      SELECT pg_advisory_xact_lock_shared(hashtext('velto.reconciliation'), hashtext(current_setting('app.current_company_id')))::text
+    const [lock] = await tx.$queryRaw<{ locked: boolean }[]>(Prisma.sql`
+      SELECT pg_try_advisory_xact_lock_shared(hashtext('velto.reconciliation'), hashtext(current_setting('app.current_company_id'))) AS locked
     `);
+    if (!lock?.locked) throw new ReconciliationBusyException();
     const locked = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
       SELECT id FROM "ReconciliationFinding" WHERE id = ${findingId}::uuid FOR UPDATE
     `);

@@ -11,6 +11,8 @@ import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
 import { ReconciliationBusyException } from '../src/modules/reconciliation/reconciliation-exceptions';
 import { ReconciliationAlertService } from '../src/modules/reconciliation/reconciliation-alert.service';
+import { ReconciliationAdminService } from '../src/modules/reconciliation/reconciliation-admin.service';
+import type { AuthenticatedUser } from '../src/common/auth/auth.types';
 import { ReconciliationScheduleProcessor } from '../src/modules/reconciliation/reconciliation-schedule.processor';
 import type { DetectResult, ReconciliationService } from '../src/modules/reconciliation/reconciliation.service';
 
@@ -134,6 +136,17 @@ describe('E2E F2.5: reconciliation', () => {
     const result = { runId: randomUUID(), stockFindings: 1, balanceFindings: 0 } as DetectResult;
     expect(await alerts.alertIfDrift(companyId, result)).toBe(0);
     expect(await alerts.alertIfDrift(companyId, result, new Date(Date.now() + 26 * 3600 * 1000))).toBe(1);
+  });
+
+  it('manual run: alert failure after commit still returns the DetectResult (no 500)', async () => {
+    const result = { runId: randomUUID(), stockFindings: 1, balanceFindings: 0 } as DetectResult;
+    const admin = new ReconciliationAdminService(
+      tenantPrisma,
+      { runDetection: async () => result } as unknown as ReconciliationService,
+      { alertIfDrift: async () => { throw new Error('alert boom'); } } as unknown as ReconciliationAlertService,
+    );
+    const user = { id: tokens.OWNER!.userId, companyId } as AuthenticatedUser;
+    await expect(admin.runManual(user)).resolves.toBe(result);
   });
 
   it('scheduler sweep: one company failing does not stop the others', async () => {
