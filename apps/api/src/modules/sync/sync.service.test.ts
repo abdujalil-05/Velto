@@ -188,7 +188,7 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
       const far = randomUUID();
       const skipped = randomUUID();
       const startedAt = new Date().toISOString();
-      const doc = { type: SyncDocType.VISIT, clientId: far, payload: { outletId, startedAt, latitude: OUTLET_LAT + 0.01, longitude: OUTLET_LNG, outcome: 'ORDERED' } };
+      const doc = { type: SyncDocType.VISIT, clientId: far, payload: { outletId, startedAt, latitude: OUTLET_LAT + 0.01, longitude: OUTLET_LNG, accuracyM: 10, outcome: 'ORDERED' } };
       const { results } = await tenantPrisma.run(companyId, () =>
         sync.push(
           [doc, { type: SyncDocType.VISIT, clientId: skipped, payload: { outletId, startedAt, permissionDenied: true, outcome: 'SKIPPED', skipReason: 'Yopiq' } }],

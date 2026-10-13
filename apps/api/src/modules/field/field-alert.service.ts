@@ -3,7 +3,7 @@ import { GpsStatus, Prisma, type TenantClient } from '@velto/database';
 import { TenantContext } from '../../common/tenant/tenant-context';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { tashkentDayStart } from '../reconciliation/reconciliation-alert.service';
+import { companyDay } from './company-day';
 
 export const FIELD_GPS_UNVERIFIED_NOTIFICATION = 'field.gps_unverified';
 export const FIELD_OUTLET_NO_COORDS_NOTIFICATION = 'field.outlet_no_coords';
@@ -17,7 +17,7 @@ export function isGpsUnverified(status: GpsStatus): boolean {
 
 /**
  * F3 data-quality alerts, in-app only. Batched: at most one notification per
- * company per Tashkent day per type (to OWNER + SALES_DIRECTOR); the text
+ * company per company-timezone day per type (to OWNER + SALES_DIRECTOR); the text
  * carries the day's count at the moment it was sent. Never throws.
  */
 @Injectable()
@@ -91,8 +91,9 @@ export class FieldAlertService {
     }>,
   ): Promise<number> {
     try {
-      const dayStart = tashkentDayStart(now);
       return await this.tenantPrisma.run(companyId, async (tx) => {
+        const company = await tx.company.findFirst({ select: { timezone: true } });
+        const dayStart = companyDay(now, company?.timezone ?? 'Asia/Tashkent').start;
         await tx.$queryRaw(Prisma.sql`
           SELECT pg_advisory_xact_lock(hashtext('velto.field.alert'), hashtext(${companyId || ''} || ${type}))::text
         `);

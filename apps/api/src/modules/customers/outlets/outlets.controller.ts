@@ -52,9 +52,9 @@ export class OutletsController {
 export class OutletsQualityController {
   constructor(private readonly outlets: OutletsService) {}
 
-  // No dedicated `outlets.read` permission exists in the RBAC catalog; customers.read is the closest.
+  // Data-quality list for managers: customers.update is held only by OWNER / SALES_DIRECTOR.
   @Get('no-coords')
-  @RequirePermission('customers.read')
+  @RequirePermission('customers.update')
   noCoords() {
     return this.outlets.listNoCoords();
   }

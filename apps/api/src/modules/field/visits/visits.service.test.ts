@@ -128,7 +128,7 @@ describe('VisitsService (integration, real Postgres + RLS)', () => {
   it('evaluateGps boundary: exactly radius = VERIFIED, 0.01m beyond = OUTSIDE_RADIUS; precedence LOW_ACCURACY over OUTSIDE', () => {
     const lat = OUTLET_LAT + 0.002;
     const d = Math.round(distanceMeters(lat, OUTLET_LNG, OUTLET_LAT, OUTLET_LNG) * 100) / 100;
-    const base = { latitude: lat, longitude: OUTLET_LNG, outletLatitude: OUTLET_LAT, outletLongitude: OUTLET_LNG, maxAccuracyM: 100 };
+    const base = { latitude: lat, longitude: OUTLET_LNG, outletLatitude: OUTLET_LAT, outletLongitude: OUTLET_LNG, maxAccuracyM: 100, accuracyM: 10 };
     expect(evaluateGps({ ...base, radiusM: d }).status).toBe('VERIFIED');
     expect(evaluateGps({ ...base, radiusM: d - 0.01 }).status).toBe('OUTSIDE_RADIUS');
     expect(evaluateGps({ ...base, radiusM: d - 0.01, accuracyM: 500 }).status).toBe('LOW_ACCURACY');
@@ -144,12 +144,40 @@ describe('VisitsService (integration, real Postgres + RLS)', () => {
   });
 
   it('list() filters by gpsStatus', async () => {
-    const v = await mk({ latitude: OUTLET_LAT + 0.01, longitude: OUTLET_LNG });
+    const v = await mk({ latitude: OUTLET_LAT + 0.01, longitude: OUTLET_LNG, accuracyM: 10 });
     const res = await tenantPrisma.run(companyId, () =>
       visits.list({ page: 1, pageSize: 100, gpsStatus: 'OUTSIDE_RADIUS' }, directorUser),
     );
     expect(res.data.map((x) => x.id)).toContain(v.id);
     expect(res.data.every((x) => x.gpsStatus === 'OUTSIDE_RADIUS')).toBe(true);
+  });
+
+  it('evaluateGps: coordinates without accuracy are LOW_ACCURACY, never VERIFIED (null and undefined); accuracy == max passes', () => {
+    const base = { latitude: OUTLET_LAT, longitude: OUTLET_LNG, outletLatitude: OUTLET_LAT, outletLongitude: OUTLET_LNG, radiusM: 150, maxAccuracyM: 100 };
+    expect(evaluateGps({ ...base }).status).toBe('LOW_ACCURACY');
+    expect(evaluateGps({ ...base, accuracyM: null }).status).toBe('LOW_ACCURACY');
+    expect(evaluateGps({ ...base, accuracyM: 0 }).status).toBe('VERIFIED');
+    expect(evaluateGps({ ...base, accuracyM: 100 }).status).toBe('VERIFIED');
+    expect(evaluateGps({ ...base, accuracyM: 100.01 }).status).toBe('LOW_ACCURACY');
+    // NO_FIX / OUTLET_NO_COORDS keep precedence over missing accuracy
+    expect(evaluateGps({ ...base, latitude: null }).status).toBe('NO_FIX');
+    expect(evaluateGps({ ...base, outletLatitude: null }).status).toBe('OUTLET_NO_COORDS');
+  });
+
+  it('SEC-023: a COURIER holding field.create cannot create a visit for another agent; own id is forced', async () => {
+    const courierDb = await systemPrisma.user.create({
+      data: { companyId, firstName: 'Cou', lastName: 'Rier', phone: '+998900000029' },
+    });
+    const courier: AuthenticatedUser = {
+      id: courierDb.id, companyId, firstName: 'Cou', lastName: 'Rier', roles: ['COURIER'], permissions: ['field.create'],
+    };
+    const v = await tenantPrisma.run(companyId, () =>
+      visits.create(
+        { outletId: outletWithCoordsId, agentId: agentUser.id, startedAt: new Date().toISOString(), outcome: 'ORDERED' } as never,
+        courier,
+      ),
+    );
+    expect(v.agentId).toBe(courier.id);
   });
 
   it('requires an explicit agentId when the caller is not a SALES_AGENT, and validates it', async () => {

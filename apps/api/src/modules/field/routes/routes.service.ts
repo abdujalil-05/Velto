@@ -97,8 +97,10 @@ export class RoutesService {
    */
   async finish(id: string, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
+    const pre = await this.loadActionableRoute(tx, id, user);
+    await this.lockRoute(tx, pre.companyId, id);
+    // Re-read under the lock: a request that waited on it must validate fresh route/stops.
     const route = await this.loadActionableRoute(tx, id, user);
-    await this.lockRoute(tx, route.companyId, id);
     const day = await this.today(tx);
     if (route.weekday !== day.isoWeekday) throw new RouteNotScheduledTodayException();
 
@@ -147,8 +149,10 @@ export class RoutesService {
   /** F3: close a stop without a visit — logs a SKIPPED Visit (reason required) for the route's agent. */
   async skipStop(id: string, dto: SkipStopDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
+    const pre = await this.loadActionableRoute(tx, id, user);
+    await this.lockRoute(tx, pre.companyId, id);
+    // Re-read under the lock: a request that waited on it must validate fresh route/stops.
     const route = await this.loadActionableRoute(tx, id, user);
-    await this.lockRoute(tx, route.companyId, id);
     const day = await this.today(tx);
     if (route.weekday !== day.isoWeekday) throw new RouteNotScheduledTodayException();
     if (!route.stops.some((s) => s.outletId === dto.outletId)) throw new RouteStopNotFoundException();

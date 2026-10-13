@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { prisma, systemPrisma } from '@velto/database';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { companyDay } from './company-day';
 import { FieldAlertService } from './field-alert.service';
 
 describe('FieldAlertService (integration, real Postgres + RLS)', () => {
@@ -50,6 +51,25 @@ describe('FieldAlertService (integration, real Postgres + RLS)', () => {
   it('a new Tashkent day sends again', async () => {
     const tomorrow = new Date(Date.now() + 26 * 3600 * 1000);
     expect(await alerts.alertOutletNoCoords(companyId, 1, tomorrow)).toBe(2);
+  });
+
+  it('dedupe day follows Company.timezone, not Tashkent (Pacific/Kiritimati UTC+14)', async () => {
+    const tenant = await systemPrisma.tenant.create({ data: { slug: `test-fa-tz-${Date.now()}`, name: 'FA TZ' } });
+    const co = await systemPrisma.company.create({ data: { tenantId: tenant.id, name: 'FA TZ Co', timezone: 'Pacific/Kiritimati' } });
+    const role = await systemPrisma.role.create({ data: { companyId: co.id, name: 'OWNER', code: 'OWNER', isSystem: true } });
+    const u = await systemPrisma.user.create({ data: { companyId: co.id, firstName: 'O', lastName: 'T', phone: `+99891${Date.now() % 10000000}` } });
+    await systemPrisma.userRole.create({ data: { userId: u.id, roleId: role.id } });
+    const now = new Date();
+    const kiri = companyDay(now, 'Pacific/Kiritimati').start;
+    const tash = companyDay(now, 'Asia/Tashkent').start;
+    // A prior alert 1 min after the EARLIER of the two day starts: inside exactly one of the two windows.
+    const earlier = new Date(Math.min(kiri.getTime(), tash.getTime()) + 60_000);
+    await systemPrisma.notification.create({
+      data: { companyId: co.id, recipientId: u.id, type: 'field.outlet_no_coords', title: {}, message: {}, createdAt: earlier },
+    });
+    // kiri later than tash: prior row is outside the company window -> sends; otherwise it is inside -> deduped.
+    const expected = kiri.getTime() > tash.getTime() ? 1 : 0;
+    expect(await alerts.alertOutletNoCoords(co.id, 1, now)).toBe(expected);
   });
 
   it('never throws (failure isolation)', async () => {

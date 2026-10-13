@@ -38,7 +38,7 @@ export interface GpsEvaluation {
  * 1 NO_PERMISSION (client says permission denied) ->
  * 2 NO_FIX (no complete lat/lng pair) ->
  * 3 OUTLET_NO_COORDS (outlet has no coordinates) ->
- * 4 LOW_ACCURACY (accuracy > maxAccuracyM; equal passes) ->
+ * 4 LOW_ACCURACY (accuracy missing/unknown or > maxAccuracyM; equal passes) ->
  * 5 OUTSIDE_RADIUS (distance > radiusM; exactly radius is VERIFIED) ->
  * 6 VERIFIED. The decision uses the same 2-decimal-rounded distance that is stored.
  */
@@ -52,7 +52,7 @@ export function evaluateGps(input: GpsEvaluationInput): GpsEvaluation {
     return { status: 'OUTLET_NO_COORDS', latitude, longitude, distanceM: null };
   }
   const distanceM = Math.round(distanceMeters(latitude, longitude, input.outletLatitude, input.outletLongitude) * 100) / 100;
-  if (input.accuracyM != null && input.accuracyM > input.maxAccuracyM) {
+  if (input.accuracyM == null || input.accuracyM > input.maxAccuracyM) {
     return { status: 'LOW_ACCURACY', latitude, longitude, distanceM };
   }
   if (distanceM > input.radiusM) return { status: 'OUTSIDE_RADIUS', latitude, longitude, distanceM };

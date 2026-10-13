@@ -91,7 +91,10 @@ export class VisitsService {
       if (existing) return existing;
     }
 
-    const agentId = user.roles.includes('SALES_AGENT') ? user.id : await this.resolveAgent(tx, dto.agentId);
+    // SEC-023: only OWNER / SALES_DIRECTOR may record a visit on behalf of another user;
+    // every other role (SALES_AGENT, COURIER, ...) is forced to their own id.
+    const mayDelegate = user.roles.includes('OWNER') || user.roles.includes('SALES_DIRECTOR');
+    const agentId = mayDelegate ? await this.resolveAgent(tx, dto.agentId) : user.id;
 
     const outlet = await tx.outlet.findFirst({ where: { id: dto.outletId, deletedAt: null } });
     if (!outlet) throw new OutletNotFoundException();
