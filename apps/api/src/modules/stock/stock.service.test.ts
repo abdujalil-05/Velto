@@ -1,9 +1,16 @@
+import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { prisma, systemPrisma } from '@velto/database';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { AuditLogService } from '../../common/audit/audit-log.service';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
-import { InsufficientStockException, InvalidStockQtyException } from './stock-exceptions';
+import {
+  InsufficientStockException,
+  InvalidStockQtyException,
+  StockMovementAlreadyReversedException,
+  StockMovementNotReversibleException,
+  StockReversalInsufficientException,
+} from './stock-exceptions';
 import { StockService } from './stock.service';
 
 describe('StockService (integration, real Postgres + RLS)', () => {
@@ -191,5 +198,121 @@ describe('StockService (integration, real Postgres + RLS)', () => {
         stock.issue(tx, { companyId, productId: pid, warehouseId: wid, qty: 5, refType: 'Test', refId: pid }),
       ),
     ).rejects.toBeInstanceOf(InvalidStockQtyException);
+  });
+  describe('reverseMovement() (F2.1)', () => {
+    async function freshProduct() {
+      return tenantPrisma.run(companyId, async (tx) =>
+        (await tx.product.create({ data: { companyId, sku: `REV-${Date.now()}-${Math.random()}`, name: 'Rev', baseUnit: 'dona', vatRate: 12 } })).id,
+      );
+    }
+    async function lastMovement(pid: string, type: 'RECEIVE' | 'ADJUST' | 'RESERVE') {
+      return tenantPrisma.run(companyId, (tx) =>
+        tx.stockMovement.findFirstOrThrow({ where: { productId: pid, warehouseId, type, reversesMovementId: null }, orderBy: { createdAt: 'desc' } }),
+      );
+    }
+    /** onHand rebuilt from the append-only ledger must equal the StockLevel projection. */
+    async function assertLedgerMatches(pid: string) {
+      const [movements, level] = await tenantPrisma.run(companyId, (tx) =>
+        Promise.all([
+          tx.stockMovement.findMany({ where: { productId: pid, warehouseId } }),
+          tx.stockLevel.findUniqueOrThrow({ where: { productId_warehouseId: { productId: pid, warehouseId } } }),
+        ]),
+      );
+      const onHand = movements.reduce((sum, m) => {
+        if (m.type === 'RECEIVE' || m.type === 'ADJUST') return sum + Number(m.qty);
+        if (m.type === 'ISSUE') return sum - Number(m.qty);
+        return sum;
+      }, 0);
+      expect(Number(level.onHand)).toBe(onHand);
+      return level;
+    }
+
+    it('reverses a manual RECEIVE with a compensating row; original untouched; audit; second reverse rejected', async () => {
+      const pid = await freshProduct();
+      await tenantPrisma.run(companyId, () => stock.receive({ productId: pid, warehouseId, qty: 50 }, user));
+      const original = await lastMovement(pid, 'RECEIVE');
+
+      const { movement, level } = await tenantPrisma.run(companyId, () => stock.reverseMovement(original.id, ' wrong qty ', user));
+      expect(movement.type).toBe('RECEIVE');
+      expect(movement.qty.toString()).toBe('-50');
+      expect(movement.reversesMovementId).toBe(original.id);
+      expect(movement.reason).toBe('wrong qty');
+      expect(level?.onHand.toString()).toBe('0');
+
+      const reread = await tenantPrisma.run(companyId, (tx) => tx.stockMovement.findUniqueOrThrow({ where: { id: original.id } }));
+      expect(reread).toEqual(original);
+      await assertLedgerMatches(pid);
+
+      const audit = await tenantPrisma.run(companyId, (tx) =>
+        tx.auditLog.findFirstOrThrow({ where: { action: 'stock.reverse', entityId: movement.id } }),
+      );
+      expect(audit.userId).toBe(user.id);
+
+      await expect(tenantPrisma.run(companyId, () => stock.reverseMovement(original.id, 'again', user))).rejects.toBeInstanceOf(
+        StockMovementAlreadyReversedException,
+      );
+      await expect(tenantPrisma.run(companyId, () => stock.reverseMovement(movement.id, 'reverse the reversal', user))).rejects.toBeInstanceOf(
+        StockMovementNotReversibleException,
+      );
+    });
+
+    it('reverses a negative ADJUST (adds stock back)', async () => {
+      const pid = await freshProduct();
+      await tenantPrisma.run(companyId, () => stock.receive({ productId: pid, warehouseId, qty: 20 }, user));
+      await tenantPrisma.run(companyId, () => stock.adjust({ productId: pid, warehouseId, qty: -5, reason: 'damage' }, user));
+      const adj = await lastMovement(pid, 'ADJUST');
+      const { level } = await tenantPrisma.run(companyId, () => stock.reverseMovement(adj.id, 'not damaged', user));
+      expect(level?.onHand.toString()).toBe('20');
+      await assertLedgerMatches(pid);
+    });
+
+    it('refuses RESERVE and document-linked RECEIVE movements', async () => {
+      const pid = await freshProduct();
+      await tenantPrisma.run(companyId, (tx) =>
+        stock.receiveForRef(tx, { companyId, productId: pid, warehouseId, qty: 10, refType: 'GoodsReceipt', refId: randomUUID() }),
+      );
+      const gr = await lastMovement(pid, 'RECEIVE');
+      await expect(tenantPrisma.run(companyId, () => stock.reverseMovement(gr.id, 'linked doc', user))).rejects.toBeInstanceOf(
+        StockMovementNotReversibleException,
+      );
+      await tenantPrisma.run(companyId, (tx) =>
+        stock.reserve(tx, { companyId, productId: pid, warehouseId, qty: 1, refType: 'SalesOrder', refId: randomUUID() }),
+      );
+      const res = await lastMovement(pid, 'RESERVE');
+      await expect(tenantPrisma.run(companyId, () => stock.reverseMovement(res.id, 'reserve', user))).rejects.toBeInstanceOf(
+        StockMovementNotReversibleException,
+      );
+    });
+
+    it('refuses a reversal that would take on-hand below reserved; nothing is written', async () => {
+      const pid = await freshProduct();
+      await tenantPrisma.run(companyId, () => stock.receive({ productId: pid, warehouseId, qty: 10 }, user));
+      const rec = await lastMovement(pid, 'RECEIVE');
+      await tenantPrisma.run(companyId, (tx) =>
+        stock.reserve(tx, { companyId, productId: pid, warehouseId, qty: 8, refType: 'SalesOrder', refId: randomUUID() }),
+      );
+      await expect(tenantPrisma.run(companyId, () => stock.reverseMovement(rec.id, 'over', user))).rejects.toBeInstanceOf(
+        StockReversalInsufficientException,
+      );
+      const level = await assertLedgerMatches(pid);
+      expect(level.onHand.toString()).toBe('10');
+      expect(level.reserved.toString()).toBe('8');
+    });
+
+    it('race: parallel reversals of one movement — exactly one succeeds, stock = ledger', async () => {
+      const pid = await freshProduct();
+      await tenantPrisma.run(companyId, () => stock.receive({ productId: pid, warehouseId, qty: 30 }, user));
+      await tenantPrisma.run(companyId, () => stock.receive({ productId: pid, warehouseId, qty: 7 }, user));
+      const rec = await lastMovement(pid, 'RECEIVE');
+      const results = await Promise.allSettled(
+        [1, 2, 3, 4].map(() => tenantPrisma.run(companyId, () => stock.reverseMovement(rec.id, 'race reverse', user))),
+      );
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      for (const r of results.filter((x) => x.status === 'rejected')) {
+        expect((r as PromiseRejectedResult).reason).toBeInstanceOf(StockMovementAlreadyReversedException);
+      }
+      const level = await assertLedgerMatches(pid);
+      expect(level.onHand.toString()).toBe(rec.qty.equals(30) ? '7' : '30');
+    });
   });
 });

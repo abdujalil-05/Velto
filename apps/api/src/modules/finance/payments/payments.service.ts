@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { InvoiceStatus, Prisma, withSavepoint, type TenantClient } from '@velto/database';
+import { InvoiceStatus, PaymentMethod, PaymentStatus, Prisma, withSavepoint, type TenantClient } from '@velto/database';
 import { AuditLogService, toAuditJson } from '../../../common/audit/audit-log.service';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { DocumentNumberingService } from '../../../common/document-numbering/document-numbering.service';
@@ -14,8 +14,13 @@ import {
   AllocationExceedsPaymentException,
   InvalidPaymentAmountException,
   InvoiceNotFoundException,
+  PaymentAlreadyReversedException,
+  PaymentExportedTo1cException,
+  PaymentInClosedCashSessionException,
   PaymentNotFoundException,
+  PaymentReversalReasonRequiredException,
 } from '../finance-exceptions';
+import { VALID_ALLOCATION_WHERE } from '../ledger-filters';
 
 // customer is included alongside allocations so the web UI (9.2 "/payments")
 // can render a full row without an extra round-trip per payment.
@@ -157,8 +162,7 @@ export class PaymentsService {
 
     // 6.7: "hech qachon to'g'ridan-to'g'ri UPDATE qilinmaydi" outside of a
     // recompute from the ledger — done here, inside the same transaction.
-    const balance = await this.customers.getBalance(tx, dto.customerId);
-    await tx.customer.update({ where: { id: dto.customerId }, data: { cachedBalance: balance } });
+    await this.refreshCachedBalance(tx, dto.customerId);
 
     const full = await tx.payment.findUniqueOrThrow({ where: { id: payment.id }, include: PAYMENT_INCLUDE });
 
@@ -185,6 +189,106 @@ export class PaymentsService {
     }
 
     return full;
+  }
+
+  /**
+   * F2.1 / §6.5: reverses a POSTED payment. Nothing is deleted or edited
+   * except Payment.status POSTED -> REVERSED (DB trigger requires the
+   * PaymentReversal row first); its allocation rows stay and simply stop
+   * counting (VALID_ALLOCATION_WHERE). Lock order matches create():
+   * payment -> invoices (createdAt asc) -> customer, so no deadlock with a
+   * concurrent allocation.
+   */
+  async reverse(paymentId: string, reason: string, user: AuthenticatedUser) {
+    const tx = this.tenantPrisma.client;
+    const trimmedReason = reason?.trim() ?? '';
+    if (trimmedReason.length < 3) throw new PaymentReversalReasonRequiredException();
+
+    await tx.$queryRaw(Prisma.sql`SELECT id FROM "Payment" WHERE id = ${paymentId}::uuid FOR UPDATE`);
+    const before = await tx.payment.findUnique({ where: { id: paymentId }, include: PAYMENT_INCLUDE });
+    if (!before) throw new PaymentNotFoundException();
+    if (before.status === PaymentStatus.REVERSED) throw new PaymentAlreadyReversedException();
+
+    await this.assertNotInClosedCashSession(tx, before);
+    await this.assertNotExportedTo1c(tx, before.createdAt);
+
+    await tx.paymentReversal.create({
+      data: { companyId: user.companyId, reversesPaymentId: paymentId, reason: trimmedReason, actorId: user.id },
+    });
+    await tx.payment.update({ where: { id: paymentId }, data: { status: PaymentStatus.REVERSED } });
+
+    const invoiceIds = await tx.invoice.findMany({
+      where: { allocations: { some: { paymentId } } },
+      select: { id: true },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    for (const { id } of invoiceIds) {
+      const invoice = await this.lockAndFetchInvoice(tx, id);
+      if (invoice.status === InvoiceStatus.CANCELLED) continue;
+      await tx.invoice.update({ where: { id }, data: { status: statusFor(invoice) } });
+    }
+
+    await this.refreshCachedBalance(tx, before.customerId);
+
+    const full = await tx.payment.findUniqueOrThrow({ where: { id: paymentId }, include: PAYMENT_INCLUDE });
+    await this.auditLog.log(tx, {
+      companyId: user.companyId,
+      userId: user.id,
+      action: 'payment.reverse',
+      entity: 'Payment',
+      entityId: paymentId,
+      oldValue: toAuditJson(before),
+      newValue: toAuditJson({ status: full.status, reason: trimmedReason }),
+    });
+    return full;
+  }
+
+  /**
+   * "Yopilgan smenaga kirgan to'lov" uses the exact membership rule
+   * CashSessionsService.withSummary counts by: CASH, collectedBy = session
+   * user, createdAt within [openedAt, closedAt]. FOR SHARE makes a concurrent
+   * close() wait for this transaction (or, if it committed first, the
+   * re-checked row is seen as closed).
+   */
+  private async assertNotInClosedCashSession(
+    tx: TenantClient,
+    payment: { method: PaymentMethod; collectedBy: string | null; createdAt: Date },
+  ): Promise<void> {
+    if (payment.method !== PaymentMethod.CASH || !payment.collectedBy) return;
+    const sessions = await tx.$queryRaw<{ id: string; closedAt: Date | null }[]>(Prisma.sql`
+      SELECT id, "closedAt" FROM "CashSession"
+      WHERE "userId" = ${payment.collectedBy}::uuid
+        AND "openedAt" <= ${payment.createdAt}
+        AND ("closedAt" IS NULL OR "closedAt" >= ${payment.createdAt})
+      FOR SHARE
+    `);
+    const closed = sessions.find((s) => s.closedAt !== null);
+    if (closed) throw new PaymentInClosedCashSessionException(closed.id);
+  }
+
+  /**
+   * Export1cProcessor exports every payment with createdAt within
+   * [periodFrom, periodTo] of the job. A PENDING/PROCESSING job will, and a
+   * DONE job did, include it — only FAILED jobs exported nothing.
+   */
+  private async assertNotExportedTo1c(tx: TenantClient, createdAt: Date): Promise<void> {
+    const job = await tx.exportJob.findFirst({
+      where: { type: '1c', status: { not: 'FAILED' }, periodFrom: { lte: createdAt }, periodTo: { gte: createdAt } },
+      select: { id: true },
+    });
+    if (job) throw new PaymentExportedTo1cException(job.id);
+  }
+
+  /**
+   * §6.5: cachedBalance recomputed from the ledger in the same tx. The
+   * customer row is locked first so two concurrent ledger writes for one
+   * customer (payment vs reversal) serialize and the later one recomputes
+   * from the other's committed rows — no stale overwrite.
+   */
+  private async refreshCachedBalance(tx: TenantClient, customerId: string): Promise<void> {
+    await tx.$queryRaw(Prisma.sql`SELECT id FROM "Customer" WHERE id = ${customerId}::uuid FOR UPDATE`);
+    const balance = await this.customers.getBalance(tx, customerId);
+    await tx.customer.update({ where: { id: customerId }, data: { cachedBalance: balance } });
   }
 
   private async allocateFifo(
@@ -262,7 +366,7 @@ export class PaymentsService {
    */
   private async lockAndFetchInvoice(tx: TenantClient, invoiceId: string): Promise<InvoiceWithAllocations> {
     await tx.$queryRaw(Prisma.sql`SELECT id FROM "Invoice" WHERE id = ${invoiceId}::uuid FOR UPDATE`);
-    const invoice = await tx.invoice.findUnique({ where: { id: invoiceId }, include: { allocations: true } });
+    const invoice = await tx.invoice.findUnique({ where: { id: invoiceId }, include: { allocations: { where: VALID_ALLOCATION_WHERE } } });
     if (!invoice) throw new InvoiceNotFoundException();
     return invoice;
   }
@@ -287,6 +391,12 @@ interface AllocationResult {
   invoiceId: string;
   invoiceNumber: string;
   amount: string;
+}
+
+function statusFor(invoice: InvoiceWithAllocations): InvoiceStatus {
+  const outstanding = outstandingOf(invoice);
+  if (!outstanding.greaterThan(0)) return InvoiceStatus.PAID;
+  return outstanding.equals(invoice.total) ? InvoiceStatus.OPEN : InvoiceStatus.PARTIALLY_PAID;
 }
 
 function outstandingOf(invoice: InvoiceWithAllocations): Prisma.Decimal {

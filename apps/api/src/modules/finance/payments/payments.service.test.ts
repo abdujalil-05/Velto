@@ -10,8 +10,12 @@ import {
   AllocationExceedsInvoiceException,
   AllocationExceedsPaymentException,
   InvoiceNotFoundException,
+  PaymentAlreadyReversedException,
+  PaymentExportedTo1cException,
+  PaymentInClosedCashSessionException,
   PaymentNotFoundException,
 } from '../finance-exceptions';
+import { CashSessionsService } from '../cash-sessions/cash-sessions.service';
 import { PaymentsService } from './payments.service';
 
 describe('PaymentsService (integration, real Postgres + RLS)', () => {
@@ -301,5 +305,171 @@ describe('PaymentsService (integration, real Postgres + RLS)', () => {
     // CASHIER (and every other non-agent role) stays unrestricted.
     const cashierList = await tenantPrisma.run(companyId, () => payments.list({ page: 1, pageSize: 100 }, user));
     expect(cashierList.data.map((p) => p.id)).toEqual(expect.arrayContaining([own.id, other.id]));
+  });
+  describe('reverse() (F2.1)', () => {
+    async function newCollector(label: string): Promise<AuthenticatedUser> {
+      const u = await systemPrisma.user.create({
+        data: { companyId, firstName: label, lastName: 'Rev', phone: `+99891${Math.floor(1_000_000 + Math.random() * 8_000_000)}` },
+      });
+      return { id: u.id, companyId, firstName: label, lastName: 'Rev', roles: ['CASHIER'], permissions: ['payments.create', 'payments.reverse'] };
+    }
+
+    /** Ledger truth, independent of service code: Σ non-cancelled invoices − Σ allocations of POSTED payments. */
+    async function ledgerBalance(customerId: string) {
+      const rows = await tenantPrisma.run(companyId, (tx) =>
+        tx.$queryRaw<{ balance: string }[]>`
+          SELECT (
+            COALESCE((SELECT SUM(total) FROM "Invoice" WHERE "customerId" = ${customerId}::uuid AND status <> 'CANCELLED'), 0)
+            - COALESCE((SELECT SUM(a.amount) FROM "PaymentAllocation" a
+                JOIN "Payment" p ON p.id = a."paymentId" JOIN "Invoice" i ON i.id = a."invoiceId"
+                WHERE i."customerId" = ${customerId}::uuid AND i.status <> 'CANCELLED' AND p.status = 'POSTED'), 0)
+          )::text AS balance`,
+      );
+      return rows[0]!.balance;
+    }
+
+    async function cachedBalance(customerId: string) {
+      const c = await tenantPrisma.run(companyId, (tx) => tx.customer.findUniqueOrThrow({ where: { id: customerId } }));
+      return c.cachedBalance;
+    }
+
+    it('keeps the original payment/allocation rows, reopens invoices, recomputes balance from the ledger, audits reason', async () => {
+      const { customerId, invoiceIds } = await createCustomerWithInvoices([
+        { total: '500000', ageDays: 30 },
+        { total: '500000', ageDays: 20 },
+        { total: '500000', ageDays: 10 },
+      ]);
+      const payment = await tenantPrisma.run(companyId, () =>
+        payments.create({ customerId, amount: 700000, method: 'TRANSFER' }, user),
+      );
+      const allocBefore = await tenantPrisma.run(companyId, (tx) =>
+        tx.paymentAllocation.findMany({ where: { paymentId: payment.id }, orderBy: { id: 'asc' } }),
+      );
+      expect(allocBefore).toHaveLength(2);
+
+      const reversed = await tenantPrisma.run(companyId, () => payments.reverse(payment.id, '  wrong customer  ', user));
+      expect(reversed.status).toBe('REVERSED');
+      expect(reversed.amount.toString()).toBe('700000');
+      expect(reversed.number).toBe(payment.number);
+
+      const allocAfter = await tenantPrisma.run(companyId, (tx) =>
+        tx.paymentAllocation.findMany({ where: { paymentId: payment.id }, orderBy: { id: 'asc' } }),
+      );
+      expect(allocAfter).toEqual(allocBefore);
+
+      const reversal = await tenantPrisma.run(companyId, (tx) =>
+        tx.paymentReversal.findUniqueOrThrow({ where: { reversesPaymentId: payment.id } }),
+      );
+      expect(reversal.reason).toBe('wrong customer');
+      expect(reversal.actorId).toBe(user.id);
+
+      const invoices = await tenantPrisma.run(companyId, (tx) => tx.invoice.findMany({ where: { id: { in: invoiceIds } } }));
+      expect(invoices.every((i) => i.status === 'OPEN')).toBe(true);
+
+      expect(await ledgerBalance(customerId)).toBe('1500000.00');
+      expect((await cachedBalance(customerId)).toString()).toBe('1500000');
+
+      const audit = await tenantPrisma.run(companyId, (tx) =>
+        tx.auditLog.findFirstOrThrow({ where: { action: 'payment.reverse', entityId: payment.id } }),
+      );
+      expect(audit.newValue).toMatchObject({ status: 'REVERSED', reason: 'wrong customer' });
+
+      // A new payment now FIFO-allocates to the reopened oldest invoice again.
+      const again = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 500000, method: 'TRANSFER' }, user));
+      expect(again.allocations.map((a) => a.invoiceId)).toEqual([invoiceIds[0]]);
+    });
+
+    it('a second reverse is rejected; parallel reversals of one payment yield exactly one PaymentReversal', async () => {
+      const { customerId } = await createCustomerWithInvoices([{ total: '100000', ageDays: 5 }]);
+      const p1 = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 100000, method: 'TRANSFER' }, user));
+      await tenantPrisma.run(companyId, () => payments.reverse(p1.id, 'duplicate entry', user));
+      await expect(tenantPrisma.run(companyId, () => payments.reverse(p1.id, 'again', user))).rejects.toBeInstanceOf(
+        PaymentAlreadyReversedException,
+      );
+
+      const p2 = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 100000, method: 'TRANSFER' }, user));
+      const results = await Promise.allSettled(
+        [1, 2, 3].map(() => tenantPrisma.run(companyId, () => payments.reverse(p2.id, 'race reverse', user))),
+      );
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      for (const r of results.filter((x) => x.status === 'rejected')) {
+        expect((r as PromiseRejectedResult).reason).toBeInstanceOf(PaymentAlreadyReversedException);
+      }
+      const count = await tenantPrisma.run(companyId, (tx) => tx.paymentReversal.count({ where: { reversesPaymentId: p2.id } }));
+      expect(count).toBe(1);
+      expect(Number((await cachedBalance(customerId)).toString())).toBe(Number(await ledgerBalance(customerId)));
+    });
+
+    it('race: reversal vs a parallel FIFO allocation on the same customer stays consistent (no over-allocation, cache = ledger)', async () => {
+      for (let round = 0; round < 3; round++) {
+        const { customerId, invoiceIds } = await createCustomerWithInvoices([
+          { total: '300000', ageDays: 15 },
+          { total: '300000', ageDays: 10 },
+        ]);
+        const p1 = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 300000, method: 'TRANSFER' }, user));
+
+        await Promise.all([
+          tenantPrisma.run(companyId, () => payments.reverse(p1.id, 'race with allocation', user)),
+          tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 400000, method: 'TRANSFER' }, user)),
+        ]);
+
+        for (const invoiceId of invoiceIds) {
+          const inv = await tenantPrisma.run(companyId, (tx) =>
+            tx.invoice.findUniqueOrThrow({ where: { id: invoiceId }, include: { allocations: { include: { payment: true } } } }),
+          );
+          const valid = inv.allocations.filter((a) => a.payment.status === 'POSTED').reduce((s, a) => s + Number(a.amount), 0);
+          expect(valid).toBeLessThanOrEqual(Number(inv.total));
+          const expected = valid === 0 ? 'OPEN' : valid >= Number(inv.total) ? 'PAID' : 'PARTIALLY_PAID';
+          expect(inv.status).toBe(expected);
+        }
+        expect(Number((await cachedBalance(customerId)).toString())).toBe(Number(await ledgerBalance(customerId)));
+        // Both orders are valid: total valid allocation is the 400 000 payment, capped by open debt.
+        expect(Number(await ledgerBalance(customerId))).toBeGreaterThanOrEqual(200000);
+      }
+    });
+
+    it('CASH payment inside a closed cash session cannot be reversed; inside an open one it can and leaves the shift total', async () => {
+      const cashier = await newCollector('Closed');
+      const cashSessions = new CashSessionsService(tenantPrisma, auditLog);
+      const { customerId } = await createCustomerWithInvoices([{ total: '90000', ageDays: 3 }]);
+
+      await tenantPrisma.run(companyId, () => cashSessions.open({ openAmount: 0 }, cashier));
+      const inClosed = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 10000, method: 'CASH' }, cashier));
+      const session = await tenantPrisma.run(companyId, () => cashSessions.current(cashier));
+      await tenantPrisma.run(companyId, () => cashSessions.close(session.id, { closeAmount: 10000 }, cashier));
+
+      await expect(tenantPrisma.run(companyId, () => payments.reverse(inClosed.id, 'closed shift', cashier))).rejects.toBeInstanceOf(
+        PaymentInClosedCashSessionException,
+      );
+      const still = await tenantPrisma.run(companyId, (tx) => tx.payment.findUniqueOrThrow({ where: { id: inClosed.id } }));
+      expect(still.status).toBe('POSTED');
+
+      await tenantPrisma.run(companyId, () => cashSessions.open({ openAmount: 0 }, cashier));
+      const inOpen = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 20000, method: 'CASH' }, cashier));
+      await tenantPrisma.run(companyId, () => payments.reverse(inOpen.id, 'cash returned', cashier));
+      const current = await tenantPrisma.run(companyId, () => cashSessions.current(cashier));
+      expect(current.totalCollected.toString()).toBe('0');
+    });
+
+    it('payment within a non-FAILED 1C export period cannot be reversed; a FAILED job does not block', async () => {
+      const { customerId } = await createCustomerWithInvoices([{ total: '50000', ageDays: 2 }]);
+      const p = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 50000, method: 'TRANSFER' }, user));
+      const q = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 1000, method: 'TRANSFER' }, user));
+
+      await tenantPrisma.run(companyId, (tx) =>
+        tx.exportJob.createMany({
+          data: [
+            { companyId, type: '1c', format: 'XML', periodFrom: p.createdAt, periodTo: p.createdAt, status: 'DONE' },
+            { companyId, type: '1c', format: 'XML', periodFrom: q.createdAt, periodTo: q.createdAt, status: 'FAILED' },
+          ],
+        }),
+      );
+
+      await expect(tenantPrisma.run(companyId, () => payments.reverse(p.id, 'after export', user))).rejects.toBeInstanceOf(
+        PaymentExportedTo1cException,
+      );
+      const reversedQ = await tenantPrisma.run(companyId, () => payments.reverse(q.id, 'export failed', user));
+      expect(reversedQ.status).toBe('REVERSED');
+    });
   });
 });

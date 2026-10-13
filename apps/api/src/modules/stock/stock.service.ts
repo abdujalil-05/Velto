@@ -7,7 +7,12 @@ import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import {
   InsufficientStockException,
   InvalidStockQtyException,
+  StockMovementAlreadyReversedException,
+  StockMovementNotFoundException,
+  StockMovementNotReversibleException,
   StockProductNotFoundException,
+  StockReversalInsufficientException,
+  StockReversalReasonRequiredException,
   WarehouseNotFoundException,
 } from './stock-exceptions';
 import type { AdjustStockDto } from './dto/adjust-stock.dto';
@@ -149,6 +154,68 @@ export class StockService {
     });
 
     return this.getLevel(tx, dto.productId, dto.warehouseId);
+  }
+
+  /**
+   * F2.1 / §6.4: compensates a manual RECEIVE/ADJUST with a new movement of
+   * the same type and opposite sign (reversesMovementId + reason); the
+   * original row is never touched (DB trigger). Document-linked receipts
+   * (refType != 'Manual', e.g. GoodsReceipt) are refused — reversing them here
+   * would desync the source document. StockLevel is locked before the
+   * already-reversed check so two concurrent reversals serialize.
+   */
+  async reverseMovement(movementId: string, reason: string, user: AuthenticatedUser) {
+    const tx = this.tenantPrisma.client;
+    const trimmedReason = reason?.trim() ?? '';
+    if (trimmedReason.length < 3) throw new StockReversalReasonRequiredException();
+
+    const original = await tx.stockMovement.findUnique({ where: { id: movementId } });
+    if (!original) throw new StockMovementNotFoundException();
+    const reversible =
+      (original.type === StockMovementType.RECEIVE || original.type === StockMovementType.ADJUST) &&
+      original.refType === 'Manual' &&
+      original.reversesMovementId === null;
+    if (!reversible) throw new StockMovementNotReversibleException(original.type, original.refType);
+
+    const locked = await this.lockStockLevel(tx, original.productId, original.warehouseId);
+    const existing = await tx.stockMovement.findUnique({ where: { reversesMovementId: movementId }, select: { id: true } });
+    if (existing) throw new StockMovementAlreadyReversedException();
+
+    const delta = original.qty.negated();
+    const resultingOnHand = locked.onHand.plus(delta);
+    if (resultingOnHand.isNegative() || resultingOnHand.lessThan(locked.reserved)) {
+      throw new StockReversalInsufficientException(locked.onHand.toString(), locked.reserved.toString(), delta.toString());
+    }
+
+    await tx.stockLevel.update({
+      where: { productId_warehouseId: { productId: original.productId, warehouseId: original.warehouseId } },
+      data: { onHand: { increment: delta } },
+    });
+
+    const reversal = await tx.stockMovement.create({
+      data: {
+        companyId: user.companyId,
+        productId: original.productId,
+        warehouseId: original.warehouseId,
+        type: original.type,
+        qty: delta,
+        refType: 'Manual',
+        reversesMovementId: original.id,
+        reason: trimmedReason,
+      },
+    });
+
+    await this.auditLog.log(tx, {
+      companyId: user.companyId,
+      userId: user.id,
+      action: 'stock.reverse',
+      entity: 'StockMovement',
+      entityId: reversal.id,
+      oldValue: toAuditJson(original),
+      newValue: toAuditJson(reversal),
+    });
+
+    return { movement: reversal, level: await this.getLevel(tx, original.productId, original.warehouseId) };
   }
 
   /**

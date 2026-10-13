@@ -80,3 +80,56 @@ export class CashSessionAlreadyOpenException extends AppException {
     });
   }
 }
+
+/** F2.1: a payment is reversed at most once (PaymentReversal is unique per payment). */
+export class PaymentAlreadyReversedException extends AppException {
+  constructor() {
+    super(HttpStatus.CONFLICT, 'PAYMENT_ALREADY_REVERSED', {
+      uz: "To'lov allaqachon qaytarilgan",
+      ru: 'Платеж уже сторнирован',
+      en: 'Payment has already been reversed',
+    });
+  }
+}
+
+export class PaymentReversalReasonRequiredException extends AppException {
+  constructor() {
+    super(HttpStatus.BAD_REQUEST, 'PAYMENT_REVERSAL_REASON_REQUIRED', {
+      uz: "Qaytarish sababi kamida 3 belgidan iborat bo'lishi kerak",
+      ru: 'Причина сторнирования должна содержать не менее 3 символов',
+      en: 'Reversal reason must be at least 3 characters',
+    });
+  }
+}
+
+/** F2.1: a CASH payment counted in an already-closed cash session cannot be reversed. */
+export class PaymentInClosedCashSessionException extends AppException {
+  constructor(cashSessionId: string) {
+    super(
+      HttpStatus.CONFLICT,
+      'PAYMENT_REVERSAL_CASH_SESSION_CLOSED',
+      {
+        uz: "To'lov yopilgan kassa smenasiga kiritilgan — uni qaytarib bo'lmaydi",
+        ru: 'Платеж учтён в закрытой кассовой смене — сторнирование невозможно',
+        en: 'Payment belongs to a closed cash session and cannot be reversed',
+      },
+      { cashSessionId },
+    );
+  }
+}
+
+/** F2.1: a payment inside the period of a non-failed 1C export job cannot be reversed. */
+export class PaymentExportedTo1cException extends AppException {
+  constructor(exportJobId: string) {
+    super(
+      HttpStatus.CONFLICT,
+      'PAYMENT_REVERSAL_EXPORTED_1C',
+      {
+        uz: "To'lov 1C ga eksport qilingan davrga tushadi — uni qaytarib bo'lmaydi",
+        ru: 'Платеж входит в период выгрузки в 1С — сторнирование невозможно',
+        en: 'Payment falls within a 1C export period and cannot be reversed',
+      },
+      { exportJobId },
+    );
+  }
+}

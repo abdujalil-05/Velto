@@ -4,6 +4,7 @@ import { AuditLogService, toAuditJson } from '../../common/audit/audit-log.servi
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { paginate, resolveSort } from '../../common/pagination/pagination.dto';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
+import { VALID_ALLOCATION_WHERE } from '../finance/ledger-filters';
 import {
   CustomerAlreadyBlockedException,
   CustomerHasOutstandingBalanceException,
@@ -358,7 +359,7 @@ export class CustomersService {
     const [invoiceAgg, paymentAgg] = await Promise.all([
       tx.invoice.aggregate({ where: { customerId, status: { not: 'CANCELLED' } }, _sum: { total: true } }),
       tx.paymentAllocation.aggregate({
-        where: { invoice: { customerId, status: { not: 'CANCELLED' } } },
+        where: { invoice: { customerId, status: { not: 'CANCELLED' } }, ...VALID_ALLOCATION_WHERE },
         _sum: { amount: true },
       }),
     ]);

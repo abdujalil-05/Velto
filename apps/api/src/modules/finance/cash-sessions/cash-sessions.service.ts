@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { PaymentMethod, Prisma, type CashSession, type TenantClient } from '@velto/database';
+import { PaymentMethod, PaymentStatus, Prisma, type CashSession, type TenantClient } from '@velto/database';
 import { AuditLogService, toAuditJson } from '../../../common/audit/audit-log.service';
 import { PermissionDeniedException } from '../../../common/auth/auth-exceptions';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
@@ -131,6 +131,9 @@ export class CashSessionsService {
       where: {
         collectedBy: session.userId,
         method: PaymentMethod.CASH,
+        // F2.1: a reversed payment is not cash in the drawer. Reversal is
+        // blocked once the session is closed, so closed totals never move.
+        status: PaymentStatus.POSTED,
         createdAt: { gte: session.openedAt, ...(session.closedAt ? { lte: session.closedAt } : {}) },
       },
       _sum: { amount: true },

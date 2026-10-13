@@ -1,6 +1,6 @@
 import { Controller, Get, Header, Query, StreamableFile } from '@nestjs/common';
 import { RequirePermission } from '../../../common/decorators/require-permission.decorator';
-import { AgingReportQueryDto } from '../dto/aging-report.query';
+import { AgingAsOfQueryDto, AgingReportQueryDto } from '../dto/aging-report.query';
 import { buildAgingReportExcel } from './aging-report-excel';
 import { AgingReportService } from './aging-report.service';
 
@@ -21,8 +21,8 @@ export class AgingReportController {
   @RequirePermission('reports.read')
   @Header('Content-Type', XLSX_MIME)
   @Header('Content-Disposition', 'attachment; filename="qarzdorlik.xlsx"')
-  async agingExport() {
-    const rows = await this.agingReport.getAllRows();
-    return new StreamableFile(await buildAgingReportExcel(rows));
+  async agingExport(@Query() query: AgingAsOfQueryDto) {
+    const { asOf, rows } = await this.agingReport.getAllRows(query.asOf);
+    return new StreamableFile(await buildAgingReportExcel(rows, asOf));
   }
 }

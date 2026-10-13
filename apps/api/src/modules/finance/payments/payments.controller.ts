@@ -2,6 +2,8 @@ import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query } from '@nestj
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequirePermission } from '../../../common/decorators/require-permission.decorator';
+import { ReverseReasonDto } from '../../../common/dto/reverse-reason.dto';
+import { Idempotent } from '../../../common/idempotency/idempotent.decorator';
 import { CreatePaymentDto } from '../dto/create-payment.dto';
 import { ListPaymentsQueryDto } from '../dto/list-payments.query';
 import { PaymentsService } from './payments.service';
@@ -26,5 +28,12 @@ export class PaymentsController {
   @RequirePermission('payments.create')
   create(@Body() dto: CreatePaymentDto, @CurrentUser() user: AuthenticatedUser) {
     return this.payments.create(dto, user);
+  }
+
+  @Post(':id/reverse')
+  @Idempotent()
+  @RequirePermission('payments.reverse')
+  reverse(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ReverseReasonDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.payments.reverse(id, dto.reason, user);
   }
 }
