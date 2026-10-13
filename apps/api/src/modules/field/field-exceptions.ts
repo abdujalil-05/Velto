@@ -120,3 +120,28 @@ export class VisitSkipReasonRequiredException extends AppException {
     });
   }
 }
+
+export class VisitStartedAtInFutureException extends AppException {
+  constructor() {
+    super(HttpStatus.BAD_REQUEST, 'VISIT_STARTED_AT_IN_FUTURE', {
+      uz: "Tashrif boshlanish vaqti kelajakda (qurilma soatini tekshiring)",
+      ru: 'Время начала визита в будущем (проверьте часы устройства)',
+      en: 'Visit start time is in the future (check the device clock)',
+    });
+  }
+}
+
+export class VisitStartedAtTooOldException extends AppException {
+  constructor(maxAgeDays: number) {
+    super(
+      HttpStatus.BAD_REQUEST,
+      'VISIT_STARTED_AT_TOO_OLD',
+      {
+        uz: `Tashrif boshlanish vaqti ${maxAgeDays} kundan eski`,
+        ru: `Время начала визита старше ${maxAgeDays} дн.`,
+        en: `Visit start time is older than ${maxAgeDays} days`,
+      },
+      { maxAgeDays },
+    );
+  }
+}

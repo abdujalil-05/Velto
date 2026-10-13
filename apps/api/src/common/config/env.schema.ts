@@ -28,6 +28,14 @@ export const envSchema = z.object({
   // request transaction under Prisma's 5s timeout, so a larger value would
   // only trade a 400 for a timed-out (RETRY-everything) batch.
   SYNC_PUSH_MAX_BATCH: z.coerce.number().int().min(1).max(100).default(20),
+  // GET /sync/pull lookback (seconds): the cursor never advances past rows
+  // younger than this, so a slow transaction that commits a lower changeSeq
+  // after a higher one is still re-sent. Must exceed 2x the request-transaction
+  // timeout (5s) plus app/DB clock skew — see SyncService.pull.
+  SYNC_PULL_LOOKBACK_SECONDS: z.coerce.number().int().min(20).max(3600).default(60),
+  // Visit.startedAt older than this many days is REJECTED (offline queue must
+  // sync within the window); more than 5 minutes in the future is always rejected.
+  VISIT_STARTED_AT_MAX_AGE_DAYS: z.coerce.number().int().min(1).max(90).default(7),
   // Comma-separated list of origins allowed to call the API with credentials
   // (SEC-040..048: CORS must not be wide-open). Web and Mini App dev ports by default.
   CORS_ORIGINS: z.string().default('http://localhost:3000,http://localhost:3002'),

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Prisma, withSavepoint, type TenantClient } from '@velto/database';
 import { AuditLogService, toAuditJson } from '../../../common/audit/audit-log.service';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
@@ -6,7 +7,13 @@ import { paginate } from '../../../common/pagination/pagination.dto';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import { endOfDay, startOfDay } from '../../analytics/report-utils';
 import { OutletNotFoundException } from '../../customers/customers-exceptions';
-import { AgentNotFoundException, VisitNotFoundException, VisitSkipReasonRequiredException } from '../field-exceptions';
+import {
+  AgentNotFoundException,
+  VisitNotFoundException,
+  VisitSkipReasonRequiredException,
+  VisitStartedAtInFutureException,
+  VisitStartedAtTooOldException,
+} from '../field-exceptions';
 import { FieldAlertService } from '../field-alert.service';
 import { evaluateGps } from '../geo';
 import type { CreateVisitDto } from './dto/create-visit.dto';
@@ -17,13 +24,23 @@ const VISIT_INCLUDE = {
   agent: { select: { id: true, firstName: true, lastName: true } },
 } satisfies Prisma.VisitInclude;
 
+/** Device clocks drift; a startedAt further ahead than this is a wrong clock, not a real visit. */
+export const VISIT_FUTURE_SKEW_MS = 5 * 60_000;
+export const VISIT_DEFAULT_MAX_AGE_DAYS = 7;
+
 @Injectable()
 export class VisitsService {
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     private readonly auditLog: AuditLogService,
     private readonly fieldAlerts?: FieldAlertService,
+    private readonly config?: ConfigService,
   ) {}
+
+  private get maxAgeDays(): number {
+    const raw = Number(this.config?.get('VISIT_STARTED_AT_MAX_AGE_DAYS') ?? VISIT_DEFAULT_MAX_AGE_DAYS);
+    return Number.isInteger(raw) && raw >= 1 ? raw : VISIT_DEFAULT_MAX_AGE_DAYS;
+  }
 
   async list(query: ListVisitsQueryDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
@@ -90,6 +107,13 @@ export class VisitsService {
       const existing = await tx.visit.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: VISIT_INCLUDE });
       if (existing) return existing;
     }
+
+    // Clock-skew guard (after the clientId replay check so an already-accepted
+    // visit still resolves to DUPLICATE): REJECTED, never silently clamped.
+    const startedAtMs = new Date(dto.startedAt).getTime();
+    const now = Date.now();
+    if (startedAtMs > now + VISIT_FUTURE_SKEW_MS) throw new VisitStartedAtInFutureException();
+    if (startedAtMs < now - this.maxAgeDays * 86_400_000) throw new VisitStartedAtTooOldException(this.maxAgeDays);
 
     // SEC-023: only OWNER / SALES_DIRECTOR may record a visit on behalf of another user;
     // every other role (SALES_AGENT, COURIER, ...) is forced to their own id.

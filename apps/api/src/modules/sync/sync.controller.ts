@@ -14,7 +14,7 @@ export class SyncController {
   @Get('pull')
   @RequirePermission('field.read')
   pull(@Query() query: SyncPullQueryDto, @CurrentUser() user: AuthenticatedUser) {
-    return this.sync.pull(query.since, query.agentId, user);
+    return this.sync.pull({ cursor: query.cursor ?? query.since, limit: query.limit, agentId: query.agentId }, user);
   }
 
   @Post('push')

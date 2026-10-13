@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import './common/serialization/bigint-json';
 import { validateEnv } from './common/config/env.schema';
 import { AuditLogService } from './common/audit/audit-log.service';
 import { JwtAuthGuard } from './common/auth/jwt-auth.guard';

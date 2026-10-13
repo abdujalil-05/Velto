@@ -4,7 +4,14 @@ import { prisma, systemPrisma } from '@velto/database';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { AuditLogService } from '../../../common/audit/audit-log.service';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
-import { AgentNotFoundException, VisitNotFoundException, VisitSkipReasonRequiredException } from '../field-exceptions';
+import { ConfigService } from '@nestjs/config';
+import {
+  AgentNotFoundException,
+  VisitNotFoundException,
+  VisitSkipReasonRequiredException,
+  VisitStartedAtInFutureException,
+  VisitStartedAtTooOldException,
+} from '../field-exceptions';
 import { distanceMeters, evaluateGps } from '../geo';
 import { VisitsService } from './visits.service';
 
@@ -81,6 +88,39 @@ describe('VisitsService (integration, real Postgres + RLS)', () => {
         agentUser,
       ),
     );
+
+  describe('startedAt clock-skew bounds', () => {
+    const at = (offsetMs: number) => new Date(Date.now() + offsetMs).toISOString();
+    const DAY = 86_400_000;
+
+    it('rejects startedAt more than 5 minutes in the future, accepts 4 minutes ahead', async () => {
+      await expect(mk({ startedAt: at(6 * 60_000) })).rejects.toBeInstanceOf(VisitStartedAtInFutureException);
+      await expect(mk({ startedAt: at(4 * 60_000) })).resolves.toBeDefined();
+    });
+
+    it('rejects startedAt older than the default 7 days, accepts 6 days', async () => {
+      const err = await mk({ startedAt: at(-8 * DAY) }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(VisitStartedAtTooOldException);
+      expect((err as VisitStartedAtTooOldException).getResponse()).toMatchObject({ code: 'VISIT_STARTED_AT_TOO_OLD' });
+      await expect(mk({ startedAt: at(-6 * DAY) })).resolves.toBeDefined();
+    });
+
+    it('max age comes from VISIT_STARTED_AT_MAX_AGE_DAYS', async () => {
+      const strict = new VisitsService(tenantPrisma, auditLog, undefined, new ConfigService({ VISIT_STARTED_AT_MAX_AGE_DAYS: 1 }));
+      const dto = { outletId: outletWithCoordsId, startedAt: at(-2 * DAY), outcome: 'ORDERED' } as never;
+      await expect(tenantPrisma.run(companyId, () => strict.create(dto, agentUser))).rejects.toBeInstanceOf(VisitStartedAtTooOldException);
+    });
+
+    it('an already-accepted clientId still resolves to the original visit even if now out of bounds', async () => {
+      const clientId = randomUUID();
+      const first = await mk({ clientId, startedAt: at(-6 * DAY) });
+      const strict = new VisitsService(tenantPrisma, auditLog, undefined, new ConfigService({ VISIT_STARTED_AT_MAX_AGE_DAYS: 1 }));
+      const again = await tenantPrisma.run(companyId, () =>
+        strict.create({ outletId: outletWithCoordsId, startedAt: at(-6 * DAY), outcome: 'ORDERED', clientId } as never, agentUser),
+      );
+      expect(again.id).toBe(first.id);
+    });
+  });
 
   it('VERIFIED within radius; stores distanceM, accuracy and derived gpsOk=true', async () => {
     const v = await mk({ latitude: OUTLET_LAT + 0.0003, longitude: OUTLET_LNG, accuracyM: 20, capturedAt: new Date().toISOString() });

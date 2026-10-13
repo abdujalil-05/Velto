@@ -94,8 +94,11 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
   });
 
   describe('pull', () => {
+    // F4: a SALES_AGENT only sees own-route customers (covered in sync-pull.test.ts); these cases use tenant-wide scope.
+    const director = (): AuthenticatedUser => ({ ...user, roles: ['SALES_DIRECTOR'] });
+
     it('returns everything on the first pull, and only later changes on a delta pull', async () => {
-      const first = await tenantPrisma.run(companyId, () => sync.pull(undefined, undefined, user));
+      const first = await tenantPrisma.run(companyId, () => sync.pull({}, director()));
       expect(first.products.some((p) => p.id === productId)).toBe(true);
       expect(first.customers.some((c) => c.id === customerId)).toBe(true);
 
@@ -106,25 +109,26 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
         }),
       );
 
-      const delta = await tenantPrisma.run(companyId, () => sync.pull(cursor, undefined, user));
-      expect(delta.products.map((p) => p.id)).toEqual([secondProduct.id]);
-      expect(delta.customers.some((c) => c.id === customerId)).toBe(false);
+      const delta = await tenantPrisma.run(companyId, () => sync.pull({ cursor }, director()));
+      // Lookback re-sends rows younger than the window (idempotent on the client); the new row must be there.
+      expect(delta.products.map((p) => p.id)).toContain(secondProduct.id);
+      expect(delta.fullResync).toBe(false);
     });
 
     it('includes product categories, delta-filtered the same way as products', async () => {
-      const first = await tenantPrisma.run(companyId, () => sync.pull(undefined, undefined, user));
+      const first = await tenantPrisma.run(companyId, () => sync.pull({}, director()));
       const cursor = first.cursor;
 
       const category = await tenantPrisma.run(companyId, (tx) =>
         tx.productCategory.create({ data: { companyId, name: 'Sync Test Category' } }),
       );
 
-      const delta = await tenantPrisma.run(companyId, () => sync.pull(cursor, undefined, user));
-      expect(delta.categories.map((c) => c.id)).toEqual([category.id]);
+      const delta = await tenantPrisma.run(companyId, () => sync.pull({ cursor }, director()));
+      expect(delta.categories.map((c) => c.id)).toContain(category.id);
     });
 
     it("returns the company's default price list id, matching SalesService's own fallback lookup", async () => {
-      const result = await tenantPrisma.run(companyId, () => sync.pull(undefined, undefined, user));
+      const result = await tenantPrisma.run(companyId, () => sync.pull({}, director()));
       const priceList = await tenantPrisma.run(companyId, (tx) => tx.priceList.findFirst({ where: { isDefault: true } }));
       expect(result.defaultPriceListId).toBe(priceList!.id);
     });
@@ -137,8 +141,9 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
         tx.routeStop.create({ data: { routeId: route.id, outletId, sortOrder: 1 } }),
       );
 
+      // legacy ISO `since` is not a cursor -> full resync, routes still sent
       const farFutureSince = new Date(Date.now() + 3_600_000).toISOString();
-      const result = await tenantPrisma.run(companyId, () => sync.pull(farFutureSince, undefined, user));
+      const result = await tenantPrisma.run(companyId, () => sync.pull({ cursor: farFutureSince }, user));
 
       expect(result.routes.some((r) => r.id === route.id)).toBe(true);
       expect(result.routeStops.some((s) => s.routeId === route.id)).toBe(true);

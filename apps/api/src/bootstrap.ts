@@ -1,4 +1,5 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import './common/serialization/bigint-json';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { traceMiddleware } from './common/trace/trace.middleware';

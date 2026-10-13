@@ -1,6 +1,6 @@
 import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Prisma, withSavepoint } from '@velto/database';
+import { Prisma, SyncEntity, withSavepoint } from '@velto/database';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { GENERIC_MESSAGES } from '../../common/filters/http-exception.filter';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
@@ -19,6 +19,8 @@ import {
   type SyncPushResponse,
   type SyncPushResultItem,
 } from './dto/sync-push.dto';
+import { SYNC_PULL_DEFAULT_LIMIT, SYNC_PULL_MAX_LIMIT } from './dto/sync-pull.query';
+import { ALL_SCOPE, decodeCursor, encodeCursor, scopeFingerprint } from './sync-cursor';
 import { SyncBatchTooLargeException } from './sync-exceptions';
 import { validatePayload } from './validate-payload';
 
@@ -33,6 +35,9 @@ export type {
 
 /** TZ 10.3 default; overridable via SYNC_PUSH_MAX_BATCH (env.schema.ts). */
 export const SYNC_PUSH_DEFAULT_MAX_BATCH = 20;
+
+/** Mirrors env.schema.ts SYNC_PULL_LOOKBACK_SECONDS default. */
+export const SYNC_PULL_DEFAULT_LOOKBACK_SECONDS = 60;
 
 @Injectable()
 export class SyncService {
@@ -51,87 +56,191 @@ export class SyncService {
     return Number.isInteger(raw) && raw >= 1 ? Math.min(raw, SYNC_PUSH_HARD_MAX_BATCH) : SYNC_PUSH_DEFAULT_MAX_BATCH;
   }
 
+  /** Effective lookback in ms — validated by env.schema.ts at boot (>= 20s), re-clamped here defensively. */
+  get pullLookbackMs(): number {
+    const raw = Number(this.config.get('SYNC_PULL_LOOKBACK_SECONDS') ?? SYNC_PULL_DEFAULT_LOOKBACK_SECONDS);
+    return (Number.isFinite(raw) && raw >= 1 ? raw : SYNC_PULL_DEFAULT_LOOKBACK_SECONDS) * 1000;
+  }
+
   /**
-   * 10.1/10.2: reference + state data for the offline client's local Dexie
-   * store — one flat array per Dexie table (`products`, `packagings`,
-   * `prices`, `customers`, `outlets`, `stock`, `balances`, `categories`),
-   * matching VELTO-TZ.md 10.2's `db.version(1).stores({...})` shape plus a
-   * `categories` table the Mini App's Order screen needs for its category
-   * filter (9.4 Ekran 4) that 10.2's table doesn't literally list, plus a
-   * top-level `defaultPriceListId` (see below). Each is delta-filtered by
-   * `updatedAt > since`; `cursor` is captured *before* any
-   * query runs and returned for the next pull's `since` — so a row written
-   * mid-request is never missed, only (rarely, harmlessly) re-sent once more
-   * next time. `balances` is derived from the same `customers` query rather
-   * than a second round trip, since Customer.cachedBalance already carries
-   * the up-to-date figure (6.7).
+   * 10.1/10.2 + F4: reference + state data for the offline client's Dexie
+   * store, one flat array per table (`products`, `packagings`, `prices`,
+   * `customers`, `outlets`, `stock`, `balances`, `categories`) plus
+   * `tombstones[]`, `routes`/`routeStops` (full snapshot every page — a
+   * handful of rows, and RoutesService hard-deletes replaced stops),
+   * `defaultPriceListId` and, for a SALES_AGENT, `scope`.
    *
-   * `routes`/`routeStops` are the one exception: a full snapshot every pull,
-   * not a delta. RoutesService.update() *hard*-deletes replaced RouteStop
-   * rows (no tombstone survives to signal removal to a delta consumer), and
-   * 10.1 explicitly allows "to'liq yuklab olish" (full download) for
-   * reference data — cheap here since it's a handful of routes/stops per
-   * agent, not thousands of rows.
+   * CURSOR = global `changeSeq` (DB sequence stamped by trigger; replaces the
+   * app-clock `updatedAt > since`). Each call returns the next `limit` items
+   * with changeSeq > cursor, merged across all tables in changeSeq order, so a
+   * page boundary never splits the order. `hasMore=true` -> call again with
+   * the returned cursor. No cursor / unparsable cursor / changed agent scope
+   * -> restart from 0 and `fullResync: true`.
+   *
+   * COMMIT-ORDER SAFETY (nextval order != commit order): a transaction can take
+   * seq 100, a second one seq 101 and commit first; a pull that saw 101 and
+   * advanced its cursor to 101 would never see 100. Chosen fix: a time-bounded
+   * lookback (re-send window; the client applies idempotently — upsert by id,
+   * delete by tombstone). A terminal page (hasMore=false) does NOT return the
+   * max seq it saw but S0 = the highest changeSeq among rows whose
+   * updatedAt/deletedAt is <= (sessionStart - lookback). Proof sketch: any row
+   * X with seq < S0 was allocated before S0's row R, i.e. no later than R's
+   * time + one request transaction (<= 5s, Prisma default timeout) and commits
+   * within another 5s; with lookback >= 20s (env min; default 60s, covering
+   * app/DB clock skew too) X committed before the session's first page read
+   * (sessionStart; carried in mid-session cursors so a slow multi-page session
+   * cannot jump past rows that committed between its pages), hence X was
+   * visible to every page and is not lost. Rows younger than the window have
+   * seq > S0 and are simply re-sent until they age out. Alternative
+   * (pg_snapshot_xmin) rejected: it bounds txids, not the sequence values the
+   * in-flight transactions hold, and xid assignment happens after the BEFORE
+   * trigger's nextval — a provable bound needs a DB-side change.
+   *
+   * TOMBSTONES (SyncTombstone, trigger-written on DELETE, soft-delete and
+   * isActive true->false): sent with the same cursor. Product/Customer/Outlet
+   * rows that are inactive or soft-deleted are never sent as rows. Apply
+   * tombstones first, then items: a re-created/reactivated row always has a
+   * higher seq than its tombstone, so it wins.
+   *
+   * AGENT SCOPE (TZ 8.2 minimum data): a SALES_AGENT gets only outlets on
+   * their own routes' stops and those outlets' customers; other roles keep the
+   * tenant-wide scope. Changing a route does not touch Outlet/Customer rows (no
+   * changeSeq bump), so: `scope = { customerIds, outletIds }` (the complete
+   * current visible id lists) is returned on every page — the device drops any
+   * local customer/outlet not in it — and the cursor carries a fingerprint of
+   * that scope; if it differs from the client's, the pull restarts as a
+   * `fullResync` so newly-scoped rows (old changeSeq) are delivered. Customer/
+   * Outlet tombstones are not sent to agents (scope covers removal; also avoids
+   * leaking ids of out-of-scope rows). `scope` is null for non-agents.
    */
-  async pull(sinceParam: string | undefined, agentIdParam: string | undefined, user: AuthenticatedUser) {
-    const cursor = new Date();
-    const since = sinceParam ? new Date(sinceParam) : new Date(0);
+  async pull(
+    params: { cursor?: string; limit?: number; agentId?: string },
+    user: AuthenticatedUser,
+  ) {
     const tx = this.tenantPrisma.client;
+    const limit = Math.min(Math.max(Math.trunc(params.limit ?? SYNC_PULL_DEFAULT_LIMIT) || SYNC_PULL_DEFAULT_LIMIT, 1), SYNC_PULL_MAX_LIMIT);
+    const take = limit + 1;
+    const isAgent = user.roles.includes('SALES_AGENT');
+    const agentId = isAgent ? user.id : params.agentId;
 
-    const agentId = user.roles.includes('SALES_AGENT') ? user.id : agentIdParam;
-
-    // Product/Customer/Outlet are soft-deleted (deletedAt), matching the
-    // deletedAt: null guard every other query onto these models in the app
-    // applies — without it, a soft-deleted row's later updatedAt bump (e.g.
-    // the delete itself) would sync it to the offline client as if still
-    // live, with nothing telling the client to remove it locally.
-    // ProductPackaging/PriceListItem/StockLevel have no deletedAt column.
-    const [products, packagings, prices, customers, outlets, stock, categories, routes] = await Promise.all([
-      tx.product.findMany({ where: { updatedAt: { gt: since }, deletedAt: null } }),
-      tx.productPackaging.findMany({ where: { updatedAt: { gt: since } } }),
-      tx.priceListItem.findMany({ where: { updatedAt: { gt: since } } }),
-      tx.customer.findMany({ where: { updatedAt: { gt: since }, deletedAt: null } }),
-      tx.outlet.findMany({ where: { updatedAt: { gt: since }, deletedAt: null } }),
-      tx.stockLevel.findMany({ where: { updatedAt: { gt: since } } }),
-      // Needed for the Mini App's Order screen category filter (9.4 Ekran 4) —
-      // no deletedAt column on this model, matching ProductPackaging/PriceListItem/StockLevel above.
-      tx.productCategory.findMany({ where: { updatedAt: { gt: since } } }),
-      agentId ? tx.route.findMany({ where: { agentId } }) : Promise.resolve([]),
-    ]);
-
+    const routes = agentId ? await tx.route.findMany({ where: { agentId } }) : [];
     const routeStops = routes.length
-      ? await tx.routeStop.findMany({
-          where: { routeId: { in: routes.map((r) => r.id) } },
-          orderBy: { sortOrder: 'asc' },
-        })
+      ? await tx.routeStop.findMany({ where: { routeId: { in: routes.map((r) => r.id) } }, orderBy: { sortOrder: 'asc' } })
       : [];
 
-    const balances = customers.map((c) => ({ customerId: c.id, balance: c.cachedBalance, updatedAt: c.updatedAt }));
+    let scope: { customerIds: string[]; outletIds: string[] } | null = null;
+    if (isAgent) {
+      const stopOutletIds = [...new Set(routeStops.map((st) => st.outletId))];
+      const outlets = stopOutletIds.length
+        ? await tx.outlet.findMany({ where: { id: { in: stopOutletIds }, deletedAt: null, isActive: true }, select: { id: true, customerId: true } })
+        : [];
+      const customers = outlets.length
+        ? await tx.customer.findMany({
+            where: { id: { in: [...new Set(outlets.map((o) => o.customerId))] }, deletedAt: null, isActive: true },
+            select: { id: true },
+          })
+        : [];
+      const customerSet = new Set(customers.map((c) => c.id));
+      scope = { customerIds: [...customerSet], outletIds: outlets.filter((o) => customerSet.has(o.customerId)).map((o) => o.id) };
+    }
+    const fingerprint = scope ? scopeFingerprint(scope.outletIds, scope.customerIds) : ALL_SCOPE;
 
-    // 8.1: order pricing falls back to this whenever a customer has no
-    // priceListId of its own — SalesService.create()'s own
-    // defaultPriceListId() private helper does the identical lookup. Sent
-    // once per pull (not delta-filtered — it's a single id, not a
-    // collection) so the offline Order screen's client-side price preview
-    // resolves the same price list the server will actually bill against.
-    const defaultPriceList = await tx.priceList.findFirst({ where: { isDefault: true } });
+    const decoded = decodeCursor(params.cursor);
+    const fullResync = decoded === null || decoded.f !== fingerprint;
+    const s = fullResync ? 0n : decoded.s;
+    const now = Date.now();
+    const sessionStart = !fullResync && decoded?.t !== undefined && decoded.t <= now ? decoded.t : now;
+
+    const gt = { gt: s };
+    const orderBy = { changeSeq: 'asc' as const };
+    const liveWhere = { deletedAt: null, isActive: true };
+    const [products, packagings, prices, customers, outlets, stock, categories, tombstones, defaultPriceList] = await Promise.all([
+      tx.product.findMany({ where: { changeSeq: gt, ...liveWhere }, orderBy, take }),
+      tx.productPackaging.findMany({ where: { changeSeq: gt, product: liveWhere }, orderBy, take }),
+      tx.priceListItem.findMany({ where: { changeSeq: gt }, orderBy, take }),
+      tx.customer.findMany({ where: { changeSeq: gt, ...liveWhere, ...(scope && { id: { in: scope.customerIds } }) }, orderBy, take }),
+      tx.outlet.findMany({ where: { changeSeq: gt, ...liveWhere, ...(scope && { id: { in: scope.outletIds } }) }, orderBy, take }),
+      tx.stockLevel.findMany({ where: { changeSeq: gt }, orderBy, take }),
+      // Order screen category filter (9.4 Ekran 4).
+      tx.productCategory.findMany({ where: { changeSeq: gt }, orderBy, take }),
+      tx.syncTombstone.findMany({
+        where: { changeSeq: gt, ...(scope && { entity: { notIn: [SyncEntity.Customer, SyncEntity.Outlet] } }) },
+        orderBy,
+        take,
+      }),
+      // 8.1: SalesService.create()'s fallback price list — a single id, sent every page.
+      tx.priceList.findFirst({ where: { isDefault: true } }),
+    ]);
+
+    // Merge all sources by the global seq (unique across tables) and cut at `limit`.
+    const tagged: Array<{ seq: bigint; key: string }> = [];
+    const tag = (kind: string, rows: Array<{ changeSeq: bigint }>) => rows.forEach((r, i) => tagged.push({ seq: r.changeSeq, key: `${kind}:${i}` }));
+    tag('products', products);
+    tag('packagings', packagings);
+    tag('prices', prices);
+    tag('customers', customers);
+    tag('outlets', outlets);
+    tag('stock', stock);
+    tag('categories', categories);
+    tag('tombstones', tombstones);
+    tagged.sort((a, b) => (a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0));
+    const hasMore = tagged.length > limit;
+    const page = tagged.slice(0, limit);
+    const kept = new Set(page.map((p) => p.key));
+    const pick = <T>(kind: string, rows: T[]): T[] => rows.filter((_, i) => kept.has(`${kind}:${i}`));
+
+    const pageCustomers = pick('customers', customers);
+    // Customer.cachedBalance already carries the up-to-date figure (6.7).
+    const balances = pageCustomers.map((c) => ({ customerId: c.id, balance: c.cachedBalance, updatedAt: c.updatedAt }));
+
+    const cursor = hasMore
+      ? encodeCursor({ s: page[page.length - 1]!.seq, f: fingerprint, t: sessionStart })
+      : encodeCursor({ s: await this.stableSeq(sessionStart - this.pullLookbackMs), f: fingerprint });
 
     return {
-      cursor: cursor.toISOString(),
-      products,
-      packagings,
-      prices,
-      customers,
-      outlets,
-      stock,
-      categories,
+      cursor,
+      hasMore,
+      fullResync,
+      products: pick('products', products),
+      packagings: pick('packagings', packagings),
+      prices: pick('prices', prices),
+      customers: pageCustomers,
+      outlets: pick('outlets', outlets),
+      stock: pick('stock', stock),
+      categories: pick('categories', categories),
       balances,
+      tombstones: pick('tombstones', tombstones).map((t) => ({
+        entity: t.entity,
+        entityId: t.entityId,
+        entityKey: t.entityKey,
+        deletedAt: t.deletedAt,
+        changeSeq: t.changeSeq,
+      })),
       routes,
       routeStops,
       defaultPriceListId: defaultPriceList?.id ?? null,
+      scope,
     };
   }
 
+  /** Highest changeSeq (any synced table or tombstone) last written at or before `cutoffMs`; 0 when none. See pull(). */
+  private async stableSeq(cutoffMs: number): Promise<bigint> {
+    const tx = this.tenantPrisma.client;
+    const cutoff = new Date(cutoffMs);
+    const where = { updatedAt: { lte: cutoff } };
+    const args = { orderBy: { changeSeq: 'desc' as const }, select: { changeSeq: true } };
+    const found = await Promise.all([
+      tx.product.findFirst({ where, ...args }),
+      tx.productPackaging.findFirst({ where, ...args }),
+      tx.priceListItem.findFirst({ where, ...args }),
+      tx.customer.findFirst({ where, ...args }),
+      tx.outlet.findFirst({ where, ...args }),
+      tx.stockLevel.findFirst({ where, ...args }),
+      tx.productCategory.findFirst({ where, ...args }),
+      tx.syncTombstone.findFirst({ where: { deletedAt: { lte: cutoff } }, ...args }),
+    ]);
+    return found.reduce((max, r) => (r && r.changeSeq > max ? r.changeSeq : max), 0n);
+  }
 
   /**
    * 10.3: processes up to `maxBatch` (SYNC_PUSH_MAX_BATCH, default 20) queued
