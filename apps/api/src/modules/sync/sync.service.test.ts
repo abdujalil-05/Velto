@@ -184,6 +184,24 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
       expect(results.every((r) => r.id)).toBe(true);
     });
 
+    it('accepts an offline visit far from the outlet (OUTSIDE_RADIUS) and a no-GPS SKIPPED visit instead of REJECTED', async () => {
+      const far = randomUUID();
+      const skipped = randomUUID();
+      const startedAt = new Date().toISOString();
+      const doc = { type: SyncDocType.VISIT, clientId: far, payload: { outletId, startedAt, latitude: OUTLET_LAT + 0.01, longitude: OUTLET_LNG, outcome: 'ORDERED' } };
+      const { results } = await tenantPrisma.run(companyId, () =>
+        sync.push(
+          [doc, { type: SyncDocType.VISIT, clientId: skipped, payload: { outletId, startedAt, permissionDenied: true, outcome: 'SKIPPED', skipReason: 'Yopiq' } }],
+          user,
+        ),
+      );
+      expect(results.map((r) => r.status)).toEqual(['ACCEPTED', 'ACCEPTED']);
+      const stored = await tenantPrisma.run(companyId, (tx) => tx.visit.findUnique({ where: { companyId_clientId: { companyId, clientId: far } } }));
+      expect(stored?.gpsStatus).toBe('OUTSIDE_RADIUS');
+      const again = await tenantPrisma.run(companyId, () => sync.push([doc], user));
+      expect(again.results[0]?.status).toBe('DUPLICATE');
+    });
+
     it('reports DUPLICATE when the same clientId is pushed twice', async () => {
       const clientId = randomUUID();
       const doc = {

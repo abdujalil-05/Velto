@@ -4,7 +4,8 @@ import { prisma, systemPrisma } from '@velto/database';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { AuditLogService } from '../../../common/audit/audit-log.service';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
-import { AgentNotFoundException, GpsTooFarException, VisitNotFoundException } from '../field-exceptions';
+import { AgentNotFoundException, VisitNotFoundException, VisitSkipReasonRequiredException } from '../field-exceptions';
+import { distanceMeters, evaluateGps } from '../geo';
 import { VisitsService } from './visits.service';
 
 describe('VisitsService (integration, real Postgres + RLS)', () => {
@@ -73,55 +74,82 @@ describe('VisitsService (integration, real Postgres + RLS)', () => {
     await systemPrisma.$disconnect();
   });
 
-  it('verifies GPS when the agent is within 150m of the outlet', async () => {
-    const visit = await tenantPrisma.run(companyId, () =>
+  const mk = (extra: Record<string, unknown>, outletId = outletWithCoordsId) =>
+    tenantPrisma.run(companyId, () =>
       visits.create(
-        {
-          outletId: outletWithCoordsId,
-          startedAt: new Date().toISOString(),
-          latitude: OUTLET_LAT + 0.0003, // ~33m north
-          longitude: OUTLET_LNG,
-          outcome: 'ORDERED',
-        },
+        { outletId, startedAt: new Date().toISOString(), outcome: 'ORDERED', ...extra } as never,
         agentUser,
       ),
     );
-    expect(visit.gpsOk).toBe(true);
-    expect(visit.agentId).toBe(agentUser.id);
+
+  it('VERIFIED within radius; stores distanceM, accuracy and derived gpsOk=true', async () => {
+    const v = await mk({ latitude: OUTLET_LAT + 0.0003, longitude: OUTLET_LNG, accuracyM: 20, capturedAt: new Date().toISOString() });
+    expect(v.gpsStatus).toBe('VERIFIED');
+    expect(v.gpsOk).toBe(true);
+    expect(Number(v.distanceM)).toBeGreaterThan(30);
+    expect(Number(v.gpsAccuracyM)).toBe(20);
+    expect(v.gpsCapturedAt).not.toBeNull();
+    expect(v.agentId).toBe(agentUser.id);
   });
 
-  it('hard-blocks a visit more than 150m away — no reason-based bypass', async () => {
-    await expect(
-      tenantPrisma.run(companyId, () =>
-        visits.create(
-          {
-            outletId: outletWithCoordsId,
-            startedAt: new Date().toISOString(),
-            latitude: OUTLET_LAT + 0.01, // ~1.1km away
-            longitude: OUTLET_LNG,
-            outcome: 'NO_ORDER',
-            noOrderReason: 'Yopiq edi',
-          },
-          agentUser,
-        ),
-      ),
-    ).rejects.toBeInstanceOf(GpsTooFarException);
+  it('OUTSIDE_RADIUS is saved (not blocked) with gpsOk=false', async () => {
+    const v = await mk({ latitude: OUTLET_LAT + 0.01, longitude: OUTLET_LNG, accuracyM: 10 });
+    expect(v.gpsStatus).toBe('OUTSIDE_RADIUS');
+    expect(v.gpsOk).toBe(false);
+    expect(Number(v.distanceM)).toBeGreaterThan(1000);
   });
 
-  it('allows a visit at an outlet with no registered coordinates — unverifiable is not the agent\'s fault, so it is not blocked', async () => {
-    const visit = await tenantPrisma.run(companyId, () =>
-      visits.create(
-        {
-          outletId: outletWithoutCoordsId,
-          startedAt: new Date().toISOString(),
-          latitude: OUTLET_LAT,
-          longitude: OUTLET_LNG,
-          outcome: 'ORDERED',
-        },
-        agentUser,
-      ),
+  it('LOW_ACCURACY: accuracy above Company.gpsMaxAccuracyM (equal passes)', async () => {
+    const at = { latitude: OUTLET_LAT, longitude: OUTLET_LNG };
+    expect((await mk({ ...at, accuracyM: 100.01 })).gpsStatus).toBe('LOW_ACCURACY');
+    expect((await mk({ ...at, accuracyM: 100 })).gpsStatus).toBe('VERIFIED');
+  });
+
+  it('NO_PERMISSION wins over coordinates and stores null coords', async () => {
+    const v = await mk({ permissionDenied: true, latitude: OUTLET_LAT, longitude: OUTLET_LNG });
+    expect(v.gpsStatus).toBe('NO_PERMISSION');
+    expect(v.latitude).toBeNull();
+    expect(v.gpsOk).toBeNull();
+  });
+
+  it('NO_FIX when no coordinates (or an incomplete pair)', async () => {
+    expect((await mk({})).gpsStatus).toBe('NO_FIX');
+    expect((await mk({ latitude: OUTLET_LAT })).gpsStatus).toBe('NO_FIX');
+  });
+
+  it('OUTLET_NO_COORDS keeps agent coords, gpsOk null; NO_FIX still wins when agent has no fix', async () => {
+    const v = await mk({ latitude: OUTLET_LAT, longitude: OUTLET_LNG }, outletWithoutCoordsId);
+    expect(v.gpsStatus).toBe('OUTLET_NO_COORDS');
+    expect(v.latitude).not.toBeNull();
+    expect(v.gpsOk).toBeNull();
+    expect((await mk({}, outletWithoutCoordsId)).gpsStatus).toBe('NO_FIX');
+  });
+
+  it('evaluateGps boundary: exactly radius = VERIFIED, 0.01m beyond = OUTSIDE_RADIUS; precedence LOW_ACCURACY over OUTSIDE', () => {
+    const lat = OUTLET_LAT + 0.002;
+    const d = Math.round(distanceMeters(lat, OUTLET_LNG, OUTLET_LAT, OUTLET_LNG) * 100) / 100;
+    const base = { latitude: lat, longitude: OUTLET_LNG, outletLatitude: OUTLET_LAT, outletLongitude: OUTLET_LNG, maxAccuracyM: 100 };
+    expect(evaluateGps({ ...base, radiusM: d }).status).toBe('VERIFIED');
+    expect(evaluateGps({ ...base, radiusM: d - 0.01 }).status).toBe('OUTSIDE_RADIUS');
+    expect(evaluateGps({ ...base, radiusM: d - 0.01, accuracyM: 500 }).status).toBe('LOW_ACCURACY');
+  });
+
+  it('SKIPPED requires a non-blank skipReason, stores it; skipReason cleared for other outcomes', async () => {
+    await expect(mk({ outcome: 'SKIPPED' })).rejects.toBeInstanceOf(VisitSkipReasonRequiredException);
+    await expect(mk({ outcome: 'SKIPPED', skipReason: '   ' })).rejects.toBeInstanceOf(VisitSkipReasonRequiredException);
+    const v = await mk({ outcome: 'SKIPPED', skipReason: 'Yopiq' });
+    expect(v.outcome).toBe('SKIPPED');
+    expect(v.skipReason).toBe('Yopiq');
+    expect((await mk({ skipReason: 'x' })).skipReason).toBeNull();
+  });
+
+  it('list() filters by gpsStatus', async () => {
+    const v = await mk({ latitude: OUTLET_LAT + 0.01, longitude: OUTLET_LNG });
+    const res = await tenantPrisma.run(companyId, () =>
+      visits.list({ page: 1, pageSize: 100, gpsStatus: 'OUTSIDE_RADIUS' }, directorUser),
     );
-    expect(visit.gpsOk).toBeNull();
+    expect(res.data.map((x) => x.id)).toContain(v.id);
+    expect(res.data.every((x) => x.gpsStatus === 'OUTSIDE_RADIUS')).toBe(true);
   });
 
   it('requires an explicit agentId when the caller is not a SALES_AGENT, and validates it', async () => {

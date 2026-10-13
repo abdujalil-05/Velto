@@ -6,8 +6,8 @@ import { paginate } from '../../../common/pagination/pagination.dto';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import { endOfDay, startOfDay } from '../../analytics/report-utils';
 import { OutletNotFoundException } from '../../customers/customers-exceptions';
-import { AgentNotFoundException, GpsTooFarException, VisitNotFoundException } from '../field-exceptions';
-import { distanceMeters, VISIT_GPS_RADIUS_M } from '../geo';
+import { AgentNotFoundException, VisitNotFoundException, VisitSkipReasonRequiredException } from '../field-exceptions';
+import { evaluateGps } from '../geo';
 import type { CreateVisitDto } from './dto/create-visit.dto';
 import type { ListVisitsQueryDto } from './dto/list-visits.query';
 
@@ -33,6 +33,7 @@ export class VisitsService {
     const where: Prisma.VisitWhereInput = {
       ...(scopedAgentId ? { agentId: scopedAgentId } : {}),
       ...(query.outletId ? { outletId: query.outletId } : {}),
+      ...(query.gpsStatus ? { gpsStatus: query.gpsStatus } : {}),
       ...(query.from || query.to
         ? {
             startedAt: {
@@ -71,16 +72,17 @@ export class VisitsService {
   }
 
   /**
-   * F-M06 / 9.4-follow-up: records a field visit with a hard GPS proximity
-   * check against the outlet's registered coordinates (150m radius) — no
-   * reason-based bypass. When the outlet has no registered coordinates at
-   * all, the check can't run, so `gpsOk` is left `null` (unverifiable, but
-   * not the agent's fault) rather than blocking the visit outright.
+   * F3: records a field visit. GPS problems never block it — the server
+   * classifies the client-reported fix via evaluateGps() (precedence in
+   * geo.ts), stores the status/distance, and only VERIFIED counts as verified.
+   * gpsOk is derived by a DB trigger and never written here.
    * 10.4 offline idempotency: a resubmitted clientId returns the original
    * visit instead of creating a duplicate.
    */
   async create(dto: CreateVisitDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
+
+    if (dto.outcome === 'SKIPPED' && !dto.skipReason?.trim()) throw new VisitSkipReasonRequiredException();
 
     if (dto.clientId) {
       const existing = await tx.visit.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: VISIT_INCLUDE });
@@ -92,12 +94,20 @@ export class VisitsService {
     const outlet = await tx.outlet.findFirst({ where: { id: dto.outletId, deletedAt: null } });
     if (!outlet) throw new OutletNotFoundException();
 
-    let gpsOk: boolean | null = null;
-    if (outlet.latitude != null && outlet.longitude != null) {
-      const distance = distanceMeters(dto.latitude, dto.longitude, Number(outlet.latitude), Number(outlet.longitude));
-      gpsOk = distance <= VISIT_GPS_RADIUS_M;
-      if (!gpsOk) throw new GpsTooFarException(distance);
-    }
+    const company = await tx.company.findUniqueOrThrow({
+      where: { id: this.tenantPrisma.companyId },
+      select: { visitGpsRadiusM: true, gpsMaxAccuracyM: true },
+    });
+    const gps = evaluateGps({
+      permissionDenied: dto.permissionDenied,
+      latitude: dto.latitude,
+      longitude: dto.longitude,
+      accuracyM: dto.accuracyM,
+      outletLatitude: outlet.latitude == null ? null : Number(outlet.latitude),
+      outletLongitude: outlet.longitude == null ? null : Number(outlet.longitude),
+      radiusM: company.visitGpsRadiusM,
+      maxAccuracyM: company.gpsMaxAccuracyM,
+    });
 
     let visit;
     try {
@@ -112,11 +122,15 @@ export class VisitsService {
             outletId: dto.outletId,
             startedAt: new Date(dto.startedAt),
             endedAt: dto.endedAt ? new Date(dto.endedAt) : null,
-            latitude: dto.latitude,
-            longitude: dto.longitude,
-            gpsOk,
+            latitude: gps.latitude,
+            longitude: gps.longitude,
+            gpsStatus: gps.status,
+            gpsAccuracyM: gps.latitude == null ? null : dto.accuracyM,
+            gpsCapturedAt: gps.latitude == null || !dto.capturedAt ? null : new Date(dto.capturedAt),
+            distanceM: gps.distanceM,
             outcome: dto.outcome,
             noOrderReason: dto.noOrderReason,
+            skipReason: dto.outcome === 'SKIPPED' ? dto.skipReason?.trim() : null,
             clientId: dto.clientId,
           },
           include: VISIT_INCLUDE,

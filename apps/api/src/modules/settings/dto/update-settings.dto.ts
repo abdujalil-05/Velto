@@ -1,4 +1,4 @@
-import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsInt, IsOptional, IsString, Max, Min, MaxLength, MinLength } from 'class-validator';
 import { IsPercentage } from '../../../common/validators/numeric-bounds';
 
 // 6.2 Company fields — deliberately excludes tenantId/plan/isActive, which
@@ -44,4 +44,17 @@ export class UpdateSettingsDto {
   @IsString()
   @MaxLength(64)
   timezone?: string;
+
+  // F3: visit geofence radius (m) and max accepted GPS accuracy (m); mirror DB CHECKs.
+  @IsOptional()
+  @IsInt()
+  @Min(10)
+  @Max(5000)
+  visitGpsRadiusM?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(5)
+  @Max(1000)
+  gpsMaxAccuracyM?: number;
 }

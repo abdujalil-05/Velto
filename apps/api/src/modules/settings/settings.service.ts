@@ -36,6 +36,8 @@ export class SettingsService {
         defaultVatRate: dto.defaultVatRate,
         docPrefix: dto.docPrefix,
         timezone: dto.timezone,
+        visitGpsRadiusM: dto.visitGpsRadiusM,
+        gpsMaxAccuracyM: dto.gpsMaxAccuracyM,
       },
     });
 
@@ -48,6 +50,21 @@ export class SettingsService {
       oldValue: toAuditJson(before),
       newValue: toAuditJson(company),
     });
+
+    if (
+      before.visitGpsRadiusM !== company.visitGpsRadiusM ||
+      before.gpsMaxAccuracyM !== company.gpsMaxAccuracyM
+    ) {
+      await this.auditLog.log(tx, {
+        companyId: user.companyId,
+        userId: user.id,
+        action: 'company.gps_settings_update',
+        entity: 'Company',
+        entityId: company.id,
+        oldValue: { visitGpsRadiusM: before.visitGpsRadiusM, gpsMaxAccuracyM: before.gpsMaxAccuracyM },
+        newValue: { visitGpsRadiusM: company.visitGpsRadiusM, gpsMaxAccuracyM: company.gpsMaxAccuracyM },
+      });
+    }
 
     return company;
   }

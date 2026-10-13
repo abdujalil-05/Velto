@@ -1,4 +1,5 @@
-import { IsDateString, IsOptional, IsUUID } from 'class-validator';
+import { IsDateString, IsEnum, IsOptional, IsUUID } from 'class-validator';
+import { GpsStatus } from '@velto/database';
 import { PaginationQueryDto } from '../../../../common/pagination/pagination.dto';
 
 export class ListVisitsQueryDto extends PaginationQueryDto {
@@ -20,4 +21,8 @@ export class ListVisitsQueryDto extends PaginationQueryDto {
   @IsOptional()
   @IsDateString()
   to?: string;
+
+  @IsOptional()
+  @IsEnum(GpsStatus)
+  gpsStatus?: GpsStatus;
 }
