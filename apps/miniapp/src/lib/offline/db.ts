@@ -57,8 +57,8 @@ class VeltoOfflineDb extends Dexie {
     // so the engine can scope pushes to the current user. No `.upgrade()` data
     // rewrite on purpose — existing v2 rows (incl. PENDING) are left byte-for-
     // byte intact; their missing owner/attemptCount fields are normalised on
-    // read (queue.ts `normalize`) and legacy rows are adopted by the first
-    // user to log in (session-bootstrap.ts). Encryption can't run inside a
+    // read (queue.ts `normalize`) and legacy rows are quarantined (never adopted;
+    // claimed only if the payload names the current user - session-bootstrap.ts). Encryption can't run inside a
     // Dexie upgrade transaction, which is the other reason not to rewrite.
     // Pull cursor + scope live in `meta` under `pull:<company>:<user>`.
     this.version(3).stores({
@@ -70,7 +70,7 @@ class VeltoOfflineDb extends Dexie {
 export const db = new VeltoOfflineDb();
 
 /** Logout / device-key rotation: wipes every locally cached + queued row. auth-context.tsx's logout() is the only caller and refuses to invoke this while any queue entry is unsynced — see its comment. */
-export async function clearOfflineDb(): Promise<void> {
+export async function clearOfflineDb(opts: { keepQueue?: boolean } = {}): Promise<void> {
   await db.transaction(
     'rw',
     [db.products, db.packagings, db.prices, db.customers, db.outlets, db.stock, db.categories, db.balances, db.routes, db.routeStops, db.queue, db.meta],
@@ -86,7 +86,7 @@ export async function clearOfflineDb(): Promise<void> {
         db.balances.clear(),
         db.routes.clear(),
         db.routeStops.clear(),
-        db.queue.clear(),
+        opts.keepQueue ? Promise.resolve() : db.queue.clear(),
         db.meta.clear(),
       ]);
     },

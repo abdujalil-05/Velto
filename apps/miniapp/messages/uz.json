@@ -251,6 +251,15 @@
     "logoutCancel": "Bekor qilish",
     "logoutDiscardConfirmTitle": "Yuborilmagan hujjatlar o'chiriladimi?",
     "logoutDiscardConfirmDescription": "{count} ta hujjat serverga yetmagan va butunlay yo'qoladi.",
-    "logoutDiscardConfirm": "Ha, o'chirib chiqish"
+    "logoutDiscardConfirm": "Ha, o'chirib chiqish",
+    "quarantineTitle": "Egasi noma'lum hujjatlar",
+    "quarantineWarning": "Bu hujjatlar eski versiyadan qolgan, kim yaratgani noma'lum. Ular yuborilmaydi va sizning ishingiz hisoblanmaydi. Faylga yuklash yoki o'chirish mumkin.",
+    "quarantineExport": "Egasi noma'lum hujjatlarni yuklash",
+    "quarantineExportWarning": "Diqqat: fayl egasi noma'lum ma'lumotni o'z ichiga oladi. Uni ehtiyotkorlik bilan saqlang.",
+    "quarantineDiscard": "O'chirish",
+    "quarantineDiscardConfirmTitle": "Egasi noma'lum hujjat o'chiriladimi?",
+    "quarantineDiscardConfirmDescription": "Hujjat serverga yetmagan va qurilmadan butunlay yo'qoladi.",
+    "quarantineDiscardConfirm": "Ha, o'chirish",
+    "logoutQuarantineNote": "Egasi noma'lum hujjatlar chiqishda o'chirilmaydi — ular qurilmada qoladi."
   }
 }

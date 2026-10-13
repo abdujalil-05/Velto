@@ -154,4 +154,17 @@ describe('queueRepository (10.3 guaranteed delivery)', () => {
     const counts = await queueRepository.countByStatus();
     expect(counts).toMatchObject({ PENDING: 1, FAILED: 0, SYNCED: 1, unsynced: 1 });
   });
+
+  it('exportPendingToJson never includes other owners (no all scope); deleteOwnEntries keeps foreign rows', async () => {
+    const mine = await queueRepository.enqueue('order', { x: 1 });
+    setOfflineSession({ userId: 'u2', companyId: 'c1' });
+    const theirs = await queueRepository.enqueue('order', { x: 2 });
+    setOfflineSession({ userId: 'u1', companyId: 'c1' });
+    const exported = JSON.parse(await (queueRepository.exportPendingToJson as (o?: unknown) => Promise<string>)({ scope: 'all' }));
+    expect(exported.items.map((i: { clientId: string }) => i.clientId)).toEqual([mine]);
+    expect(JSON.stringify(exported)).not.toContain(theirs);
+    expect(await queueRepository.unsyncedCountForLogout()).toBe(1); // foreign row not counted
+    await queueRepository.deleteOwnEntries();
+    expect((await queueRepository.listAllOwners()).map((e) => e.clientId)).toEqual([theirs]);
+  });
 });

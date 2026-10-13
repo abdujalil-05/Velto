@@ -383,6 +383,8 @@ export interface PendingExport {
   exportedAt: string;
   userId: string | null;
   companyId: string | null;
+  /** True for the quarantine export: the file holds data of an UNKNOWN owner. */
+  unknownOwner?: boolean;
   items: {
     clientId: string;
     type: SyncDocType;
@@ -390,48 +392,102 @@ export interface PendingExport {
     createdAt: string;
     payload: Record<string, unknown>;
     lastError?: QueueError;
-    ownerUserId?: string;
   }[];
 }
 
-/**
- * TZ 8.1 local recovery path: JSON of every document the server has not
- * accepted (PENDING/SYNCING/FAILED/CONFLICT). Default = current user's only.
- * `scope: 'all'` also includes other users' documents on this device and is
- * meant solely for the logout / device-handover flow. The caller (screen)
- * hands the string to a download/share action; it is plaintext by design.
- */
-export async function exportPendingToJson(opts: { scope?: 'own' | 'all' } = {}): Promise<string> {
-  const s = getOfflineSession();
-  const all = opts.scope === 'all' ? await readAll() : await listAll();
-  const items = all
+function toExportItems(entries: QueueEntry[]): PendingExport['items'] {
+  return entries
     .filter((e) => UNSYNCED_STATUSES.includes(e.status))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-    .map((e) => ({
-      clientId: e.clientId,
-      type: e.type,
-      status: e.status,
-      createdAt: e.createdAt,
-      payload: e.payload,
-      lastError: e.lastError,
-      ...(ownedBy(e, s) ? {} : { ownerUserId: e.userId }),
-    }));
-  const out: PendingExport = { exportedAt: new Date().toISOString(), userId: s?.userId ?? null, companyId: s?.companyId ?? null, items };
-  return JSON.stringify(out, null, 2);
+    .map((e) => ({ clientId: e.clientId, type: e.type, status: e.status, createdAt: e.createdAt, payload: e.payload, lastError: e.lastError }));
 }
 
 /**
- * Pre-v3 documents carry no owner. Logout was blocked while anything was
- * unsynced, so such rows can only belong to the last signed-in user; the
- * first user to sign in after the upgrade adopts them (done outside the Dexie
- * upgrade because encryption can't run inside one).
+ * TZ 8.1 local recovery path: JSON of the CURRENT user's documents the server
+ * has not accepted (PENDING/SYNCING/FAILED/CONFLICT). Other owners' documents
+ * are never exported (no 'all' scope). The caller hands the string to a
+ * download/share action; it is plaintext by design.
  */
-export async function adoptLegacyEntries(session: OfflineSession): Promise<number> {
-  const legacy = (await readAll()).filter((e) => !e.userId);
-  for (const e of legacy) {
-    await store.put({ ...e, userId: session.userId, companyId: session.companyId });
+export async function exportPendingToJson(): Promise<string> {
+  const s = getOfflineSession();
+  const out: PendingExport = { exportedAt: new Date().toISOString(), userId: s?.userId ?? null, companyId: s?.companyId ?? null, items: toExportItems(await listAll()) };
+  return JSON.stringify(out, null, 2);
+}
+
+// ---- quarantine of ownerless pre-v3 rows (TZ 8.1 / 11.3) ----------------
+
+/**
+ * Ownerless (pre-v3) rows. NEVER pushed, never listed as anybody's work.
+ * On a shared device we cannot know who created them, so nobody inherits them
+ * implicitly; they are only exportable or explicitly discardable.
+ */
+export async function listQuarantined(): Promise<QueueEntry[]> {
+  if (!getOfflineSession()) return [];
+  return (await readAll()).filter((e) => !e.userId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+/** Export of quarantined rows: the file contains data of UNKNOWN owner (`unknownOwner: true`). */
+export async function exportQuarantinedToJson(): Promise<string> {
+  const s = getOfflineSession();
+  const out: PendingExport = {
+    exportedAt: new Date().toISOString(),
+    userId: s?.userId ?? null,
+    companyId: s?.companyId ?? null,
+    unknownOwner: true,
+    items: toExportItems(await listQuarantined()),
+  };
+  return JSON.stringify(out, null, 2);
+}
+
+/** Explicit user discard (UI confirms first) of one quarantined row. Owned rows are untouched. */
+export async function discardQuarantinedItem(clientId: string): Promise<void> {
+  const e = (await listQuarantined()).find((x) => x.clientId === clientId);
+  if (!e) throw new QueueItemStateError('NOT_FOUND', `Quarantined item ${clientId} not found`);
+  await db.queue.delete(clientId);
+}
+
+/** Unsynced rows the current user is answerable for on logout: own + quarantined (foreign owners' are untouched and not counted). */
+export async function unsyncedCountForLogout(): Promise<number> {
+  const s = getOfflineSession();
+  return (await readAll()).filter((e) => UNSYNCED_STATUSES.includes(e.status) && (!e.userId || ownedBy(e, s))).length;
+}
+
+/** Force-logout discard: deletes ONLY the current user's own rows. Foreign/quarantined rows stay. */
+export async function deleteOwnEntries(): Promise<void> {
+  const s = getOfflineSession();
+  const mine = (await readAll()).filter((e) => ownedBy(e, s));
+  await Promise.all(mine.map((e) => db.queue.delete(e.clientId)));
+}
+
+/** Rows that must survive a logout wipe (anyone's, incl. quarantined). */
+export async function queueRowCount(): Promise<number> {
+  return db.queue.count();
+}
+
+function creatorIdOf(e: QueueEntry): string | null {
+  for (const k of ['agentId', 'userId', 'createdBy'] as const) {
+    const v = e.payload[k];
+    if (typeof v === 'string' && v) return v;
   }
-  return legacy.length;
+  return null;
+}
+
+/**
+ * Pre-v3 documents carry no owner. They are NEVER adopted by whoever signs in
+ * first (shared device: that would push A's cash under B's identity). A row is
+ * claimed only if its payload names the creating agent and that is the current
+ * user; everything else stays ownerless = quarantined.
+ */
+export async function claimLegacyEntries(session: OfflineSession): Promise<{ claimed: number; quarantined: number }> {
+  const legacy = (await readAll()).filter((e) => !e.userId);
+  let claimed = 0;
+  for (const e of legacy) {
+    if (creatorIdOf(e) === session.userId) {
+      await store.put({ ...e, userId: session.userId, companyId: session.companyId });
+      claimed += 1;
+    }
+  }
+  return { claimed, quarantined: legacy.length - claimed };
 }
 
 export const queueRepository = {
@@ -455,5 +511,11 @@ export const queueRepository = {
   discardFailedItem,
   resolveConflictResubmit,
   exportPendingToJson,
-  adoptLegacyEntries,
+  claimLegacyEntries,
+  listQuarantined,
+  exportQuarantinedToJson,
+  discardQuarantinedItem,
+  unsyncedCountForLogout,
+  deleteOwnEntries,
+  queueRowCount,
 };

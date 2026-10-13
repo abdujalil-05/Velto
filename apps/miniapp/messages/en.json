@@ -251,6 +251,15 @@
     "logoutCancel": "Cancel",
     "logoutDiscardConfirmTitle": "Discard unsent documents?",
     "logoutDiscardConfirmDescription": "{count} document(s) never reached the server and will be lost for good.",
-    "logoutDiscardConfirm": "Yes, discard and sign out"
+    "logoutDiscardConfirm": "Yes, discard and sign out",
+    "quarantineTitle": "Documents of unknown owner",
+    "quarantineWarning": "These documents are left over from an old version and their creator is unknown. They are not sent and are not counted as your work. You can export or discard them.",
+    "quarantineExport": "Export documents of unknown owner",
+    "quarantineExportWarning": "Warning: the file contains data of an unknown owner. Store it carefully.",
+    "quarantineDiscard": "Discard",
+    "quarantineDiscardConfirmTitle": "Discard document of unknown owner?",
+    "quarantineDiscardConfirmDescription": "The document never reached the server and will be lost for good.",
+    "quarantineDiscardConfirm": "Yes, discard",
+    "logoutQuarantineNote": "Documents of unknown owner are not deleted on sign-out - they stay on the device."
   }
 }

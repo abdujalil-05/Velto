@@ -20,22 +20,24 @@ export function LogoutButton() {
   const t = useTranslations('Queue');
   const { logout } = useAuth();
   const [count, setCount] = useState(0);
+  const [quarantined, setQuarantined] = useState(0);
   const [guardOpen, setGuardOpen] = useState(false);
   const [discardOpen, setDiscardOpen] = useState(false);
 
   async function onLogoutClick() {
-    const unsynced = await queueRepository.unsyncedCountAllOwners();
+    const unsynced = await queueRepository.unsyncedCountForLogout();
     if (unsynced === 0) {
       await logout();
       return;
     }
     setCount(unsynced);
+    setQuarantined((await queueRepository.listQuarantined()).length);
     setGuardOpen(true);
   }
 
   async function exportThenLogout() {
     try {
-      downloadJson(await queueRepository.exportPendingToJson({ scope: 'all' }), exportFileName());
+      downloadJson(await queueRepository.exportPendingToJson(), exportFileName());
     } catch {
       toast.error(t('actionError'));
       return; // export failed: never wipe
@@ -55,6 +57,7 @@ export function LogoutButton() {
         <DialogContent className="rounded-b-none rounded-t-2xl border-b-0 p-5" role="alertdialog" aria-label={t('logoutBlockedTitle')}>
           <h2 className="text-base font-semibold">{t('logoutBlockedTitle')}</h2>
           <p className="mt-1 text-sm text-muted-foreground">{t('logoutBlockedDescription', { count })}</p>
+          {quarantined > 0 && <p className="mt-1 text-sm text-muted-foreground">{t('logoutQuarantineNote')}</p>}
           <div className="mt-5 flex flex-col gap-2">
             <Button type="button" size="lg" onClick={() => void exportThenLogout()}>
               {t('logoutExport')}

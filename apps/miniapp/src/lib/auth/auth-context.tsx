@@ -26,7 +26,7 @@ type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated' | 'no-telegram
 interface AuthContextValue {
   user: AuthenticatedUser | null;
   status: AuthStatus;
-  /** Blocked while any unsynced document exists on the device (any owner). `force` is only for the explicit export/discard flow, after the user exported or discarded — it also wipes other users' unsent documents. */
+  /** Blocked while the current user has unsynced (or quarantined) documents. `force` is only for the explicit export/discard flow and deletes ONLY the current user's own documents; other owners' rows are kept. */
   logout: (opts?: { force?: boolean }) => Promise<void>;
   hasPermission: (code: string) => boolean;
   linkPhone: () => Promise<void>;
@@ -161,7 +161,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(
     () =>
       onUnauthorized(() => {
+        // Session ended (refresh expired/revoked): queue rows keep their owner
+        // tag; nothing is wiped, adopted or re-tagged.
         setOfflineSession(null);
+        resetPreparedSession();
         setUser(null);
         setStatus('unauthenticated');
       }),
@@ -176,21 +179,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // shared device) must not start with a stale queue trying to sync
     // under the wrong session either — so logout is blocked, not silently
     // deferred, until the queue is actually empty.
-    const unsynced = await queueRepository.unsyncedCountAllOwners();
+    const unsynced = await queueRepository.unsyncedCountForLogout();
     if (unsynced > 0 && !opts?.force) {
       toast.error(t('logoutBlockedPendingSync', { count: unsynced }));
       return;
     }
 
+    // `force` (after export/confirmed discard) deletes ONLY the current user's
+    // own rows. Other owners' / quarantined unsynced documents are never
+    // destroyed by someone else.
+    if (opts?.force) await queueRepository.deleteOwnEntries();
+    const foreignRows = await queueRepository.queueRowCount();
+
     const refreshToken = getRefreshToken();
     clearTokens();
-    await clearOfflineDb();
-    // Rotate the local DB key too, after the wipe: without this the next
-    // agent on a shared device re-uses the previous agent's key, and any row
-    // the wipe missed (a table added later and forgotten in clearOfflineDb)
-    // stays readable under it. Safe here specifically because the queue is
-    // provably empty by this point — see the guard above.
-    clearDeviceKey();
+    await clearOfflineDb({ keepQueue: foreignRows > 0 });
+    // Rotate the device key only when the queue is empty: rotating it while
+    // foreign unsynced rows exist would make them undecryptable (= destroyed).
+    // Trade-off: with surviving foreign rows the next user shares the key, but
+    // they only ever see rows tagged with their own owner (queue.ts listAll).
+    if (foreignRows === 0) clearDeviceKey();
     setOfflineSession(null);
     resetPreparedSession();
     setUser(null);

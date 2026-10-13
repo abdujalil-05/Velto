@@ -251,6 +251,15 @@
     "logoutCancel": "Отмена",
     "logoutDiscardConfirmTitle": "Удалить неотправленные документы?",
     "logoutDiscardConfirmDescription": "{count} док. не дошли до сервера и будут потеряны навсегда.",
-    "logoutDiscardConfirm": "Да, удалить и выйти"
+    "logoutDiscardConfirm": "Да, удалить и выйти",
+    "quarantineTitle": "Документы неизвестного владельца",
+    "quarantineWarning": "Эти документы остались от старой версии, автор неизвестен. Они не отправляются и не считаются вашей работой. Можно выгрузить в файл или удалить.",
+    "quarantineExport": "Выгрузить документы неизвестного владельца",
+    "quarantineExportWarning": "Внимание: файл содержит данные неизвестного владельца. Храните его осторожно.",
+    "quarantineDiscard": "Удалить",
+    "quarantineDiscardConfirmTitle": "Удалить документ неизвестного владельца?",
+    "quarantineDiscardConfirmDescription": "Документ не дошёл до сервера и будет потерян навсегда.",
+    "quarantineDiscardConfirm": "Да, удалить",
+    "logoutQuarantineNote": "Документы неизвестного владельца при выходе не удаляются — они остаются на устройстве."
   }
 }
