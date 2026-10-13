@@ -3,7 +3,7 @@ import { InvoiceStatus, Prisma } from '@velto/database';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { VALID_ALLOCATION_WHERE } from '../finance/ledger-filters';
 import type { DateRangeQueryDto } from './dto/date-range.query';
-import { COUNTED_ORDER_STATUSES, DAY_MS, resolveDateRange, sumLineTotals } from './report-utils';
+import { COUNTED_ORDER_STATUSES, DAY_MS, resolveDateRange, ORDER_AMOUNT_SELECT, orderTotal } from './report-utils';
 
 /** 9.2 "Hisobotlar ... umumiy" — company-wide summary for the window: turnover, active/new customers, and outstanding debt (17.2 KPI defs). */
 @Injectable()
@@ -17,7 +17,7 @@ export class OverviewReportService {
     const [orders, newCustomers, totalCustomers, openInvoices] = await Promise.all([
       tx.salesOrder.findMany({
         where: { createdAt: { gte: start, lte: end }, status: { in: COUNTED_ORDER_STATUSES } },
-        select: { customerId: true, lines: { select: { lineTotal: true } } },
+        select: { customerId: true, ...ORDER_AMOUNT_SELECT },
       }),
       tx.customer.count({ where: { createdAt: { gte: start, lte: end }, deletedAt: null } }),
       tx.customer.count({ where: { deletedAt: null } }),
@@ -30,7 +30,7 @@ export class OverviewReportService {
     let turnover = new Prisma.Decimal(0);
     const activeCustomers = new Set<string>();
     for (const order of orders) {
-      turnover = turnover.plus(sumLineTotals(order.lines));
+      turnover = turnover.plus(orderTotal(order));
       activeCustomers.add(order.customerId);
     }
 

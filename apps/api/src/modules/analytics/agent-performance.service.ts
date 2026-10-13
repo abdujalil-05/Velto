@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma, VisitOutcome } from '@velto/database';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import type { DateRangeQueryDto } from './dto/date-range.query';
-import { COUNTED_ORDER_STATUSES, DAY_MS, isoWeekday, resolveDateRange, sumLineTotals } from './report-utils';
+import { COUNTED_ORDER_STATUSES, DAY_MS, isoWeekday, resolveDateRange, ORDER_AMOUNT_SELECT, orderTotal } from './report-utils';
 
 /** 9.2 "agent samaradorligi (asosiy)" / 17.2 KPI: route completion and effective-visit ratio, plus order count/turnover/avg-check, per agent over the window. */
 @Injectable()
@@ -31,7 +31,7 @@ export class AgentPerformanceReportService {
       }),
       tx.salesOrder.findMany({
         where: { agentId: { in: agentIds }, createdAt: { gte: start, lte: end }, status: { in: COUNTED_ORDER_STATUSES } },
-        select: { agentId: true, lines: { select: { lineTotal: true } } },
+        select: { agentId: true, ...ORDER_AMOUNT_SELECT },
       }),
     ]);
 
@@ -65,7 +65,7 @@ export class AgentPerformanceReportService {
       if (!order.agentId) continue;
       const entry = orderStatsByAgent.get(order.agentId) ?? { count: 0, turnover: new Prisma.Decimal(0) };
       entry.count += 1;
-      entry.turnover = entry.turnover.plus(sumLineTotals(order.lines));
+      entry.turnover = entry.turnover.plus(orderTotal(order));
       orderStatsByAgent.set(order.agentId, entry);
     }
 

@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@velto/database';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import type { DateRangeQueryDto } from './dto/date-range.query';
-import { COUNTED_ORDER_STATUSES, DAY_MS, localDateString, resolveDateRange, sumLineTotals } from './report-utils';
+import { COUNTED_ORDER_STATUSES, DAY_MS, localDateString, resolveDateRange, ORDER_AMOUNT_SELECT, effectiveLineTotal, orderTotal } from './report-utils';
 
 /** 9.2 "Hisobotlar ... sotuv" — turnover/order-count trend plus the agents and products driving it, for the given window (default: last 30 days). */
 @Injectable()
@@ -19,7 +19,10 @@ export class SalesReportService {
         createdAt: true,
         agentId: true,
         agent: { select: { firstName: true, lastName: true } },
-        lines: { select: { lineTotal: true, productId: true, product: { select: { name: true } } } },
+        status: true,
+        lines: {
+          select: { ...ORDER_AMOUNT_SELECT.lines.select, productId: true, product: { select: { name: true } } },
+        },
       },
     });
 
@@ -29,23 +32,23 @@ export class SalesReportService {
     const byProduct = new Map<string, { name: string; turnover: Prisma.Decimal }>();
 
     for (const order of orders) {
-      const orderTotal = sumLineTotals(order.lines);
-      turnover = turnover.plus(orderTotal);
+      const amount = orderTotal(order);
+      turnover = turnover.plus(amount);
 
       const dayKey = localDateString(order.createdAt);
-      byDay.set(dayKey, (byDay.get(dayKey) ?? new Prisma.Decimal(0)).plus(orderTotal));
+      byDay.set(dayKey, (byDay.get(dayKey) ?? new Prisma.Decimal(0)).plus(amount));
 
       if (order.agentId) {
         const name = order.agent ? `${order.agent.firstName} ${order.agent.lastName}` : '';
         const entry = byAgent.get(order.agentId) ?? { name, turnover: new Prisma.Decimal(0), orderCount: 0 };
-        entry.turnover = entry.turnover.plus(orderTotal);
+        entry.turnover = entry.turnover.plus(amount);
         entry.orderCount += 1;
         byAgent.set(order.agentId, entry);
       }
 
       for (const line of order.lines) {
         const entry = byProduct.get(line.productId) ?? { name: line.product.name, turnover: new Prisma.Decimal(0) };
-        entry.turnover = entry.turnover.plus(line.lineTotal);
+        entry.turnover = entry.turnover.plus(effectiveLineTotal(order.status, line));
         byProduct.set(line.productId, entry);
       }
     }

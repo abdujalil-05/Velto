@@ -11,10 +11,10 @@ import {
   localDateString,
   pctChange,
   startOfDay,
-  sumLineTotals,
+  ORDER_AMOUNT_SELECT,
+  orderTotal,
 } from './report-utils';
 
-const ORDER_LINES_SELECT = { lines: { select: { lineTotal: true } } } satisfies Prisma.SalesOrderSelect;
 
 /** 9.3: the home dashboard — today's headline cards (each vs. yesterday), a 30-day turnover trend, today's per-agent activity, and the top debtors. */
 @Injectable()
@@ -74,9 +74,9 @@ export class DashboardService {
   private async ordersTotals(tx: TenantClient, start: Date, end: Date) {
     const orders = await tx.salesOrder.findMany({
       where: { createdAt: { gte: start, lte: end }, status: { in: COUNTED_ORDER_STATUSES } },
-      select: ORDER_LINES_SELECT,
+      select: ORDER_AMOUNT_SELECT,
     });
-    return { turnover: orders.reduce((sum, o) => sum.plus(sumLineTotals(o.lines)), new Prisma.Decimal(0)), count: orders.length };
+    return { turnover: orders.reduce((sum, o) => sum.plus(orderTotal(o)), new Prisma.Decimal(0)), count: orders.length };
   }
 
   private async paymentsTotal(tx: TenantClient, start: Date, end: Date) {
@@ -120,13 +120,13 @@ export class DashboardService {
   private async turnoverByDay(tx: TenantClient, start: Date, end: Date) {
     const orders = await tx.salesOrder.findMany({
       where: { createdAt: { gte: start, lte: end }, status: { in: COUNTED_ORDER_STATUSES } },
-      select: { createdAt: true, ...ORDER_LINES_SELECT },
+      select: { createdAt: true, ...ORDER_AMOUNT_SELECT },
     });
 
     const byDay = new Map<string, Prisma.Decimal>();
     for (const order of orders) {
       const key = localDateString(order.createdAt);
-      byDay.set(key, (byDay.get(key) ?? new Prisma.Decimal(0)).plus(sumLineTotals(order.lines)));
+      byDay.set(key, (byDay.get(key) ?? new Prisma.Decimal(0)).plus(orderTotal(order)));
     }
 
     const days: { date: string; turnover: Prisma.Decimal }[] = [];
@@ -154,7 +154,7 @@ export class DashboardService {
       tx.visit.findMany({ where: { agentId: { in: agentIds }, startedAt: { gte: start, lte: end } }, select: { agentId: true } }),
       tx.salesOrder.findMany({
         where: { agentId: { in: agentIds }, createdAt: { gte: start, lte: end }, status: { in: COUNTED_ORDER_STATUSES } },
-        select: { agentId: true, ...ORDER_LINES_SELECT },
+        select: { agentId: true, ...ORDER_AMOUNT_SELECT },
       }),
     ]);
 
@@ -177,7 +177,7 @@ export class DashboardService {
       if (!order.agentId) continue;
       const entry = orderStatsByAgent.get(order.agentId) ?? { count: 0, turnover: new Prisma.Decimal(0) };
       entry.count += 1;
-      entry.turnover = entry.turnover.plus(sumLineTotals(order.lines));
+      entry.turnover = entry.turnover.plus(orderTotal(order));
       orderStatsByAgent.set(order.agentId, entry);
     }
 

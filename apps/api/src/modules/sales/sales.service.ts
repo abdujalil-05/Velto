@@ -19,7 +19,8 @@ import type { CancelOrderDto } from './dto/cancel-order.dto';
 import type { CreateOrderDto } from './dto/create-order.dto';
 import type { DeliverOrderDto, DeliverOrderLineDto } from './dto/deliver-order.dto';
 import type { ListOrdersQueryDto } from './dto/list-orders.query';
-import { calcLineTotal } from './line-total';
+import { isDeliveredQtyCheckViolation } from './delivered-qty-check';
+import { calcLineTotal, deliveredLineTotal, orderTotal, type OrderLineAmounts } from './line-total';
 import {
   AmbiguousWarehouseException,
   CourierNotFoundException,
@@ -149,13 +150,6 @@ function resolveDeliveryPlan<L extends DeliverableLine>(
 
   if (plan.every((p) => p.deliveredQty.isZero())) throw new EmptyDeliveryException();
   return plan;
-}
-
-/** SQLSTATE 23514 on SalesOrderLine_deliveredQty_range_check — matched by constraint name, so it stays narrow. */
-function isDeliveredQtyCheckViolation(err: unknown): boolean {
-  if (!err || typeof err !== 'object') return false;
-  const message = (err as { message?: unknown }).message;
-  return typeof message === 'string' && message.includes('SalesOrderLine_deliveredQty_range_check');
 }
 
 @Injectable()
@@ -477,10 +471,8 @@ export class SalesService {
     }
 
     // Invoice only from what physically left the warehouse; 0-qty lines are
-    // omitted. A fully delivered line keeps the order's snapshot lineTotal
-    // exactly; a partial one is recomputed from the same snapshot (price,
-    // discount, VAT) and rounded once, half-up to 2dp — the same result the
-    // Decimal(18,2) column would store — so total = Σ invoice lines.
+    // omitted. deliveredLineTotal is the same rule orderTotal() applies to a
+    // DELIVERED order, so order.total = invoice.total = Σ invoice lines.
     const invoiceLines = plan
       .filter((p) => p.deliveredQty.greaterThan(0))
       .map(({ line, deliveredQty }) => ({
@@ -488,14 +480,7 @@ export class SalesService {
         qty: deliveredQty,
         unitPrice: line.unitPrice,
         vatRate: line.vatRate,
-        lineTotal: deliveredQty.equals(line.qty)
-          ? line.lineTotal
-          : calcLineTotal(
-              deliveredQty,
-              line.unitPrice,
-              line.discountPct,
-              line.vatRate,
-            ).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+        lineTotal: deliveredLineTotal({ ...line, deliveredQty }),
       }));
     const invoiceTotal = invoiceLines.reduce(
       (sum, l) => sum.plus(l.lineTotal),
@@ -854,6 +839,7 @@ export class SalesService {
   }
 }
 
-function withTotal<T extends { lines: { lineTotal: Prisma.Decimal }[] }>(order: T) {
-  return { ...order, total: order.lines.reduce((sum, l) => sum.plus(l.lineTotal), new Prisma.Decimal(0)) };
+/** `total` follows orderTotal(): delivered amount for DELIVERED/CLOSED, ordered amount otherwise. */
+function withTotal<T extends { status: OrderStatus; lines: OrderLineAmounts[] }>(order: T) {
+  return { ...order, total: orderTotal(order) };
 }

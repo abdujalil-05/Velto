@@ -25,6 +25,7 @@ import {
   PartialDeliveryNotAllowedException,
   SalesOrderNotFoundException,
 } from './sales-exceptions';
+import { isDeliveredQtyCheckViolation } from './delivered-qty-check';
 import { SalesService } from './sales.service';
 
 describe('SalesService (integration, real Postgres + RLS)', () => {
@@ -755,6 +756,9 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
       const p1Before = await level(productId);
       const p2Before = await level(product2Id);
       const { order, line1, line2 } = await confirmedTwoLine(10, 3);
+      // CONFIRMED: total is the ordered amount (10 × 11200 + 3 × 1119.99 = 115359.97).
+      const ordered = await tenantPrisma.run(companyId, () => sales.getById(order.id, user));
+      expect(ordered.total.toString()).toBe('115359.97');
 
       const delivered = await tenantPrisma.run(companyId, () =>
         sales.deliver(order.id, user, {
@@ -798,6 +802,11 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
         '1119.99',
       );
       expect(invoice.total.toString()).toBe('45919.99');
+      // DELIVERED: order.total is the delivered amount and equals invoice.total,
+      // both in deliver()'s return value and on a later read.
+      expect(delivered.total.toString()).toBe('45919.99');
+      const reread = await tenantPrisma.run(companyId, () => sales.getById(order.id, user));
+      expect(reread.total.toString()).toBe(invoice.total.toString());
 
       const audit = await tenantPrisma.run(companyId, (tx) =>
         tx.auditLog.findFirstOrThrow({ where: { entityId: order.id, action: 'order.deliver' } }),
@@ -809,6 +818,31 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
         deliveredQty: '4',
         releasedQty: '6',
       });
+    });
+
+    it('isDeliveredQtyCheckViolation matches the real Postgres/Prisma error for the range CHECK only', async () => {
+      const { line1 } = await confirmedTwoLine(2, 1);
+      const checkErr = await tenantPrisma
+        .run(companyId, (tx) =>
+          tx.salesOrderLine.update({ where: { id: line1 }, data: { deliveredQty: '3' } }),
+        )
+        .catch((e: unknown) => e);
+      expect(checkErr).toBeInstanceOf(Error);
+      expect(isDeliveredQtyCheckViolation(checkErr)).toBe(true);
+
+      // A different DB error (unique violation on Product.sku) must not match.
+      const uniqueErr = await tenantPrisma
+        .run(companyId, (tx) =>
+          tx.product.create({ data: { companyId, sku: 'SALES-TEST-2', name: 'dup', baseUnit: 'dona' } }),
+        )
+        .catch((e: unknown) => e);
+      expect(uniqueErr).toBeInstanceOf(Error);
+      expect(isDeliveredQtyCheckViolation(uniqueErr)).toBe(false);
+
+      const untouched = await tenantPrisma.run(companyId, (tx) =>
+        tx.salesOrderLine.findUniqueOrThrow({ where: { id: line1 } }),
+      );
+      expect(untouched.deliveredQty.toString()).toBe('0');
     });
 
     it('a 0-qty line is fully released and omitted from the invoice', async () => {

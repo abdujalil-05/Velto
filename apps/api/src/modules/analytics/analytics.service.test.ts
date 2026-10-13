@@ -85,7 +85,14 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
   async function createOrder(
     companyId: string,
     fx: Awaited<ReturnType<typeof seedBaseFixtures>>,
-    opts: { status: OrderStatus; total: string; createdAt?: Date; agentId?: string | null },
+    opts: {
+      status: OrderStatus;
+      total: string;
+      createdAt?: Date;
+      agentId?: string | null;
+      /** F2.4 line snapshot overrides; default is qty 1 × total, 0% discount/VAT. */
+      line?: { qty: string; deliveredQty: string; unitPrice: string; discountPct: string; vatRate: string };
+    },
   ) {
     return tenantPrisma.run(companyId, (tx) =>
       tx.salesOrder.create({
@@ -102,9 +109,11 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
               {
                 productId: fx.productId,
                 packagingId: fx.packagingId,
-                qty: '1',
-                unitPrice: opts.total,
-                vatRate: '0',
+                qty: opts.line?.qty ?? '1',
+                deliveredQty: opts.line?.deliveredQty ?? '0',
+                unitPrice: opts.line?.unitPrice ?? opts.total,
+                discountPct: opts.line?.discountPct ?? '0',
+                vatRate: opts.line?.vatRate ?? '0',
                 lineTotal: opts.total,
               },
             ],
@@ -129,6 +138,47 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
       expect(report.summary.turnover.toString()).toBe('150000');
       expect(report.byAgent.find((a) => a.agentId === fx.agentId)?.turnover.toString()).toBe('150000');
       expect(report.topProducts.find((p) => p.productId === fx.productId)?.turnover.toString()).toBe('150000');
+    });
+  });
+
+  describe('F2.4: DELIVERED/CLOSED orders count the delivered amount (= invoice total)', () => {
+    it('sales report, agent performance, overview and dashboard all use orderTotal()', async () => {
+      const companyId = await createCompany('delivered-amount');
+      const fx = await seedBaseFixtures(companyId);
+
+      // Ordered 4 × 33333.33, −10%, +12% VAT = 134399.99 (snapshot); delivered 1
+      // → 33333.33 × 0.9 × 1.12 = 33599.99664 → 33600.00 (half-up, as invoice).
+      await createOrder(companyId, fx, {
+        status: OrderStatus.DELIVERED,
+        total: '134399.99',
+        line: { qty: '4', deliveredQty: '1', unitPrice: '33333.33', discountPct: '10', vatRate: '12' },
+      });
+      // Fully delivered CLOSED order keeps its snapshot lineTotal.
+      await createOrder(companyId, fx, {
+        status: OrderStatus.CLOSED,
+        total: '20000',
+        line: { qty: '2', deliveredQty: '2', unitPrice: '10000', discountPct: '0', vatRate: '0' },
+      });
+      // Not yet delivered: ordered amount (deliveredQty is still 0).
+      await createOrder(companyId, fx, { status: OrderStatus.CONFIRMED, total: '50000' });
+
+      const expected = '103600';
+      const sales = await tenantPrisma.run(companyId, () => salesReport.getSalesReport({}));
+      expect(sales.summary.turnover.toString()).toBe(expected);
+      expect(sales.byAgent.find((a) => a.agentId === fx.agentId)?.turnover.toString()).toBe(expected);
+      expect(sales.topProducts.find((p) => p.productId === fx.productId)?.turnover.toString()).toBe(expected);
+
+      const perf = await tenantPrisma.run(companyId, () => agentPerformance.getAgentPerformance({}));
+      expect(perf.agents.find((a) => a.agentId === fx.agentId)?.turnover.toString()).toBe(expected);
+
+      const ov = await tenantPrisma.run(companyId, () => overview.getOverview({}));
+      expect(ov.turnover.toString()).toBe(expected);
+
+      const dash = await tenantPrisma.run(companyId, () => dashboard.getDashboard());
+      expect(dash.today.turnover.toString()).toBe(expected);
+      expect(dash.agentsToday.find((a) => a.agentId === fx.agentId)?.turnover.toString()).toBe(expected);
+      const todayKey = localDateString(new Date());
+      expect(dash.turnoverLast30Days.find((d) => d.date === todayKey)?.turnover.toString()).toBe(expected);
     });
   });
 

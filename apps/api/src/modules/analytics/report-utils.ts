@@ -1,4 +1,5 @@
 import { OrderStatus, Prisma } from '@velto/database';
+import { ORDER_LINE_AMOUNTS_SELECT } from '../sales/line-total';
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -62,6 +63,14 @@ export const COUNTED_ORDER_STATUSES: OrderStatus[] = [
   OrderStatus.CLOSED,
 ];
 
-export function sumLineTotals(lines: { lineTotal: Prisma.Decimal }[]): Prisma.Decimal {
-  return lines.reduce((sum, l) => sum.plus(l.lineTotal), new Prisma.Decimal(0));
-}
+/**
+ * Prisma `select` every sales figure needs: status + line snapshot, so
+ * DELIVERED/CLOSED orders count what was delivered (= invoice total) and the
+ * rest count what was ordered — one rule, shared with SalesService (§6.6/F2.4).
+ */
+export const ORDER_AMOUNT_SELECT = {
+  status: true,
+  lines: { select: ORDER_LINE_AMOUNTS_SELECT },
+} as const satisfies Prisma.SalesOrderSelect;
+
+export { orderTotal, effectiveLineTotal } from '../sales/line-total';
