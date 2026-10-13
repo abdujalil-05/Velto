@@ -6,6 +6,7 @@ import { AuditLogService } from '../../../common/audit/audit-log.service';
 import { DocumentNumberingService } from '../../../common/document-numbering/document-numbering.service';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import { CustomersService } from '../../customers/customers.service';
+import { CustomerHasCreditBalanceException, CustomerNotFoundException } from '../../customers/customers-exceptions';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { AllocatePaymentDto } from '../dto/allocate-payment.dto';
@@ -821,5 +822,39 @@ describe('PaymentsService (integration, real Postgres + RLS)', () => {
       expect(await errorsFor('10', 'not-a-uuid')).toBeGreaterThan(0);
       expect((await validate(plainToInstance(AllocatePaymentDto, { allocations: [] }))).length).toBeGreaterThan(0);
     });
+  });
+
+  it('race: customers.remove() vs payments.create() — never a POSTED payment on a soft-deleted customer (customer row lock)', async () => {
+    const outcomes = new Set<string>();
+    for (let round = 0; round < 4; round++) {
+      // No invoices: balance 0, so remove() can win; a payment makes it a credit (< 0).
+      const { customerId } = await createCustomerWithInvoices([]);
+      const [removed, paid] = await Promise.allSettled([
+        tenantPrisma.run(companyId, () => customers.remove(customerId, user)),
+        tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 25000, method: 'CASH' }, user)),
+      ]);
+
+      // Exactly one side wins, the loser fails with the domain error.
+      expect([removed.status, paid.status].sort()).toEqual(['fulfilled', 'rejected']);
+      if (removed.status === 'fulfilled') {
+        expect(paid.status === 'rejected' && paid.reason).toBeInstanceOf(CustomerNotFoundException);
+        outcomes.add('removed');
+      } else {
+        expect(removed.reason).toBeInstanceOf(CustomerHasCreditBalanceException);
+        outcomes.add('paid');
+      }
+
+      const { customer, posted } = await tenantPrisma.run(companyId, async (tx) => ({
+        customer: await tx.customer.findUniqueOrThrow({ where: { id: customerId } }),
+        posted: await tx.payment.count({ where: { customerId, status: 'POSTED' } }),
+      }));
+      if (customer.deletedAt) {
+        expect(posted).toBe(0);
+      } else {
+        expect(posted).toBe(1);
+        expect(customer.cachedBalance.toString()).toBe('-25000');
+      }
+    }
+    expect(outcomes.size).toBeGreaterThan(0);
   });
 });

@@ -132,6 +132,13 @@ export class PaymentsService {
       throw new InvalidPaymentAmountException("To'lov summasi musbat bo'lishi kerak");
     }
 
+    // Customer row lock FIRST, then the deletedAt check as a fresh read: a
+    // concurrent CustomersService.remove() holds the same lock, so either it
+    // commits first (we see deletedAt -> CustomerNotFound) or we commit first
+    // (its ledger read sees this payment -> balance != 0, delete refused).
+    // Lock order customer -> invoices; allocate()/reverse() take the customer
+    // lock before invoices too, so no lock-order inversion between them.
+    await this.lockCustomer(tx, dto.customerId);
     await this.customers.findActiveOrThrow(tx, dto.customerId);
 
     const number = await this.docNumbering.next(tx, user.companyId, 'PAY');
@@ -204,8 +211,8 @@ export class PaymentsService {
    * F2.1 / §6.5: manually applies (part of) an existing POSTED payment's
    * advance to the same customer's live invoices. Append-only: new
    * PaymentAllocation rows only. Lock order = reverse(): payment FOR UPDATE
-   * (serializes two allocations of one advance) -> invoices (createdAt, id
-   * asc) -> customer. Σamount ≤ advance read under the payment lock.
+   * (serializes two allocations of one advance) -> customer -> invoices
+   * (createdAt, id asc). Σamount ≤ advance read under the payment lock.
    */
   async allocate(paymentId: string, dto: AllocatePaymentDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
@@ -218,6 +225,7 @@ export class PaymentsService {
     const before = await tx.payment.findUnique({ where: { id: paymentId }, include: PAYMENT_INCLUDE });
     if (!before) throw new PaymentNotFoundException();
     if (before.status !== PaymentStatus.POSTED) throw new PaymentNotPostedException(before.status);
+    await this.lockCustomer(tx, before.customerId);
 
     const advanceBefore = paymentAdvanceOf(before);
     const allocations = await this.allocateManual(
@@ -248,9 +256,9 @@ export class PaymentsService {
    * F2.1 / §6.5: reverses a POSTED payment. Nothing is deleted or edited
    * except Payment.status POSTED -> REVERSED (DB trigger requires the
    * PaymentReversal row first); its allocation rows stay and simply stop
-   * counting (VALID_ALLOCATION_WHERE). Lock order matches create():
-   * payment -> invoices (createdAt asc) -> customer, so no deadlock with a
-   * concurrent allocation.
+   * counting (VALID_ALLOCATION_WHERE). Lock order matches create()/allocate():
+   * payment -> customer -> invoices (createdAt asc), so no deadlock with a
+   * concurrent allocation or new payment.
    */
   async reverse(paymentId: string, reason: string, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
@@ -261,6 +269,7 @@ export class PaymentsService {
     const before = await tx.payment.findUnique({ where: { id: paymentId }, include: PAYMENT_INCLUDE });
     if (!before) throw new PaymentNotFoundException();
     if (before.status === PaymentStatus.REVERSED) throw new PaymentAlreadyReversedException();
+    await this.lockCustomer(tx, before.customerId);
 
     await this.assertNotInClosedCashSession(tx, before);
     await this.assertNotExportedTo1c(tx, before.createdAt);
@@ -339,9 +348,14 @@ export class PaymentsService {
    * from the other's committed rows — no stale overwrite.
    */
   private async refreshCachedBalance(tx: TenantClient, customerId: string): Promise<void> {
-    await tx.$queryRaw(Prisma.sql`SELECT id FROM "Customer" WHERE id = ${customerId}::uuid FOR UPDATE`);
+    await this.lockCustomer(tx, customerId); // already held by every caller — re-entrant no-op
     const balance = await this.customers.getBalance(tx, customerId);
     await tx.customer.update({ where: { id: customerId }, data: { cachedBalance: balance } });
+  }
+
+  /** Customer row lock shared with CustomersService.remove(); always taken before any Invoice lock. */
+  private async lockCustomer(tx: TenantClient, customerId: string): Promise<void> {
+    await tx.$queryRaw(Prisma.sql`SELECT id FROM "Customer" WHERE id = ${customerId}::uuid FOR UPDATE`);
   }
 
   private async allocateFifo(
