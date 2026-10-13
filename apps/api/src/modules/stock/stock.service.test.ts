@@ -315,4 +315,43 @@ describe('StockService (integration, real Postgres + RLS)', () => {
       expect(level.onHand.toString()).toBe(rec.qty.equals(30) ? '7' : '30');
     });
   });
+  describe('listMovements() (F2.1)', () => {
+    it('lists tenant movements with reversible/reversedBy, filters, and tenant isolation', async () => {
+      const pid = await tenantPrisma.run(companyId, async (tx) =>
+        (await tx.product.create({ data: { companyId, sku: `LM-${Date.now()}`, name: 'LM', baseUnit: 'dona', vatRate: 12 } })).id,
+      );
+      await tenantPrisma.run(companyId, () => stock.receive({ productId: pid, warehouseId, qty: 20 }, user));
+      await tenantPrisma.run(companyId, () => stock.receive({ productId: pid, warehouseId, qty: 5 }, user));
+      const first = await tenantPrisma.run(companyId, (tx) =>
+        tx.stockMovement.findFirstOrThrow({ where: { productId: pid, qty: 20 } }),
+      );
+      const { movement: reversal } = await tenantPrisma.run(companyId, () => stock.reverseMovement(first.id, 'mistake', user));
+
+      const all = await tenantPrisma.run(companyId, () => stock.listMovements({ page: 1, pageSize: 25, productId: pid } as never));
+      expect(all.data).toHaveLength(3);
+      const byId = new Map(all.data.map((m) => [m.id, m]));
+      expect(byId.get(first.id)).toMatchObject({ reversedBy: reversal.id, reversible: false, qty: '20' });
+      expect(byId.get(reversal.id)).toMatchObject({ reversesMovementId: first.id, reversible: false, reason: 'mistake', qty: '-20' });
+      const open = all.data.find((m) => m.qty === '5')!;
+      expect(open).toMatchObject({ reversible: true, reversedBy: null });
+
+      const adjusts = await tenantPrisma.run(companyId, () =>
+        stock.listMovements({ page: 1, pageSize: 25, productId: pid, type: 'ISSUE' } as never),
+      );
+      expect(adjusts.data).toHaveLength(0);
+      const future = await tenantPrisma.run(companyId, () =>
+        stock.listMovements({ page: 1, pageSize: 25, productId: pid, from: '2999-01-01' } as never),
+      );
+      expect(future.data).toHaveLength(0);
+      const today = await tenantPrisma.run(companyId, () =>
+        stock.listMovements({ page: 1, pageSize: 25, productId: pid, from: new Date().toISOString(), to: new Date().toISOString() } as never),
+      );
+      expect(today.data).toHaveLength(3);
+
+      const otherTenant = await systemPrisma.tenant.create({ data: { slug: `test-stock-lm-${Date.now()}`, name: 'Other' } });
+      const otherCompany = await systemPrisma.company.create({ data: { tenantId: otherTenant.id, name: 'Other Co' } });
+      const foreign = await tenantPrisma.run(otherCompany.id, () => stock.listMovements({ page: 1, pageSize: 25 } as never));
+      expect(foreign.data).toHaveLength(0);
+    });
+  });
 });

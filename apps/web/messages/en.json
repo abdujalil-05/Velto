@@ -226,7 +226,23 @@
         "NO_ORDER": "No order"
       },
       "credit": "Credit",
-      "advance": "Advance"
+      "advance": "Advance",
+      "allocate": {
+        "action": "Allocate advance",
+        "title": "Allocate advance",
+        "success": "Advance allocated",
+        "retry": "Retry",
+        "noAdvance": "The customer has no unallocated advance",
+        "noInvoices": "The customer has no open invoices to allocate to",
+        "payment": "Payment",
+        "advanceOf": "advance",
+        "outstanding": "Outstanding",
+        "amount": "Amount",
+        "invalidAmount": "Enter an amount up to the outstanding balance",
+        "total": "Allocated",
+        "exceedsAdvance": "exceeds the advance",
+        "submit": "Allocate"
+      }
     },
     "credit": "Credit",
     "advance": "Advance"
@@ -482,6 +498,41 @@
       "invalidQty": "Enter a valid quantity",
       "submit": "Receive",
       "received": "Stock received"
+    },
+    "tabs": {
+      "levels": "Stock levels",
+      "movements": "Movements"
+    },
+    "movements": {
+      "product": "Product",
+      "warehouse": "Warehouse",
+      "type": "Type",
+      "all": "All",
+      "to": "To",
+      "refresh": "Refresh",
+      "retry": "Retry",
+      "empty": "No movements for these filters — adjust the filters or receive stock",
+      "date": "Date",
+      "qty": "Quantity",
+      "reason": "Reason",
+      "status": "Status",
+      "actions": "Actions",
+      "isReversal": "Reversal",
+      "reversed": "Reversed",
+      "types": {
+        "RECEIVE": "Receive",
+        "ISSUE": "Issue",
+        "RESERVE": "Reserve",
+        "RELEASE": "Release",
+        "ADJUST": "Adjustment"
+      },
+      "from": "From",
+      "reverse": {
+        "action": "Reverse",
+        "title": "Reverse stock movement",
+        "description": "The movement will be reversed with an opposite entry. This cannot be undone.",
+        "success": "Movement reversed"
+      }
     }
   },
   "Users": {

@@ -5,6 +5,7 @@ import { AuditLogService } from '../../common/audit/audit-log.service';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import {
   CustomerAlreadyBlockedException,
+  CustomerHasCreditBalanceException,
   CustomerHasOutstandingBalanceException,
   CustomerNotBlockedException,
   CustomerNotFoundException,
@@ -133,6 +134,36 @@ describe('CustomersService (integration, real Postgres + RLS)', () => {
     await expect(tenantPrisma.run(companyId, () => customers.remove(id, user))).rejects.toBeInstanceOf(
       CustomerHasOutstandingBalanceException,
     );
+  });
+
+  it('remove() refuses while the customer has an unallocated advance/credit (balance < 0), and leaves the row live', async () => {
+    const { customer } = await tenantPrisma.run(companyId, () => customers.create(dto('C-DEL-3'), user));
+    const id = (customer as { id: string }).id;
+    await tenantPrisma.run(companyId, (tx) =>
+      tx.payment.create({ data: { companyId, number: 'PAY-TEST-DEL-3', customerId: id, amount: '7000.00', method: 'TRANSFER' } }),
+    );
+
+    const err = await tenantPrisma.run(companyId, () => customers.remove(id, user)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CustomerHasCreditBalanceException);
+    expect((err as CustomerHasCreditBalanceException).getResponse()).toMatchObject({
+      code: 'CUSTOMER_HAS_CREDIT_BALANCE',
+      details: { credit: '7000.00' },
+    });
+    const row = await tenantPrisma.run(companyId, (tx) => tx.customer.findUniqueOrThrow({ where: { id } }));
+    expect(row.deletedAt).toBeNull();
+  });
+
+  it('remove() succeeds once debt and payment net to exactly 0', async () => {
+    const { customer } = await tenantPrisma.run(companyId, () => customers.create(dto('C-DEL-4'), user));
+    const id = (customer as { id: string }).id;
+    await tenantPrisma.run(companyId, async (tx) => {
+      const inv = await tx.invoice.create({ data: { companyId, number: 'INV-TEST-DEL-4', customerId: id, total: '5000.00', status: 'PAID' } });
+      const pay = await tx.payment.create({ data: { companyId, number: 'PAY-TEST-DEL-4', customerId: id, amount: '5000.00', method: 'CASH' } });
+      await tx.paymentAllocation.create({ data: { paymentId: pay.id, invoiceId: inv.id, amount: '5000.00' } });
+    });
+
+    const deleted = await tenantPrisma.run(companyId, () => customers.remove(id, user));
+    expect(deleted.deletedAt).not.toBeNull();
   });
 
   it('SEC-023 (15.3): a SALES_AGENT only sees customers reached via their own orders/routes/visits', async () => {

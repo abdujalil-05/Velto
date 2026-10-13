@@ -5,6 +5,7 @@ import { RequirePermission } from '../../common/decorators/require-permission.de
 import { ReverseReasonDto } from '../../common/dto/reverse-reason.dto';
 import { Idempotent } from '../../common/idempotency/idempotent.decorator';
 import { AdjustStockDto } from './dto/adjust-stock.dto';
+import { ListMovementsQueryDto } from './dto/list-movements.query';
 import { ListStockQueryDto } from './dto/list-stock.query';
 import { ReceiveStockDto } from './dto/receive-stock.dto';
 import { StockService } from './stock.service';
@@ -17,6 +18,12 @@ export class StockController {
   @RequirePermission('stock.read')
   list(@Query() query: ListStockQueryDto) {
     return this.stock.list(query);
+  }
+
+  @Get('movements')
+  @RequirePermission('stock.read')
+  listMovements(@Query() query: ListMovementsQueryDto) {
+    return this.stock.listMovements(query);
   }
 
   @Post('receive')

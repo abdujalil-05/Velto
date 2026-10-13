@@ -80,3 +80,19 @@ export class CustomerHasOutstandingBalanceException extends AppException {
     );
   }
 }
+
+/** Negative ledger balance = advance/credit the company owes back; deleting would lose it (§6.5). */
+export class CustomerHasCreditBalanceException extends AppException {
+  constructor(credit: string) {
+    super(
+      HttpStatus.CONFLICT,
+      'CUSTOMER_HAS_CREDIT_BALANCE',
+      {
+        uz: `Mijozda qaytarilishi kerak bo'lgan avans/kredit bor (${credit}), uni o'chirib bo'lmaydi`,
+        ru: `У клиента есть аванс/кредит к возврату (${credit}) — удаление невозможно`,
+        en: `The customer has an advance/credit balance to be returned (${credit}) and cannot be deleted`,
+      },
+      { credit },
+    );
+  }
+}

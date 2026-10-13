@@ -745,13 +745,42 @@ describe('PaymentsService (integration, real Postgres + RLS)', () => {
       await expectLedgerConsistent(customerId, '-30000', '30000');
     });
 
-    it('SALES_AGENT cannot allocate a payment collected by someone else (SEC-023, not found)', async () => {
-      const { customerId, paymentId } = await customerWithAdvance(20000);
-      const inv = await addInvoice(customerId, '10000');
-      const agent: AuthenticatedUser = { ...user, id: randomUUID(), roles: ['SALES_AGENT'], permissions: ['payments.create'] };
-      await expect(
-        tenantPrisma.run(companyId, () => payments.allocate(paymentId, { allocations: [{ invoiceId: inv, amount: '10000' }] }, agent)),
-      ).rejects.toBeInstanceOf(PaymentNotFoundException);
+    it('allowed (business decision): advance of a CASH payment in a CLOSED cash session, and of a 1C-exported payment', async () => {
+      const u = await systemPrisma.user.create({
+        data: { companyId, firstName: 'Alloc', lastName: 'Closed', phone: `+99892${Math.floor(1_000_000 + Math.random() * 8_000_000)}` },
+      });
+      const cashier: AuthenticatedUser = {
+        id: u.id, companyId, firstName: 'Alloc', lastName: 'Closed', roles: ['CASHIER'], permissions: ['payments.create', 'payments.allocate'],
+      };
+      const cashSessions = new CashSessionsService(tenantPrisma, auditLog);
+
+      // CASH advance collected inside a shift that is then closed.
+      const { customerId: cashCustomer } = await createCustomerWithInvoices([]);
+      await tenantPrisma.run(companyId, () => cashSessions.open({ openAmount: 0 }, cashier));
+      const cashPay = await tenantPrisma.run(companyId, () => payments.create({ customerId: cashCustomer, amount: 15000, method: 'CASH' }, cashier));
+      const session = await tenantPrisma.run(companyId, () => cashSessions.current(cashier));
+      await tenantPrisma.run(companyId, () => cashSessions.close(session.id, { closeAmount: 15000 }, cashier));
+      const cashInv = await addInvoice(cashCustomer, '10000');
+      const cashResult = await tenantPrisma.run(companyId, () =>
+        payments.allocate(cashPay.id, { allocations: [{ invoiceId: cashInv, amount: '10000' }] }, cashier),
+      );
+      expect(cashResult.advance).toBe('5000');
+      await expectLedgerConsistent(cashCustomer, '-5000', '5000');
+
+      // TRANSFER advance inside a DONE 1C export period.
+      const { customerId: expCustomer, paymentId: expPay } = await customerWithAdvance(20000);
+      const exported = await tenantPrisma.run(companyId, (tx) => tx.payment.findUniqueOrThrow({ where: { id: expPay } }));
+      await tenantPrisma.run(companyId, (tx) =>
+        tx.exportJob.create({
+          data: { companyId, type: '1c', format: 'XML', periodFrom: exported.createdAt, periodTo: exported.createdAt, status: 'DONE' },
+        }),
+      );
+      const expInv = await addInvoice(expCustomer, '20000');
+      const expResult = await tenantPrisma.run(companyId, () =>
+        payments.allocate(expPay, { allocations: [{ invoiceId: expInv, amount: '20000' }] }, cashier),
+      );
+      expect(expResult.advance).toBe('0');
+      await expectLedgerConsistent(expCustomer, '0', '0');
     });
 
     it('race: two parallel allocations never spend the same advance twice', async () => {

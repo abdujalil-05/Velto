@@ -226,7 +226,23 @@
         "NO_ORDER": "Buyurtmasiz"
       },
       "credit": "Kredit",
-      "advance": "Avans"
+      "advance": "Avans",
+      "allocate": {
+        "action": "Avansni taqsimlash",
+        "title": "Avansni taqsimlash",
+        "success": "Avans taqsimlandi",
+        "retry": "Qayta urinish",
+        "noAdvance": "Mijozda taqsimlanmagan avans yo'q",
+        "noInvoices": "Mijozda taqsimlash uchun ochiq fakturalar yo'q",
+        "payment": "To'lov",
+        "advanceOf": "avans",
+        "outstanding": "Qoldiq",
+        "amount": "Summa",
+        "invalidAmount": "Faktura qoldig'idan oshmagan summa kiriting",
+        "total": "Taqsimlandi",
+        "exceedsAdvance": "avansdan oshib ketdi",
+        "submit": "Taqsimlash"
+      }
     },
     "credit": "Kredit",
     "advance": "Avans"
@@ -482,6 +498,41 @@
       "invalidQty": "Miqdorni to'g'ri kiriting",
       "submit": "Qabul qilish",
       "received": "Qoldiq qo'shildi"
+    },
+    "tabs": {
+      "levels": "Qoldiqlar",
+      "movements": "Harakatlar"
+    },
+    "movements": {
+      "product": "Mahsulot",
+      "warehouse": "Ombor",
+      "type": "Turi",
+      "all": "Hammasi",
+      "to": "Gacha",
+      "refresh": "Yangilash",
+      "retry": "Qayta urinish",
+      "empty": "Bu filtrlar bo'yicha harakatlar yo'q — filtrlarni o'zgartiring yoki tovar qabul qiling",
+      "date": "Sana",
+      "qty": "Miqdor",
+      "reason": "Sabab",
+      "status": "Holat",
+      "actions": "Amallar",
+      "isReversal": "Storno",
+      "reversed": "Bekor qilingan",
+      "types": {
+        "RECEIVE": "Kirim",
+        "ISSUE": "Chiqim",
+        "RESERVE": "Zaxira",
+        "RELEASE": "Zaxirani bo'shatish",
+        "ADJUST": "Tuzatish"
+      },
+      "from": "Dan",
+      "reverse": {
+        "action": "Bekor qilish",
+        "title": "Ombor harakatini bekor qilish",
+        "description": "Harakat qarama-qarshi yozuv bilan bekor qilinadi. Bu amalni qaytarib bo'lmaydi.",
+        "success": "Harakat bekor qilindi"
+      }
     }
   },
   "Users": {

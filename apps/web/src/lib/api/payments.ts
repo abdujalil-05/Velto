@@ -91,3 +91,28 @@ export function useReversePaymentMutation() {
     },
   });
 }
+
+export interface AllocatePaymentInput {
+  id: string;
+  allocations: { invoiceId: string; amount: string }[];
+  idempotencyKey: string;
+}
+
+/** POST /payments/:id/allocate — distributes a payment's advance over open invoices (needs `payments.allocate`). */
+export function useAllocatePaymentMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, allocations, idempotencyKey }: AllocatePaymentInput) =>
+      apiFetch<Payment>(`/payments/${id}/allocate`, {
+        method: 'POST',
+        body: { allocations },
+        headers: { 'Idempotency-Key': idempotencyKey },
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['payments'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['customers'] });
+      queryClient.invalidateQueries({ queryKey: ['receivables'] });
+    },
+  });
+}

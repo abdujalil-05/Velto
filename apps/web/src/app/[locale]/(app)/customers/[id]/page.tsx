@@ -19,6 +19,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { OrderStatusBadge } from '@/components/shared/order-status-badge';
+import { AllocateAdvanceDialog } from '@/components/customers/allocate-advance-dialog';
 import { BlockCustomerDialog } from '@/components/customers/block-customer-dialog';
 
 export default function CustomerDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -34,6 +35,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
   const blockMutation = useBlockCustomerMutation(id);
   const unblockMutation = useUnblockCustomerMutation(id);
   const [blockDialogOpen, setBlockDialogOpen] = useState(false);
+  const [allocateOpen, setAllocateOpen] = useState(false);
 
   if (isLoading) {
     return (
@@ -134,6 +136,11 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
                 {t('advance')}: {formatMoney(customer.advance)} {tCommon('somUnit')}
               </p>
             )}
+            {Number(customer.advance) > 0 && hasPermission('payments.allocate') && (
+              <Button variant="outline" size="sm" className="mt-2" onClick={() => setAllocateOpen(true)}>
+                {t('allocate.action')}
+              </Button>
+            )}
           </CardContent>
         </Card>
 
@@ -149,6 +156,8 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
           </CardContent>
         </Card>
       </div>
+
+      {allocateOpen && <AllocateAdvanceDialog customerId={id} open onOpenChange={setAllocateOpen} />}
 
       <Card>
         <CardHeader>

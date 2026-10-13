@@ -16,7 +16,7 @@ describe('rbac-catalog: F1.4 role grants', () => {
     const keys = permissionKeysForRole('ACCOUNTANT');
     const forbidden = [
       'payments.create', 'cash.open', 'cash.close', 'orders.create', 'orders.update', 'orders.cancel',
-      'orders.deliver', 'stock.receive', 'stock.adjust', 'stock.reverse', 'payments.reverse', 'purchases.create', 'purchases.receive',
+      'orders.deliver', 'stock.receive', 'stock.adjust', 'stock.reverse', 'payments.reverse', 'payments.allocate', 'purchases.create', 'purchases.receive',
       'users.create', 'users.update', 'users.delete', 'settings.update',
       'catalog.create', 'catalog.update', 'catalog.delete',
       'customers.create', 'customers.update', 'customers.delete',
@@ -35,6 +35,11 @@ describe('rbac-catalog: F1.4 role grants', () => {
       const holders = SYSTEM_ROLES.filter((r) => permissionKeysForRole(r.code).includes(key)).map((r) => r.code);
       expect(holders.sort(), key).toEqual(['OWNER', 'SALES_DIRECTOR']);
     }
+  });
+
+  it('F2.1: payments.allocate granted only to OWNER, SALES_DIRECTOR and CASHIER', () => {
+    const holders = SYSTEM_ROLES.filter((r) => permissionKeysForRole(r.code).includes('payments.allocate')).map((r) => r.code);
+    expect(holders.sort()).toEqual(['CASHIER', 'OWNER', 'SALES_DIRECTOR']);
   });
 
   it('COURIER holds exactly 4 keys', () => {

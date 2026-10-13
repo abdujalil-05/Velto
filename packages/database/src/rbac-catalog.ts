@@ -59,7 +59,11 @@ export const PERMISSION_DEFS: { module: string; actions: string[] }[] = [
   // narrow "mark my delivery done" transition (CONFIRMED -> DELIVERED).
   { module: 'orders', actions: ['read', 'create', 'update', 'cancel', 'deliver'] },
   { module: 'invoices', actions: ['read'] },
-  { module: 'payments', actions: ['read', 'create', 'reverse'] },
+  // `allocate` (F2.1): manually apply an advance (unallocated) payment to
+  // invoices (POST /payments/:id/allocate). Separate from `create` so a sales
+  // agent can take a payment but not redistribute advances — OWNER,
+  // SALES_DIRECTOR and CASHIER only, never ACCOUNTANT (ADR-003c).
+  { module: 'payments', actions: ['read', 'create', 'reverse', 'allocate'] },
   { module: 'cash', actions: ['read', 'open', 'close'] },
   { module: 'routes', actions: ['read', 'create', 'update'] },
   { module: 'field', actions: ['read', 'create'] },
@@ -81,7 +85,7 @@ export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
     'customers.read', 'customers.update', 'catalog.read', 'stock.read',
     'purchases.read', 'purchases.create',
     'orders.read', 'orders.update', 'orders.deliver', 'invoices.read', 'payments.read',
-    'payments.reverse', 'stock.reverse',
+    'payments.reverse', 'stock.reverse', 'payments.allocate',
     'routes.read', 'routes.create', 'routes.update', 'field.read',
     'reports.read', 'reports.export', 'users.read', 'users.create',
     'users.update', 'users.delete', 'roles.read',
@@ -105,7 +109,7 @@ export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
     'orders.deliver', // marks CONFIRMED orders as DELIVERED
   ],
   CASHIER: [
-    'customers.read', 'invoices.read', 'payments.read', 'payments.create',
+    'customers.read', 'invoices.read', 'payments.read', 'payments.create', 'payments.allocate',
     'cash.read', 'cash.open', 'cash.close',
   ],
   ACCOUNTANT: [

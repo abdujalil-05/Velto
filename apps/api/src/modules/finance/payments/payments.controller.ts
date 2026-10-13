@@ -31,11 +31,11 @@ export class PaymentsController {
     return this.payments.create(dto, user);
   }
 
-  // F2.1: later manual allocation of a payment's advance. Same grant as
-  // creating/allocating a payment (payments.create) — never ACCOUNTANT.
+  // F2.1: later manual allocation of a payment's advance. Dedicated grant
+  // (OWNER, SALES_DIRECTOR, CASHIER) — never SALES_AGENT or ACCOUNTANT.
   @Post(':id/allocate')
   @Idempotent()
-  @RequirePermission('payments.create')
+  @RequirePermission('payments.allocate')
   allocate(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AllocatePaymentDto, @CurrentUser() user: AuthenticatedUser) {
     return this.payments.allocate(id, dto, user);
   }

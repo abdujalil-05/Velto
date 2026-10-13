@@ -70,3 +70,37 @@ export function useReverseStockMovementMutation() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['stock'] }),
   });
 }
+
+export type StockMovementType = 'RECEIVE' | 'ISSUE' | 'RESERVE' | 'RELEASE' | 'ADJUST';
+
+export interface StockMovementRow {
+  id: string;
+  type: StockMovementType;
+  qty: string;
+  productId: string;
+  warehouseId: string;
+  createdAt: string;
+  reason: string | null;
+  reversesMovementId: string | null;
+  reversedBy: string | null;
+  reversible: boolean;
+}
+
+export interface ListMovementsParams {
+  page?: number;
+  pageSize?: number;
+  productId?: string;
+  warehouseId?: string;
+  type?: StockMovementType;
+  from?: string;
+  to?: string;
+  [key: string]: string | number | undefined;
+}
+
+export function useStockMovementsQuery(params: ListMovementsParams) {
+  return useQuery({
+    queryKey: ['stock', 'movements', params],
+    queryFn: () => apiFetch<PaginatedResult<StockMovementRow>>(`/stock/movements${toQueryString(params)}`),
+    placeholderData: (previous) => previous,
+  });
+}

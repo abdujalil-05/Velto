@@ -16,6 +16,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { PaginationBar } from '@/components/shared/pagination-bar';
 import { ExportCsvButton } from '@/components/shared/export-csv-button';
+import { MovementsSection } from '@/components/stock/movements-section';
 import { StockTable } from '@/components/stock/stock-table';
 import { cn } from '@/lib/utils';
 
@@ -24,6 +25,7 @@ export default function StockPage() {
   const locale = useLocale();
   const { hasPermission } = useAuth();
 
+  const [tab, setTab] = useState<'levels' | 'movements'>('levels');
   const [page, setPage] = useState(1);
   const { sort, toggle: toggleSort } = useSort();
 
@@ -59,6 +61,17 @@ export default function StockPage() {
         </div>
       </div>
 
+      <div role="tablist" className="flex gap-2">
+        {(['levels', 'movements'] as const).map((k) => (
+          <Button key={k} role="tab" aria-selected={tab === k} variant={tab === k ? 'default' : 'outline'} size="sm" onClick={() => setTab(k)}>
+            {t(`tabs.${k}`)}
+          </Button>
+        ))}
+      </div>
+
+      {tab === 'movements' && <MovementsSection />}
+
+      {tab === 'levels' && <>
       <div className="flex flex-wrap items-center gap-3">
         <Button variant="ghost" size="sm" onClick={() => refetch()} disabled={isFetching}>
           <RefreshCw className={cn('mr-2 h-4 w-4', isFetching && 'animate-spin')} />
@@ -106,6 +119,7 @@ export default function StockPage() {
           </CardContent>
         </Card>
       )}
+      </>}
     </div>
   );
 }

@@ -211,12 +211,11 @@ export class PaymentsService {
     const tx = this.tenantPrisma.client;
 
     await tx.$queryRaw(Prisma.sql`SELECT id FROM "Payment" WHERE id = ${paymentId}::uuid FOR UPDATE`);
-    // SEC-023: same object-level scoping as getById() — an agent can only touch payments they collected.
-    const scopedCollectedBy = user.roles.includes('SALES_AGENT') ? user.id : undefined;
-    const before = await tx.payment.findFirst({
-      where: { id: paymentId, ...(scopedCollectedBy ? { collectedBy: scopedCollectedBy } : {}) },
-      include: PAYMENT_INCLUDE,
-    });
+    // Only `payments.allocate` holders reach here (no SALES_AGENT), so no
+    // collectedBy scoping; tenant isolation is RLS on the tenant tx.
+    // Closed cash session / 1C-exported payments are deliberately allowed:
+    // allocating an advance moves no cash and adds append-only rows only.
+    const before = await tx.payment.findUnique({ where: { id: paymentId }, include: PAYMENT_INCLUDE });
     if (!before) throw new PaymentNotFoundException();
     if (before.status !== PaymentStatus.POSTED) throw new PaymentNotPostedException(before.status);
 

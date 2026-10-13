@@ -16,7 +16,9 @@ import {
   WarehouseNotFoundException,
 } from './stock-exceptions';
 import type { AdjustStockDto } from './dto/adjust-stock.dto';
+import type { ListMovementsQueryDto } from './dto/list-movements.query';
 import type { ListStockQueryDto } from './dto/list-stock.query';
+import { endOfDay, startOfDay } from '../analytics/report-utils';
 import type { ReceiveStockDto } from './dto/receive-stock.dto';
 
 export interface StockMoveParams {
@@ -26,6 +28,13 @@ export interface StockMoveParams {
   qty: Prisma.Decimal.Value;
   refType: string;
   refId: string;
+}
+
+/** F2.1 / §6.4: only manual RECEIVE/ADJUST that are not themselves reversals can be reversed. */
+export function isReversibleMovementKind(m: { type: StockMovementType; refType: string | null; reversesMovementId: string | null }): boolean {
+  return (
+    (m.type === StockMovementType.RECEIVE || m.type === StockMovementType.ADJUST) && m.refType === 'Manual' && m.reversesMovementId === null
+  );
 }
 
 @Injectable()
@@ -66,6 +75,57 @@ export class StockService {
 
     return paginate(
       data.map((row) => ({ ...row, available: row.onHand.minus(row.reserved) })),
+      total,
+      query.page,
+      query.pageSize,
+    );
+  }
+
+  async listMovements(query: ListMovementsQueryDto) {
+    const tx = this.tenantPrisma.client;
+    const where: Prisma.StockMovementWhereInput = {
+      ...(query.productId ? { productId: query.productId } : {}),
+      ...(query.warehouseId ? { warehouseId: query.warehouseId } : {}),
+      ...(query.type ? { type: query.type } : {}),
+      ...(query.from || query.to
+        ? {
+            createdAt: {
+              ...(query.from ? { gte: startOfDay(new Date(query.from)) } : {}),
+              ...(query.to ? { lte: endOfDay(new Date(query.to)) } : {}),
+            },
+          }
+        : {}),
+    };
+    const orderBy = resolveSort<Prisma.StockMovementOrderByWithRelationInput[]>(
+      query,
+      { createdAt: (dir) => [{ createdAt: dir }, { id: dir }], qty: (dir) => [{ qty: dir }, { id: 'desc' }] },
+      [{ createdAt: 'desc' }, { id: 'desc' }],
+    );
+
+    const [rows, total] = await Promise.all([
+      tx.stockMovement.findMany({
+        where,
+        orderBy,
+        skip: (query.page - 1) * query.pageSize,
+        take: query.pageSize,
+        include: { reversedBy: { select: { id: true } } },
+      }),
+      tx.stockMovement.count({ where }),
+    ]);
+
+    return paginate(
+      rows.map((m) => ({
+        id: m.id,
+        type: m.type,
+        qty: m.qty.toString(),
+        productId: m.productId,
+        warehouseId: m.warehouseId,
+        createdAt: m.createdAt,
+        reason: m.reason,
+        reversesMovementId: m.reversesMovementId,
+        reversedBy: m.reversedBy?.id ?? null,
+        reversible: isReversibleMovementKind(m) && m.reversedBy === null,
+      })),
       total,
       query.page,
       query.pageSize,
@@ -171,11 +231,7 @@ export class StockService {
 
     const original = await tx.stockMovement.findUnique({ where: { id: movementId } });
     if (!original) throw new StockMovementNotFoundException();
-    const reversible =
-      (original.type === StockMovementType.RECEIVE || original.type === StockMovementType.ADJUST) &&
-      original.refType === 'Manual' &&
-      original.reversesMovementId === null;
-    if (!reversible) throw new StockMovementNotReversibleException(original.type, original.refType);
+    if (!isReversibleMovementKind(original)) throw new StockMovementNotReversibleException(original.type, original.refType);
 
     const locked = await this.lockStockLevel(tx, original.productId, original.warehouseId);
     const existing = await tx.stockMovement.findUnique({ where: { reversesMovementId: movementId }, select: { id: true } });

@@ -7,6 +7,7 @@ import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { POSTED_PAYMENT_WHERE, VALID_ALLOCATION_WHERE } from '../finance/ledger-filters';
 import {
   CustomerAlreadyBlockedException,
+  CustomerHasCreditBalanceException,
   CustomerHasOutstandingBalanceException,
   CustomerNotBlockedException,
   CustomerNotFoundException,
@@ -316,8 +317,14 @@ export class CustomersService {
     const before = await tx.customer.findFirst({ where: { id, deletedAt: null } });
     if (!before) throw new CustomerNotFoundException();
 
+    // Same customer-row lock ledger writers take (refreshCachedBalance), so the
+    // balance below cannot change under us before the soft delete commits.
+    await tx.$queryRaw(Prisma.sql`SELECT id FROM "Customer" WHERE id = ${id}::uuid FOR UPDATE`);
+    // Ledger (source of truth), not cachedBalance. Only exactly 0 may be deleted:
+    // debt (> 0) and credit/advance owed back to the customer (< 0) both block.
     const balance = await this.getBalance(tx, id);
-    if (!balance.isZero()) throw new CustomerHasOutstandingBalanceException(balance.toFixed(2));
+    if (balance.greaterThan(0)) throw new CustomerHasOutstandingBalanceException(balance.toFixed(2));
+    if (balance.lessThan(0)) throw new CustomerHasCreditBalanceException(balance.abs().toFixed(2));
 
     const deletedAt = new Date();
     const customer = await tx.customer.update({ where: { id }, data: { deletedAt, isActive: false } });
