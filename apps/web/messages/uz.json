@@ -50,7 +50,8 @@
     "settings": "Sozlamalar",
     "help": "Ma'lumot",
     "cash": "Kassa va to'lovlar",
-    "purchases": "Xarid"
+    "purchases": "Xarid",
+    "reconciliation": "Solishtirish"
   },
   "LanguageSwitcher": {
     "label": "Til"
@@ -1524,5 +1525,62 @@
     "receiptTotalQty": "Jami miqdor",
     "receivedBy": "Qabul qildi",
     "allWarehouses": "Barcha omborlar"
+  },
+  "Reconciliation": {
+    "title": "Solishtirish",
+    "subtitle": "Saqlangan qoldiq va mijoz balanslarini jurnal bilan solishtiradi.",
+    "refresh": "Yangilash",
+    "retry": "Qayta urinish",
+    "noPermission": "Solishtirishni ko'rish uchun ruxsatingiz yo'q.",
+    "runNow": "Hozir ishga tushirish",
+    "runDone": "Tekshiruv tugadi: qoldiq bo'yicha {stock}, balans bo'yicha {balance} farq, {healed} ta o'zi tuzaldi.",
+    "busy": "Solishtirish allaqachon bajarilmoqda. Bir daqiqadan so'ng qayta urining.",
+    "alreadyConsistent": "Allaqachon mos: saqlangan qiymat jurnalga teng, o'zgarish bo'lmadi.",
+    "fixed": "Proyeksiya jurnal qiymati bilan qayta yozildi.",
+    "fix": "Tuzatish",
+    "empty": "Bu filtrlar bo'yicha farq yo'q. Ma'lumotlar jurnalga mos; qayta tekshirish uchun «Hozir ishga tushirish» tugmasini bosing.",
+    "columnsHint": "Qiymatlar: kutilgan (jurnal) / haqiqiy (saqlangan) / farq (haqiqiy − kutilgan).",
+    "product": "Mahsulot ID",
+    "warehouse": "Ombor ID",
+    "customer": "Mijoz ID",
+    "runsTitle": "So'nggi tekshiruvlar",
+    "runsEmpty": "Hali tekshiruv bo'lmagan. Kundalik tekshiruv shu yerda ko'rinadi yoki «Hozir ishga tushirish» tugmasini bosing.",
+    "filters": {
+      "kind": "Turi",
+      "status": "Holati",
+      "all": "Hammasi"
+    },
+    "kind": {
+      "STOCK": "Qoldiq",
+      "BALANCE": "Balans"
+    },
+    "status": {
+      "OPEN": "Ochiq",
+      "FIXED": "Tuzatilgan"
+    },
+    "trigger": {
+      "SCHEDULED": "Jadval bo'yicha",
+      "MANUAL": "Qo'lda"
+    },
+    "col": {
+      "kind": "Turi",
+      "subject": "Obyekt",
+      "main": "Qoldiq / balans",
+      "reserved": "Zaxira",
+      "status": "Holati",
+      "detected": "Aniqlangan"
+    },
+    "runs": {
+      "started": "Boshlanishi",
+      "trigger": "Ishga tushirish",
+      "stock": "Qoldiq farqlari",
+      "balance": "Balans farqlari",
+      "ratio": "{checked} tadan {found} ta farq"
+    },
+    "fixDialog": {
+      "title": "Farqni tuzatamizmi?",
+      "description": "Saqlangan qoldiq/balans proyeksiyasi jurnal asosida hisoblangan qiymat bilan qayta yoziladi. Jurnalning o'zi o'zgarmaydi. Amal audit jurnaliga yoziladi.",
+      "confirm": "Jurnal qiymati bilan qayta yozish"
+    }
   }
 }

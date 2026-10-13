@@ -50,7 +50,8 @@
     "settings": "Settings",
     "help": "Help",
     "cash": "Cash & payments",
-    "purchases": "Purchasing"
+    "purchases": "Purchasing",
+    "reconciliation": "Reconciliation"
   },
   "LanguageSwitcher": {
     "label": "Language"
@@ -1524,5 +1525,62 @@
     "receiptTotalQty": "Total qty",
     "receivedBy": "Received by",
     "allWarehouses": "All warehouses"
+  },
+  "Reconciliation": {
+    "title": "Reconciliation",
+    "subtitle": "Checks stored stock and customer balances against the ledger.",
+    "refresh": "Refresh",
+    "retry": "Retry",
+    "noPermission": "You do not have permission to view reconciliation.",
+    "runNow": "Run now",
+    "runDone": "Run finished: {stock} stock and {balance} balance findings, {healed} self-healed.",
+    "busy": "A reconciliation run is already in progress. Try again in a minute.",
+    "alreadyConsistent": "Already consistent: the stored value already matches the ledger, nothing changed.",
+    "fixed": "Projection overwritten with the ledger value.",
+    "fix": "Fix",
+    "empty": "No findings for these filters. Stored values match the ledger; use Run now to check again.",
+    "columnsHint": "Values shown as expected (ledger) / actual (stored) / difference (actual − expected).",
+    "product": "Product ID",
+    "warehouse": "Warehouse ID",
+    "customer": "Customer ID",
+    "runsTitle": "Recent runs",
+    "runsEmpty": "No runs yet. The daily check will appear here, or start one with Run now.",
+    "filters": {
+      "kind": "Type",
+      "status": "Status",
+      "all": "All"
+    },
+    "kind": {
+      "STOCK": "Stock",
+      "BALANCE": "Balance"
+    },
+    "status": {
+      "OPEN": "Open",
+      "FIXED": "Fixed"
+    },
+    "trigger": {
+      "SCHEDULED": "Scheduled",
+      "MANUAL": "Manual"
+    },
+    "col": {
+      "kind": "Type",
+      "subject": "Subject",
+      "main": "On hand / balance",
+      "reserved": "Reserved",
+      "status": "Status",
+      "detected": "Detected"
+    },
+    "runs": {
+      "started": "Started",
+      "trigger": "Trigger",
+      "stock": "Stock findings",
+      "balance": "Balance findings",
+      "ratio": "{found} of {checked} checked"
+    },
+    "fixDialog": {
+      "title": "Fix this finding?",
+      "description": "This overwrites the stored stock/balance projection with the value calculated from the ledger. The ledger itself is not changed. The action is recorded in the audit log.",
+      "confirm": "Overwrite with ledger value"
+    }
   }
 }
