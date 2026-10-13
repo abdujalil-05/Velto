@@ -27,7 +27,12 @@ const VISIT_INCLUDE = {
 
 /** Device clocks drift; a startedAt further ahead than this is a wrong clock, not a real visit. */
 export const VISIT_FUTURE_SKEW_MS = 5 * 60_000;
-export const VISIT_DEFAULT_MAX_AGE_DAYS = 7;
+/**
+ * Default max age of an offline visit's startedAt. 30 days (not 7): iOS evicts
+ * IndexedDB after ~7 days of inactivity, and rejecting older visits would lose an
+ * agent's field data (TZ 8.4); 30 days still bounds bogus/wrong-clock dates.
+ */
+export const VISIT_DEFAULT_MAX_AGE_DAYS = 30;
 
 @Injectable()
 export class VisitsService {

@@ -99,11 +99,11 @@ describe('VisitsService (integration, real Postgres + RLS)', () => {
       await expect(mk({ startedAt: at(4 * 60_000) })).resolves.toBeDefined();
     });
 
-    it('rejects startedAt older than the default 7 days, accepts 6 days', async () => {
-      const err = await mk({ startedAt: at(-8 * DAY) }).catch((e: unknown) => e);
+    it('rejects startedAt older than the default 30 days, accepts 29 days', async () => {
+      const err = await mk({ startedAt: at(-31 * DAY) }).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(VisitStartedAtTooOldException);
       expect((err as VisitStartedAtTooOldException).getResponse()).toMatchObject({ code: 'VISIT_STARTED_AT_TOO_OLD' });
-      await expect(mk({ startedAt: at(-6 * DAY) })).resolves.toBeDefined();
+      await expect(mk({ startedAt: at(-29 * DAY) })).resolves.toBeDefined();
     });
 
     it('max age comes from VISIT_STARTED_AT_MAX_AGE_DAYS', async () => {

@@ -356,6 +356,15 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
       expect((await orderByClientId(doc.clientId))?.id).toBe(results[0]?.id);
     });
 
+    it('ACCEPTED as SUBMITTED with no reservation even when qty exceeds on-hand stock (8.4: never dropped; reserve only at confirm)', async () => {
+      const reservedBefore = await reservedQty();
+      const doc = orderDoc({ qty: 1_000_000 });
+      const { results } = await tenantPrisma.run(companyId, () => sync.push([doc], user));
+      expect(results[0]).toMatchObject({ clientId: doc.clientId, status: 'ACCEPTED' });
+      expect((await orderByClientId(doc.clientId))?.status).toBe('SUBMITTED');
+      expect(await reservedQty()).toBe(reservedBefore);
+    });
+
     it('CONFLICT PRICE_CHANGED with line + total details; no order, no SO/INV number, no reserve written; rest of batch unaffected', async () => {
       const [counterBefore, reservedBefore, invoicesBefore] = await Promise.all([
         soCounter(),

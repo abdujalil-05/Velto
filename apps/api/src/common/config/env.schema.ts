@@ -35,7 +35,9 @@ export const envSchema = z.object({
   SYNC_PULL_LOOKBACK_SECONDS: z.coerce.number().int().min(20).max(3600).default(60),
   // Visit.startedAt older than this many days is REJECTED (offline queue must
   // sync within the window); more than 5 minutes in the future is always rejected.
-  VISIT_STARTED_AT_MAX_AGE_DAYS: z.coerce.number().int().min(1).max(90).default(7),
+  // 30 days: iOS evicts IndexedDB after ~7 days of inactivity, so a 7-day cap
+  // would lose field data (TZ 8.4); 30 days still bounds bogus dates.
+  VISIT_STARTED_AT_MAX_AGE_DAYS: z.coerce.number().int().min(1).max(90).default(30),
   // Comma-separated list of origins allowed to call the API with credentials
   // (SEC-040..048: CORS must not be wide-open). Web and Mini App dev ports by default.
   CORS_ORIGINS: z.string().default('http://localhost:3000,http://localhost:3002'),
