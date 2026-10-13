@@ -1,12 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ConfigService } from '@nestjs/config';
-import { prisma, systemPrisma } from '@velto/database';
+import { Prisma, prisma, systemPrisma } from '@velto/database';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { AuditLogService } from '../../common/audit/audit-log.service';
 import { DocumentNumberingService } from '../../common/document-numbering/document-numbering.service';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
+import { AppException } from '../../common/errors/app-exception';
+import { CustomerHasOutstandingBalanceException, CustomerNotFoundException } from '../customers/customers-exceptions';
 import { CustomersService } from '../customers/customers.service';
+import { PaymentsService } from '../finance/payments/payments.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { InsufficientStockException } from '../stock/stock-exceptions';
 import { StockService } from '../stock/stock.service';
@@ -35,6 +38,7 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
   const docNumbering = new DocumentNumberingService();
   const notifications = new NotificationsService(tenantPrisma, new ConfigService());
   const sales = new SalesService(tenantPrisma, auditLog, customers, stock, docNumbering, notifications);
+  const payments = new PaymentsService(tenantPrisma, auditLog, customers, docNumbering);
 
   beforeAll(async () => {
     const tenant = await systemPrisma.tenant.create({
@@ -546,5 +550,116 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     });
     // 33600 + 50400 + 10924.99 + 15750 + 4181.02
     expect(order.total.toString()).toBe('114856.01');
+  });
+
+  describe('customer lock order: SalesOrder → Customer → StockLevel → Invoice (deliver vs remove/payments)', () => {
+    const ROUNDS = 4;
+
+    async function confirmedOrder(customerId: string, qty = 1) {
+      const order = await tenantPrisma.run(companyId, () =>
+        sales.create({ customerId, lines: [{ productId, packagingId, qty }] }, user),
+      );
+      await tenantPrisma.run(companyId, () => sales.confirm(order.id, user));
+      return order;
+    }
+
+    async function balances(customerId: string) {
+      return tenantPrisma.run(companyId, async (tx) => {
+        const row = await tx.customer.findUniqueOrThrow({ where: { id: customerId } });
+        const ledger = await customers.getBalance(tx, customerId);
+        return { cached: row.cachedBalance.toString(), ledger: ledger.toString(), deletedAt: row.deletedAt };
+      });
+    }
+
+    /** A deadlock (40P01) or any non-domain error surfaces as a non-AppException rejection. */
+    function expectOnlyDomainErrors(results: PromiseSettledResult<unknown>[]) {
+      for (const r of results) {
+        if (r.status === 'rejected') expect(r.reason).toBeInstanceOf(AppException);
+      }
+    }
+
+    it('deliver refuses a soft-deleted customer: no ISSUE, no invoice, order stays CONFIRMED', async () => {
+      const customerId = await createCustomer();
+      const order = await confirmedOrder(customerId);
+      await tenantPrisma.run(companyId, () => customers.remove(customerId, user));
+
+      await expect(tenantPrisma.run(companyId, () => sales.deliver(order.id, user))).rejects.toBeInstanceOf(
+        CustomerNotFoundException,
+      );
+      const [invoices, issues, status] = await tenantPrisma.run(companyId, async (tx) => [
+        await tx.invoice.count({ where: { orderId: order.id } }),
+        await tx.stockMovement.count({ where: { refId: order.id, type: 'ISSUE' } }),
+        (await tx.salesOrder.findUniqueOrThrow({ where: { id: order.id } })).status,
+      ]);
+      expect(invoices).toBe(0);
+      expect(issues).toBe(0);
+      expect(status).toBe('CONFIRMED');
+    });
+
+    it('parallel deliver ×4 of one customer\'s orders: all succeed, no deadlock, cachedBalance = ledger', async () => {
+      for (let round = 0; round < ROUNDS; round++) {
+        const customerId = await createCustomer();
+        const orders = await Promise.all([0, 1, 2, 3].map(() => confirmedOrder(customerId)));
+        const results = await Promise.allSettled(
+          orders.map((o) => tenantPrisma.run(companyId, () => sales.deliver(o.id, user))),
+        );
+        expectOnlyDomainErrors(results);
+        expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(4);
+        const b = await balances(customerId);
+        expect(b.cached).toBe(b.ledger);
+        expect(b.ledger).toBe(orders.reduce((sum, o) => sum.plus(o.total), new Prisma.Decimal(0)).toString());
+      }
+    });
+
+    it('deliver vs customers.remove ×4 rounds: exactly one wins, never an invoice for a deleted customer', async () => {
+      for (let round = 0; round < ROUNDS; round++) {
+        const customerId = await createCustomer();
+        const order = await confirmedOrder(customerId);
+        const [deliverRes, removeRes] = await Promise.allSettled([
+          tenantPrisma.run(companyId, () => sales.deliver(order.id, user)),
+          tenantPrisma.run(companyId, () => customers.remove(customerId, user)),
+        ]);
+        expectOnlyDomainErrors([deliverRes, removeRes]);
+        const invoices = await tenantPrisma.run(companyId, (tx) => tx.invoice.count({ where: { orderId: order.id } }));
+        const b = await balances(customerId);
+        if (deliverRes.status === 'fulfilled') {
+          expect(removeRes.status).toBe('rejected');
+          expect((removeRes as PromiseRejectedResult).reason).toBeInstanceOf(CustomerHasOutstandingBalanceException);
+          expect(invoices).toBe(1);
+          expect(b.deletedAt).toBeNull();
+        } else {
+          expect(removeRes.status).toBe('fulfilled');
+          expect(deliverRes.reason).toBeInstanceOf(CustomerNotFoundException);
+          expect(invoices).toBe(0);
+          expect(b.deletedAt).not.toBeNull();
+        }
+        expect(b.cached).toBe(b.ledger);
+      }
+    });
+
+    it('deliver vs payments.create ×4 rounds: both succeed, no deadlock, Σallocations ≤ payment, cachedBalance = ledger', async () => {
+      for (let round = 0; round < ROUNDS; round++) {
+        const customerId = await createCustomer();
+        const first = await confirmedOrder(customerId);
+        await tenantPrisma.run(companyId, () => sales.deliver(first.id, user)); // an open invoice for FIFO to hit
+        const second = await confirmedOrder(customerId);
+        const amount = 30000;
+
+        const results = await Promise.allSettled([
+          tenantPrisma.run(companyId, () => sales.deliver(second.id, user)),
+          tenantPrisma.run(companyId, () => payments.create({ customerId, amount, method: 'CASH' }, user)),
+        ]);
+        expectOnlyDomainErrors(results);
+        expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(2);
+
+        const allocated = await tenantPrisma.run(companyId, (tx) =>
+          tx.paymentAllocation.aggregate({ where: { payment: { customerId } }, _sum: { amount: true } }),
+        );
+        expect(allocated._sum.amount!.lessThanOrEqualTo(amount)).toBe(true);
+        const b = await balances(customerId);
+        expect(b.cached).toBe(b.ledger);
+        expect(b.ledger).toBe(first.total.plus(second.total).minus(amount).toString());
+      }
+    });
   });
 });

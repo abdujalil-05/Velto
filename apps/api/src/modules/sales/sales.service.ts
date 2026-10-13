@@ -339,6 +339,13 @@ export class SalesService {
       throw new InvalidOrderTransitionException(order.status, OrderStatus.DELIVERED);
     }
 
+    // Lock the customer before any stock/invoice write and re-check deletedAt:
+    // a concurrent CustomersService.remove() either commits first (we refuse
+    // with CustomerNotFound) or waits for us and then sees the new invoice in
+    // the ledger (balance ≠ 0 → refused). Order SalesOrder → Customer →
+    // StockLevel → Invoice; see CustomersService.lockForUpdate().
+    await this.customers.lockActiveOrThrow(tx, order.customerId);
+
     for (const line of order.lines) {
       await this.stock.issue(tx, {
         companyId: user.companyId,

@@ -138,8 +138,7 @@ export class PaymentsService {
     // (its ledger read sees this payment -> balance != 0, delete refused).
     // Lock order customer -> invoices; allocate()/reverse() take the customer
     // lock before invoices too, so no lock-order inversion between them.
-    await this.lockCustomer(tx, dto.customerId);
-    await this.customers.findActiveOrThrow(tx, dto.customerId);
+    await this.customers.lockActiveOrThrow(tx, dto.customerId);
 
     const number = await this.docNumbering.next(tx, user.companyId, 'PAY');
     let payment;
@@ -225,7 +224,7 @@ export class PaymentsService {
     const before = await tx.payment.findUnique({ where: { id: paymentId }, include: PAYMENT_INCLUDE });
     if (!before) throw new PaymentNotFoundException();
     if (before.status !== PaymentStatus.POSTED) throw new PaymentNotPostedException(before.status);
-    await this.lockCustomer(tx, before.customerId);
+    await this.customers.lockForUpdate(tx, before.customerId);
 
     const advanceBefore = paymentAdvanceOf(before);
     const allocations = await this.allocateManual(
@@ -269,7 +268,7 @@ export class PaymentsService {
     const before = await tx.payment.findUnique({ where: { id: paymentId }, include: PAYMENT_INCLUDE });
     if (!before) throw new PaymentNotFoundException();
     if (before.status === PaymentStatus.REVERSED) throw new PaymentAlreadyReversedException();
-    await this.lockCustomer(tx, before.customerId);
+    await this.customers.lockForUpdate(tx, before.customerId);
 
     await this.assertNotInClosedCashSession(tx, before);
     await this.assertNotExportedTo1c(tx, before.createdAt);
@@ -348,14 +347,9 @@ export class PaymentsService {
    * from the other's committed rows — no stale overwrite.
    */
   private async refreshCachedBalance(tx: TenantClient, customerId: string): Promise<void> {
-    await this.lockCustomer(tx, customerId); // already held by every caller — re-entrant no-op
+    await this.customers.lockForUpdate(tx, customerId); // already held by every caller — re-entrant no-op
     const balance = await this.customers.getBalance(tx, customerId);
     await tx.customer.update({ where: { id: customerId }, data: { cachedBalance: balance } });
-  }
-
-  /** Customer row lock shared with CustomersService.remove(); always taken before any Invoice lock. */
-  private async lockCustomer(tx: TenantClient, customerId: string): Promise<void> {
-    await tx.$queryRaw(Prisma.sql`SELECT id FROM "Customer" WHERE id = ${customerId}::uuid FOR UPDATE`);
   }
 
   private async allocateFifo(

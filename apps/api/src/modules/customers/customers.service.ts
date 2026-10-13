@@ -35,6 +35,31 @@ export class CustomersService {
   }
 
   /**
+   * Customer row lock (`SELECT ... FOR UPDATE`) — the single lock every ledger
+   * writer (payments create/allocate/reverse, SalesService.deliver) and
+   * remove() take on a customer. Lock order (deadlock-free, see
+   * sales.service.test "customer lock order"):
+   *   Payment → Customer → Invoice  (PaymentsService)
+   *   SalesOrder → Customer → StockLevel → Invoice  (SalesService.deliver)
+   *   Customer only  (remove/update/block)
+   * Nothing locks Customer before Payment/SalesOrder, nor StockLevel/Invoice
+   * before Customer, so the graph is acyclic. Re-entrant within one tx.
+   */
+  async lockForUpdate(tx: TenantClient, customerId: string): Promise<void> {
+    await tx.$queryRaw(Prisma.sql`SELECT id FROM "Customer" WHERE id = ${customerId}::uuid FOR UPDATE`);
+  }
+
+  /**
+   * Lock, THEN a fresh deletedAt read: a concurrent remove() holds the same
+   * lock, so either it commits first (we see deletedAt → CustomerNotFound) or
+   * we commit first (its ledger read sees our new row → balance ≠ 0, refused).
+   */
+  async lockActiveOrThrow(tx: TenantClient, customerId: string) {
+    await this.lockForUpdate(tx, customerId);
+    return this.findActiveOrThrow(tx, customerId);
+  }
+
+  /**
    * SEC-023 (15.3): "agent faqat o'z mijozini ko'radi" — a SALES_AGENT's
    * visible customers are those reachable through their own routes, their
    * own orders, or their own visits. Other roles (SALES_DIRECTOR, OWNER,
@@ -319,7 +344,7 @@ export class CustomersService {
 
     // Same customer-row lock ledger writers take (refreshCachedBalance), so the
     // balance below cannot change under us before the soft delete commits.
-    await tx.$queryRaw(Prisma.sql`SELECT id FROM "Customer" WHERE id = ${id}::uuid FOR UPDATE`);
+    await this.lockForUpdate(tx, id);
     // Ledger (source of truth), not cachedBalance. Only exactly 0 may be deleted:
     // debt (> 0) and credit/advance owed back to the customer (< 0) both block.
     const balance = await this.getBalance(tx, id);
