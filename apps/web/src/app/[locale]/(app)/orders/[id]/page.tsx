@@ -20,6 +20,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { OrderStatusBadge } from '@/components/shared/order-status-badge';
+import { DeliverOrderDialog } from '@/components/orders/deliver-order-dialog';
 import { CancelOrderDialog } from '@/components/orders/cancel-order-dialog';
 
 export default function OrderDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -27,7 +28,8 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const t = useTranslations('Orders.detail');
   const tCommon = useTranslations('Common');
   const locale = useLocale();
-  const { hasPermission } = useAuth();
+  const { hasPermission, user } = useAuth();
+  const courierOnly = !!user && user.roles.length > 0 && user.roles.every((r) => r === 'COURIER');
 
   const { data: order, isLoading, isError, error, refetch } = useOrderQuery(id);
   const confirmMutation = useConfirmOrderMutation(id);
@@ -37,6 +39,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const deliverKey = useRef<string | null>(null);
   const closeMutation = useCloseOrderMutation(id);
   const cancelMutation = useCancelOrderMutation(id);
+  const [deliverDialogOpen, setDeliverDialogOpen] = useState(false);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
 
   if (isLoading) {
@@ -68,7 +71,22 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const canConfirm = canUpdate && order.status === 'SUBMITTED';
   // CONFIRMED -> DELIVERED is the normal path; SHIPPED -> DELIVERED is for orders handed to a
   // courier (created with courierId, or assigned one later) — see sales.service.ts deliver().
+  function runDeliver(lines?: { lineId: string; deliveredQty: string }[]) {
+    deliverMutation.mutate(
+      { idempotencyKey: (deliverKey.current ??= crypto.randomUUID()), lines },
+      {
+        onSuccess: () => {
+          deliverKey.current = null;
+          setDeliverDialogOpen(false);
+          toast.success(t('deliverSuccess'));
+        },
+        onError: (err) => toast.error(errorMessage(err, locale)),
+      },
+    );
+  }
+
   const canDeliver = canUpdate && (order.status === 'CONFIRMED' || order.status === 'SHIPPED');
+  const showDelivered = order.status === 'DELIVERED' || order.status === 'CLOSED';
   const canClose = canUpdate && order.status === 'DELIVERED';
   const canCancelOrder = canCancel && !['DELIVERED', 'CLOSED', 'CANCELLED'].includes(order.status);
 
@@ -110,15 +128,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           {canDeliver && (
             <Button
               size="sm"
-              onClick={() =>
-                deliverMutation.mutate((deliverKey.current ??= crypto.randomUUID()), {
-                  onSuccess: () => {
-                    deliverKey.current = null;
-                    toast.success(t('deliverSuccess'));
-                  },
-                  onError: (err) => toast.error(errorMessage(err, locale)),
-                })
-              }
+              onClick={() => (courierOnly ? runDeliver(undefined) : setDeliverDialogOpen(true))}
               disabled={deliverMutation.isPending}
             >
               <PackageCheck className="mr-2 h-4 w-4" />
@@ -181,6 +191,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   <th className="pb-2 pr-3 font-medium">{t('product')}</th>
                   <th className="pb-2 pr-3 font-medium">{t('packaging')}</th>
                   <th className="pb-2 pr-3 text-right font-medium">{t('qty')}</th>
+                  {showDelivered && <th className="pb-2 pr-3 text-right font-medium">{t('deliveredQty')}</th>}
                   <th className="pb-2 pr-3 text-right font-medium">{t('unitPrice')}</th>
                   <th className="pb-2 pr-3 text-right font-medium">{t('discount')}</th>
                   <th className="pb-2 text-right font-medium">{t('lineTotal')}</th>
@@ -192,6 +203,9 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                     <td className="py-2 pr-3">{line.product.name}</td>
                     <td className="py-2 pr-3 text-muted-foreground">{line.packaging.name}</td>
                     <td className="py-2 pr-3 text-right tabular-nums">{formatQty(line.qty)}</td>
+                    {showDelivered && (
+                      <td className="py-2 pr-3 text-right tabular-nums">{formatQty(line.deliveredQty)}</td>
+                    )}
                     <td className="py-2 pr-3 text-right tabular-nums">{formatMoney(line.unitPrice)}</td>
                     <td className="py-2 pr-3 text-right tabular-nums">{Number(line.discountPct) > 0 ? `${line.discountPct}%` : '—'}</td>
                     <td className="py-2 text-right tabular-nums font-medium">{formatMoney(line.lineTotal)}</td>
@@ -213,6 +227,16 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         </CardContent>
       </Card>
 
+      {canDeliver && !courierOnly && (
+        <DeliverOrderDialog
+          key={deliverDialogOpen ? 'open' : 'closed'}
+          open={deliverDialogOpen}
+          onOpenChange={setDeliverDialogOpen}
+          lines={order.lines}
+          onConfirm={runDeliver}
+          isSubmitting={deliverMutation.isPending}
+        />
+      )}
       <CancelOrderDialog
         open={cancelDialogOpen}
         onOpenChange={setCancelDialogOpen}

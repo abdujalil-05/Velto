@@ -316,7 +316,15 @@
       "cancelReasonLabel": "Sabab (ixtiyoriy)",
       "cancelConfirm": "Bekor qilish",
       "cancelKeep": "Bekor qilmaslik",
-      "courier": "Kuryer"
+      "courier": "Kuryer",
+      "deliverTitle": "Buyurtmani yetkazish",
+      "deliverHint": "Har bir qator bo'yicha haqiqatda chiqarilgan miqdorni kiriting (asosiy birlikda). Odatda — buyurtma qilingan miqdor.",
+      "deliveredQty": "Yetkazildi",
+      "deliveredQtyOver": "Buyurtma miqdoridan oshmasligi kerak",
+      "deliveredQtyInvalid": "To'g'ri manfiy bo'lmagan son kiriting (3 xonagacha kasr)",
+      "deliverRemainderNotice": "Yetkazilmagan qoldiq zaxiradan bo'shatiladi va buyurtma yetkazilgan sifatida yopiladi.",
+      "deliverAllZero": "Kamida bitta qatorda miqdor noldan katta bo'lishi kerak. Buyurtmani to'xtatish uchun uni bekor qiling.",
+      "deliverConfirm": "Yetkazishni tasdiqlash"
     },
     "form": {
       "title": "Yangi buyurtma",

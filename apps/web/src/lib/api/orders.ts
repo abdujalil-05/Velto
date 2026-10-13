@@ -10,6 +10,8 @@ export interface SalesOrderLine {
   productId: string;
   packagingId: string;
   qty: string;
+  /** Base-unit qty actually issued (F2.4); equals qty until the order is delivered. */
+  deliveredQty: string;
   unitPrice: string;
   discountPct: string;
   vatRate: string;
@@ -117,13 +119,20 @@ export function useConfirmOrderMutation(id: string) {
   });
 }
 
+export interface DeliverOrderInput {
+  idempotencyKey: string;
+  lines?: { lineId: string; deliveredQty: string }[];
+}
+
 export function useDeliverOrderMutation(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (idempotencyKey: string) =>
+    mutationFn: ({ idempotencyKey, lines }: DeliverOrderInput) =>
       apiFetch<SalesOrder>(`/orders/${id}/deliver`, {
         method: 'POST',
         headers: { 'Idempotency-Key': idempotencyKey },
+        // No body = full delivery; `lines` (every order line, base units) = partial goods issue.
+        ...(lines ? { body: { lines } } : {}),
       }),
     onSuccess: () => invalidateOrder(queryClient, id),
   });

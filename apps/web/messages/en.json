@@ -316,7 +316,15 @@
       "cancelReasonLabel": "Reason (optional)",
       "cancelConfirm": "Cancel order",
       "cancelKeep": "Keep order",
-      "courier": "Courier"
+      "courier": "Courier",
+      "deliverTitle": "Deliver order",
+      "deliverHint": "Enter the quantity actually issued per line (base unit). Default is the full ordered quantity.",
+      "deliveredQty": "Delivered",
+      "deliveredQtyOver": "Cannot exceed ordered quantity",
+      "deliveredQtyInvalid": "Enter a valid non-negative number (up to 3 decimals)",
+      "deliverRemainderNotice": "The undelivered remainder will be released from reservation and the order will be closed as delivered.",
+      "deliverAllZero": "At least one line must have a quantity above zero. To stop the order, cancel it instead.",
+      "deliverConfirm": "Confirm delivery"
     },
     "form": {
       "title": "New order",
