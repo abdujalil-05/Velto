@@ -1534,6 +1534,7 @@
     "noPermission": "You do not have permission to view reconciliation.",
     "runNow": "Run now",
     "runDone": "Run finished: {stock} stock and {balance} balance findings, {healed} self-healed.",
+    "runDoneBalanceOnly": "Run finished: {balance} balance findings, {healed} self-healed.",
     "busy": "A reconciliation run is already in progress. Try again in a minute.",
     "alreadyConsistent": "Already consistent: the stored value already matches the ledger, nothing changed.",
     "fixed": "Projection overwritten with the ledger value.",

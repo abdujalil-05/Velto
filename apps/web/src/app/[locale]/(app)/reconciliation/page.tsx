@@ -43,6 +43,7 @@ export default function ReconciliationPage() {
   const { hasPermission } = useAuth();
   const canRead = hasPermission('reconciliation.read');
   const canFix = hasPermission('reconciliation.fix');
+  const canStock = hasPermission('stock.read');
 
   const [kind, setKind] = useState<ReconciliationKind | ''>('');
   const [status, setStatus] = useState<ReconciliationFindingStatus | ''>('OPEN');
@@ -87,7 +88,11 @@ export default function ReconciliationPage() {
       {
         onSuccess: (r) => {
           runKey.current = null;
-          toast.success(t('runDone', { stock: r.stockFindings, balance: r.balanceFindings, healed: r.selfHealed }));
+          toast.success(
+            r.stockFindings === null
+              ? t('runDoneBalanceOnly', { balance: r.balanceFindings, healed: r.selfHealed })
+              : t('runDone', { stock: r.stockFindings, balance: r.balanceFindings, healed: r.selfHealed }),
+          );
         },
         onError: (err) => {
           if (err instanceof ApiError && err.status < 500) runKey.current = null;
@@ -166,7 +171,7 @@ export default function ReconciliationPage() {
             }}
           >
             <option value="">{t('filters.all')}</option>
-            <option value="STOCK">{t('kind.STOCK')}</option>
+            {canStock && <option value="STOCK">{t('kind.STOCK')}</option>}
             <option value="BALANCE">{t('kind.BALANCE')}</option>
           </Select>
         </label>
@@ -321,7 +326,7 @@ export default function ReconciliationPage() {
                   <tr className="border-b border-border text-left text-xs text-muted-foreground">
                     <th className="pb-2 pr-3 font-medium">{t('runs.started')}</th>
                     <th className="pb-2 pr-3 font-medium">{t('runs.trigger')}</th>
-                    <th className="pb-2 pr-3 font-medium">{t('runs.stock')}</th>
+                    {canStock && <th className="pb-2 pr-3 font-medium">{t('runs.stock')}</th>}
                     <th className="pb-2 font-medium">{t('runs.balance')}</th>
                   </tr>
                 </thead>
@@ -330,7 +335,13 @@ export default function ReconciliationPage() {
                     <tr key={r.id}>
                       <td className="py-2 pr-3 whitespace-nowrap">{formatDateTime(r.startedAt, locale)}</td>
                       <td className="py-2 pr-3">{t(`trigger.${r.trigger}`)}</td>
-                      <td className="py-2 pr-3">{t('runs.ratio', { found: r.stockFindings, checked: r.stockChecked })}</td>
+                      {canStock && (
+                        <td className="py-2 pr-3">
+                          {r.stockFindings === null || r.stockChecked === null
+                            ? '—'
+                            : t('runs.ratio', { found: r.stockFindings, checked: r.stockChecked })}
+                        </td>
+                      )}
                       <td className="py-2">{t('runs.ratio', { found: r.balanceFindings, checked: r.balanceChecked })}</td>
                     </tr>
                   ))}

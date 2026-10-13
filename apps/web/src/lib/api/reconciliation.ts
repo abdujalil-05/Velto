@@ -14,8 +14,8 @@ export interface ReconciliationRun {
   triggeredById: string | null;
   startedAt: string;
   finishedAt: string | null;
-  stockChecked: number;
-  stockFindings: number;
+  stockChecked: number | null;
+  stockFindings: number | null;
   balanceChecked: number;
   balanceFindings: number;
 }
@@ -44,8 +44,8 @@ export interface ReconciliationFinding {
 
 export interface DetectResult {
   runId: string;
-  stockChecked: number;
-  stockFindings: number;
+  stockChecked: number | null;
+  stockFindings: number | null;
   balanceChecked: number;
   balanceFindings: number;
   selfHealed: number;

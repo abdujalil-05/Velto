@@ -1534,6 +1534,7 @@
     "noPermission": "Solishtirishni ko'rish uchun ruxsatingiz yo'q.",
     "runNow": "Hozir ishga tushirish",
     "runDone": "Tekshiruv tugadi: qoldiq bo'yicha {stock}, balans bo'yicha {balance} farq, {healed} ta o'zi tuzaldi.",
+    "runDoneBalanceOnly": "Tekshiruv tugadi: balans bo'yicha {balance} farq, {healed} ta o'zi tuzaldi.",
     "busy": "Solishtirish allaqachon bajarilmoqda. Bir daqiqadan so'ng qayta urining.",
     "alreadyConsistent": "Allaqachon mos: saqlangan qiymat jurnalga teng, o'zgarish bo'lmadi.",
     "fixed": "Proyeksiya jurnal qiymati bilan qayta yozildi.",
