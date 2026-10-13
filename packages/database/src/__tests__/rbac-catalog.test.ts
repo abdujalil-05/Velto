@@ -50,6 +50,12 @@ describe('rbac-catalog: F1.4 role grants', () => {
     expect(holders('reconciliation.fix')).toEqual(['OWNER']);
   });
 
+  it('F3: routes.finish → OWNER, SALES_DIRECTOR, SALES_AGENT only', () => {
+    const holders = SYSTEM_ROLES.filter((r) => permissionKeysForRole(r.code).includes('routes.finish')).map((r) => r.code);
+    expect(holders.sort()).toEqual(['OWNER', 'SALES_AGENT', 'SALES_DIRECTOR']);
+    expect(permissionKeysForRole('SALES_AGENT')).not.toContain('routes.update');
+  });
+
   it('COURIER holds exactly 4 keys', () => {
     expect([...permissionKeysForRole('COURIER')].sort()).toEqual([
       'catalog.read', 'customers.read', 'orders.deliver', 'orders.read',

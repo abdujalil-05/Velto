@@ -4,6 +4,7 @@ import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequirePermission } from '../../../common/decorators/require-permission.decorator';
 import { CreateRouteDto } from './dto/create-route.dto';
 import { ListRoutesQueryDto } from './dto/list-routes.query';
+import { SkipStopDto } from './dto/skip-stop.dto';
 import { UpdateRouteDto } from './dto/update-route.dto';
 import { RoutesService } from './routes.service';
 
@@ -36,8 +37,14 @@ export class RoutesController {
   }
 
   @Post(':id/finish')
-  @RequirePermission('routes.update')
+  @RequirePermission('routes.finish')
   finish(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.routes.finish(id, user);
+  }
+
+  @Post(':id/skip-stop')
+  @RequirePermission('routes.finish')
+  skipStop(@Param('id', ParseUUIDPipe) id: string, @Body() dto: SkipStopDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.routes.skipStop(id, dto, user);
   }
 }

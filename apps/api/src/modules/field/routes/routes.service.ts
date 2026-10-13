@@ -1,25 +1,31 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma, type TenantClient } from '@velto/database';
+import { GpsStatus, Prisma, VisitOutcome, type TenantClient } from '@velto/database';
 import { AuditLogService, toAuditJson } from '../../../common/audit/audit-log.service';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { paginate } from '../../../common/pagination/pagination.dto';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
-import { endOfDay, isoWeekday, startOfDay } from '../../analytics/report-utils';
 import { OutletNotFoundException } from '../../customers/customers-exceptions';
 // A courier is the same concept in both modules (a User holding COURIER), so
 // the exception is defined once, next to its primary caller, rather than
 // duplicated here — same cross-module import style as SalesService reusing
 // AgentNotFoundException from field-exceptions.
 import { CourierNotFoundException } from '../../sales/sales-exceptions';
+import { companyDay } from '../company-day';
 import {
   AgentNotFoundException,
+  CourierRouteFinishForbiddenException,
   RouteNotFoundException,
+  RouteNotOwnedException,
+  RouteStopAlreadyClosedException,
+  RouteStopNotFoundException,
+  type OpenRouteStop,
   RouteNotReadyException,
   RouteNotScheduledTodayException,
 } from '../field-exceptions';
 import type { CreateRouteDto } from './dto/create-route.dto';
 import type { ListRoutesQueryDto } from './dto/list-routes.query';
 import type { RouteStopInputDto } from './dto/route-stop-input.dto';
+import type { SkipStopDto } from './dto/skip-stop.dto';
 import type { UpdateRouteDto } from './dto/update-route.dto';
 
 const ROUTE_INCLUDE = {
@@ -68,55 +74,55 @@ export class RoutesService {
 
   async getById(id: string) {
     const tx = this.tenantPrisma.client;
+    const day = await this.today(tx);
     const route = await tx.route.findFirst({
       where: { id },
-      include: { ...ROUTE_INCLUDE, runs: { where: { date: startOfDay(new Date()) } } },
+      include: { ...ROUTE_INCLUDE, runs: { where: { date: day.dbDate } } },
     });
     if (!route) throw new RouteNotFoundException();
     return route;
   }
 
   /**
-   * 9.4-follow-up: "marshrutni tugatish" — hard-gated on every stop having a
-   * GPS-verified Visit (Visit.gpsOk === true) logged today; no bypass. One
-   * RouteRun row per calendar day backs this, since Route itself is a
-   * recurring weekly template, not a single dated occurrence.
+   * F3 "marshrutni tugatish". Every stop must be closed today (company
+   * timezone) by one of: a VERIFIED visit, a visit at an outlet without
+   * coordinates (OUTLET_NO_COORDS), or a SKIPPED visit with a reason —
+   * otherwise 409 ROUTE_NOT_READY with `details.openStops`. One RouteRun row
+   * per company-local day backs this (Route is a weekly template).
+   * Agent-only: courier routes can't be finished (ADR-003a). An agent may
+   * finish only their own route (SEC-023); `routes.update` holders (OWNER,
+   * SALES_DIRECTOR) may finish any agent route.
    */
   async finish(id: string, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
-    const route = await tx.route.findFirst({ where: { id }, include: ROUTE_INCLUDE });
-    if (!route) throw new RouteNotFoundException();
-    if (route.weekday !== isoWeekday(new Date())) throw new RouteNotScheduledTodayException();
+    const route = await this.loadActionableRoute(tx, id, user);
+    const day = await this.today(tx);
+    if (route.weekday !== day.isoWeekday) throw new RouteNotScheduledTodayException();
 
-    const today = startOfDay(new Date());
-    const outletIds = route.stops.map((s) => s.outletId);
-    // A courier-served route (`agentId` null) has no GPS-tracked agent to
-    // log a Visit in the first place — the "every stop has a verified visit"
-    // gate below is agent-route-only in MVP, so it just never finds one
-    // finished (falls straight to RouteNotReadyException) rather than
-    // querying Visit with a null agentId.
-    const verifiedVisits = route.agentId
-      ? await tx.visit.findMany({
-          where: {
-            agentId: route.agentId,
-            outletId: { in: outletIds },
-            gpsOk: true,
-            startedAt: { gte: today, lte: endOfDay(new Date()) },
-          },
-          select: { outletId: true },
-        })
-      : [];
-    const verifiedOutletIds = new Set(verifiedVisits.map((v) => v.outletId));
-    const missingStops = route.stops.filter((s) => !verifiedOutletIds.has(s.outletId));
-    if (missingStops.length > 0) {
-      throw new RouteNotReadyException(missingStops.map((s) => s.outlet.name));
+    const closing = await this.closingVisits(tx, route.agentId!, route.stops.map((s) => s.outletId), day);
+    const openStops: OpenRouteStop[] = [];
+    const noCoordsStops: { outletId: string; outletName: string }[] = [];
+    for (const stop of route.stops) {
+      const state = closing.get(stop.outletId);
+      if (!state) {
+        openStops.push({ outletId: stop.outletId, outletName: stop.outlet.name, reason: 'NO_VISIT' });
+      } else if (state.closed === 'NO_COORDS') {
+        noCoordsStops.push({ outletId: stop.outletId, outletName: stop.outlet.name });
+      } else if (state.closed === null) {
+        openStops.push({ outletId: stop.outletId, outletName: stop.outlet.name, reason: state.lastStatus });
+      }
     }
+    if (openStops.length > 0) throw new RouteNotReadyException(openStops);
 
+    const completedAt = new Date();
     const run = await tx.routeRun.upsert({
-      where: { routeId_date: { routeId: id, date: today } },
-      update: { completedAt: new Date() },
-      create: { companyId: user.companyId, routeId: id, date: today, completedAt: new Date() },
+      where: { routeId_date: { routeId: id, date: day.dbDate } },
+      update: { completedAt },
+      create: { companyId: user.companyId, routeId: id, date: day.dbDate, completedAt },
     });
+    // F3 data-quality: RouteRun has no column for this (schema is another
+    // agent's), so it is exposed in the response and recorded in the audit row.
+    const result = { ...run, outletNoCoordsCount: noCoordsStops.length, outletNoCoordsStops: noCoordsStops };
 
     await this.auditLog.log(tx, {
       companyId: user.companyId,
@@ -124,10 +130,95 @@ export class RoutesService {
       action: 'route.finish',
       entity: 'Route',
       entityId: id,
-      newValue: toAuditJson(run),
+      newValue: toAuditJson(result),
     });
 
-    return run;
+    return result;
+  }
+
+  /** F3: close a stop without a visit — logs a SKIPPED Visit (reason required) for the route's agent. */
+  async skipStop(id: string, dto: SkipStopDto, user: AuthenticatedUser) {
+    const tx = this.tenantPrisma.client;
+    const route = await this.loadActionableRoute(tx, id, user);
+    const day = await this.today(tx);
+    if (route.weekday !== day.isoWeekday) throw new RouteNotScheduledTodayException();
+    if (!route.stops.some((s) => s.outletId === dto.outletId)) throw new RouteStopNotFoundException();
+
+    const closing = await this.closingVisits(tx, route.agentId!, [dto.outletId], day);
+    if (closing.get(dto.outletId)?.closed) throw new RouteStopAlreadyClosedException();
+
+    const visit = await tx.visit.create({
+      data: {
+        companyId: user.companyId,
+        agentId: route.agentId!,
+        outletId: dto.outletId,
+        startedAt: new Date(),
+        outcome: VisitOutcome.SKIPPED,
+        skipReason: dto.reason,
+      },
+    });
+
+    await this.auditLog.log(tx, {
+      companyId: user.companyId,
+      userId: user.id,
+      action: 'route.skip_stop',
+      entity: 'Route',
+      entityId: id,
+      newValue: toAuditJson({ visitId: visit.id, outletId: dto.outletId, reason: dto.reason }),
+    });
+
+    return visit;
+  }
+
+  /** Company-timezone "today" (Company.timezone, default Asia/Tashkent). */
+  private async today(tx: TenantClient) {
+    const company = await tx.company.findFirst({ select: { timezone: true } });
+    return companyDay(new Date(), company?.timezone ?? 'Asia/Tashkent');
+  }
+
+  /** Shared guard for finish/skip: 404, courier route -> 403, agent ownership (SEC-023) -> 403. */
+  private async loadActionableRoute(tx: TenantClient, id: string, user: AuthenticatedUser) {
+    const route = await tx.route.findFirst({ where: { id }, include: ROUTE_INCLUDE });
+    if (!route) throw new RouteNotFoundException();
+    if (!route.agentId) throw new CourierRouteFinishForbiddenException();
+    if (route.agentId !== user.id && !user.permissions.includes('routes.update')) {
+      throw new RouteNotOwnedException();
+    }
+    return route;
+  }
+
+  /**
+   * Per outlet, today's visits by the route's agent: `closed` is VERIFIED /
+   * NO_COORDS / SKIPPED if any visit closes the stop (VERIFIED wins), else
+   * null with the latest visit's GpsStatus. Outlets with no visit are absent.
+   */
+  private async closingVisits(
+    tx: TenantClient,
+    agentId: string,
+    outletIds: string[],
+    day: { start: Date; end: Date },
+  ) {
+    const visits = await tx.visit.findMany({
+      where: { agentId, outletId: { in: outletIds }, startedAt: { gte: day.start, lt: day.end } },
+      select: { outletId: true, gpsStatus: true, outcome: true },
+      orderBy: { startedAt: 'asc' },
+    });
+    const rank = { VERIFIED: 3, NO_COORDS: 2, SKIPPED: 1 } as const;
+    const map = new Map<string, { closed: keyof typeof rank | null; lastStatus: string }>();
+    for (const v of visits) {
+      const kind: keyof typeof rank | null =
+        v.outcome === VisitOutcome.SKIPPED
+          ? 'SKIPPED'
+          : v.gpsStatus === GpsStatus.VERIFIED
+            ? 'VERIFIED'
+            : v.gpsStatus === GpsStatus.OUTLET_NO_COORDS
+              ? 'NO_COORDS'
+              : null;
+      const prev = map.get(v.outletId);
+      const closed = prev?.closed && (!kind || rank[prev.closed] >= rank[kind]) ? prev.closed : kind;
+      map.set(v.outletId, { closed, lastStatus: v.gpsStatus });
+    }
+    return map;
   }
 
   async create(dto: CreateRouteDto, user: AuthenticatedUser) {

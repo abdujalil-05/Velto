@@ -65,7 +65,11 @@ export const PERMISSION_DEFS: { module: string; actions: string[] }[] = [
   // SALES_DIRECTOR and CASHIER only, never ACCOUNTANT (ADR-003c).
   { module: 'payments', actions: ['read', 'create', 'reverse', 'allocate'] },
   { module: 'cash', actions: ['read', 'open', 'close'] },
-  { module: 'routes', actions: ['read', 'create', 'update'] },
+  // `finish` (F3): finish a route / skip a stop. Split from `update` so a
+  // SALES_AGENT can close their own route without edit rights; the agent-only-
+  // own-route rule (SEC-023) is enforced in RoutesService. Backfill existing
+  // tenants with backfill-permissions.ts.
+  { module: 'routes', actions: ['read', 'create', 'update', 'finish'] },
   { module: 'field', actions: ['read', 'create'] },
   { module: 'reports', actions: ['read', 'export'] },
   { module: 'users', actions: ['read', 'create', 'update', 'delete'] },
@@ -90,13 +94,13 @@ export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
     'purchases.read', 'purchases.create',
     'orders.read', 'orders.update', 'orders.deliver', 'invoices.read', 'payments.read',
     'payments.reverse', 'stock.reverse', 'payments.allocate',
-    'routes.read', 'routes.create', 'routes.update', 'field.read',
+    'routes.read', 'routes.create', 'routes.update', 'routes.finish', 'field.read',
     'reports.read', 'reports.export', 'users.read', 'users.create',
     'users.update', 'users.delete', 'roles.read',
   ],
   SALES_AGENT: [
     'customers.read', 'catalog.read', 'stock.read', 'orders.read',
-    'orders.create', 'payments.create', 'payments.read', 'invoices.read', 'routes.read', 'field.read', 'field.create',
+    'orders.create', 'payments.create', 'payments.read', 'invoices.read', 'routes.read', 'routes.finish', 'field.read', 'field.create',
   ],
   // Deliberately narrow: a courier only needs to find the customer, see what
   // is on the order and mark their own delivery done. `orders.deliver`, not
