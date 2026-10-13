@@ -103,6 +103,19 @@ describe('E2E F2.5: reconciliation', () => {
     expect(await driftNotifications(tokens.OWNER!.userId)).toBe(1);
   });
 
+  it('ACCOUNTANT sees only BALANCE findings and no stock counts; OWNER sees both kinds', async () => {
+    const acc = await request(app.getHttpServer()).get('/reconciliation/findings').set('Authorization', auth('ACCOUNTANT')).expect(200);
+    expect(acc.body.data.every((f: { kind: string }) => f.kind === 'BALANCE')).toBe(true);
+    const accStock = await request(app.getHttpServer()).get('/reconciliation/findings?kind=STOCK').set('Authorization', auth('ACCOUNTANT')).expect(200);
+    expect(accStock.body.data).toHaveLength(0);
+    const accRuns = await request(app.getHttpServer()).get('/reconciliation/runs').set('Authorization', auth('ACCOUNTANT')).expect(200);
+    expect(accRuns.body.data[0]).toMatchObject({ stockChecked: null, stockFindings: null });
+    const owner = await request(app.getHttpServer()).get('/reconciliation/findings').set('Authorization', auth('OWNER')).expect(200);
+    expect(owner.body.data.some((f: { kind: string }) => f.kind === 'STOCK')).toBe(true);
+    const ownerRuns = await request(app.getHttpServer()).get('/reconciliation/runs').set('Authorization', auth('OWNER')).expect(200);
+    expect(ownerRuns.body.data[0].stockFindings).toBeGreaterThan(0);
+  });
+
   it('OWNER fixes the finding; second fix => 409', async () => {
     const list = await request(app.getHttpServer()).get('/reconciliation/findings?status=OPEN&kind=STOCK').set('Authorization', auth('OWNER')).expect(200);
     const finding = list.body.data.find((f: { productId: string }) => f.productId === productId);

@@ -17,7 +17,7 @@ export class ReconciliationAdminService {
     private readonly alerts: ReconciliationAlertService,
   ) {}
 
-  async listRuns(q: ListReconciliationRunsQueryDto) {
+  async listRuns(q: ListReconciliationRunsQueryDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
     const [rows, total] = await Promise.all([
       tx.reconciliationRun.findMany({
@@ -27,14 +27,22 @@ export class ReconciliationAdminService {
       }),
       tx.reconciliationRun.count(),
     ]);
-    return paginate(rows, total, q.page, q.pageSize);
+    // Stock counts are stock-level data: hide them from users without stock.read.
+    const data: unknown[] = user.permissions.includes('stock.read')
+      ? rows
+      : rows.map((r) => ({ ...r, stockChecked: null, stockFindings: null }));
+    return paginate(data, total, q.page, q.pageSize);
   }
 
-  async listFindings(q: ListReconciliationFindingsQueryDto) {
+  async listFindings(q: ListReconciliationFindingsQueryDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
+    // STOCK findings expose per-product/warehouse quantities: require stock.read.
+    // Without it: omitted kind => BALANCE only; explicit kind=STOCK => empty page.
+    const canSeeStock = user.permissions.includes('stock.read');
+    if (!canSeeStock && q.kind === 'STOCK') return paginate([], 0, q.page, q.pageSize);
     const where: Prisma.ReconciliationFindingWhereInput = {
       ...(q.status ? { status: q.status } : {}),
-      ...(q.kind ? { kind: q.kind } : {}),
+      ...(canSeeStock ? (q.kind ? { kind: q.kind } : {}) : { kind: 'BALANCE' as const }),
     };
     const [rows, total] = await Promise.all([
       tx.reconciliationFinding.findMany({

@@ -17,14 +17,14 @@ export class ReconciliationController {
 
   @Get('runs')
   @RequirePermission('reconciliation.read')
-  runs(@Query() q: ListReconciliationRunsQueryDto) {
-    return this.admin.listRuns(q);
+  runs(@Query() q: ListReconciliationRunsQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.admin.listRuns(q, user);
   }
 
   @Get('findings')
   @RequirePermission('reconciliation.read')
-  findings(@Query() q: ListReconciliationFindingsQueryDto) {
-    return this.admin.listFindings(q);
+  findings(@Query() q: ListReconciliationFindingsQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.admin.listFindings(q, user);
   }
 
   @Post('run')
