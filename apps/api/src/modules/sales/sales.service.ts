@@ -17,16 +17,22 @@ import { StockService } from '../stock/stock.service';
 import type { AssignCourierDto } from './dto/assign-courier.dto';
 import type { CancelOrderDto } from './dto/cancel-order.dto';
 import type { CreateOrderDto } from './dto/create-order.dto';
+import type { DeliverOrderDto, DeliverOrderLineDto } from './dto/deliver-order.dto';
 import type { ListOrdersQueryDto } from './dto/list-orders.query';
 import { calcLineTotal } from './line-total';
 import {
   AmbiguousWarehouseException,
   CourierNotFoundException,
   CustomerBlockedException,
+  DeliveryLinesMismatchException,
+  EmptyDeliveryException,
   EmptyOrderException,
+  InvalidDeliveredQtyException,
   InvalidOrderTransitionException,
   OrderNotAssignedToCourierException,
+  OverDeliveryException,
   PackagingMismatchException,
+  PartialDeliveryNotAllowedException,
   PriceNotFoundException,
   SalesOrderNotFoundException,
 } from './sales-exceptions';
@@ -59,6 +65,97 @@ const ORDER_SUPERVISOR_ROLES = ['OWNER', 'SALES_DIRECTOR', 'WAREHOUSE'];
 /** SEC-023, courier half: a courier-only session is confined to its own deliveries, exactly as a SALES_AGENT is to its own orders. */
 function isCourierOnly(user: AuthenticatedUser): boolean {
   return user.roles.includes('COURIER') && !user.roles.some((role) => ORDER_SUPERVISOR_ROLES.includes(role));
+}
+
+/**
+ * Every path that locks more than one StockLevel (reserve/release/issue)
+ * walks the order lines in productId order, so two transactions sharing
+ * products always take those row locks in the same order — no deadlock.
+ * Array.prototype.sort is stable, so same-product lines keep their order.
+ */
+function sortByProduct<T extends { productId: string }>(lines: readonly T[]): T[] {
+  return [...lines].sort((a, b) =>
+    a.productId < b.productId ? -1 : a.productId > b.productId ? 1 : 0,
+  );
+}
+
+type DeliverableLine = {
+  id: string;
+  productId: string;
+  qty: Prisma.Decimal;
+  unitPrice: Prisma.Decimal;
+  discountPct: Prisma.Decimal;
+  vatRate: Prisma.Decimal;
+  lineTotal: Prisma.Decimal;
+};
+
+type DeliveryPlanItem<L extends DeliverableLine> = {
+  line: L;
+  deliveredQty: Prisma.Decimal;
+  releasedQty: Prisma.Decimal;
+};
+
+/**
+ * F2.4: turns the optional `lines` body into a per-line (delivered, released)
+ * plan, sorted by productId. No body ⇒ full delivery of every line. With a
+ * body, every order line must be listed exactly once and 0 ≤ deliveredQty ≤ qty
+ * (3 dp max); at least one line must deliver something. Pure — throws before
+ * any write.
+ */
+function resolveDeliveryPlan<L extends DeliverableLine>(
+  lines: readonly L[],
+  requested: readonly DeliverOrderLineDto[] | undefined,
+): DeliveryPlanItem<L>[] {
+  const zero = new Prisma.Decimal(0);
+  if (!requested) {
+    return sortByProduct(lines).map((line) => ({
+      line,
+      deliveredQty: line.qty,
+      releasedQty: zero,
+    }));
+  }
+
+  const lineIds = new Set(lines.map((l) => l.id));
+  const seen = new Set<string>();
+  const duplicate = new Set<string>();
+  const unknown: string[] = [];
+  for (const r of requested) {
+    if (!lineIds.has(r.lineId)) unknown.push(r.lineId);
+    else if (seen.has(r.lineId)) duplicate.add(r.lineId);
+    seen.add(r.lineId);
+  }
+  const missing = lines.filter((l) => !seen.has(l.id)).map((l) => l.id);
+  if (unknown.length || duplicate.size || missing.length) {
+    throw new DeliveryLinesMismatchException({ unknown, duplicate: [...duplicate], missing });
+  }
+
+  const requestedById = new Map(requested.map((r) => [r.lineId, r.deliveredQty]));
+  const plan = sortByProduct(lines).map((line) => {
+    const raw = requestedById.get(line.id)!;
+    let deliveredQty: Prisma.Decimal;
+    try {
+      deliveredQty = new Prisma.Decimal(raw);
+    } catch {
+      throw new InvalidDeliveredQtyException(line.id, String(raw));
+    }
+    if (!deliveredQty.isFinite() || deliveredQty.lessThan(0) || deliveredQty.decimalPlaces() > 3) {
+      throw new InvalidDeliveredQtyException(line.id, String(raw));
+    }
+    if (deliveredQty.greaterThan(line.qty)) {
+      throw new OverDeliveryException(line.id, line.qty.toString(), deliveredQty.toString());
+    }
+    return { line, deliveredQty, releasedQty: line.qty.minus(deliveredQty) };
+  });
+
+  if (plan.every((p) => p.deliveredQty.isZero())) throw new EmptyDeliveryException();
+  return plan;
+}
+
+/** SQLSTATE 23514 on SalesOrderLine_deliveredQty_range_check — matched by constraint name, so it stays narrow. */
+function isDeliveredQtyCheckViolation(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const message = (err as { message?: unknown }).message;
+  return typeof message === 'string' && message.includes('SalesOrderLine_deliveredQty_range_check');
 }
 
 @Injectable()
@@ -322,7 +419,7 @@ export class SalesService {
    * or up front by create()/assignCourier() for a courier order) and
    * creates the invoice — 6.6: "MVP'da 1 order = 1 invoice soddalashtirilgan".
    */
-  async deliver(id: string, user: AuthenticatedUser) {
+  async deliver(id: string, user: AuthenticatedUser, dto?: DeliverOrderDto) {
     const tx = this.tenantPrisma.client;
     const order = await this.getRawOrderForUpdate(tx, id);
 
@@ -337,25 +434,73 @@ export class SalesService {
       throw new InvalidOrderTransitionException(order.status, OrderStatus.DELIVERED);
     }
 
+    // F2.4: the courier Mini App path is full delivery only.
+    if (dto?.lines && isCourierOnly(user)) throw new PartialDeliveryNotAllowedException();
+
+    // Validated in full before any lock beyond the order row or any write.
+    const plan = resolveDeliveryPlan(order.lines, dto?.lines);
+
     // Lock the customer before any stock/invoice write and re-check deletedAt:
     // a concurrent CustomersService.remove() either commits first (we refuse
     // with CustomerNotFound) or waits for us and then sees the new invoice in
     // the ledger (balance ≠ 0 → refused). Order SalesOrder → Customer →
-    // StockLevel → Invoice; see CustomersService.lockForUpdate().
+    // StockLevel → DocCounter(INV) → Invoice; see CustomersService.lockForUpdate().
     await this.customers.lockActiveOrThrow(tx, order.customerId);
 
-    for (const line of order.lines) {
-      await this.stock.issue(tx, {
+    // StockLevel locks in productId order (plan is sorted) so two deliveries /
+    // confirms sharing products can't deadlock. Issue the delivered part, then
+    // release the undelivered remainder of the reservation (F2.4 decision: the
+    // order still goes to DELIVERED, 1 order = 1 invoice, §6.6).
+    for (const { line, deliveredQty, releasedQty } of plan) {
+      const move = {
         companyId: user.companyId,
         productId: line.productId,
         warehouseId: order.warehouseId,
-        qty: line.qty,
         refType: 'SalesOrder',
         refId: order.id,
-      });
+      };
+      if (deliveredQty.greaterThan(0)) await this.stock.issue(tx, { ...move, qty: deliveredQty });
+      if (releasedQty.greaterThan(0)) await this.stock.release(tx, { ...move, qty: releasedQty });
     }
 
-    const invoiceTotal = order.lines.reduce((sum, l) => sum.plus(l.lineTotal), new Prisma.Decimal(0));
+    for (const { line, deliveredQty } of plan) {
+      try {
+        await tx.salesOrderLine.update({ where: { id: line.id }, data: { deliveredQty } });
+      } catch (err) {
+        // Backstop for SalesOrderLine_deliveredQty_range_check (23514); the
+        // plan validation above should make it unreachable.
+        if (isDeliveredQtyCheckViolation(err)) {
+          throw new OverDeliveryException(line.id, line.qty.toString(), deliveredQty.toString());
+        }
+        throw err;
+      }
+    }
+
+    // Invoice only from what physically left the warehouse; 0-qty lines are
+    // omitted. A fully delivered line keeps the order's snapshot lineTotal
+    // exactly; a partial one is recomputed from the same snapshot (price,
+    // discount, VAT) and rounded once, half-up to 2dp — the same result the
+    // Decimal(18,2) column would store — so total = Σ invoice lines.
+    const invoiceLines = plan
+      .filter((p) => p.deliveredQty.greaterThan(0))
+      .map(({ line, deliveredQty }) => ({
+        productId: line.productId,
+        qty: deliveredQty,
+        unitPrice: line.unitPrice,
+        vatRate: line.vatRate,
+        lineTotal: deliveredQty.equals(line.qty)
+          ? line.lineTotal
+          : calcLineTotal(
+              deliveredQty,
+              line.unitPrice,
+              line.discountPct,
+              line.vatRate,
+            ).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP),
+      }));
+    const invoiceTotal = invoiceLines.reduce(
+      (sum, l) => sum.plus(l.lineTotal),
+      new Prisma.Decimal(0),
+    );
     const invoiceNumber = await this.docNumbering.next(tx, user.companyId, 'INV');
     const invoice = await tx.invoice.create({
       data: {
@@ -365,15 +510,7 @@ export class SalesService {
         orderId: order.id,
         total: invoiceTotal,
         status: 'OPEN',
-        lines: {
-          create: order.lines.map((line) => ({
-            productId: line.productId,
-            qty: line.qty,
-            unitPrice: line.unitPrice,
-            vatRate: line.vatRate,
-            lineTotal: line.lineTotal,
-          })),
-        },
+        lines: { create: invoiceLines },
       },
     });
 
@@ -400,7 +537,19 @@ export class SalesService {
       entity: 'SalesOrder',
       entityId: id,
       oldValue: toAuditJson({ status: order.status }),
-      newValue: toAuditJson({ status: OrderStatus.DELIVERED, invoiceId: invoice.id }),
+      newValue: toAuditJson({
+        status: OrderStatus.DELIVERED,
+        invoiceId: invoice.id,
+        invoiceTotal: invoiceTotal.toString(),
+        partial: plan.some((p) => p.releasedQty.greaterThan(0)),
+        lines: plan.map(({ line, deliveredQty, releasedQty }) => ({
+          lineId: line.id,
+          productId: line.productId,
+          qty: line.qty.toString(),
+          deliveredQty: deliveredQty.toString(),
+          releasedQty: releasedQty.toString(),
+        })),
+      }),
     });
 
     return withTotal(updated);
@@ -447,7 +596,7 @@ export class SalesService {
     }
 
     if (order.status === OrderStatus.CONFIRMED || order.status === OrderStatus.SHIPPED) {
-      for (const line of order.lines) {
+      for (const line of sortByProduct(order.lines)) {
         await this.stock.release(tx, {
           companyId: user.companyId,
           productId: line.productId,
@@ -564,7 +713,8 @@ export class SalesService {
     order: { id: string; warehouseId: string; lines: { productId: string; qty: Prisma.Decimal }[] },
     user: AuthenticatedUser,
   ): Promise<void> {
-    for (const line of order.lines) {
+    // StockLevel locks always in productId order — see sortByProduct().
+    for (const line of sortByProduct(order.lines)) {
       await this.stock.reserve(tx, {
         companyId: user.companyId,
         productId: line.productId,

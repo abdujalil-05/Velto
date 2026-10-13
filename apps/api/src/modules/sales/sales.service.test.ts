@@ -16,8 +16,13 @@ import { StockService } from '../stock/stock.service';
 import {
   CourierNotFoundException,
   CustomerBlockedException,
+  DeliveryLinesMismatchException,
+  EmptyDeliveryException,
+  InvalidDeliveredQtyException,
   InvalidOrderTransitionException,
   OrderNotAssignedToCourierException,
+  OverDeliveryException,
+  PartialDeliveryNotAllowedException,
   SalesOrderNotFoundException,
 } from './sales-exceptions';
 import { SalesService } from './sales.service';
@@ -660,6 +665,313 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
         expect(b.cached).toBe(b.ledger);
         expect(b.ledger).toBe(first.total.plus(second.total).minus(amount).toString());
       }
+    });
+  });
+
+  describe('F2.4 partial goods issue: deliver(lines[{lineId, deliveredQty}])', () => {
+    let product2Id: string;
+    let packaging2Id: string;
+
+    beforeAll(async () => {
+      await tenantPrisma.run(companyId, async (tx) => {
+        const product = await tx.product.create({
+          data: {
+            companyId,
+            sku: 'SALES-TEST-2',
+            name: 'Sales Test Product 2',
+            baseUnit: 'dona',
+            vatRate: 12,
+          },
+        });
+        product2Id = product.id;
+        const packaging = await tx.productPackaging.create({
+          data: { productId: product.id, name: 'dona', qtyInBaseUnit: 1, isDefault: true },
+        });
+        packaging2Id = packaging.id;
+        const priceList = await tx.priceList.findFirstOrThrow({ where: { isDefault: true } });
+        await tx.priceListItem.create({
+          data: { priceListId: priceList.id, productId: product.id, price: '999.99' },
+        });
+      });
+      await tenantPrisma.run(companyId, () =>
+        stock.receive({ productId: product2Id, warehouseId, qty: 1000 }, user),
+      );
+    });
+
+    async function level(pid: string) {
+      const l = await tenantPrisma.run(companyId, (tx) =>
+        tx.stockLevel.findUniqueOrThrow({
+          where: { productId_warehouseId: { productId: pid, warehouseId } },
+        }),
+      );
+      return { onHand: l.onHand, reserved: l.reserved };
+    }
+
+    /** CONFIRMED order: line[0] = product1 × q1 (10000), line[1] = product2 × q2 (999.99), in the given order. */
+    async function confirmedTwoLine(q1: number, q2: number, reverse = false) {
+      const customerId = await createCustomer();
+      const lines = [
+        { productId, packagingId, qty: q1 },
+        { productId: product2Id, packagingId: packaging2Id, qty: q2 },
+      ];
+      const order = await tenantPrisma.run(companyId, () =>
+        sales.create({ customerId, lines: reverse ? lines.reverse() : lines }, user),
+      );
+      await tenantPrisma.run(companyId, () => sales.confirm(order.id, user));
+      const byProduct = (pid: string) => order.lines.find((l) => l.productId === pid)!.id;
+      return { order, customerId, line1: byProduct(productId), line2: byProduct(product2Id) };
+    }
+
+    async function writesFor(orderId: string) {
+      return tenantPrisma.run(companyId, async (tx) => ({
+        movements: await tx.stockMovement.count({
+          where: { refId: orderId, type: { in: ['ISSUE', 'RELEASE'] } },
+        }),
+        invoices: await tx.invoice.count({ where: { orderId } }),
+        order: await tx.salesOrder.findUniqueOrThrow({
+          where: { id: orderId },
+          include: { lines: true },
+        }),
+      }));
+    }
+
+    it('no body: full delivery writes deliveredQty = qty on every line, invoice = order snapshot total', async () => {
+      const { order } = await confirmedTwoLine(2, 3);
+      const delivered = await tenantPrisma.run(companyId, () => sales.deliver(order.id, user));
+      expect(delivered.status).toBe('DELIVERED');
+      expect(delivered.lines.every((l) => l.deliveredQty.equals(l.qty))).toBe(true);
+      const invoice = await tenantPrisma.run(companyId, (tx) =>
+        tx.invoice.findFirstOrThrow({ where: { orderId: order.id }, include: { lines: true } }),
+      );
+      expect(invoice.total.toString()).toBe(delivered.total.toString());
+      expect(invoice.lines).toHaveLength(2);
+      const releases = await tenantPrisma.run(companyId, (tx) =>
+        tx.stockMovement.count({ where: { refId: order.id, type: 'RELEASE' } }),
+      );
+      expect(releases).toBe(0);
+    });
+
+    it('partial: issues delivered qty, releases the remainder, invoices only delivered qty (rounded half-up)', async () => {
+      const p1Before = await level(productId);
+      const p2Before = await level(product2Id);
+      const { order, line1, line2 } = await confirmedTwoLine(10, 3);
+
+      const delivered = await tenantPrisma.run(companyId, () =>
+        sales.deliver(order.id, user, {
+          lines: [
+            { lineId: line2, deliveredQty: '1' },
+            { lineId: line1, deliveredQty: '4' },
+          ],
+        }),
+      );
+      expect(delivered.status).toBe('DELIVERED');
+      expect(delivered.lines.find((l) => l.id === line1)!.deliveredQty.toString()).toBe('4');
+      expect(delivered.lines.find((l) => l.id === line2)!.deliveredQty.toString()).toBe('1');
+
+      const p1 = await level(productId);
+      const p2 = await level(product2Id);
+      expect(p1Before.onHand.minus(p1.onHand).toString()).toBe('4');
+      expect(p2Before.onHand.minus(p2.onHand).toString()).toBe('1');
+      expect(p1.reserved.toString()).toBe(p1Before.reserved.toString());
+      expect(p2.reserved.toString()).toBe(p2Before.reserved.toString());
+
+      const moves = await tenantPrisma.run(companyId, (tx) =>
+        tx.stockMovement.findMany({
+          where: { refId: order.id, type: { in: ['ISSUE', 'RELEASE'] } },
+        }),
+      );
+      const qtyOf = (pid: string, type: string) =>
+        moves.find((m) => m.productId === pid && m.type === type)?.qty.toString();
+      expect(qtyOf(productId, 'ISSUE')).toBe('4');
+      expect(qtyOf(productId, 'RELEASE')).toBe('6');
+      expect(qtyOf(product2Id, 'ISSUE')).toBe('1');
+      expect(qtyOf(product2Id, 'RELEASE')).toBe('2');
+
+      const invoice = await tenantPrisma.run(companyId, (tx) =>
+        tx.invoice.findFirstOrThrow({ where: { orderId: order.id }, include: { lines: true } }),
+      );
+      // 4 × 10000 × 1.12 = 44800; 1 × 999.99 × 1.12 = 1119.9888 → 1119.99
+      expect(invoice.lines.find((l) => l.productId === productId)!.lineTotal.toString()).toBe(
+        '44800',
+      );
+      expect(invoice.lines.find((l) => l.productId === product2Id)!.lineTotal.toString()).toBe(
+        '1119.99',
+      );
+      expect(invoice.total.toString()).toBe('45919.99');
+
+      const audit = await tenantPrisma.run(companyId, (tx) =>
+        tx.auditLog.findFirstOrThrow({ where: { entityId: order.id, action: 'order.deliver' } }),
+      );
+      const auditLines = (
+        audit.newValue as { lines: { lineId: string; deliveredQty: string; releasedQty: string }[] }
+      ).lines;
+      expect(auditLines.find((l) => l.lineId === line1)).toMatchObject({
+        deliveredQty: '4',
+        releasedQty: '6',
+      });
+    });
+
+    it('a 0-qty line is fully released and omitted from the invoice', async () => {
+      const p2Before = await level(product2Id);
+      const { order, line1, line2 } = await confirmedTwoLine(2, 5);
+      await tenantPrisma.run(companyId, () =>
+        sales.deliver(order.id, user, {
+          lines: [
+            { lineId: line1, deliveredQty: '2' },
+            { lineId: line2, deliveredQty: '0' },
+          ],
+        }),
+      );
+      const p2 = await level(product2Id);
+      expect(p2.onHand.toString()).toBe(p2Before.onHand.toString());
+      expect(p2.reserved.toString()).toBe(p2Before.reserved.toString());
+      const invoice = await tenantPrisma.run(companyId, (tx) =>
+        tx.invoice.findFirstOrThrow({ where: { orderId: order.id }, include: { lines: true } }),
+      );
+      expect(invoice.lines.map((l) => l.productId)).toEqual([productId]);
+      expect(invoice.total.toString()).toBe('22400');
+    });
+
+    it.each([
+      [
+        'over-delivery',
+        (l1: string, l2: string) => [
+          { lineId: l1, deliveredQty: '2.001' },
+          { lineId: l2, deliveredQty: '1' },
+        ],
+        OverDeliveryException,
+      ],
+      [
+        'all zero',
+        (l1: string, l2: string) => [
+          { lineId: l1, deliveredQty: '0' },
+          { lineId: l2, deliveredQty: '0' },
+        ],
+        EmptyDeliveryException,
+      ],
+      [
+        'negative',
+        (l1: string, l2: string) => [
+          { lineId: l1, deliveredQty: '-1' },
+          { lineId: l2, deliveredQty: '1' },
+        ],
+        InvalidDeliveredQtyException,
+      ],
+      [
+        'missing line',
+        (l1: string) => [{ lineId: l1, deliveredQty: '1' }],
+        DeliveryLinesMismatchException,
+      ],
+      [
+        'duplicate line',
+        (l1: string, l2: string) => [
+          { lineId: l1, deliveredQty: '1' },
+          { lineId: l1, deliveredQty: '1' },
+          { lineId: l2, deliveredQty: '1' },
+        ],
+        DeliveryLinesMismatchException,
+      ],
+      [
+        'unknown line',
+        (l1: string, l2: string) => [
+          { lineId: l1, deliveredQty: '1' },
+          { lineId: l2, deliveredQty: '1' },
+          { lineId: randomUUID(), deliveredQty: '1' },
+        ],
+        DeliveryLinesMismatchException,
+      ],
+    ])(
+      'rejects %s with nothing written (no movement, no invoice, still CONFIRMED)',
+      async (_name, build, errorClass) => {
+        const reservedBefore = await level(productId);
+        const { order, line1, line2 } = await confirmedTwoLine(2, 3);
+        await expect(
+          tenantPrisma.run(companyId, () =>
+            sales.deliver(order.id, user, { lines: build(line1, line2) }),
+          ),
+        ).rejects.toBeInstanceOf(errorClass);
+
+        const w = await writesFor(order.id);
+        expect(w.movements).toBe(0);
+        expect(w.invoices).toBe(0);
+        expect(w.order.status).toBe('CONFIRMED');
+        expect(w.order.lines.every((l) => l.deliveredQty.isZero())).toBe(true);
+        expect((await level(productId)).reserved.minus(reservedBefore.reserved).toString()).toBe(
+          '2',
+        );
+      },
+    );
+
+    it('a courier-only session cannot send partial lines (Mini App path is full delivery only)', async () => {
+      const customerId = await createCustomer();
+      const order = await tenantPrisma.run(companyId, () =>
+        sales.create({ customerId, courierId, lines: [{ productId, packagingId, qty: 2 }] }, user),
+      );
+      await expect(
+        tenantPrisma.run(companyId, () =>
+          sales.deliver(order.id, courierUser, {
+            lines: [{ lineId: order.lines[0]!.id, deliveredQty: '1' }],
+          }),
+        ),
+      ).rejects.toBeInstanceOf(PartialDeliveryNotAllowedException);
+      expect((await writesFor(order.id)).movements).toBe(0);
+    });
+
+    it('race: parallel confirm + partial deliver of orders with opposite line order — no deadlock, stock consistent', async () => {
+      const p1Before = await level(productId);
+      const p2Before = await level(product2Id);
+      const N = 4;
+      const orders = await Promise.all(
+        Array.from({ length: N }, (_, i) => confirmedTwoLine(3, 3, i % 2 === 1)),
+      );
+      // A second wave confirmed concurrently with the deliveries below.
+      const customerId = await createCustomer();
+      const pending = await Promise.all(
+        Array.from({ length: N }, (_, i) =>
+          tenantPrisma.run(companyId, () =>
+            sales.create(
+              {
+                customerId,
+                lines:
+                  i % 2
+                    ? [
+                        { productId: product2Id, packagingId: packaging2Id, qty: 1 },
+                        { productId, packagingId, qty: 1 },
+                      ]
+                    : [
+                        { productId, packagingId, qty: 1 },
+                        { productId: product2Id, packagingId: packaging2Id, qty: 1 },
+                      ],
+              },
+              user,
+            ),
+          ),
+        ),
+      );
+
+      const results = await Promise.allSettled([
+        ...orders.map(({ order, line1, line2 }) =>
+          tenantPrisma.run(companyId, () =>
+            sales.deliver(order.id, user, {
+              lines: [
+                { lineId: line1, deliveredQty: '1' },
+                { lineId: line2, deliveredQty: '2' },
+              ],
+            }),
+          ),
+        ),
+        ...pending.map((o) => tenantPrisma.run(companyId, () => sales.confirm(o.id, user))),
+      ]);
+      const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+      expect(failures.map((f) => String(f.reason))).toEqual([]);
+
+      const p1 = await level(productId);
+      const p2 = await level(product2Id);
+      expect(p1Before.onHand.minus(p1.onHand).toString()).toBe(String(N * 1));
+      expect(p2Before.onHand.minus(p2.onHand).toString()).toBe(String(N * 2));
+      // Only the second wave's reservations remain.
+      expect(p1.reserved.minus(p1Before.reserved).toString()).toBe(String(N));
+      expect(p2.reserved.minus(p2Before.reserved).toString()).toBe(String(N));
     });
   });
 });

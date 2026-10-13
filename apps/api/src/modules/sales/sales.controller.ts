@@ -6,6 +6,7 @@ import { Idempotent } from '../../common/idempotency/idempotent.decorator';
 import { AssignCourierDto } from './dto/assign-courier.dto';
 import { CancelOrderDto } from './dto/cancel-order.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { DeliverOrderDto } from './dto/deliver-order.dto';
 import { ListOrdersQueryDto } from './dto/list-orders.query';
 import { SalesService } from './sales.service';
 
@@ -44,8 +45,14 @@ export class SalesController {
   @Post(':id/deliver')
   @Idempotent()
   @RequirePermission('orders.deliver')
-  deliver(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.sales.deliver(id, user);
+  // Optional body (F2.4): `lines[{lineId, deliveredQty}]` for a partial goods
+  // issue; empty body = full delivery (courier Mini App path, unchanged).
+  deliver(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: DeliverOrderDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.sales.deliver(id, user, dto);
   }
 
   /** Attaches a delivery Courier and moves the order straight to SHIPPED — see SalesService.assignCourier(). */
