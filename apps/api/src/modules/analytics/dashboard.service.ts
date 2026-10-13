@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
-import { InvoiceStatus, Prisma, type TenantClient } from '@velto/database';
+import { InvoiceStatus, PaymentStatus, Prisma, type TenantClient } from '@velto/database';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
+import { VALID_ALLOCATION_WHERE } from '../finance/ledger-filters';
 import { AgingReportService } from '../finance/reports/aging-report.service';
 import {
   COUNTED_ORDER_STATUSES,
@@ -79,7 +80,7 @@ export class DashboardService {
   }
 
   private async paymentsTotal(tx: TenantClient, start: Date, end: Date) {
-    const agg = await tx.payment.aggregate({ where: { createdAt: { gte: start, lte: end } }, _sum: { amount: true } });
+    const agg = await tx.payment.aggregate({ where: { createdAt: { gte: start, lte: end }, status: PaymentStatus.POSTED }, _sum: { amount: true } });
     return agg._sum.amount ?? new Prisma.Decimal(0);
   }
 
@@ -97,7 +98,7 @@ export class DashboardService {
     const invoices = await tx.invoice.findMany({
       where: { createdAt: { lte: asOf }, status: { not: InvoiceStatus.CANCELLED } },
       include: {
-        allocations: { include: { payment: { select: { createdAt: true } } } },
+        allocations: { where: VALID_ALLOCATION_WHERE, include: { payment: { select: { createdAt: true } } } },
         customer: { select: { paymentTermDays: true } },
       },
     });

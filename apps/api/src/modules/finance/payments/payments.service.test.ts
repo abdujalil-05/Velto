@@ -306,31 +306,152 @@ describe('PaymentsService (integration, real Postgres + RLS)', () => {
     const cashierList = await tenantPrisma.run(companyId, () => payments.list({ page: 1, pageSize: 100 }, user));
     expect(cashierList.data.map((p) => p.id)).toEqual(expect.arrayContaining([own.id, other.id]));
   });
+  /**
+   * Ledger truth, independent of service code (F2.1): Σ non-cancelled invoices
+   * − Σ POSTED payments (allocated part + advance). REVERSED never counts.
+   */
+  async function ledgerBalance(customerId: string) {
+    const rows = await tenantPrisma.run(companyId, (tx) =>
+      tx.$queryRaw<{ balance: string }[]>`
+        SELECT (
+          COALESCE((SELECT SUM(total) FROM "Invoice" WHERE "customerId" = ${customerId}::uuid AND status <> 'CANCELLED'), 0)
+          - COALESCE((SELECT SUM(amount) FROM "Payment" WHERE "customerId" = ${customerId}::uuid AND status = 'POSTED'), 0)
+        )::text AS balance`,
+    );
+    return rows[0]!.balance;
+  }
+
+  async function cachedBalance(customerId: string) {
+    const c = await tenantPrisma.run(companyId, (tx) => tx.customer.findUniqueOrThrow({ where: { id: customerId } }));
+    return c.cachedBalance;
+  }
+
+  async function customerLedger(customerId: string) {
+    return tenantPrisma.run(companyId, () => customers.getCustomerBalance(customerId, user));
+  }
+
+  describe('advance / avans (F2.1)', () => {
+    it('over-payment: remainder is the payment advance and the balance goes negative (credit)', async () => {
+      const { customerId } = await createCustomerWithInvoices([{ total: '10000', ageDays: 1 }]);
+      const payment = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 15000, method: 'CASH' }, user));
+
+      expect(payment.advance).toBe('5000');
+      const ledger = await customerLedger(customerId);
+      expect(ledger.advance).toBe('5000');
+      expect(ledger.balance.toString()).toBe('-5000');
+      expect((await cachedBalance(customerId)).toString()).toBe('-5000');
+      expect(Number(await ledgerBalance(customerId))).toBe(-5000);
+
+      const detail = await tenantPrisma.run(companyId, () => customers.getById(customerId, user));
+      expect(detail.advance).toBe('5000');
+      expect((await tenantPrisma.run(companyId, () => payments.getById(payment.id, user))).advance).toBe('5000');
+    });
+
+    it('partial allocation: under-payment leaves no advance; advance is never auto-applied to a later invoice', async () => {
+      const { customerId, invoiceIds } = await createCustomerWithInvoices([{ total: '10000', ageDays: 2 }]);
+      const under = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 4000, method: 'CASH' }, user));
+      expect(under.advance).toBe('0');
+      expect((await customerLedger(customerId)).balance.toString()).toBe('6000');
+
+      const over = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 9000, method: 'CASH' }, user));
+      expect(over.advance).toBe('3000');
+
+      // A new invoice after the advance exists: it stays OPEN, advance untouched.
+      const later = await tenantPrisma.run(companyId, (tx) =>
+        tx.invoice.create({ data: { companyId, number: `PAY-TEST-INV-${Date.now()}-${invoiceSeq++}`, customerId, total: '7000', status: 'OPEN' } }),
+      );
+      const fresh = await tenantPrisma.run(companyId, (tx) =>
+        tx.invoice.findUniqueOrThrow({ where: { id: later.id }, include: { allocations: true } }),
+      );
+      expect(fresh.status).toBe('OPEN');
+      expect(fresh.allocations).toHaveLength(0);
+      expect(invoiceIds).toHaveLength(1);
+      const ledger = await customerLedger(customerId);
+      expect(ledger.advance).toBe('3000');
+      expect(ledger.balance.toString()).toBe('4000'); // 17000 − 13000
+      expect(Number(await ledgerBalance(customerId))).toBe(4000);
+    });
+
+    it('a REVERSED payment is never an advance', async () => {
+      const { customerId } = await createCustomerWithInvoices([{ total: '10000', ageDays: 1 }]);
+      const payment = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 25000, method: 'TRANSFER' }, user));
+      expect(payment.advance).toBe('15000');
+
+      const reversed = await tenantPrisma.run(companyId, () => payments.reverse(payment.id, 'wrong amount', user));
+      expect(reversed.advance).toBe('0');
+      const ledger = await customerLedger(customerId);
+      expect(ledger.advance).toBe('0');
+      expect(ledger.balance.toString()).toBe('10000');
+      expect((await cachedBalance(customerId)).toString()).toBe('10000');
+    });
+
+    it('manual allocation reduces the advance by exactly the allocated amount', async () => {
+      const { customerId, invoiceIds } = await createCustomerWithInvoices([
+        { total: '10000', ageDays: 5 },
+        { total: '20000', ageDays: 1 },
+      ]);
+      const payment = await tenantPrisma.run(companyId, () =>
+        payments.create({ customerId, amount: 25000, method: 'CARD', allocations: [{ invoiceId: invoiceIds[1]!, amount: 20000 }] }, user),
+      );
+      expect(payment.advance).toBe('5000');
+      const oldest = await tenantPrisma.run(companyId, (tx) => tx.invoice.findUniqueOrThrow({ where: { id: invoiceIds[0]! } }));
+      expect(oldest.status).toBe('OPEN'); // manual mode: remainder is NOT FIFO-applied
+      const ledger = await customerLedger(customerId);
+      expect(ledger.advance).toBe('5000');
+      expect(ledger.balance.toString()).toBe('5000'); // 30000 − 20000 − 5000
+      expect((await cachedBalance(customerId)).toString()).toBe('5000');
+    });
+
+    it('race: parallel FIFO, manual and over-payments on one customer keep advance, cache and ledger consistent', async () => {
+      for (let round = 0; round < 3; round++) {
+        const { customerId, invoiceIds } = await createCustomerWithInvoices([
+          { total: '100000', ageDays: 9 },
+          { total: '100000', ageDays: 3 },
+        ]);
+        const settled = await Promise.allSettled([
+          tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 150000, method: 'TRANSFER' }, user)),
+          tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 120000, method: 'CASH' }, user)),
+          tenantPrisma.run(companyId, () =>
+            payments.create({ customerId, amount: 30000, method: 'CARD', allocations: [{ invoiceId: invoiceIds[1]!, amount: 10000 }] }, user),
+          ),
+        ]);
+        // The two FIFO payments must succeed; the manual one may legitimately
+        // lose to them (invoice already PAID / outstanding too small) and roll back whole.
+        expect(settled[0]!.status).toBe('fulfilled');
+        expect(settled[1]!.status).toBe('fulfilled');
+        if (settled[2]!.status === 'rejected') {
+          expect(settled[2]!.reason).toSatisfy(
+            (e: unknown) => e instanceof InvoiceNotFoundException || e instanceof AllocationExceedsInvoiceException,
+          );
+        }
+        const results = settled.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []));
+        const paid = results.reduce((s, p) => s + Number(p.amount), 0);
+
+        for (const invoiceId of invoiceIds) {
+          const inv = await tenantPrisma.run(companyId, (tx) =>
+            tx.invoice.findUniqueOrThrow({ where: { id: invoiceId }, include: { allocations: true } }),
+          );
+          expect(inv.allocations.reduce((s, a) => s + Number(a.amount), 0)).toBeLessThanOrEqual(Number(inv.total));
+        }
+        const sumAdvance = results.reduce((s, p) => s + Number(p.advance), 0);
+        const ledger = await customerLedger(customerId);
+        // FIFO payments alone (270000) exceed the 200000 invoiced, so both
+        // invoices end fully paid and everything else is advance.
+        expect(sumAdvance).toBe(paid - 200000);
+        expect(Number(ledger.advance)).toBe(paid - 200000);
+        expect(Number(ledger.balance)).toBe(200000 - paid);
+        expect(Number((await cachedBalance(customerId)).toString())).toBe(200000 - paid);
+        expect(Number(await ledgerBalance(customerId))).toBe(200000 - paid);
+      }
+    });
+  });
+
   describe('reverse() (F2.1)', () => {
     async function newCollector(label: string): Promise<AuthenticatedUser> {
       const u = await systemPrisma.user.create({
         data: { companyId, firstName: label, lastName: 'Rev', phone: `+99891${Math.floor(1_000_000 + Math.random() * 8_000_000)}` },
       });
       return { id: u.id, companyId, firstName: label, lastName: 'Rev', roles: ['CASHIER'], permissions: ['payments.create', 'payments.reverse'] };
-    }
-
-    /** Ledger truth, independent of service code: Σ non-cancelled invoices − Σ allocations of POSTED payments. */
-    async function ledgerBalance(customerId: string) {
-      const rows = await tenantPrisma.run(companyId, (tx) =>
-        tx.$queryRaw<{ balance: string }[]>`
-          SELECT (
-            COALESCE((SELECT SUM(total) FROM "Invoice" WHERE "customerId" = ${customerId}::uuid AND status <> 'CANCELLED'), 0)
-            - COALESCE((SELECT SUM(a.amount) FROM "PaymentAllocation" a
-                JOIN "Payment" p ON p.id = a."paymentId" JOIN "Invoice" i ON i.id = a."invoiceId"
-                WHERE i."customerId" = ${customerId}::uuid AND i.status <> 'CANCELLED' AND p.status = 'POSTED'), 0)
-          )::text AS balance`,
-      );
-      return rows[0]!.balance;
-    }
-
-    async function cachedBalance(customerId: string) {
-      const c = await tenantPrisma.run(companyId, (tx) => tx.customer.findUniqueOrThrow({ where: { id: customerId } }));
-      return c.cachedBalance;
     }
 
     it('keeps the original payment/allocation rows, reopens invoices, recomputes balance from the ledger, audits reason', async () => {

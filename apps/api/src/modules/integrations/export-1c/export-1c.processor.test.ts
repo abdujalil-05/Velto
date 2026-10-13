@@ -163,6 +163,37 @@ describe('Export1cProcessor (integration, real Postgres + RLS)', () => {
     );
   });
 
+  it('exports only POSTED payments; REVERSED ones are excluded (CommerceML and Excel)', async () => {
+    const companyId = await createCompany();
+    const { customerId } = await seedFixtures(companyId, { withExternalCode: true });
+    const postedNo = (await tenantPrisma.run(companyId, (tx) => tx.payment.findFirstOrThrow({ where: { status: 'POSTED' } }))).number;
+    const reversedNo = `PAY-REV-${randomUUID().slice(0, 8)}`;
+    await tenantPrisma.run(companyId, (tx) =>
+      tx.payment.create({
+        data: { companyId, number: reversedNo, customerId, amount: '777', method: PaymentMethod.CASH, status: 'REVERSED' },
+      }),
+    );
+
+    const xmlUpload = vi.fn().mockResolvedValue('https://storage.test/f.xml');
+    await new Export1cProcessor(tenantPrisma, { upload: xmlUpload } as unknown as StorageService).process(
+      fakeJob((await createPendingJob(companyId, 'XML')).id, companyId),
+    );
+    const xml = (xmlUpload.mock.calls[0]![0] as { buffer: Buffer }).buffer.toString('utf-8');
+    expect(xml).toContain(postedNo);
+    expect(xml).not.toContain(reversedNo);
+
+    const xlsUpload = vi.fn().mockResolvedValue('https://storage.test/f.xlsx');
+    await new Export1cProcessor(tenantPrisma, { upload: xlsUpload } as unknown as StorageService).process(
+      fakeJob((await createPendingJob(companyId, 'EXCEL')).id, companyId),
+    );
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load((xlsUpload.mock.calls[0]![0] as { buffer: Buffer }).buffer as never);
+    const numbers = wb.getWorksheet("To'lovlar")!.getSheetValues().flat().map(String);
+    expect(numbers).toContain(postedNo);
+    expect(numbers).not.toContain(reversedNo);
+  });
+
   it('is a no-op when the export job no longer exists (e.g. deleted before the worker ran)', async () => {
     const companyId = await createCompany();
     const upload = vi.fn();

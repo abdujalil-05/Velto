@@ -4,7 +4,7 @@ import { AuditLogService, toAuditJson } from '../../common/audit/audit-log.servi
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { paginate, resolveSort } from '../../common/pagination/pagination.dto';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
-import { VALID_ALLOCATION_WHERE } from '../finance/ledger-filters';
+import { POSTED_PAYMENT_WHERE, VALID_ALLOCATION_WHERE } from '../finance/ledger-filters';
 import {
   CustomerAlreadyBlockedException,
   CustomerHasOutstandingBalanceException,
@@ -115,8 +115,8 @@ export class CustomersService {
     // customer exists.
     if (!customer) throw new CustomerNotFoundException();
 
-    const [balance, recentOrders, lastPayment, recentVisits] = await Promise.all([
-      this.getBalance(tx, id),
+    const [{ balance, advance }, recentOrders, lastPayment, recentVisits] = await Promise.all([
+      this.getLedger(tx, id),
       tx.salesOrder.findMany({
         where: { customerId: id },
         orderBy: { createdAt: 'desc' },
@@ -135,6 +135,7 @@ export class CustomersService {
     return {
       ...customer,
       balance,
+      advance: advance.toString(),
       recentOrders: recentOrders.map((order) => ({
         id: order.id,
         number: order.number,
@@ -345,27 +346,44 @@ export class CustomersService {
       select: { id: true },
     });
     if (!customer) throw new CustomerNotFoundException();
-    const balance = await this.getBalance(tx, id);
-    return { customerId: id, balance };
+    const { balance, advance } = await this.getLedger(tx, id);
+    return { customerId: id, balance, advance: advance.toString() };
+  }
+
+  /** Customer balance only — see getLedger() for the formula. */
+  async getBalance(tx: TenantClient, customerId: string): Promise<Prisma.Decimal> {
+    return (await this.getLedger(tx, customerId)).balance;
   }
 
   /**
-   * 6.7: Balans = Σ(Invoice.total) − Σ(PaymentAllocation.amount), cancelled
-   * invoices excluded. Decimal throughout — never Float. Public: the
-   * Payments module calls this to compute allocation against open invoices
-   * — modules only reach each other via service interfaces (11.2).
+   * §6.5 / F2.1: balance = Σ live invoices − Σ valid allocations to them −
+   * advance, where advance = Σ POSTED payments − their valid allocations to
+   * live invoices (paymentAdvanceOf, summed). REVERSED payments count nowhere.
+   * Over-payment ⇒ negative balance (customer credit). Decimal throughout.
+   * Public: Payments/Sales recompute cachedBalance from this (11.2).
    */
-  async getBalance(tx: TenantClient, customerId: string): Promise<Prisma.Decimal> {
-    const [invoiceAgg, paymentAgg] = await Promise.all([
-      tx.invoice.aggregate({ where: { customerId, status: { not: 'CANCELLED' } }, _sum: { total: true } }),
+  async getLedger(
+    tx: TenantClient,
+    customerId: string,
+  ): Promise<{ invoiced: Prisma.Decimal; allocated: Prisma.Decimal; advance: Prisma.Decimal; balance: Prisma.Decimal }> {
+    const liveInvoice = { status: { not: 'CANCELLED' as const } };
+    const [invoiceAgg, allocatedAgg, postedAgg, appliedOwnAgg] = await Promise.all([
+      tx.invoice.aggregate({ where: { customerId, ...liveInvoice }, _sum: { total: true } }),
       tx.paymentAllocation.aggregate({
-        where: { invoice: { customerId, status: { not: 'CANCELLED' } }, ...VALID_ALLOCATION_WHERE },
+        where: { invoice: { customerId, ...liveInvoice }, ...VALID_ALLOCATION_WHERE },
+        _sum: { amount: true },
+      }),
+      tx.payment.aggregate({ where: { customerId, ...POSTED_PAYMENT_WHERE }, _sum: { amount: true } }),
+      tx.paymentAllocation.aggregate({
+        where: { invoice: liveInvoice, payment: { customerId, ...POSTED_PAYMENT_WHERE } },
         _sum: { amount: true },
       }),
     ]);
 
-    const totalInvoiced = invoiceAgg._sum.total ?? new Prisma.Decimal(0);
-    const totalPaid = paymentAgg._sum.amount ?? new Prisma.Decimal(0);
-    return totalInvoiced.minus(totalPaid);
+    const zero = new Prisma.Decimal(0);
+    const invoiced = invoiceAgg._sum.total ?? zero;
+    const allocated = allocatedAgg._sum.amount ?? zero;
+    const advance = (postedAgg._sum.amount ?? zero).minus(appliedOwnAgg._sum.amount ?? zero);
+    return { invoiced, allocated, advance, balance: invoiced.minus(allocated).minus(advance) };
   }
 }

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InvoiceStatus, Prisma } from '@velto/database';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
+import { VALID_ALLOCATION_WHERE } from '../finance/ledger-filters';
 import type { DateRangeQueryDto } from './dto/date-range.query';
 import { COUNTED_ORDER_STATUSES, DAY_MS, resolveDateRange, sumLineTotals } from './report-utils';
 
@@ -22,7 +23,7 @@ export class OverviewReportService {
       tx.customer.count({ where: { deletedAt: null } }),
       tx.invoice.findMany({
         where: { status: { in: [InvoiceStatus.OPEN, InvoiceStatus.PARTIALLY_PAID] } },
-        include: { allocations: true, customer: { select: { paymentTermDays: true } } },
+        include: { allocations: { where: VALID_ALLOCATION_WHERE }, customer: { select: { paymentTermDays: true } } },
       }),
     ]);
 

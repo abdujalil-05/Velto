@@ -20,7 +20,7 @@ import {
   PaymentNotFoundException,
   PaymentReversalReasonRequiredException,
 } from '../finance-exceptions';
-import { VALID_ALLOCATION_WHERE } from '../ledger-filters';
+import { VALID_ALLOCATION_WHERE, paymentAdvanceOf } from '../ledger-filters';
 
 // customer is included alongside allocations so the web UI (9.2 "/payments")
 // can render a full row without an extra round-trip per payment.
@@ -29,6 +29,12 @@ const PAYMENT_INCLUDE = {
   customer: { select: { id: true, name: true, code: true } },
 } satisfies Prisma.PaymentInclude;
 type InvoiceWithAllocations = Prisma.InvoiceGetPayload<{ include: { allocations: true } }>;
+type PaymentWithIncludes = Prisma.PaymentGetPayload<{ include: typeof PAYMENT_INCLUDE }>;
+
+/** F2.1: every payment response carries `advance` (unapplied POSTED amount, Decimal string). */
+function withAdvance<T extends PaymentWithIncludes>(payment: T): T & { advance: string } {
+  return { ...payment, advance: paymentAdvanceOf(payment).toString() };
+}
 
 @Injectable()
 export class PaymentsService {
@@ -81,7 +87,7 @@ export class PaymentsService {
       tx.payment.count({ where }),
     ]);
 
-    return paginate(data, total, query.page, query.pageSize);
+    return paginate(data.map(withAdvance), total, query.page, query.pageSize);
   }
 
   async getById(id: string, user: AuthenticatedUser) {
@@ -95,7 +101,7 @@ export class PaymentsService {
       include: PAYMENT_INCLUDE,
     });
     if (!payment) throw new PaymentNotFoundException();
-    return payment;
+    return withAdvance(payment);
   }
 
   /**
@@ -103,10 +109,9 @@ export class PaymentsService {
    * invoices, unless the caller supplies an explicit `allocations` array
    * (manual override — "operator qo'lda taqsimlashni o'zgartira oladi").
    * Any amount left over once every open invoice is settled is simply not
-   * allocated (no PaymentAllocation row) — 6.7's balance formula only sums
-   * PaymentAllocation, so an over-payment doesn't retroactively invent an
-   * invoice to attach to; it just sits as a visible, unapplied credit on
-   * this payment until a future invoice/payment allocates it.
+   * allocated (no PaymentAllocation row): it is the payment's `advance`
+   * (avans), counted in the customer balance as credit (negative balance on
+   * over-payment) and never auto-applied to a later invoice — only manually.
    * 10.4 offline idempotency: a resubmitted clientId returns the original
    * payment instead of creating a duplicate.
    */
@@ -115,7 +120,7 @@ export class PaymentsService {
 
     if (dto.clientId) {
       const existing = await tx.payment.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: PAYMENT_INCLUDE });
-      if (existing) return existing;
+      if (existing) return withAdvance(existing);
     }
 
     const amount = new Prisma.Decimal(dto.amount);
@@ -150,7 +155,7 @@ export class PaymentsService {
       // loser hits this unique violation. Return the winner's payment.
       if (dto.clientId && err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
         const existing = await tx.payment.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: PAYMENT_INCLUDE });
-        if (existing) return existing;
+        if (existing) return withAdvance(existing);
       }
       throw err;
     }
@@ -188,7 +193,7 @@ export class PaymentsService {
       });
     }
 
-    return full;
+    return withAdvance(full);
   }
 
   /**
@@ -240,7 +245,7 @@ export class PaymentsService {
       oldValue: toAuditJson(before),
       newValue: toAuditJson({ status: full.status, reason: trimmedReason }),
     });
-    return full;
+    return withAdvance(full);
   }
 
   /**

@@ -124,7 +124,8 @@ export class Export1cProcessor extends WorkerHost {
         orderBy: { createdAt: 'asc' },
       }),
       tx.payment.findMany({
-        where: { createdAt: { gte: periodFrom, lte: periodTo } },
+        // REVERSED payments are never exported as ordinary payments (no storno document in MVP).
+        where: { createdAt: { gte: periodFrom, lte: periodTo }, status: 'POSTED' },
         include: { customer: true },
         orderBy: { createdAt: 'asc' },
       }),

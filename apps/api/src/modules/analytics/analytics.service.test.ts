@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, describe, expect, it } from 'vitest';
-import { InvoiceStatus, OrderStatus, prisma, systemPrisma, VisitOutcome } from '@velto/database';
+import { InvoiceStatus, OrderStatus, PaymentMethod, PaymentStatus, prisma, systemPrisma, VisitOutcome } from '@velto/database';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { AgingReportService } from '../finance/reports/aging-report.service';
 import { AgentPerformanceReportService } from './agent-performance.service';
@@ -165,7 +165,44 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
     });
   });
 
+  // Invoice 500000 with two allocations of 100000: one POSTED, one REVERSED payment.
+  async function seedPaidAndReversed(companyId: string, fx: Awaited<ReturnType<typeof seedBaseFixtures>>) {
+    await tenantPrisma.run(companyId, async (tx) => {
+      const invoice = await tx.invoice.create({
+        data: {
+          companyId,
+          number: `INV-TEST-${randomUUID().slice(0, 8)}`,
+          customerId: fx.customerId,
+          total: '500000',
+          status: InvoiceStatus.PARTIALLY_PAID,
+          createdAt: new Date(Date.now() - 2 * 24 * 3600 * 1000),
+        },
+      });
+      for (const status of [PaymentStatus.POSTED, PaymentStatus.REVERSED]) {
+        const payment = await tx.payment.create({
+          data: {
+            companyId,
+            number: `PAY-TEST-${randomUUID().slice(0, 8)}`,
+            customerId: fx.customerId,
+            amount: '100000',
+            method: PaymentMethod.CASH,
+            status,
+          },
+        });
+        await tx.paymentAllocation.create({ data: { paymentId: payment.id, invoiceId: invoice.id, amount: '100000' } });
+      }
+    });
+  }
+
   describe('OverviewReportService', () => {
+    it('ignores allocations of REVERSED payments', async () => {
+      const companyId = await createCompany('overview-rev');
+      const fx = await seedBaseFixtures(companyId);
+      await seedPaidAndReversed(companyId, fx);
+      const report = await tenantPrisma.run(companyId, () => overview.getOverview({}));
+      expect(report.totalDebt.toString()).toBe('400000');
+    });
+
     it('counts active customers from counted orders and aggregates outstanding debt', async () => {
       const companyId = await createCompany('overview');
       const fx = await seedBaseFixtures(companyId);
@@ -193,6 +230,15 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
   });
 
   describe('DashboardService', () => {
+    it('excludes REVERSED payments from collected and overdue debt', async () => {
+      const companyId = await createCompany('dashboard-rev');
+      const fx = await seedBaseFixtures(companyId);
+      await seedPaidAndReversed(companyId, fx);
+      const result = await tenantPrisma.run(companyId, () => dashboard.getDashboard());
+      expect(result.today.collected.toString()).toBe('100000');
+      expect(result.today.overdueDebt.toString()).toBe('400000');
+    });
+
     it('reconstructs overdue debt as-of yesterday', async () => {
       const companyId = await createCompany('dashboard');
       const fx = await seedBaseFixtures(companyId);
