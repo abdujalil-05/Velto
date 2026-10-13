@@ -162,6 +162,10 @@
     "homeAction": "HOME"
   },
   "Common": {
+    "stockUpdatedAt": "Stock updated: {time}",
+    "balanceSyncedAt": "Debt/balance synced: {time}",
+    "neverSynced": "Not synced yet",
+    "dataStale": "Data is stale — connect to the internet",
     "somUnit": "so'm",
     "mapUnavailable": "Map unavailable",
     "online": "Online",

@@ -3,6 +3,8 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
+import { FreshnessLabel } from '@/components/freshness-label';
+import { searchCustomers, searchProducts } from '@/lib/offline/search';
 import { toast } from 'sonner';
 import { History, Search } from 'lucide-react';
 import { useRouter } from '@/i18n/navigation';
@@ -117,19 +119,12 @@ export default function NewOrderPage() {
 
   const filteredProducts = useMemo(() => {
     if (!products.data) return [];
-    const q = debouncedSearch.trim().toLowerCase();
-    return products.data
-      .filter((p) => p.isActive)
-      .filter((p) => !categoryId || p.categoryId === categoryId)
-      .filter((p) => !q || p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q) || (p.barcode ?? '').toLowerCase().includes(q))
-      .sort((a, b) => a.name.localeCompare(b.name));
+    return searchProducts(products.data, debouncedSearch, categoryId);
   }, [products.data, debouncedSearch, categoryId]);
 
   const filteredCustomers = useMemo(() => {
     if (outlet || !customers.data) return [];
-    const q = customerQuery.trim().toLowerCase();
-    if (!q) return [];
-    return customers.data.filter((c) => !c.isBlocked && (c.name.toLowerCase().includes(q) || c.code.toLowerCase().includes(q))).slice(0, 15);
+    return searchCustomers(customers.data, customerQuery);
   }, [customers.data, customerQuery, outlet]);
 
   function defaultPackagingId(productId: string): string {
@@ -325,6 +320,8 @@ export default function NewOrderPage() {
               ))}
             </div>
           )}
+
+          <FreshnessLabel kind="stock" />
 
           {filteredProducts.length === 0 && (
             <Card>

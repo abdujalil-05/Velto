@@ -1,5 +1,6 @@
 'use client';
 
+import { FreshnessLabel } from '@/components/freshness-label';
 import { useCallback, useMemo, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { toast } from 'sonner';
@@ -184,6 +185,7 @@ export default function RoutePage() {
         </Card>
       )}
 
+      <FreshnessLabel kind="balance" />
       <div className="space-y-2">
         {stops.map((stop) => (
           <Card key={stop.stopId} className="transition-colors">

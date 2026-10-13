@@ -162,6 +162,10 @@
     "homeAction": "BOSH SAHIFA"
   },
   "Common": {
+    "stockUpdatedAt": "Qoldiq yangilangan: {time}",
+    "balanceSyncedAt": "Qarz/balans sinxronlangan: {time}",
+    "neverSynced": "Hali sinxronlanmagan",
+    "dataStale": "Ma'lumot eskirgan — internetga ulaning",
     "somUnit": "so'm",
     "mapUnavailable": "Xarita mavjud emas",
     "online": "Onlayn",

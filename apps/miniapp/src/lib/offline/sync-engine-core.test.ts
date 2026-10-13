@@ -167,4 +167,24 @@ describe('runPush status machine (TZ 8.3/8.4)', () => {
     const flat = pushSync.mock.calls.flatMap((c) => (c[0] as { clientId: string }[]).map((d) => d.clientId));
     expect(flat.indexOf(visit)).toBeLessThan(flat.indexOf(order));
   });
+
+  it('a failed put while applying results (quota) releases the unapplied rest to PENDING, none stuck in SYNCING', async () => {
+    asA();
+    const ids = [await queueRepository.enqueue('payment', { i: 1 }), await queueRepository.enqueue('payment', { i: 2 }), await queueRepository.enqueue('payment', { i: 3 })];
+    pushSync.mockImplementation(async (docs: { clientId: string }[]) => ({ results: docs.map((d) => ({ clientId: d.clientId, status: 'ACCEPTED' })) }));
+    const original = db.queue.put.bind(db.queue);
+    let calls = 0;
+    const spy = vi.spyOn(db.queue, 'put').mockImplementation(((...args: Parameters<typeof original>) => {
+      calls += 1;
+      // 3 markSyncing puts, then markSynced #1 ok, markSynced #2 hits quota once.
+      if (calls === 5) return Promise.reject(Object.assign(new Error('full'), { name: 'QuotaExceededError' }));
+      return original(...args);
+    }) as never);
+    await expect(runPush()).rejects.toThrow();
+    spy.mockRestore();
+    const states = await Promise.all(ids.map(async (id) => (await entry(id)).status));
+    expect(states[0]).toBe('SYNCED');
+    expect(states.slice(1)).toEqual(['PENDING', 'PENDING']);
+    expect((await entry(ids[1]!)).attemptCount).toBe(0);
+  });
 });

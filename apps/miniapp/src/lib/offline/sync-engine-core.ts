@@ -1,7 +1,7 @@
 import type { GpsStatus } from '@/lib/gps-payload';
 import { ApiError } from '@/lib/api/client';
 import { pullSync, pushSync, type SyncPushResultItem } from '@/lib/api/sync';
-import { applyPull, getCursor } from './repository';
+import { applyPull, getCursor, markPullComplete } from './repository';
 import { queueRepository, type QueueEntry, type QueueError } from './queue';
 import { getOfflineSession } from './session';
 import { prepareOfflineSession } from './session-bootstrap';
@@ -32,6 +32,7 @@ export async function runPull(): Promise<{ pages: number }> {
     cursor = result.cursor;
     if (!result.hasMore) break;
   }
+  await markPullComplete();
   await queueRepository.pruneOld();
   await enforceStorageBudget();
   return { pages };
@@ -99,8 +100,17 @@ export async function runPush(): Promise<PushOutcome> {
     }
 
     const byId = new Map(results.map((r) => [r.clientId, r]));
-    for (const entry of batch) {
-      await applyResult(entry, byId.get(entry.clientId), outcome);
+    const applied = new Set<string>();
+    try {
+      for (const entry of batch) {
+        await applyResult(entry, byId.get(entry.clientId), outcome);
+        applied.add(entry.clientId);
+      }
+    } finally {
+      // A failed put (quota) must not strand the rest in SYNCING: release them
+      // to PENDING (attempt not counted); the server dedupes the re-send by clientId.
+      const rest = ids.filter((id) => !applied.has(id));
+      if (rest.length > 0) await queueRepository.releaseUnsent(rest).catch(() => {});
     }
   }
 

@@ -160,11 +160,29 @@ describe('queueRepository (10.3 guaranteed delivery)', () => {
     setOfflineSession({ userId: 'u2', companyId: 'c1' });
     const theirs = await queueRepository.enqueue('order', { x: 2 });
     setOfflineSession({ userId: 'u1', companyId: 'c1' });
-    const exported = JSON.parse(await (queueRepository.exportPendingToJson as (o?: unknown) => Promise<string>)({ scope: 'all' }));
+    const exported = JSON.parse(await queueRepository.exportPendingToJson());
     expect(exported.items.map((i: { clientId: string }) => i.clientId)).toEqual([mine]);
     expect(JSON.stringify(exported)).not.toContain(theirs);
     expect(await queueRepository.unsyncedCountForLogout()).toBe(1); // foreign row not counted
     await queueRepository.deleteOwnEntries();
     expect((await queueRepository.listAllOwners()).map((e) => e.clientId)).toEqual([theirs]);
+  });
+});
+
+describe('attempt accounting on kill / put failure', () => {
+  beforeEach(async () => {
+    setOfflineSession({ userId: 'u1', companyId: 'c1' });
+    await db.queue.clear();
+  });
+
+  it('N process kills mid-sync never reach SYNC_MAX_ATTEMPTS', async () => {
+    const id = await queueRepository.enqueue('order', { x: 1 });
+    for (let i = 0; i < 20; i++) {
+      await queueRepository.markSyncing([id]);
+      await queueRepository.releaseStaleSyncing(); // app restart after kill
+    }
+    const e = (await queueRepository.listAll()).find((x) => x.clientId === id)!;
+    expect(e.status).toBe('PENDING');
+    expect(e.attemptCount).toBe(0);
   });
 });

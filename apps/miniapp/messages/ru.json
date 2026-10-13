@@ -162,6 +162,10 @@
     "homeAction": "НА ГЛАВНУЮ"
   },
   "Common": {
+    "stockUpdatedAt": "Остатки обновлены: {time}",
+    "balanceSyncedAt": "Долг/баланс синхронизирован: {time}",
+    "neverSynced": "Ещё не синхронизировано",
+    "dataStale": "Данные устарели — подключитесь к интернету",
     "somUnit": "сум",
     "mapUnavailable": "Карта недоступна",
     "online": "Онлайн",

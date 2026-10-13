@@ -49,6 +49,25 @@ export async function getPullState(): Promise<PullState> {
   return (row?.value as PullState | undefined) ?? { scope: null };
 }
 
+function pullAtKey(session: OfflineSession): string {
+  return `pullAt:${sessionKey(session)}`;
+}
+
+/** TZ 8.2: when this user's last COMPLETE pull finished (ISO), or null = never synced. */
+export async function getLastPullAt(): Promise<string | null> {
+  const session = getOfflineSession();
+  if (!session) return null;
+  const row = await db.meta.get(pullAtKey(session));
+  return (row?.value as string | undefined) ?? null;
+}
+
+/** Call only after the final page (hasMore=false) was applied. */
+export async function markPullComplete(at: Date = new Date()): Promise<void> {
+  const session = getOfflineSession();
+  if (!session) return;
+  await db.meta.put({ key: pullAtKey(session), value: at.toISOString() });
+}
+
 export async function getCursor(): Promise<string | undefined> {
   return (await getPullState()).cursor;
 }

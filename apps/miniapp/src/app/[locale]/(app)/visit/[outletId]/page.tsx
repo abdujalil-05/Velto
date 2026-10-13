@@ -1,5 +1,6 @@
 'use client';
 
+import { FreshnessLabel } from '@/components/freshness-label';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
@@ -140,6 +141,7 @@ export default function VisitPage() {
           <p className={cn('text-2xl font-bold tabular-nums', Number(customer.cachedBalance) > 0 && 'text-destructive')}>
             {formatMoney(customer.cachedBalance)} {tCommon('somUnit')}
           </p>
+          <FreshnessLabel kind="balance" />
           <p className="text-xs text-muted-foreground">
             {t('lastOrder')}:{' '}
             {lastOrder.isLoading ? '…' : lastOrder.data ? formatDate(lastOrder.data.createdAt, locale) : t('never')}

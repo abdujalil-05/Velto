@@ -257,7 +257,9 @@ export async function releaseUnsent(clientIds: string[]): Promise<void> {
 export async function releaseStaleSyncing(): Promise<number> {
   const s = getOfflineSession();
   const stale = (await readAll()).filter((e) => e.status === 'SYNCING' && ownedBy(e, s));
-  for (const e of stale) await update(e.clientId, (x) => ({ ...x, status: 'PENDING' }));
+  // markSyncing counted an attempt, but a killed process never got a result:
+  // give it back so repeated kills cannot walk an item to SYNC_MAX_ATTEMPTS.
+  for (const e of stale) await update(e.clientId, (x) => ({ ...x, status: 'PENDING', attemptCount: Math.max(0, x.attemptCount - 1) }));
   return stale.length;
 }
 

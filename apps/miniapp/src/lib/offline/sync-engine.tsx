@@ -7,11 +7,17 @@ import { toast } from 'sonner';
 import { useAuth } from '@/lib/auth/auth-context';
 import { queueRepository } from './queue';
 import { getLastStorageStatus, onStorageStatus, publishStorageStatus, type StorageStatus } from './storage-budget';
+import { ApiError } from '@/lib/api/client';
 import { runPull, runPush } from './sync-engine-core';
 
 const FLUSH_INTERVAL_MS = 30_000;
 const MIN_BACKOFF_MS = 2_000;
 const MAX_BACKOFF_MS = 5 * 60_000;
+
+function describeError(err: unknown): string {
+  if (err instanceof ApiError) return err.code || String(err.status);
+  return err instanceof Error ? err.message : 'SYNC_ERROR';
+}
 
 interface SyncEngineValue {
   isOnline: boolean;
@@ -26,6 +32,8 @@ interface SyncEngineValue {
   /** True after a 401 survived refresh: sync is paused until the user signs in again. */
   authPaused: boolean;
   lastSyncAt: Date | null;
+  /** Code/message of the last failed push or pull (null after a clean cycle). Surfaced, never swallowed. */
+  syncError: string | null;
   /** Screens call this right after `queueRepository.enqueue(...)` so the badge updates immediately and a push is attempted without waiting for the next interval tick. */
   notifyQueueChanged: () => void;
   forceSyncNow: () => void;
@@ -49,6 +57,7 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
   const [authPaused, setAuthPaused] = useState(false);
   const nextDelayRef = useRef<number | undefined>(undefined);
   const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   const backoffRef = useRef(MIN_BACKOFF_MS);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -85,32 +94,49 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
       runningRef.current = true;
       setIsSyncing(true);
       let didPull = false;
+      let pullFailed = false;
+      let pullAuth = false;
+      // Push and pull are independent: a failing pull (5xx/401/network) must
+      // never keep documents on the device, and a failing push never blocks pull.
+      let outcome: Awaited<ReturnType<typeof runPush>> | null = null;
       try {
-        if (opts.pull) {
-          await runPull();
-          didPull = true;
-        }
-        const outcome = await runPush();
+      try {
+        outcome = await runPush();
         for (const v of outcome.visitGps) {
           if (v.gpsStatus !== 'VERIFIED') toast.warning(tVisit(`gpsStatus.${v.gpsStatus}`));
         }
-        if (outcome.accepted > 0) {
-          // Freshly-confirmed docs can change stock/balances (e.g. a
-          // just-approved order reserving stock) — pull again so the next
-          // screen render reflects it, without waiting a full interval.
+      } catch (err) {
+        setSyncError(describeError(err));
+        backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
+      }
+      if (opts.pull || (outcome?.accepted ?? 0) > 0) {
+        // Freshly-confirmed docs can change stock/balances, so pull after an accepted push too.
+        try {
           await runPull();
           didPull = true;
+        } catch (err) {
+          pullFailed = true;
+          // apiFetch already refreshed the token once; a surviving 401 pauses sync.
+          if (err instanceof ApiError && err.status === 401) pullAuth = true;
+          else backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
+          setSyncError(describeError(err));
         }
-        setAuthPaused(outcome.paused === 'AUTH');
+      }
+      if (outcome) {
+        setAuthPaused(outcome.paused === 'AUTH' || pullAuth);
         nextDelayRef.current = outcome.nextRetryInMs;
         if (outcome.paused === 'NETWORK') {
           backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
         } else {
           backoffRef.current = MIN_BACKOFF_MS;
-          if (outcome.paused === null) setLastSyncAt(new Date());
+          if (outcome.paused === null && !pullFailed) {
+            setLastSyncAt(new Date());
+            setSyncError(null);
+          }
         }
-      } catch {
-        backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
+      } else if (pullAuth) {
+        setAuthPaused(true);
+      }
       } finally {
         runningRef.current = false;
         setIsSyncing(false);
@@ -178,7 +204,7 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
 
   return (
     <SyncEngineContext.Provider
-      value={{ isOnline, isSyncing, pendingCount, failedCount, conflictCount, unsyncedCount, storage, authPaused, lastSyncAt, notifyQueueChanged, forceSyncNow }}
+      value={{ isOnline, isSyncing, pendingCount, failedCount, conflictCount, unsyncedCount, storage, authPaused, lastSyncAt, syncError, notifyQueueChanged, forceSyncNow }}
     >
       {children}
     </SyncEngineContext.Provider>

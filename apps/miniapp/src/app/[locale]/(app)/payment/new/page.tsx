@@ -1,5 +1,6 @@
 'use client';
 
+import { FreshnessLabel } from '@/components/freshness-label';
 import { useCallback, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
@@ -137,6 +138,7 @@ export default function NewPaymentPage() {
           <p className={cn('text-2xl font-bold tabular-nums', Number(customer.cachedBalance) > 0 && 'text-destructive')}>
             {formatMoney(customer.cachedBalance)} {tCommon('somUnit')}
           </p>
+          <FreshnessLabel kind="balance" />
         </CardContent>
       </Card>
 
