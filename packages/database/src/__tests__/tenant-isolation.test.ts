@@ -297,15 +297,25 @@ describe('tenant isolation (RLS)', () => {
     await systemPrisma.stockLevel.deleteMany({ where: { warehouseId: { in: [warehouseAId, warehouseBId] } } });
     await systemPrisma.productCategory.deleteMany({ where: scopedCompanies });
     await systemPrisma.product.deleteMany({
-      where: { ...scopedCompanies, goodsReceiptLines: { none: {} }, purchaseOrderLines: { none: {} } },
+      where: {
+        ...scopedCompanies,
+        goodsReceiptLines: { none: {} },
+        purchaseOrderLines: { none: {} },
+        stockMovements: { none: {} },
+      },
     });
     await systemPrisma.warehouse.deleteMany({
-      where: { ...scopedCompanies, goodsReceipts: { none: {} }, purchaseOrders: { none: {} } },
+      where: { ...scopedCompanies, goodsReceipts: { none: {} }, purchaseOrders: { none: {} }, stockMovements: { none: {} } },
     });
     await systemPrisma.outlet.deleteMany({ where: scopedCompanies });
     await systemPrisma.customer.updateMany({ where: scopedCompanies, data: { priceListId: null } });
     await systemPrisma.priceList.deleteMany({ where: scopedCompanies });
-    await systemPrisma.customer.deleteMany({ where: scopedCompanies });
+    // F2.1: Payment/PaymentAllocation/StockMovement/PaymentReversal are
+    // append-only (DB triggers) with RESTRICT FKs — the reversal fixture's
+    // customer/invoice/actor chain is left behind like the AuditLog row.
+    await systemPrisma.customer.deleteMany({
+      where: { ...scopedCompanies, payments: { none: {} }, invoices: { none: {} } },
+    });
     await systemPrisma.permission.deleteMany({ where: { id: permissionId } });
     await prisma.$disconnect();
     await systemPrisma.$disconnect();
@@ -949,5 +959,223 @@ describe('tenant isolation (RLS)', () => {
 
     // No cleanup: the row is append-only by design, even for the BYPASSRLS
     // role — this one test log entry is expected to remain in dev/test data.
+  });
+
+  // F2.1: payment / stock-movement reversal. PaymentReversal is a new
+  // direct-companyId table; Payment/PaymentAllocation/StockMovement/
+  // PaymentReversal are append-only except Payment.status POSTED -> REVERSED.
+  describe('F2.1 reversal tables and append-only locks', () => {
+    let payCustomerId: string;
+    let invoiceId: string;
+    let paymentId: string;
+    let allocationId: string;
+    let actorId: string;
+    let movementAId: string;
+    let movementBId: string;
+
+    beforeAll(async () => {
+      const actor = await systemPrisma.user.create({
+        data: {
+          companyId: companyAId,
+          firstName: 'Reversal',
+          lastName: 'Actor',
+          phone: `+99891${Date.now().toString().slice(-7)}`,
+        },
+      });
+      actorId = actor.id;
+      await withTenant(companyAId, async (tx) => {
+        const customer = await tx.customer.create({ data: { companyId: companyAId, code: 'A-PAY', name: 'Payer A' } });
+        payCustomerId = customer.id;
+        const invoice = await tx.invoice.create({
+          data: { companyId: companyAId, number: 'INV-ISO-1', customerId: payCustomerId, total: '100.00' },
+        });
+        invoiceId = invoice.id;
+        const payment = await tx.payment.create({
+          data: { companyId: companyAId, number: 'PAY-ISO-1', customerId: payCustomerId, amount: '100.00', method: 'CASH' },
+        });
+        paymentId = payment.id;
+        const allocation = await tx.paymentAllocation.create({
+          data: { paymentId, invoiceId, amount: '100.00' },
+        });
+        allocationId = allocation.id;
+        const movement = await tx.stockMovement.create({
+          data: { companyId: companyAId, productId: productAId, warehouseId: warehouseAId, type: 'ADJUST', qty: '2.000' },
+        });
+        movementAId = movement.id;
+      });
+      const movementB = await withTenant(companyBId, (tx) =>
+        tx.stockMovement.create({
+          data: { companyId: companyBId, productId: productBId, warehouseId: warehouseBId, type: 'ADJUST', qty: '1.000' },
+        }),
+      );
+      movementBId = movementB.id;
+    });
+
+    it('Payment.status defaults to POSTED', async () => {
+      const p = await withTenant(companyAId, (tx) => tx.payment.findUnique({ where: { id: paymentId } }));
+      expect(p?.status).toBe('POSTED');
+    });
+
+    it('Payment cannot flip to REVERSED before its PaymentReversal row exists', async () => {
+      await expect(
+        withTenant(companyAId, (tx) => tx.payment.update({ where: { id: paymentId }, data: { status: 'REVERSED' } })),
+      ).rejects.toThrow(/PaymentReversal/);
+    });
+
+    it('PaymentReversal rejects a cross-tenant payment or actor and an empty reason', async () => {
+      // Company B cannot reverse company A's payment …
+      await expect(
+        withTenant(companyBId, (tx) =>
+          tx.paymentReversal.create({
+            data: { companyId: companyBId, reversesPaymentId: paymentId, reason: 'x', actorId: userBId },
+          }),
+        ),
+      ).rejects.toThrow();
+      // … nor can company A record company B's user as the actor.
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.paymentReversal.create({
+            data: { companyId: companyAId, reversesPaymentId: paymentId, reason: 'x', actorId: userBId },
+          }),
+        ),
+      ).rejects.toThrow();
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.paymentReversal.create({
+            data: { companyId: companyAId, reversesPaymentId: paymentId, reason: '  ', actorId },
+          }),
+        ),
+      ).rejects.toThrow();
+    });
+
+    it('a direct-companyId table (PaymentReversal) is scoped per tenant; Payment flips POSTED -> REVERSED once', async () => {
+      await withTenant(companyAId, async (tx) => {
+        await tx.paymentReversal.create({
+          data: { companyId: companyAId, reversesPaymentId: paymentId, reason: 'duplicate entry', actorId },
+        });
+        await tx.payment.update({ where: { id: paymentId }, data: { status: 'REVERSED' } });
+      });
+
+      const seenFromA = await withTenant(companyAId, (tx) => tx.paymentReversal.findMany());
+      const seenFromB = await withTenant(companyBId, (tx) => tx.paymentReversal.findMany());
+      expect(seenFromA.map((r) => r.reversesPaymentId)).toEqual([paymentId]);
+      expect(seenFromB).toHaveLength(0);
+      try {
+        expect(await prisma.paymentReversal.findMany()).toHaveLength(0);
+      } catch (err) {
+        expect(String(err)).toMatch(/uuid/i);
+      }
+
+      // One reversal per payment.
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.paymentReversal.create({
+            data: { companyId: companyAId, reversesPaymentId: paymentId, reason: 'again', actorId },
+          }),
+        ),
+      ).rejects.toThrow();
+      // REVERSED is terminal.
+      await expect(
+        withTenant(companyAId, (tx) => tx.payment.update({ where: { id: paymentId }, data: { status: 'POSTED' } })),
+      ).rejects.toThrow(/append-only/i);
+      const p = await withTenant(companyAId, (tx) => tx.payment.findUnique({ where: { id: paymentId } }));
+      expect(p?.status).toBe('REVERSED');
+      expect(p?.amount.toString()).toBe('100');
+    });
+
+    it('Payment/PaymentAllocation/PaymentReversal are append-only — UPDATE/DELETE/TRUNCATE rejected, even for velto_system', async () => {
+      await expect(
+        withTenant(companyAId, (tx) => tx.$executeRaw`UPDATE "Payment" SET amount = 1 WHERE id = ${paymentId}::uuid`),
+      ).rejects.toThrow(/append-only/i);
+      await expect(
+        withTenant(companyAId, (tx) => tx.$executeRaw`DELETE FROM "Payment" WHERE id = ${paymentId}::uuid`),
+      ).rejects.toThrow(/append-only/i);
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.$executeRaw`UPDATE "PaymentAllocation" SET amount = 1 WHERE id = ${allocationId}::uuid`,
+        ),
+      ).rejects.toThrow(/append-only/i);
+      await expect(
+        withTenant(companyAId, (tx) => tx.$executeRaw`DELETE FROM "PaymentAllocation" WHERE id = ${allocationId}::uuid`),
+      ).rejects.toThrow(/append-only/i);
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.$executeRaw`UPDATE "PaymentReversal" SET reason = 'changed' WHERE "reversesPaymentId" = ${paymentId}::uuid`,
+        ),
+      ).rejects.toThrow(/append-only/i);
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.$executeRaw`DELETE FROM "PaymentReversal" WHERE "reversesPaymentId" = ${paymentId}::uuid`,
+        ),
+      ).rejects.toThrow(/append-only/i);
+      for (const table of ['Payment', 'PaymentAllocation', 'PaymentReversal']) {
+        await expect(
+          withTenant(companyAId, (tx) => tx.$executeRawUnsafe(`TRUNCATE TABLE "${table}" CASCADE`)),
+        ).rejects.toThrow(TRUNCATE_REJECTED);
+      }
+
+      // BYPASSRLS does not skip triggers.
+      await expect(
+        systemPrisma.payment.update({ where: { id: paymentId }, data: { method: 'CARD' } }),
+      ).rejects.toThrow(/append-only/i);
+      await expect(systemPrisma.payment.delete({ where: { id: paymentId } })).rejects.toThrow(/append-only/i);
+      await expect(
+        systemPrisma.paymentAllocation.update({ where: { id: allocationId }, data: { amount: '1.00' } }),
+      ).rejects.toThrow(/append-only/i);
+      await expect(
+        systemPrisma.paymentAllocation.deleteMany({ where: { id: allocationId } }),
+      ).rejects.toThrow(/append-only/i);
+
+      const alloc = await withTenant(companyAId, (tx) => tx.paymentAllocation.findUnique({ where: { id: allocationId } }));
+      expect(alloc?.amount.toString()).toBe('100');
+    });
+
+    it('StockMovement is append-only; a reversal is a new row (reason required, once, same tenant)', async () => {
+      await expect(
+        withTenant(companyAId, (tx) => tx.$executeRaw`UPDATE "StockMovement" SET qty = 9 WHERE id = ${movementAId}::uuid`),
+      ).rejects.toThrow(/append-only/i);
+      await expect(
+        withTenant(companyAId, (tx) => tx.$executeRaw`DELETE FROM "StockMovement" WHERE id = ${movementAId}::uuid`),
+      ).rejects.toThrow(/append-only/i);
+      await expect(
+        withTenant(companyAId, (tx) => tx.$executeRawUnsafe('TRUNCATE TABLE "StockMovement"')),
+      ).rejects.toThrow(TRUNCATE_REJECTED);
+      await expect(
+        systemPrisma.stockMovement.update({ where: { id: movementAId }, data: { note: 'changed' } }),
+      ).rejects.toThrow(/append-only/i);
+      await expect(systemPrisma.stockMovement.delete({ where: { id: movementAId } })).rejects.toThrow(/append-only/i);
+
+      const reversal = (extra: { reason?: string; reversesMovementId: string }) => ({
+        companyId: companyAId,
+        productId: productAId,
+        warehouseId: warehouseAId,
+        type: 'ADJUST' as const,
+        qty: '-2.000',
+        ...extra,
+      });
+      // Reason required.
+      await expect(
+        withTenant(companyAId, (tx) => tx.stockMovement.create({ data: reversal({ reversesMovementId: movementAId }) })),
+      ).rejects.toThrow();
+      // Cannot reverse another tenant's movement.
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.stockMovement.create({ data: reversal({ reversesMovementId: movementBId, reason: 'x' }) }),
+        ),
+      ).rejects.toThrow();
+      const rev = await withTenant(companyAId, (tx) =>
+        tx.stockMovement.create({ data: reversal({ reversesMovementId: movementAId, reason: 'miscount' }) }),
+      );
+      expect(rev.reversesMovementId).toBe(movementAId);
+      // At most one reversal per movement.
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.stockMovement.create({ data: reversal({ reversesMovementId: movementAId, reason: 'again' }) }),
+        ),
+      ).rejects.toThrow();
+      // Invisible cross-tenant.
+      const fromB = await withTenant(companyBId, (tx) => tx.stockMovement.findMany({ where: { id: rev.id } }));
+      expect(fromB).toHaveLength(0);
+    });
   });
 });

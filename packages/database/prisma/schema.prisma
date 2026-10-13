@@ -82,6 +82,7 @@ model Company {
   exportJobs         ExportJob[]
   documentCounters   DocumentCounter[]
   idempotencyRecords IdempotencyRecord[]
+  paymentReversals   PaymentReversal[]
   notifications      Notification[]
   suppliers          Supplier[]
   purchaseOrders     PurchaseOrder[]
@@ -116,6 +117,7 @@ model User {
   // both sides; in practice the two roles are held by different people.
   courierOrders      SalesOrder[]        @relation("CourierOrders")
   paymentsCollected  Payment[]           @relation("PaymentsCollected")
+  paymentReversals   PaymentReversal[]   @relation("PaymentReversalsActed")
   cashSessions       CashSession[]
   agentRoutes        Route[]             @relation("AgentRoutes")
   courierRoutes      Route[]             @relation("CourierRoutes")
@@ -447,20 +449,28 @@ model StockLevel {
 
 model StockMovement {
   // haqiqat manbai — append-only
-  id          String            @id @default(uuid()) @db.Uuid
-  companyId   String            @db.Uuid
-  productId   String            @db.Uuid
-  warehouseId String            @db.Uuid
-  type        StockMovementType
-  qty         Decimal           @db.Decimal(18, 3) // ishorali: + kirim, - chiqim
-  refType     String? // "SalesOrder", "PurchaseOrder"...
-  refId       String?           @db.Uuid
-  note        String?
-  createdAt   DateTime          @default(now())
+  id                 String            @id @default(uuid()) @db.Uuid
+  companyId          String            @db.Uuid
+  productId          String            @db.Uuid
+  warehouseId        String            @db.Uuid
+  type               StockMovementType
+  qty                Decimal           @db.Decimal(18, 3) // ishorali: + kirim, - chiqim
+  refType            String? // "SalesOrder", "PurchaseOrder"...
+  refId              String?           @db.Uuid
+  note               String?
+  // F2.1: a reversal is a new compensating row pointing at the original —
+  // the original is never edited (UPDATE/DELETE blocked by DB trigger).
+  // Unique: a movement can be reversed at most once. `reason` is required
+  // (DB CHECK) whenever reversesMovementId is set.
+  reversesMovementId String?           @unique @db.Uuid
+  reason             String?
+  createdAt          DateTime          @default(now())
 
-  company   Company   @relation(fields: [companyId], references: [id])
-  product   Product   @relation(fields: [productId], references: [id])
-  warehouse Warehouse @relation(fields: [warehouseId], references: [id])
+  company    Company        @relation(fields: [companyId], references: [id])
+  product    Product        @relation(fields: [productId], references: [id])
+  warehouse  Warehouse      @relation(fields: [warehouseId], references: [id])
+  reverses   StockMovement? @relation("StockMovementReversal", fields: [reversesMovementId], references: [id])
+  reversedBy StockMovement? @relation("StockMovementReversal")
 
   @@index([companyId, productId, warehouseId])
 }
@@ -768,6 +778,13 @@ enum PaymentMethod {
   TRANSFER
 }
 
+// F2.1: POSTED -> REVERSED is the only permitted in-place change on a
+// Payment (DB trigger); the reversal itself is a PaymentReversal row.
+enum PaymentStatus {
+  POSTED
+  REVERSED
+}
+
 model Payment {
   id          String        @id @default(uuid()) @db.Uuid
   companyId   String        @db.Uuid
@@ -775,6 +792,7 @@ model Payment {
   customerId  String        @db.Uuid
   amount      Decimal       @db.Decimal(18, 2)
   method      PaymentMethod
+  status      PaymentStatus @default(POSTED)
   collectedBy String?       @db.Uuid // agent/kassir
   clientId    String? // offline idempotentlik — per-company unique, see SalesOrder.clientId
   createdAt   DateTime      @default(now())
@@ -785,11 +803,32 @@ model Payment {
   collector User?    @relation("PaymentsCollected", fields: [collectedBy], references: [id])
 
   allocations PaymentAllocation[]
+  reversal    PaymentReversal?
 
   @@unique([companyId, number])
   @@unique([companyId, clientId])
   @@index([companyId, customerId])
   @@index([collectedBy])
+}
+
+// F2.1: append-only record of a payment reversal (OWNER/SALES_DIRECTOR via
+// `payments.reverse`). One per payment. Payment.status may only flip to
+// REVERSED once this row exists (DB trigger). Closed-cash-session / 1C-export
+// prohibitions are enforced in the service layer.
+model PaymentReversal {
+  id                String   @id @default(uuid()) @db.Uuid
+  companyId         String   @db.Uuid
+  reversesPaymentId String   @unique @db.Uuid
+  reason            String
+  actorId           String   @db.Uuid
+  createdAt         DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+  payment Payment @relation(fields: [reversesPaymentId], references: [id])
+  actor   User    @relation("PaymentReversalsActed", fields: [actorId], references: [id])
+
+  @@index([companyId])
+  @@index([actorId])
 }
 
 model PaymentAllocation {

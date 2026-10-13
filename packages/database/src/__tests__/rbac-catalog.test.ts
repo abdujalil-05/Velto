@@ -16,7 +16,7 @@ describe('rbac-catalog: F1.4 role grants', () => {
     const keys = permissionKeysForRole('ACCOUNTANT');
     const forbidden = [
       'payments.create', 'cash.open', 'cash.close', 'orders.create', 'orders.update', 'orders.cancel',
-      'orders.deliver', 'stock.receive', 'stock.adjust', 'purchases.create', 'purchases.receive',
+      'orders.deliver', 'stock.receive', 'stock.adjust', 'stock.reverse', 'payments.reverse', 'purchases.create', 'purchases.receive',
       'users.create', 'users.update', 'users.delete', 'settings.update',
       'catalog.create', 'catalog.update', 'catalog.delete',
       'customers.create', 'customers.update', 'customers.delete',
@@ -28,6 +28,13 @@ describe('rbac-catalog: F1.4 role grants', () => {
     // Generic guard: only read/export actions (export1c is the 1C export) are allowed.
     const allowedActions = new Set(['read', 'export', 'export1c']);
     for (const key of keys) expect(allowedActions.has(key.split('.')[1]!), key).toBe(true);
+  });
+
+  it('F2.1: payments.reverse / stock.reverse granted only to OWNER and SALES_DIRECTOR', () => {
+    for (const key of ['payments.reverse', 'stock.reverse']) {
+      const holders = SYSTEM_ROLES.filter((r) => permissionKeysForRole(r.code).includes(key)).map((r) => r.code);
+      expect(holders.sort(), key).toEqual(['OWNER', 'SALES_DIRECTOR']);
+    }
   });
 
   it('COURIER holds exactly 4 keys', () => {

@@ -45,7 +45,9 @@ export const SYSTEM_ROLES: { code: string; name: string }[] = [
 export const PERMISSION_DEFS: { module: string; actions: string[] }[] = [
   { module: 'customers', actions: ['read', 'create', 'update', 'delete'] },
   { module: 'catalog', actions: ['read', 'create', 'update', 'delete'] },
-  { module: 'stock', actions: ['read', 'receive', 'adjust'] },
+  // `reverse` (F2.1): post a compensating StockMovement / PaymentReversal.
+  // OWNER + SALES_DIRECTOR only — never ACCOUNTANT (ADR-003c: read/export-only).
+  { module: 'stock', actions: ['read', 'receive', 'adjust', 'reverse'] },
   // M08 Xarid (ADR-011): suppliers + purchase orders + goods receipts.
   // `receive` posts a GoodsReceipt (and its StockMovement RECEIVE rows) — kept
   // separate from `create` so a warehouse keeper can receive without being
@@ -57,7 +59,7 @@ export const PERMISSION_DEFS: { module: string; actions: string[] }[] = [
   // narrow "mark my delivery done" transition (CONFIRMED -> DELIVERED).
   { module: 'orders', actions: ['read', 'create', 'update', 'cancel', 'deliver'] },
   { module: 'invoices', actions: ['read'] },
-  { module: 'payments', actions: ['read', 'create'] },
+  { module: 'payments', actions: ['read', 'create', 'reverse'] },
   { module: 'cash', actions: ['read', 'open', 'close'] },
   { module: 'routes', actions: ['read', 'create', 'update'] },
   { module: 'field', actions: ['read', 'create'] },
@@ -79,6 +81,7 @@ export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
     'customers.read', 'customers.update', 'catalog.read', 'stock.read',
     'purchases.read', 'purchases.create',
     'orders.read', 'orders.update', 'orders.deliver', 'invoices.read', 'payments.read',
+    'payments.reverse', 'stock.reverse',
     'routes.read', 'routes.create', 'routes.update', 'field.read',
     'reports.read', 'reports.export', 'users.read', 'users.create',
     'users.update', 'users.delete', 'roles.read',
