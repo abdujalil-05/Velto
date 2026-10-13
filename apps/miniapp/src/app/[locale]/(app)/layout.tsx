@@ -5,6 +5,8 @@ import { useTranslations } from 'next-intl';
 import { useAuth } from '@/lib/auth/auth-context';
 import { isCourierOnly } from '@/lib/auth/roles';
 import { SyncStatusBadge } from '@/components/shared/sync-status-badge';
+import { QueueNavLink } from '@/components/queue/queue-nav-link';
+import { SyncBanners } from '@/components/queue/sync-banners';
 import { TelegramFallback } from '@/components/telegram-fallback';
 import { Button } from '@/components/ui/button';
 
@@ -51,9 +53,17 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     <div className="mx-auto flex min-h-screen max-w-lg flex-col">
       <header className="flex items-center justify-between border-b border-border px-4 py-3">
         <span className="text-sm font-semibold">Velto</span>
-        {!courierOnly && <SyncStatusBadge />}
+        {!courierOnly && (
+          <div className="flex items-center gap-2">
+            <QueueNavLink />
+            <SyncStatusBadge />
+          </div>
+        )}
       </header>
-      <main className="flex-1 p-4">{children}</main>
+      <main className="flex-1 space-y-4 p-4">
+        {!courierOnly && <SyncBanners />}
+        {children}
+      </main>
     </div>
   );
 }
