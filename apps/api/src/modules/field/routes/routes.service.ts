@@ -98,8 +98,13 @@ export class RoutesService {
   async finish(id: string, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
     const route = await this.loadActionableRoute(tx, id, user);
+    await this.lockRoute(tx, route.companyId, id);
     const day = await this.today(tx);
     if (route.weekday !== day.isoWeekday) throw new RouteNotScheduledTodayException();
+
+    // Idempotent: a completed run keeps its first completedAt; no write, audit or alert.
+    const existing = await tx.routeRun.findFirst({ where: { routeId: id, date: day.dbDate, completedAt: { not: null } } });
+    if (existing) return { ...existing, outletNoCoordsCount: 0, outletNoCoordsStops: [] };
 
     const closing = await this.closingVisits(tx, route.agentId!, route.stops.map((s) => s.outletId), day);
     const openStops: OpenRouteStop[] = [];
@@ -143,6 +148,7 @@ export class RoutesService {
   async skipStop(id: string, dto: SkipStopDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
     const route = await this.loadActionableRoute(tx, id, user);
+    await this.lockRoute(tx, route.companyId, id);
     const day = await this.today(tx);
     if (route.weekday !== day.isoWeekday) throw new RouteNotScheduledTodayException();
     if (!route.stops.some((s) => s.outletId === dto.outletId)) throw new RouteStopNotFoundException();
@@ -171,6 +177,11 @@ export class RoutesService {
     });
 
     return visit;
+  }
+
+  /** Serializes finish/skip-stop per route for the rest of the tx (same lock, taken first in both). */
+  private async lockRoute(tx: TenantClient, companyId: string, routeId: string) {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`route:${companyId}:${routeId}`}, 0))`;
   }
 
   /** Company-timezone "today" (Company.timezone, default Asia/Tashkent). */

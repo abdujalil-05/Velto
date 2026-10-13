@@ -87,9 +87,10 @@ describe('RoutesService F3 finish edge cases (integration, real Postgres + RLS)'
     const route = await mkRoute(2, [outletIds[3]!]);
     await visit(outletIds[3]!, new Date('2026-10-13T19:10:00Z'));
     const a = await finish(route.id);
-    const b = await finish(route.id).catch((e) => e);
-    if (b instanceof Error) expect(b.getStatus()).toBe(409);
-    else expect(b.id).toBe(a.id);
+    vi.setSystemTime(new Date('2026-10-13T19:45:00Z'));
+    const b = await finish(route.id);
+    expect(b.id).toBe(a.id);
+    expect(b.completedAt).toEqual(a.completedAt);
     const rows = await tenantPrisma.run(companyId, (tx) => tx.routeRun.count({ where: { routeId: route.id } }));
     expect(rows).toBe(1);
   });
