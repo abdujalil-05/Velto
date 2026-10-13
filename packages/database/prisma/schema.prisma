@@ -95,6 +95,7 @@ model Company {
   goodsReceiptLines      GoodsReceiptLine[]
   reconciliationRuns     ReconciliationRun[]
   reconciliationFindings ReconciliationFinding[]
+  syncTombstones         SyncTombstone[]
 
   @@index([tenantId])
 }
@@ -247,6 +248,7 @@ model Customer {
   deletedAt       DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
+  changeSeq       BigInt   @default(dbgenerated("nextval('sync_change_seq'::regclass)")) // F4: global sync cursor, trigger-maintained
 
   company   Company    @relation(fields: [companyId], references: [id])
   priceList PriceList? @relation(fields: [priceListId], references: [id])
@@ -268,6 +270,7 @@ model Customer {
   // (not hand-written SQL) so Prisma's migration diff manages it and stops
   // proposing to drop it on every subsequent `migrate dev`.
   @@index([name(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@index([companyId, changeSeq])
 }
 
 model Outlet {
@@ -284,6 +287,7 @@ model Outlet {
   deletedAt  DateTime?
   createdAt  DateTime   @default(now())
   updatedAt  DateTime   @updatedAt
+  changeSeq  BigInt   @default(dbgenerated("nextval('sync_change_seq'::regclass)")) // F4: global sync cursor, trigger-maintained
 
   company  Company  @relation(fields: [companyId], references: [id])
   customer Customer @relation(fields: [customerId], references: [id])
@@ -294,6 +298,7 @@ model Outlet {
 
   @@index([companyId, customerId])
   @@index([companyId, latitude, longitude])
+  @@index([companyId, changeSeq])
 }
 
 // Domen qoidasi (F-M01): mijoz to'laqonli obyekt. Dublikat aniqlash — INN,
@@ -311,6 +316,7 @@ model ProductCategory {
   parentId  String?  @db.Uuid
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  changeSeq BigInt   @default(dbgenerated("nextval('sync_change_seq'::regclass)")) // F4: global sync cursor, trigger-maintained
 
   company  Company           @relation(fields: [companyId], references: [id])
   parent   ProductCategory?  @relation("CategoryTree", fields: [parentId], references: [id])
@@ -324,6 +330,7 @@ model ProductCategory {
   // prisma/migrations/*_tenant_scoped_keys_and_fk_guards, same technique as the
   // soft-delete partial uniques on Customer.code / Product.sku.
   @@unique([companyId, name, parentId])
+  @@index([companyId, changeSeq])
 }
 
 model Product {
@@ -343,6 +350,7 @@ model Product {
   deletedAt    DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
+  changeSeq    BigInt   @default(dbgenerated("nextval('sync_change_seq'::regclass)")) // F4: global sync cursor, trigger-maintained
 
   company  Company          @relation(fields: [companyId], references: [id])
   category ProductCategory? @relation(fields: [categoryId], references: [id])
@@ -363,6 +371,7 @@ model Product {
   @@index([companyId, sku])
   @@index([companyId, name])
   @@index([companyId, barcode])
+  @@index([companyId, changeSeq])
 }
 
 model ProductPackaging {
@@ -374,11 +383,13 @@ model ProductPackaging {
   isDefault     Boolean  @default(false)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
+  changeSeq     BigInt   @default(dbgenerated("nextval('sync_change_seq'::regclass)")) // F4: global sync cursor, trigger-maintained
 
   product    Product          @relation(fields: [productId], references: [id])
   orderLines SalesOrderLine[]
 
   @@index([productId])
+  @@index([changeSeq])
 }
 
 model PriceList {
@@ -403,11 +414,13 @@ model PriceListItem {
   price       Decimal  @db.Decimal(18, 2)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  changeSeq   BigInt   @default(dbgenerated("nextval('sync_change_seq'::regclass)")) // F4: global sync cursor, trigger-maintained
 
   priceList PriceList @relation(fields: [priceListId], references: [id])
   product   Product   @relation(fields: [productId], references: [id])
 
   @@unique([priceListId, productId])
+  @@index([changeSeq])
 }
 
 // ---------------------------------------------------------------------------
@@ -451,11 +464,13 @@ model StockLevel {
   // available = onHand - reserved (hisoblanadi)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  changeSeq   BigInt   @default(dbgenerated("nextval('sync_change_seq'::regclass)")) // F4: global sync cursor, trigger-maintained
 
   product   Product   @relation(fields: [productId], references: [id])
   warehouse Warehouse @relation(fields: [warehouseId], references: [id])
 
   @@id([productId, warehouseId])
+  @@index([changeSeq])
 }
 
 model StockMovement {
@@ -1254,4 +1269,35 @@ model ReconciliationFinding {
   @@index([companyId, status, kind])
   @@index([runId])
   @@index([lastRunId])
+}
+
+// F4 offline sync: a synced row that was hard-deleted, soft-deleted
+// (deletedAt set) or deactivated (isActive -> false). Written only by DB
+// triggers (migration 20261013200000_sync_change_seq_tombstones); devices pull
+// tombstones with `changeSeq > cursor` and drop the local row. entityId is the
+// row id (StockLevel: "productId:warehouseId"); entityKey carries the natural
+// key for device stores keyed by a composite (PriceListItem, StockLevel).
+// Retention: keep >= the longest supported offline window (no cleanup job yet).
+model SyncTombstone {
+  id        String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyId String     @db.Uuid
+  entity    SyncEntity
+  entityId  String
+  entityKey Json?
+  changeSeq BigInt     @default(dbgenerated("nextval('sync_change_seq'::regclass)"))
+  deletedAt DateTime   @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, changeSeq])
+}
+
+enum SyncEntity {
+  Product
+  ProductPackaging
+  PriceListItem
+  Customer
+  Outlet
+  StockLevel
+  ProductCategory
 }

@@ -1497,4 +1497,122 @@ describe('tenant isolation (RLS)', () => {
       ).rejects.toThrow(CROSS);
     });
   });
+
+  // 20261013200000_sync_change_seq_tombstones: global changeSeq cursor on the
+  // synced tables + trigger-written SyncTombstone (RLS + FORCE).
+  describe('F4 sync changeSeq and SyncTombstone', () => {
+    const createdProductIds: string[] = [];
+    const newProduct = async (sku: string) => {
+      const p = await withTenant(companyAId, (tx) =>
+        tx.product.create({ data: { companyId: companyAId, sku: `${sku}-${Date.now()}`, name: sku, baseUnit: 'dona' } }),
+      );
+      createdProductIds.push(p.id);
+      return p;
+    };
+    const tombstonesFor = (companyId: string, entityId: string) =>
+      withTenant(companyId, (tx) => tx.syncTombstone.findMany({ where: { entityId }, orderBy: { changeSeq: 'asc' } }));
+
+    afterAll(async () => {
+      await systemPrisma.priceListItem.deleteMany({ where: { productId: { in: createdProductIds } } });
+      await systemPrisma.stockLevel.deleteMany({ where: { productId: { in: createdProductIds } } });
+      await systemPrisma.productPackaging.deleteMany({ where: { productId: { in: createdProductIds } } });
+      await systemPrisma.product.deleteMany({ where: { id: { in: createdProductIds } } });
+    });
+
+    it('changeSeq is stamped on insert, increases on every update and ignores a writer-supplied value', async () => {
+      const p = await newProduct('SEQ');
+      const before = p.changeSeq;
+      const updated = await withTenant(companyAId, (tx) =>
+        tx.product.update({ where: { id: p.id }, data: { name: 'SEQ renamed', changeSeq: 1n } }),
+      );
+      expect(updated.changeSeq).toBeGreaterThan(before);
+      const pkg = await withTenant(companyAId, (tx) =>
+        tx.productPackaging.create({ data: { productId: p.id, name: 'blok', qtyInBaseUnit: 10, changeSeq: 1n } }),
+      );
+      expect(pkg.changeSeq).toBeGreaterThan(updated.changeSeq);
+      const pkg2 = await withTenant(companyAId, (tx) =>
+        tx.productPackaging.update({ where: { id: pkg.id }, data: { qtyInBaseUnit: 12 } }),
+      );
+      expect(pkg2.changeSeq).toBeGreaterThan(pkg.changeSeq);
+    });
+
+    it('hard DELETE writes a tombstone (direct and parent-resolved companyId, composite natural key)', async () => {
+      const p = await newProduct('TOMB');
+      const [pkg, item, stock] = await withTenant(companyAId, async (tx) => [
+        await tx.productPackaging.create({ data: { productId: p.id, name: 'quti', qtyInBaseUnit: 20 } }),
+        await tx.priceListItem.create({ data: { priceListId: priceListAId, productId: p.id, price: 1000 } }),
+        await tx.stockLevel.create({ data: { productId: p.id, warehouseId: warehouseAId } }),
+      ] as const);
+      await withTenant(companyAId, async (tx) => {
+        await tx.productPackaging.delete({ where: { id: pkg.id } });
+        await tx.priceListItem.delete({ where: { id: item.id } });
+        await tx.stockLevel.delete({ where: { productId_warehouseId: { productId: p.id, warehouseId: warehouseAId } } });
+        await tx.product.delete({ where: { id: p.id } });
+      });
+
+      const [pkgT] = await tombstonesFor(companyAId, pkg.id);
+      expect(pkgT).toMatchObject({ companyId: companyAId, entity: 'ProductPackaging', entityKey: null });
+      expect(pkgT!.changeSeq).toBeGreaterThan(pkg.changeSeq);
+      const [itemT] = await tombstonesFor(companyAId, item.id);
+      expect(itemT).toMatchObject({
+        companyId: companyAId,
+        entity: 'PriceListItem',
+        entityKey: { priceListId: priceListAId, productId: p.id },
+      });
+      const [stockT] = await tombstonesFor(companyAId, `${p.id}:${warehouseAId}`);
+      expect(stockT).toMatchObject({
+        companyId: companyAId,
+        entity: 'StockLevel',
+        entityKey: { productId: p.id, warehouseId: warehouseAId },
+      });
+      expect(stockT!.changeSeq).toBeGreaterThan(stock.changeSeq);
+      const [productT] = await tombstonesFor(companyAId, p.id);
+      expect(productT).toMatchObject({ companyId: companyAId, entity: 'Product' });
+    });
+
+    it('soft delete / deactivation writes a tombstone; reactivation bumps the row above it', async () => {
+      const p = await newProduct('DEACT');
+      await withTenant(companyAId, (tx) => tx.product.update({ where: { id: p.id }, data: { name: 'no-op for tombstones' } }));
+      expect(await tombstonesFor(companyAId, p.id)).toHaveLength(0);
+
+      await withTenant(companyAId, (tx) => tx.product.update({ where: { id: p.id }, data: { isActive: false } }));
+      const [t1] = await tombstonesFor(companyAId, p.id);
+      expect(t1).toMatchObject({ entity: 'Product', companyId: companyAId });
+
+      const reactivated = await withTenant(companyAId, (tx) =>
+        tx.product.update({ where: { id: p.id }, data: { isActive: true } }),
+      );
+      expect(reactivated.changeSeq).toBeGreaterThan(t1!.changeSeq);
+
+      await withTenant(companyAId, (tx) => tx.customer.update({ where: { id: customerAId }, data: { deletedAt: new Date() } }));
+      await withTenant(companyAId, (tx) => tx.customer.update({ where: { id: customerAId }, data: { deletedAt: null } }));
+      const customerT = await tombstonesFor(companyAId, customerAId);
+      expect(customerT).toHaveLength(1);
+      expect(customerT[0]).toMatchObject({ entity: 'Customer', companyId: companyAId });
+    });
+
+    it('SyncTombstone is scoped per tenant and fails closed without a tenant context', async () => {
+      const p = await newProduct('RLS');
+      await withTenant(companyAId, (tx) => tx.product.delete({ where: { id: p.id } }));
+      expect(await tombstonesFor(companyAId, p.id)).toHaveLength(1);
+      expect(await tombstonesFor(companyBId, p.id)).toHaveLength(0);
+      // No tenant context: zero rows or a ''::uuid cast error — both fail
+      // closed (see 'fails closed (never leaks)…' above).
+      try {
+        expect(await prisma.syncTombstone.findMany({ where: { entityId: p.id } })).toHaveLength(0);
+      } catch (err) {
+        expect(String(err)).toMatch(/uuid/i);
+      }
+
+      const touched = await withTenant(companyBId, (tx) =>
+        tx.syncTombstone.deleteMany({ where: { entityId: p.id } }),
+      );
+      expect(touched.count).toBe(0);
+      await expect(
+        withTenant(companyBId, (tx) =>
+          tx.syncTombstone.create({ data: { companyId: companyAId, entity: 'Product', entityId: p.id } }),
+        ),
+      ).rejects.toThrow(/row-level security/i);
+    });
+  });
 });
