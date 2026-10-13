@@ -700,17 +700,19 @@ model SalesOrder {
 }
 
 model SalesOrderLine {
-  id          String   @id @default(uuid()) @db.Uuid
-  orderId     String   @db.Uuid
-  productId   String   @db.Uuid
-  packagingId String   @db.Uuid
-  qty         Decimal  @db.Decimal(18, 3)
-  unitPrice   Decimal  @db.Decimal(18, 2)
-  discountPct Decimal  @default(0) @db.Decimal(5, 2)
-  vatRate     Decimal  @db.Decimal(5, 2)
-  lineTotal   Decimal  @db.Decimal(18, 2) // serverda hisoblanadi, agent yubormaydi
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id           String   @id @default(uuid()) @db.Uuid
+  orderId      String   @db.Uuid
+  productId    String   @db.Uuid
+  packagingId  String   @db.Uuid
+  qty          Decimal  @db.Decimal(18, 3)
+  unitPrice    Decimal  @db.Decimal(18, 2)
+  discountPct  Decimal  @default(0) @db.Decimal(5, 2)
+  vatRate      Decimal  @db.Decimal(5, 2)
+  lineTotal    Decimal  @db.Decimal(18, 2) // serverda hisoblanadi, agent yubormaydi
+  // F2.4: chiqarilgan (yetkazilgan) miqdor; DB CHECK: 0 <= deliveredQty <= qty
+  deliveredQty Decimal  @default(0) @db.Decimal(18, 3)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   order     SalesOrder       @relation(fields: [orderId], references: [id])
   product   Product          @relation(fields: [productId], references: [id])

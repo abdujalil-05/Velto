@@ -278,6 +278,8 @@ describe('tenant isolation (RLS)', () => {
     const scopedCompanies = { companyId: { in: [companyAId, companyBId, companyCId] } };
     // Orders before users: "SalesOrder"."courierId" is ON DELETE SET NULL, but
     // deleting the rows outright keeps the fixture cleanup exact.
+    await systemPrisma.salesOrderLine.deleteMany({ where: { order: scopedCompanies } });
+    await systemPrisma.productPackaging.deleteMany({ where: { product: scopedCompanies } });
     await systemPrisma.salesOrder.deleteMany({ where: scopedCompanies });
     // GoodsReceipt/GoodsReceiptLine are append-only (DB triggers, even for
     // velto_system) and their FKs are RESTRICT, so — like the AuditLog row —
@@ -565,6 +567,46 @@ describe('tenant isolation (RLS)', () => {
   // same company. These cases cover the BEFORE-INSERT guards added in
   // 20260808120000, including via `systemPrisma`, which is BYPASSRLS and would
   // otherwise be able to stitch two tenants' rows together.
+  it('SalesOrderLine (parent-subquery policy) is scoped per tenant; deliveredQty defaults to 0 and stays within 0..qty (F2.4)', async () => {
+    const line = await withTenant(companyAId, async (tx) => {
+      const packaging = await tx.productPackaging.create({
+        data: { productId: productAId, name: 'dona', qtyInBaseUnit: '1', isDefault: true },
+      });
+      return tx.salesOrderLine.create({
+        data: {
+          orderId: deliveryOrderAId,
+          productId: productAId,
+          packagingId: packaging.id,
+          qty: '5',
+          unitPrice: '1000',
+          vatRate: '12',
+          lineTotal: '5000',
+        },
+      });
+    });
+    expect(line.deliveredQty.toString()).toBe('0');
+
+    const seenFromA = await withTenant(companyAId, (tx) => tx.salesOrderLine.findMany({ where: { id: line.id } }));
+    const seenFromB = await withTenant(companyBId, (tx) => tx.salesOrderLine.findMany({ where: { id: line.id } }));
+    expect(seenFromA).toHaveLength(1);
+    expect(seenFromB).toHaveLength(0);
+    const updatedFromB = await withTenant(companyBId, (tx) =>
+      tx.salesOrderLine.updateMany({ where: { id: line.id }, data: { deliveredQty: '1' } }),
+    );
+    expect(updatedFromB.count).toBe(0);
+
+    await expect(
+      withTenant(companyAId, (tx) => tx.salesOrderLine.update({ where: { id: line.id }, data: { deliveredQty: '5.001' } })),
+    ).rejects.toThrow(/SalesOrderLine_deliveredQty_range_check/);
+    await expect(
+      withTenant(companyAId, (tx) => tx.salesOrderLine.update({ where: { id: line.id }, data: { deliveredQty: '-1' } })),
+    ).rejects.toThrow(/SalesOrderLine_deliveredQty_range_check/);
+    const full = await withTenant(companyAId, (tx) =>
+      tx.salesOrderLine.update({ where: { id: line.id }, data: { deliveredQty: '5' } }),
+    );
+    expect(full.deliveredQty.toString()).toBe('5');
+  });
+
   it('rejects a SalesOrder pointing at another tenant’s customer/outlet/warehouse', async () => {
     const base = {
       companyId: companyAId,
