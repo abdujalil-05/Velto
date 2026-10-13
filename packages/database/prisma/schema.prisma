@@ -60,35 +60,37 @@ model Company {
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
 
-  users              User[]
-  roles              Role[]
-  customers          Customer[]
-  outlets            Outlet[]
-  productCategories  ProductCategory[]
-  products           Product[]
-  priceLists         PriceList[]
-  warehouses         Warehouse[]
-  stockMovements     StockMovement[]
-  salesOrders        SalesOrder[]
-  invoices           Invoice[]
-  payments           Payment[]
-  cashSessions       CashSession[]
-  routes             Route[]
-  routeRuns          RouteRun[]
-  visits             Visit[]
-  auditLogs          AuditLog[]
-  outboxEvents       OutboxEvent[]
-  importJobs         ImportJob[]
-  exportJobs         ExportJob[]
-  documentCounters   DocumentCounter[]
-  idempotencyRecords IdempotencyRecord[]
-  paymentReversals   PaymentReversal[]
-  notifications      Notification[]
-  suppliers          Supplier[]
-  purchaseOrders     PurchaseOrder[]
-  purchaseOrderLines PurchaseOrderLine[]
-  goodsReceipts      GoodsReceipt[]
-  goodsReceiptLines  GoodsReceiptLine[]
+  users                  User[]
+  roles                  Role[]
+  customers              Customer[]
+  outlets                Outlet[]
+  productCategories      ProductCategory[]
+  products               Product[]
+  priceLists             PriceList[]
+  warehouses             Warehouse[]
+  stockMovements         StockMovement[]
+  salesOrders            SalesOrder[]
+  invoices               Invoice[]
+  payments               Payment[]
+  cashSessions           CashSession[]
+  routes                 Route[]
+  routeRuns              RouteRun[]
+  visits                 Visit[]
+  auditLogs              AuditLog[]
+  outboxEvents           OutboxEvent[]
+  importJobs             ImportJob[]
+  exportJobs             ExportJob[]
+  documentCounters       DocumentCounter[]
+  idempotencyRecords     IdempotencyRecord[]
+  paymentReversals       PaymentReversal[]
+  notifications          Notification[]
+  suppliers              Supplier[]
+  purchaseOrders         PurchaseOrder[]
+  purchaseOrderLines     PurchaseOrderLine[]
+  goodsReceipts          GoodsReceipt[]
+  goodsReceiptLines      GoodsReceiptLine[]
+  reconciliationRuns     ReconciliationRun[]
+  reconciliationFindings ReconciliationFinding[]
 
   @@index([tenantId])
 }
@@ -109,25 +111,27 @@ model User {
 
   company Company @relation(fields: [companyId], references: [id])
 
-  roles              UserRole[]
-  refreshTokens      RefreshToken[]
-  agentOrders        SalesOrder[]        @relation("AgentOrders")
+  roles                       UserRole[]
+  refreshTokens               RefreshToken[]
+  agentOrders                 SalesOrder[]            @relation("AgentOrders")
   // Delivery work assigned to this user as a kuryer (role code COURIER). A
   // courier is an ordinary User, so the same row can in principle appear on
   // both sides; in practice the two roles are held by different people.
-  courierOrders      SalesOrder[]        @relation("CourierOrders")
-  paymentsCollected  Payment[]           @relation("PaymentsCollected")
-  paymentReversals   PaymentReversal[]   @relation("PaymentReversalsActed")
-  cashSessions       CashSession[]
-  agentRoutes        Route[]             @relation("AgentRoutes")
-  courierRoutes      Route[]             @relation("CourierRoutes")
-  agentVisits        Visit[]             @relation("AgentVisits")
-  auditLogs          AuditLog[]
-  exportJobs         ExportJob[]
-  notifications      Notification[]
-  purchaseOrders     PurchaseOrder[]     @relation("PurchaseOrderCreatedBy")
-  goodsReceipts      GoodsReceipt[]      @relation("GoodsReceiptReceivedBy")
-  idempotencyRecords IdempotencyRecord[]
+  courierOrders               SalesOrder[]            @relation("CourierOrders")
+  paymentsCollected           Payment[]               @relation("PaymentsCollected")
+  paymentReversals            PaymentReversal[]       @relation("PaymentReversalsActed")
+  cashSessions                CashSession[]
+  agentRoutes                 Route[]                 @relation("AgentRoutes")
+  courierRoutes               Route[]                 @relation("CourierRoutes")
+  agentVisits                 Visit[]                 @relation("AgentVisits")
+  auditLogs                   AuditLog[]
+  exportJobs                  ExportJob[]
+  notifications               Notification[]
+  purchaseOrders              PurchaseOrder[]         @relation("PurchaseOrderCreatedBy")
+  goodsReceipts               GoodsReceipt[]          @relation("GoodsReceiptReceivedBy")
+  idempotencyRecords          IdempotencyRecord[]
+  reconciliationRunsTriggered ReconciliationRun[]     @relation("ReconciliationRunTriggeredBy")
+  reconciliationFindingsFixed ReconciliationFinding[] @relation("ReconciliationFindingFixedBy")
 
   @@unique([companyId, phone])
   // Scoped per-company like every other natural key here: a global unique on
@@ -243,10 +247,11 @@ model Customer {
   company   Company    @relation(fields: [companyId], references: [id])
   priceList PriceList? @relation(fields: [priceListId], references: [id])
 
-  outlets     Outlet[]
-  salesOrders SalesOrder[]
-  invoices    Invoice[]
-  payments    Payment[]
+  outlets                Outlet[]
+  salesOrders            SalesOrder[]
+  invoices               Invoice[]
+  payments               Payment[]
+  reconciliationFindings ReconciliationFinding[]
 
   // Uniqueness on `code` only applies to live rows — enforced by a partial
   // index in prisma/migrations/*_soft_delete_partial_unique (Prisma's schema
@@ -338,14 +343,15 @@ model Product {
   company  Company          @relation(fields: [companyId], references: [id])
   category ProductCategory? @relation(fields: [categoryId], references: [id])
 
-  packagings         ProductPackaging[]
-  priceListItems     PriceListItem[]
-  stockLevels        StockLevel[]
-  stockMovements     StockMovement[]
-  orderLines         SalesOrderLine[]
-  invoiceLines       InvoiceLine[]
-  purchaseOrderLines PurchaseOrderLine[]
-  goodsReceiptLines  GoodsReceiptLine[]
+  packagings             ProductPackaging[]
+  priceListItems         PriceListItem[]
+  stockLevels            StockLevel[]
+  stockMovements         StockMovement[]
+  reconciliationFindings ReconciliationFinding[]
+  orderLines             SalesOrderLine[]
+  invoiceLines           InvoiceLine[]
+  purchaseOrderLines     PurchaseOrderLine[]
+  goodsReceiptLines      GoodsReceiptLine[]
 
   // Same partial-unique-index note as Customer.code above — see
   // prisma/migrations/*_soft_delete_partial_unique.
@@ -421,12 +427,13 @@ model Warehouse {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  company        Company         @relation(fields: [companyId], references: [id])
-  stockLevels    StockLevel[]
-  stockMovements StockMovement[]
-  salesOrders    SalesOrder[]
-  purchaseOrders PurchaseOrder[]
-  goodsReceipts  GoodsReceipt[]
+  company                Company                 @relation(fields: [companyId], references: [id])
+  stockLevels            StockLevel[]
+  stockMovements         StockMovement[]
+  reconciliationFindings ReconciliationFinding[]
+  salesOrders            SalesOrder[]
+  purchaseOrders         PurchaseOrder[]
+  goodsReceipts          GoodsReceipt[]
 
   @@index([companyId])
 }
@@ -454,7 +461,7 @@ model StockMovement {
   productId          String            @db.Uuid
   warehouseId        String            @db.Uuid
   type               StockMovementType
-  qty                Decimal           @db.Decimal(18, 3) // ishorali: + kirim, - chiqim
+  qty                Decimal           @db.Decimal(18, 3) // > 0 for RECEIVE/RESERVE/RELEASE/ISSUE (sign = type); signed only for ADJUST and reversal rows
   refType            String? // "SalesOrder", "PurchaseOrder"...
   refId              String?           @db.Uuid
   note               String?
@@ -1126,4 +1133,95 @@ model IdempotencyRecord {
 
   @@unique([companyId, key])
   @@index([expiresAt])
+}
+
+// ---------------------------------------------------------------------------
+// F2.5 (§6.4, §6.5): projection drift reconciliation. A run recomputes
+//   STOCK:   onHand   = ΣRECEIVE + ΣADJUST − ΣISSUE
+//            reserved = ΣRESERVE − ΣRELEASE − ΣISSUE      (vs StockLevel)
+//   BALANCE: Customer.cachedBalance vs the invoice/payment ledger
+// and records one finding per drifted subject. "expected" = ledger-derived,
+// "actual" = stored projection, diff = actual − expected (DB CHECK).
+// Dedupe: at most one OPEN finding per (companyId, kind, subject) — enforced
+// by partial unique indexes in migration 20261013170000_reconciliation (Prisma
+// 6 cannot express partial indexes, so they live in SQL only). A repeat run
+// refreshes the existing OPEN row instead of inserting a duplicate.
+// ---------------------------------------------------------------------------
+
+enum ReconciliationKind {
+  STOCK
+  BALANCE
+}
+
+enum ReconciliationTrigger {
+  SCHEDULED
+  MANUAL
+}
+
+enum ReconciliationFindingStatus {
+  OPEN
+  FIXED
+}
+
+model ReconciliationRun {
+  id              String                @id @default(uuid()) @db.Uuid
+  companyId       String                @db.Uuid
+  trigger         ReconciliationTrigger
+  triggeredById   String?               @db.Uuid // null for SCHEDULED
+  startedAt       DateTime              @default(now())
+  finishedAt      DateTime?
+  stockChecked    Int                   @default(0) // (product, warehouse) pairs checked
+  stockFindings   Int                   @default(0)
+  balanceChecked  Int                   @default(0) // customers checked
+  balanceFindings Int                   @default(0)
+
+  company     Company                 @relation(fields: [companyId], references: [id])
+  triggeredBy User?                   @relation("ReconciliationRunTriggeredBy", fields: [triggeredById], references: [id], onDelete: Restrict)
+  findings    ReconciliationFinding[] @relation("ReconciliationFindingRun")
+  lastSeen    ReconciliationFinding[] @relation("ReconciliationFindingLastRun")
+
+  @@index([companyId, startedAt])
+}
+
+model ReconciliationFinding {
+  id          String                      @id @default(uuid()) @db.Uuid
+  companyId   String                      @db.Uuid
+  runId       String                      @db.Uuid // run that first detected it
+  lastRunId   String                      @db.Uuid // latest run that still saw it
+  kind        ReconciliationKind
+  status      ReconciliationFindingStatus @default(OPEN)
+  // STOCK subject
+  productId   String?                     @db.Uuid
+  warehouseId String?                     @db.Uuid
+  // BALANCE subject
+  customerId  String?                     @db.Uuid
+
+  // STOCK values (qty, Decimal(18,3)) — all set iff kind = STOCK
+  expectedOnHand   Decimal? @db.Decimal(18, 3)
+  actualOnHand     Decimal? @db.Decimal(18, 3)
+  diffOnHand       Decimal? @db.Decimal(18, 3)
+  expectedReserved Decimal? @db.Decimal(18, 3)
+  actualReserved   Decimal? @db.Decimal(18, 3)
+  diffReserved     Decimal? @db.Decimal(18, 3)
+  // BALANCE values (money, Decimal(18,2)) — all set iff kind = BALANCE
+  expectedBalance  Decimal? @db.Decimal(18, 2)
+  actualBalance    Decimal? @db.Decimal(18, 2)
+  diffBalance      Decimal? @db.Decimal(18, 2)
+
+  fixedAt   DateTime?
+  fixedById String?   @db.Uuid
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  company   Company           @relation(fields: [companyId], references: [id])
+  run       ReconciliationRun @relation("ReconciliationFindingRun", fields: [runId], references: [id])
+  lastRun   ReconciliationRun @relation("ReconciliationFindingLastRun", fields: [lastRunId], references: [id])
+  product   Product?          @relation(fields: [productId], references: [id], onDelete: Restrict)
+  warehouse Warehouse?        @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  customer  Customer?         @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  fixedBy   User?             @relation("ReconciliationFindingFixedBy", fields: [fixedById], references: [id], onDelete: Restrict)
+
+  @@index([companyId, status, kind])
+  @@index([runId])
+  @@index([lastRunId])
 }

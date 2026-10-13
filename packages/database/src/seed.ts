@@ -535,22 +535,28 @@ async function seedHistory(
           },
         });
 
-        // Historical order already delivered — net stock effect is consumption.
+        // Historical order already delivered. Mirrors StockService: qty is
+        // always positive for RESERVE/ISSUE (sign comes from the type), and
+        // ISSUE consumes a prior RESERVE — so onHand = ΣRECEIVE+ΣADJUST−ΣISSUE
+        // and reserved = ΣRESERVE−ΣRELEASE−ΣISSUE match StockLevel (F2.5).
         for (const line of lines) {
           const packagingsForProduct = ctx.packagingsByProduct[line.productId] ?? [];
           const packaging = packagingsForProduct.find((p) => p.id === line.packagingId)!;
           const baseQty = line.qty * packaging.qtyInBaseUnit;
-          await tx.stockMovement.create({
-            data: {
-              companyId,
-              productId: line.productId,
-              warehouseId: ctx.warehouseId,
-              type: StockMovementType.ISSUE,
-              qty: -baseQty,
-              refType: 'SalesOrder',
-              refId: order.id,
-            },
-          });
+          for (const type of [StockMovementType.RESERVE, StockMovementType.ISSUE]) {
+            await tx.stockMovement.create({
+              data: {
+                companyId,
+                productId: line.productId,
+                warehouseId: ctx.warehouseId,
+                type,
+                qty: baseQty,
+                refType: 'SalesOrder',
+                refId: order.id,
+              },
+            });
+          }
+          // Net of reserve(+baseQty) then issue(−baseQty) on reserved is 0.
           await tx.stockLevel.updateMany({
             where: { productId: line.productId, warehouseId: ctx.warehouseId },
             data: { onHand: { decrement: baseQty } },

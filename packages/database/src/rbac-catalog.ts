@@ -73,6 +73,10 @@ export const PERMISSION_DEFS: { module: string; actions: string[] }[] = [
   { module: 'audit', actions: ['read'] },
   { module: 'settings', actions: ['read', 'update'] },
   { module: 'integrations', actions: ['export1c'] },
+  // F2.5 (§6.4/§6.5): drift reconciliation. `read` = view runs/findings
+  // (OWNER, ACCOUNTANT — read-only, fits ADR-003c); `fix` = rebuild a
+  // projection from the ledger / mark a finding FIXED — OWNER only.
+  { module: 'reconciliation', actions: ['read', 'fix'] },
 ];
 
 // Roles are fixed system roles with no custom-role authoring in MVP
@@ -115,6 +119,7 @@ export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
   ACCOUNTANT: [
     'customers.read', 'invoices.read', 'payments.read', 'cash.read', 'reports.read',
     'reports.export', 'integrations.export1c', 'purchases.read',
+    'reconciliation.read',
   ],
 };
 

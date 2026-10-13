@@ -260,6 +260,10 @@ describe('tenant isolation (RLS)', () => {
   });
 
   afterAll(async () => {
+    // F2.5: reconciliation rows RESTRICT-reference users/products/warehouses/
+    // customers, so they go first.
+    await systemPrisma.reconciliationFinding.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
+    await systemPrisma.reconciliationRun.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
     // Company/Tenant are deliberately NOT deleted here: the AuditLog test
     // below creates a row that FK-restricts deletion of its Company, and the
     // log itself can never be deleted (append-only). That's the correct
@@ -1218,6 +1222,148 @@ describe('tenant isolation (RLS)', () => {
       // Invisible cross-tenant.
       const fromB = await withTenant(companyBId, (tx) => tx.stockMovement.findMany({ where: { id: rev.id } }));
       expect(fromB).toHaveLength(0);
+    });
+  });
+
+  describe('F2.5 reconciliation tables (ReconciliationRun / ReconciliationFinding)', () => {
+    let runAId: string;
+    let runBId: string;
+    const stockFinding = (runId: string, extra: Record<string, unknown> = {}) => ({
+      companyId: companyAId,
+      runId,
+      lastRunId: runId,
+      kind: 'STOCK' as const,
+      productId: productAId,
+      warehouseId: warehouseAId,
+      expectedOnHand: '10.000',
+      actualOnHand: '12.000',
+      diffOnHand: '2.000',
+      expectedReserved: '0.000',
+      actualReserved: '0.000',
+      diffReserved: '0.000',
+      ...extra,
+    });
+    const balanceFinding = (runId: string, extra: Record<string, unknown> = {}) => ({
+      companyId: companyAId,
+      runId,
+      lastRunId: runId,
+      kind: 'BALANCE' as const,
+      customerId: customerAId,
+      expectedBalance: '100.00',
+      actualBalance: '90.00',
+      diffBalance: '-10.00',
+      ...extra,
+    });
+
+    beforeAll(async () => {
+      const runA = await withTenant(companyAId, (tx) =>
+        tx.reconciliationRun.create({ data: { companyId: companyAId, trigger: 'MANUAL', triggeredById: courierAId } }),
+      );
+      runAId = runA.id;
+      const runB = await withTenant(companyBId, (tx) =>
+        tx.reconciliationRun.create({ data: { companyId: companyBId, trigger: 'SCHEDULED' } }),
+      );
+      runBId = runB.id;
+      await withTenant(companyAId, (tx) => tx.reconciliationFinding.create({ data: stockFinding(runAId) }));
+    });
+
+    it('runs and findings are scoped per tenant and fail closed without a tenant context', async () => {
+      const [runsA, findingsA] = await withTenant(companyAId, (tx) =>
+        Promise.all([tx.reconciliationRun.findMany(), tx.reconciliationFinding.findMany()]),
+      );
+      const [runsB, findingsB] = await withTenant(companyBId, (tx) =>
+        Promise.all([tx.reconciliationRun.findMany(), tx.reconciliationFinding.findMany()]),
+      );
+      expect(runsA.map((r) => r.id)).toEqual([runAId]);
+      expect(findingsA).toHaveLength(1);
+      expect(findingsA[0]!.status).toBe('OPEN');
+      expect(runsB.map((r) => r.id)).toEqual([runBId]);
+      expect(findingsB).toHaveLength(0);
+      // Outside withTenant: zero rows or the '' GUC ::uuid cast error — both
+      // fail closed (see the generic fail-closed case above).
+      for (const read of [() => prisma.reconciliationRun.findMany(), () => prisma.reconciliationFinding.findMany()]) {
+        try {
+          expect(await read()).toHaveLength(0);
+        } catch (err) {
+          expect(String(err)).toMatch(/uuid/i);
+        }
+      }
+    });
+
+    it('rejects cross-tenant run/product/warehouse/customer/user references', async () => {
+      const bad: Record<string, unknown>[] = [
+        stockFinding(runAId, { runId: runBId }),
+        stockFinding(runAId, { lastRunId: runBId }),
+        stockFinding(runAId, { productId: productBId }),
+        stockFinding(runAId, { warehouseId: warehouseBId }),
+        balanceFinding(runAId, { customerId: customerBId }),
+      ];
+      for (const data of bad) {
+        await expect(
+          withTenant(companyAId, (tx) => tx.reconciliationFinding.create({ data: data as never })),
+        ).rejects.toThrow();
+      }
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.reconciliationRun.create({ data: { companyId: companyAId, trigger: 'MANUAL', triggeredById: userBId } }),
+        ),
+      ).rejects.toThrow();
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.reconciliationRun.create({ data: { companyId: companyBId, trigger: 'SCHEDULED' } }),
+        ),
+      ).rejects.toThrow();
+    });
+
+    it('enforces per-kind shape, diff = actual − expected, and MANUAL ⇒ triggeredBy', async () => {
+      const bad: Record<string, unknown>[] = [
+        stockFinding(runAId, { productId: null }),
+        stockFinding(runAId, { customerId: customerAId }),
+        stockFinding(runAId, { diffOnHand: '5.000' }),
+        stockFinding(runAId, { expectedBalance: '1.00', actualBalance: '1.00', diffBalance: '0.00' }),
+        balanceFinding(runAId, { diffBalance: '10.00' }),
+        stockFinding(runAId, { status: 'FIXED' }),
+      ];
+      for (const data of bad) {
+        await expect(
+          withTenant(companyAId, (tx) => tx.reconciliationFinding.create({ data: data as never })),
+        ).rejects.toThrow();
+      }
+      await expect(
+        withTenant(companyAId, (tx) => tx.reconciliationRun.create({ data: { companyId: companyAId, trigger: 'MANUAL' } })),
+      ).rejects.toThrow();
+    });
+
+    it('at most one OPEN finding per (company, kind, subject); FIXED frees the slot', async () => {
+      await expect(
+        withTenant(companyAId, (tx) => tx.reconciliationFinding.create({ data: stockFinding(runAId) })),
+      ).rejects.toThrow();
+      const balance = await withTenant(companyAId, (tx) => tx.reconciliationFinding.create({ data: balanceFinding(runAId) }));
+      await expect(
+        withTenant(companyAId, (tx) => tx.reconciliationFinding.create({ data: balanceFinding(runAId) })),
+      ).rejects.toThrow();
+      await withTenant(companyAId, (tx) =>
+        tx.reconciliationFinding.update({
+          where: { id: balance.id },
+          data: { status: 'FIXED', fixedAt: new Date(), fixedById: courierAId },
+        }),
+      );
+      const reopened = await withTenant(companyAId, (tx) => tx.reconciliationFinding.create({ data: balanceFinding(runAId) }));
+      expect(reopened.status).toBe('OPEN');
+      // A FIXED finding cannot name another tenant's user as fixer.
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.reconciliationFinding.update({
+            where: { id: reopened.id },
+            data: { status: 'FIXED', fixedAt: new Date(), fixedById: userBId },
+          }),
+        ),
+      ).rejects.toThrow();
+      // Company B cannot touch A's finding (invisible → no match).
+      const touched = await withTenant(companyBId, (tx) =>
+        tx.reconciliationFinding.updateMany({ where: { id: reopened.id }, data: { lastRunId: runBId } }),
+      );
+      expect(touched.count).toBe(0);
     });
   });
 });

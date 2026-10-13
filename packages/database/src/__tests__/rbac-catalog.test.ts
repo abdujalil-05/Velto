@@ -7,7 +7,7 @@ describe('rbac-catalog: F1.4 role grants', () => {
     expect([...permissionKeysForRole('ACCOUNTANT')].sort()).toEqual(
       [
         'cash.read', 'customers.read', 'integrations.export1c', 'invoices.read', 'payments.read',
-        'purchases.read', 'reports.export', 'reports.read',
+        'purchases.read', 'reconciliation.read', 'reports.export', 'reports.read',
       ],
     );
   });
@@ -17,6 +17,7 @@ describe('rbac-catalog: F1.4 role grants', () => {
     const forbidden = [
       'payments.create', 'cash.open', 'cash.close', 'orders.create', 'orders.update', 'orders.cancel',
       'orders.deliver', 'stock.receive', 'stock.adjust', 'stock.reverse', 'payments.reverse', 'payments.allocate', 'purchases.create', 'purchases.receive',
+      'reconciliation.fix',
       'users.create', 'users.update', 'users.delete', 'settings.update',
       'catalog.create', 'catalog.update', 'catalog.delete',
       'customers.create', 'customers.update', 'customers.delete',
@@ -40,6 +41,13 @@ describe('rbac-catalog: F1.4 role grants', () => {
   it('F2.1: payments.allocate granted only to OWNER, SALES_DIRECTOR and CASHIER', () => {
     const holders = SYSTEM_ROLES.filter((r) => permissionKeysForRole(r.code).includes('payments.allocate')).map((r) => r.code);
     expect(holders.sort()).toEqual(['CASHIER', 'OWNER', 'SALES_DIRECTOR']);
+  });
+
+  it('F2.5: reconciliation.read → OWNER + ACCOUNTANT; reconciliation.fix → OWNER only', () => {
+    const holders = (key: string) =>
+      SYSTEM_ROLES.filter((r) => permissionKeysForRole(r.code).includes(key)).map((r) => r.code).sort();
+    expect(holders('reconciliation.read')).toEqual(['ACCOUNTANT', 'OWNER']);
+    expect(holders('reconciliation.fix')).toEqual(['OWNER']);
   });
 
   it('COURIER holds exactly 4 keys', () => {
