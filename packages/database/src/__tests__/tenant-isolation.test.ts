@@ -1366,4 +1366,108 @@ describe('tenant isolation (RLS)', () => {
       expect(touched.count).toBe(0);
     });
   });
+
+  describe('F3 Visit GPS status / SKIPPED and Company GPS thresholds', () => {
+    const base = () => ({
+      companyId: companyAId,
+      agentId: courierAId,
+      outletId: outletAId,
+      startedAt: new Date(),
+    });
+    const CHECK = /check constraint|violates/i;
+
+    afterAll(async () => {
+      await systemPrisma.visit.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
+    });
+
+    it('Company thresholds default to 150/100 and are range-checked', async () => {
+      const company = await withTenant(companyAId, (tx) => tx.company.findUniqueOrThrow({ where: { id: companyAId } }));
+      expect(company.visitGpsRadiusM).toBe(150);
+      expect(company.gpsMaxAccuracyM).toBe(100);
+      for (const data of [{ visitGpsRadiusM: 9 }, { visitGpsRadiusM: 5001 }]) {
+        await expect(
+          withTenant(companyAId, (tx) => tx.company.update({ where: { id: companyAId }, data })),
+        ).rejects.toThrow(/Company_visitGpsRadiusM_range_check|check constraint/i);
+      }
+      for (const data of [{ gpsMaxAccuracyM: 4 }, { gpsMaxAccuracyM: 1001 }]) {
+        await expect(
+          withTenant(companyAId, (tx) => tx.company.update({ where: { id: companyAId }, data })),
+        ).rejects.toThrow(/Company_gpsMaxAccuracyM_range_check|check constraint/i);
+      }
+      // Another tenant cannot change A's thresholds (invisible, never matched).
+      const touched = await withTenant(companyBId, (tx) =>
+        tx.company.updateMany({ where: { id: companyAId }, data: { visitGpsRadiusM: 500 } }),
+      );
+      expect(touched.count).toBe(0);
+    });
+
+    it('a Visit with gpsStatus/skipReason is scoped per tenant; gpsOk is derived from gpsStatus', async () => {
+      const verified = await withTenant(companyAId, (tx) =>
+        tx.visit.create({
+          data: {
+            ...base(),
+            latitude: 41.3,
+            longitude: 69.2,
+            gpsStatus: 'VERIFIED',
+            gpsAccuracyM: 12.5,
+            gpsCapturedAt: new Date(),
+            distanceM: 40,
+            gpsOk: false, // overwritten by the Visit_gps_sync trigger
+            outcome: 'ORDERED',
+          },
+        }),
+      );
+      expect(verified.gpsOk).toBe(true);
+      const skipped = await withTenant(companyAId, (tx) =>
+        tx.visit.create({
+          data: { ...base(), gpsStatus: 'NO_PERMISSION', outcome: 'SKIPPED', skipReason: 'Yopiq edi' },
+        }),
+      );
+      expect(skipped.gpsOk).toBeNull();
+      expect(skipped.latitude).toBeNull();
+
+      const seenFromA = await withTenant(companyAId, (tx) => tx.visit.findMany({ where: { companyId: companyAId } }));
+      const seenFromB = await withTenant(companyBId, (tx) => tx.visit.findMany());
+      expect(new Set(seenFromA.map((v) => v.id))).toEqual(new Set([verified.id, skipped.id]));
+      expect(seenFromB).toHaveLength(0);
+      const touched = await withTenant(companyBId, (tx) =>
+        tx.visit.updateMany({ where: { id: skipped.id }, data: { skipReason: 'x' } }),
+      );
+      expect(touched.count).toBe(0);
+    });
+
+    it('a pre-F3 writer (coords + gpsOk, no status) gets gpsStatus derived', async () => {
+      const legacy = await withTenant(companyAId, (tx) =>
+        tx.visit.create({ data: { ...base(), latitude: 41.3, longitude: 69.2, gpsOk: true, outcome: 'NO_ORDER' } }),
+      );
+      expect(legacy.gpsStatus).toBe('VERIFIED');
+      const noOutletCoords = await withTenant(companyAId, (tx) =>
+        tx.visit.create({ data: { ...base(), latitude: 41.3, longitude: 69.2, gpsOk: null, outcome: 'NO_ORDER' } }),
+      );
+      expect(noOutletCoords.gpsStatus).toBe('OUTLET_NO_COORDS');
+    });
+
+    it('rejects half coordinates, status/coords mismatch, negative metrics and bad skipReason', async () => {
+      const rejected = [
+        // Visit_coords_pair_check
+        { latitude: 41.3, gpsStatus: 'LOW_ACCURACY', outcome: 'ORDERED' },
+        // Visit_gpsStatus_coords_check: VERIFIED without coordinates
+        { gpsStatus: 'VERIFIED', outcome: 'ORDERED' },
+        // Visit_gpsStatus_coords_check: NO_FIX with GPS metadata and coordinates
+        { latitude: 41.3, longitude: 69.2, gpsStatus: 'NO_FIX', gpsCapturedAt: new Date(), outcome: 'ORDERED' },
+        // Visit_gps_metrics_nonneg_check
+        { latitude: 41.3, longitude: 69.2, gpsStatus: 'VERIFIED', distanceM: -1, outcome: 'ORDERED' },
+        { latitude: 41.3, longitude: 69.2, gpsStatus: 'VERIFIED', gpsAccuracyM: -1, outcome: 'ORDERED' },
+        // Visit_skipReason_check: SKIPPED without / with blank reason, reason on a non-skip
+        { gpsStatus: 'NO_FIX', outcome: 'SKIPPED' },
+        { gpsStatus: 'NO_FIX', outcome: 'SKIPPED', skipReason: '   ' },
+        { gpsStatus: 'NO_FIX', outcome: 'NO_ORDER', skipReason: 'Yopiq edi' },
+      ] as const;
+      for (const data of rejected) {
+        await expect(
+          withTenant(companyAId, (tx) => tx.visit.create({ data: { ...base(), ...data } })),
+        ).rejects.toThrow(CHECK);
+      }
+    });
+  });
 });

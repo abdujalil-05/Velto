@@ -44,19 +44,23 @@ model Tenant {
 }
 
 model Company {
-  id             String   @id @default(uuid()) @db.Uuid
-  tenantId       String   @db.Uuid
-  name           String
-  legalName      String?
-  phone          String?
-  address        String?
-  currency       String   @default("UZS")
-  defaultVatRate Decimal  @default(12) @db.Decimal(5, 2)
-  docPrefix      String   @default("")
-  timezone       String   @default("Asia/Tashkent")
-  isActive       Boolean  @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id              String   @id @default(uuid()) @db.Uuid
+  tenantId        String   @db.Uuid
+  name            String
+  legalName       String?
+  phone           String?
+  address         String?
+  currency        String   @default("UZS")
+  defaultVatRate  Decimal  @default(12) @db.Decimal(5, 2)
+  docPrefix       String   @default("")
+  timezone        String   @default("Asia/Tashkent")
+  /// F3: visit geofence radius in metres (CHECK 10..5000, Company_visitGpsRadiusM_range_check).
+  visitGpsRadiusM Int      @default(150)
+  /// F3: max accepted device GPS accuracy in metres (CHECK 5..1000, Company_gpsMaxAccuracyM_range_check).
+  gpsMaxAccuracyM Int      @default(100)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
 
@@ -956,6 +960,20 @@ model RouteStop {
 enum VisitOutcome {
   ORDERED
   NO_ORDER
+  /// F3: stop skipped without a visit; `skipReason` required (Visit_skipReason_check).
+  SKIPPED
+}
+
+/// F3: outcome of the visit GPS check. Coordinates are present for VERIFIED,
+/// OUTSIDE_RADIUS, LOW_ACCURACY, OUTLET_NO_COORDS and absent for NO_PERMISSION,
+/// NO_FIX (Visit_gpsStatus_coords_check).
+enum GpsStatus {
+  VERIFIED
+  OUTSIDE_RADIUS
+  LOW_ACCURACY
+  NO_PERMISSION
+  NO_FIX
+  OUTLET_NO_COORDS
 }
 
 model Visit {
@@ -965,14 +983,26 @@ model Visit {
   outletId      String       @db.Uuid
   startedAt     DateTime
   endedAt       DateTime?
-  latitude      Decimal      @db.Decimal(10, 7)
-  longitude     Decimal      @db.Decimal(10, 7)
-  // null = outlet has no registered coordinates, so the check couldn't run
-  // (allowed through, not blocked — see visits.service.ts); true/false = a
-  // real 150m-radius check was performed.
+  /// F3: nullable — both null or both set (Visit_coords_pair_check).
+  latitude      Decimal?     @db.Decimal(10, 7)
+  longitude     Decimal?     @db.Decimal(10, 7)
+  /// F3: source of truth for the GPS check. The DB default NO_FIX is only a
+  /// legacy-writer fallback: trigger Visit_gps_sync derives it from `gpsOk`
+  /// when a writer that predates F3 inserts coordinates without a status.
+  gpsStatus     GpsStatus    @default(NO_FIX)
+  gpsAccuracyM  Decimal?     @db.Decimal(8, 2)
+  gpsCapturedAt DateTime?
+  distanceM     Decimal?     @db.Decimal(10, 2)
+  /// Derived from `gpsStatus` (trigger Visit_gps_sync overwrites it; CHECK
+  /// Visit_gpsOk_derived_check): VERIFIED -> true; OUTSIDE_RADIUS,
+  /// LOW_ACCURACY -> false; NO_PERMISSION, NO_FIX, OUTLET_NO_COORDS -> null.
+  /// Kept for backward compatibility — new code should read `gpsStatus`.
   gpsOk         Boolean?
   outcome       VisitOutcome
   noOrderReason String?
+  /// F3: free text like `noOrderReason` (no reason catalog exists); required
+  /// iff outcome = SKIPPED (Visit_skipReason_check).
+  skipReason    String?
   clientId      String? // offline idempotentlik — per-company unique, see SalesOrder.clientId
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
