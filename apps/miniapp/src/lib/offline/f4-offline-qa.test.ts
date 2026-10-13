@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearTokens, getAccessToken, setTokens } from '@/lib/auth/tokens';
 import { onUnauthorized } from '@/lib/api/client';
+import Dexie from 'dexie';
+import { encryptValue } from './crypto';
 import { db } from './db';
 import { EncryptedStore } from './encrypted-store';
 import { QueueQuotaError, queueRepository } from './queue';
@@ -83,7 +85,7 @@ async function makeAllDue() {
   for (const e of await entries()) await s.put({ ...(await s.get(e.clientId))!, nextAttemptAt: undefined });
 }
 const orderPayload = (i: number) => ({ customerId: 'cust', lines: [{ productId: 'p', packagingId: 'k', qty: 1, expectedUnitPrice: '10000.00' }], note: `n${i}` });
-/** Human-paced enqueue (>=2 ms apart): createdAt is ms-resolution, see the it.fails tie test below. */
+/** Human-paced enqueue (>=2 ms apart): createdAt is ms-resolution, ties are resolved by seq. */
 async function enqueueOrders(n: number, paced = true): Promise<string[]> {
   const ids: string[] = [];
   for (let i = 0; i < n; i++) {
@@ -140,12 +142,43 @@ describe('F4.4 offline QA (TZ 8.5 / 16.2)', () => {
     expect((await queueRepository.listAll()).every((e) => e.status === 'SYNCED' && e.serverId)).toBe(true);
   });
 
-  // KNOWN PRODUCTION BUG (queue.ts listPushable/listPending): FIFO is `createdAt.localeCompare` at millisecond resolution; rows created in
-  // the same ms tie and fall back to IndexedDB primary-key order (random UUID) => not FIFO. Flip to a plain `it` once fixed (e.g. a monotonic seq).
-  it.fails('8.5 FIFO holds for orders enqueued in the same millisecond (tie-break)', async () => {
+  it('8.5 FIFO holds for orders enqueued in the same millisecond (monotonic seq)', async () => {
     const ids = await enqueueOrders(20, false);
     await runPush();
     expect(server.sent()).toEqual(ids);
+  });
+
+  it('8.5 same-ms enqueues keep insertion order after an app restart', async () => {
+    const ids = await enqueueOrders(30, false);
+    await restartApp();
+    expect((await queueRepository.listPending(30)).map((e) => e.clientId)).toEqual(ids);
+    expect((await queueRepository.listPushable(30)).map((e) => e.clientId)).toEqual(ids);
+    const more = await enqueueOrders(3, false);
+    expect((await queueRepository.listPending(33)).map((e) => e.clientId)).toEqual([...ids, ...more]);
+  });
+
+  it('8.5 Dexie v3 -> v4 upgrade keeps every queue row and backfills seq by createdAt then clientId', async () => {
+    db.close();
+    await Dexie.delete('velto-miniapp');
+    const v3 = new Dexie('velto-miniapp');
+    v3.version(1).stores({ products: 'id, sku, name, categoryId', packagings: 'id, productId', prices: '[priceListId+productId], productId', customers: 'id, code, name, tin', outlets: 'id, customerId', stock: '[productId+warehouseId], productId', categories: 'id, parentId', balances: 'customerId', routes: 'id, weekday', routeStops: 'id, routeId, outletId', queue: 'clientId, type, status, createdAt', meta: 'key' });
+    v3.version(2).stores({ customers: 'id, code, name' });
+    v3.version(3).stores({ queue: 'clientId, type, status, createdAt, userId, companyId' });
+    const mk = (clientId: string, createdAt: string) => ({ clientId, type: 'order', status: 'PENDING', payload: { clientId }, createdAt, schemaVersion: 1, attemptCount: 0, userId: A.userId, companyId: A.companyId });
+    const old = [mk('zz', '2026-01-01T00:00:00.000Z'), mk('bb', '2026-01-01T00:00:00.001Z'), mk('aa', '2026-01-01T00:00:00.001Z')];
+    for (const e of old) {
+      await v3.table('queue').put({ clientId: e.clientId, type: e.type, status: e.status, createdAt: e.createdAt, userId: e.userId, companyId: e.companyId, _enc: await encryptValue(e) });
+    }
+    v3.close();
+    await db.open();
+    resetPreparedSession();
+    setOfflineSession(A);
+    const after = await queueRepository.listPending(10);
+    expect(after.map((e) => e.clientId)).toEqual(['zz', 'aa', 'bb']);
+    expect(after.map((e) => e.seq)).toEqual([1, 2, 3]);
+    expect(after.every((e) => e.status === 'PENDING')).toBe(true);
+    const fresh = await queueRepository.enqueue('order', orderPayload(0));
+    expect((await queueRepository.listPending(10)).map((e) => e.clientId)).toEqual(['zz', 'aa', 'bb', fresh]);
   });
 
   it('8.5 triple resend after lost ACKs: server answers DUPLICATE, queue ends SYNCED once, server holds one doc per clientId', async () => {

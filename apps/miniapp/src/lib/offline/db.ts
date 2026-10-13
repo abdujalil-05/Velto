@@ -16,6 +16,9 @@ export interface RawRow {
   _enc: EncryptedBlob;
 }
 
+/** meta key holding the last allocated queue sequence number. */
+export const QUEUE_SEQ_KEY = 'queue:seq';
+
 class VeltoOfflineDb extends Dexie {
   products!: Table<RawRow & { id: string; sku: string; name: string; categoryId: string | null }, string>;
   packagings!: Table<RawRow & { id: string; productId: string }, string>;
@@ -28,7 +31,7 @@ class VeltoOfflineDb extends Dexie {
   routes!: Table<RawRow & { id: string; weekday: number }, string>;
   routeStops!: Table<RawRow & { id: string; routeId: string; outletId: string }, string>;
   queue!: Table<
-    RawRow & { clientId: string; type: string; status: string; createdAt: string; userId: string; companyId: string },
+    RawRow & { clientId: string; type: string; status: string; createdAt: string; userId: string; companyId: string; seq?: number },
     string
   >;
   meta!: Table<{ key: string; value: unknown }, string>;
@@ -64,6 +67,22 @@ class VeltoOfflineDb extends Dexie {
     this.version(3).stores({
       queue: 'clientId, type, status, createdAt, userId, companyId',
     });
+    // v4 (additive): monotonic per-device `seq` (plaintext index) = FIFO order,
+    // since createdAt (ms) ties. Upgrade only ADDS seq to existing rows ordered
+    // by createdAt then clientId (both plaintext) — no row is dropped or re-encrypted.
+    this.version(4)
+      .stores({ queue: 'clientId, type, status, createdAt, userId, companyId, seq' })
+      .upgrade(async (tx) => {
+        const table = tx.table('queue');
+        const rows = (await table.toArray()) as { clientId: string; createdAt?: string; seq?: number; [k: string]: unknown }[];
+        rows.sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? '') || a.clientId.localeCompare(b.clientId));
+        let n = 0;
+        for (const r of rows) {
+          n += 1;
+          await table.put({ ...r, seq: n });
+        }
+        await tx.table('meta').put({ key: QUEUE_SEQ_KEY, value: n });
+      });
   }
 }
 

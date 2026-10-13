@@ -32,6 +32,8 @@ export class EncryptedStore<T extends object, Key> {
   constructor(
     table: Table<RawRow & Record<string, unknown>, Key>,
     private readonly keyFields: (keyof T & string)[],
+    /** Plaintext columns that win over the encrypted copy on read when present (set by a Dexie upgrade that cannot encrypt). */
+    private readonly plaintextWins: (keyof T & string)[] = [],
   ) {
     this.table = table;
   }
@@ -69,10 +71,17 @@ export class EncryptedStore<T extends object, Key> {
     await this.table.put(await this.toRow(item)());
   }
 
+  private overlay(row: RawRow & Record<string, unknown>, value: T | undefined): T | undefined {
+    if (value === undefined || this.plaintextWins.length === 0) return value;
+    const out = { ...value } as Record<string, unknown>;
+    for (const f of this.plaintextWins) if (row[f] !== undefined && row[f] !== null) out[f] = row[f];
+    return out as T;
+  }
+
   async get(key: Key): Promise<T | undefined> {
     const row = await this.table.get(key);
     if (!row) return undefined;
-    return (await tryDecrypt<T>(row._enc)).value;
+    return this.overlay(row, (await tryDecrypt<T>(row._enc)).value);
   }
 
   /**
@@ -89,7 +98,10 @@ export class EncryptedStore<T extends object, Key> {
     const rows = await this.table.toArray();
     const decoded = await Promise.all(rows.map((row) => tryDecrypt<T>(row._enc)));
     const out: T[] = [];
-    for (const { value } of decoded) if (value !== undefined) out.push(value);
+    decoded.forEach(({ value }, i) => {
+      const v = this.overlay(rows[i]!, value);
+      if (v !== undefined) out.push(v);
+    });
     return out;
   }
 

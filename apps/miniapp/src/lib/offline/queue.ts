@@ -1,5 +1,5 @@
 import type { SyncDocType } from '@/lib/api/sync';
-import { db } from './db';
+import { db, QUEUE_SEQ_KEY } from './db';
 import { EncryptedStore } from './encrypted-store';
 import { getOfflineSession, NoOfflineSessionError, type OfflineSession } from './session';
 import { publishStorageStatus } from './storage-budget';
@@ -45,6 +45,8 @@ export interface QueueEntry {
   status: QueueStatus;
   payload: Record<string, unknown>;
   createdAt: string;
+  /** Per-device monotonic FIFO order (createdAt ties within a ms). Display still uses createdAt. */
+  seq?: number;
   schemaVersion: number;
   attemptCount: number;
   lastAttemptAt?: string;
@@ -83,7 +85,25 @@ const store = new EncryptedStore<QueueEntry, string>(db.queue as never, [
   'createdAt',
   'userId',
   'companyId',
-]);
+  'seq',
+], ['seq']);
+
+const NO_SEQ = Number.MAX_SAFE_INTEGER;
+/** FIFO comparator: seq, then createdAt, then clientId (legacy rows without seq sort last, stably). */
+function bySeq(a: QueueEntry, b: QueueEntry): number {
+  return (a.seq ?? NO_SEQ) - (b.seq ?? NO_SEQ) || a.createdAt.localeCompare(b.createdAt) || a.clientId.localeCompare(b.clientId);
+}
+
+/** Allocates the next sequence atomically (no crypto inside the Dexie transaction). */
+async function nextSeq(): Promise<number> {
+  return db.transaction('rw', [db.meta, db.queue], async () => {
+    const counter = ((await db.meta.get(QUEUE_SEQ_KEY))?.value as number | undefined) ?? 0;
+    const top = (await db.queue.orderBy('seq').last())?.seq ?? 0;
+    const next = Math.max(counter, top) + 1;
+    await db.meta.put({ key: QUEUE_SEQ_KEY, value: next });
+    return next;
+  });
+}
 
 function isQuotaError(e: unknown): boolean {
   const err = e as { name?: string; inner?: { name?: string }; code?: number } | null;
@@ -126,12 +146,14 @@ export async function enqueue(type: SyncDocType, payload: Record<string, unknown
   const session = getOfflineSession();
   if (!session) throw new NoOfflineSessionError();
   const clientId = crypto.randomUUID();
+  const seq = await nextSeq();
   const entry: QueueEntry = {
     clientId,
     type,
     status: 'PENDING',
     payload: { ...payload, clientId },
     createdAt: new Date().toISOString(),
+    seq,
     schemaVersion: QUEUE_SCHEMA_VERSION,
     attemptCount: 0,
     userId: session.userId,
@@ -164,13 +186,13 @@ export async function listAllOwners(): Promise<QueueEntry[]> {
 export async function listPending(limit = 20): Promise<QueueEntry[]> {
   return (await listAll())
     .filter((e) => e.status === 'PENDING')
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .sort(bySeq)
     .slice(0, limit);
 }
 
 /**
  * Current user's PENDING items that may be sent now (backoff elapsed), in
- * push order: FIFO by createdAt, except a visit goes before an order of the
+ * push order: FIFO by seq, except a visit goes before an order of the
  * same outlet, and an order waits while a same-outlet visit is still
  * unsynced but not yet due (backoff).
  */
@@ -196,15 +218,15 @@ export async function listPushable(limit: number, now: Date = new Date()): Promi
     if (e.type === 'order' && o) ordersByOutlet.set(o, [...(ordersByOutlet.get(o) ?? []), e]);
   }
   // A visit is lifted to the earliest same-outlet order's position so it is always sent first.
-  const sortKey = (e: QueueEntry): string => {
+  const sortKey = (e: QueueEntry): number => {
+    const own = e.seq ?? NO_SEQ;
     const o = outletOf(e);
-    if (e.type !== 'visit' || !o) return e.createdAt;
-    const earliestOrder = (ordersByOutlet.get(o) ?? []).map((x) => x.createdAt).sort()[0];
-    return earliestOrder && earliestOrder < e.createdAt ? earliestOrder : e.createdAt;
+    if (e.type !== 'visit' || !o) return own;
+    return Math.min(own, ...(ordersByOutlet.get(o) ?? []).map((x) => x.seq ?? NO_SEQ));
   };
   const rank = (e: QueueEntry) => (e.type === 'visit' ? 0 : 1);
   return eligible
-    .sort((a, b) => sortKey(a).localeCompare(sortKey(b)) || rank(a) - rank(b) || a.createdAt.localeCompare(b.createdAt))
+    .sort((a, b) => sortKey(a) - sortKey(b) || rank(a) - rank(b) || bySeq(a, b))
     .slice(0, limit);
 }
 
@@ -315,7 +337,7 @@ export async function unsyncedCountAllOwners(): Promise<number> {
 export async function listNeedsAttention(): Promise<QueueEntry[]> {
   return (await listAll())
     .filter((e) => e.status === 'FAILED' || e.status === 'CONFLICT')
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    .sort(bySeq);
 }
 
 async function ownEntry(clientId: string): Promise<QueueEntry> {
@@ -398,7 +420,7 @@ export interface PendingExport {
 function toExportItems(entries: QueueEntry[]): PendingExport['items'] {
   return entries
     .filter((e) => UNSYNCED_STATUSES.includes(e.status))
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .sort(bySeq)
     .map((e) => ({ clientId: e.clientId, type: e.type, status: e.status, createdAt: e.createdAt, payload: e.payload, lastError: e.lastError }));
 }
 
@@ -423,7 +445,7 @@ export async function exportPendingToJson(): Promise<string> {
  */
 export async function listQuarantined(): Promise<QueueEntry[]> {
   if (!getOfflineSession()) return [];
-  return (await readAll()).filter((e) => !e.userId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  return (await readAll()).filter((e) => !e.userId).sort(bySeq);
 }
 
 /** Export of quarantined rows: the file contains data of UNKNOWN owner (`unknownOwner: true`). */
