@@ -11,6 +11,7 @@ import { OutletNotFoundException } from '../../customers/customers-exceptions';
 // AgentNotFoundException from field-exceptions.
 import { CourierNotFoundException } from '../../sales/sales-exceptions';
 import { companyDay } from '../company-day';
+import { FieldAlertService } from '../field-alert.service';
 import {
   AgentNotFoundException,
   CourierRouteFinishForbiddenException,
@@ -44,6 +45,7 @@ export class RoutesService {
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     private readonly auditLog: AuditLogService,
+    private readonly fieldAlerts?: FieldAlertService,
   ) {}
 
   // 7.2 groups this as "GET /routes/:agentId" — kept here as a query filter
@@ -133,6 +135,7 @@ export class RoutesService {
       newValue: toAuditJson(result),
     });
 
+    this.fieldAlerts?.scheduleOutletNoCoords(noCoordsStops.length);
     return result;
   }
 

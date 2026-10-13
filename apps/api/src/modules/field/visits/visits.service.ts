@@ -7,6 +7,7 @@ import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.servic
 import { endOfDay, startOfDay } from '../../analytics/report-utils';
 import { OutletNotFoundException } from '../../customers/customers-exceptions';
 import { AgentNotFoundException, VisitNotFoundException, VisitSkipReasonRequiredException } from '../field-exceptions';
+import { FieldAlertService } from '../field-alert.service';
 import { evaluateGps } from '../geo';
 import type { CreateVisitDto } from './dto/create-visit.dto';
 import type { ListVisitsQueryDto } from './dto/list-visits.query';
@@ -21,6 +22,7 @@ export class VisitsService {
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     private readonly auditLog: AuditLogService,
+    private readonly fieldAlerts?: FieldAlertService,
   ) {}
 
   async list(query: ListVisitsQueryDto, user: AuthenticatedUser) {
@@ -156,6 +158,7 @@ export class VisitsService {
       newValue: toAuditJson(visit),
     });
 
+    this.fieldAlerts?.scheduleGpsUnverified(visit.gpsStatus);
     return visit;
   }
 

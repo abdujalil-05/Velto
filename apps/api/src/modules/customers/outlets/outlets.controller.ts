@@ -47,3 +47,15 @@ export class OutletsController {
     return this.outlets.remove(customerId, outletId, user);
   }
 }
+
+@Controller('outlets')
+export class OutletsQualityController {
+  constructor(private readonly outlets: OutletsService) {}
+
+  // No dedicated `outlets.read` permission exists in the RBAC catalog; customers.read is the closest.
+  @Get('no-coords')
+  @RequirePermission('customers.read')
+  noCoords() {
+    return this.outlets.listNoCoords();
+  }
+}
