@@ -150,22 +150,22 @@ describe('E2E F2.5: reconciliation', () => {
   });
 
   it('scheduler sweep: one company failing does not stop the others', async () => {
+    // The sweep lists ALL companies itself; other test files create/delete companies concurrently,
+    // so assert against the ids the processor actually visited, not a pre-fetched snapshot.
     const calls: string[] = [];
-    let failId = '';
     const fake = {
       runDetection: async (id: string) => {
         calls.push(id);
-        if (id === failId) throw new Error('boom');
+        if (calls.length === 1) throw new Error('boom');
         if (calls.length === 2) throw new ReconciliationBusyException();
         return { runId: randomUUID(), stockFindings: 0, balanceFindings: 0 } as DetectResult;
       },
     } as unknown as ReconciliationService;
-    const all = await systemPrisma.company.findMany({ select: { id: true } });
-    failId = all[0]!.id;
     const processor = new ReconciliationScheduleProcessor(fake, { alertIfDrift: async () => 0 } as unknown as ReconciliationAlertService);
     const out = await processor.runAll();
-    expect(calls).toHaveLength(all.length);
+    expect(calls.length).toBeGreaterThanOrEqual(3);
     expect(out.failed).toBe(1);
-    expect(out.ok + out.failed + out.busy).toBe(all.length);
+    expect(out.busy).toBe(1);
+    expect(out.ok).toBe(calls.length - 2);
   });
 });
