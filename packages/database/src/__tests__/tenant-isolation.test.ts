@@ -1591,6 +1591,67 @@ describe('tenant isolation (RLS)', () => {
       expect(customerT[0]).toMatchObject({ entity: 'Customer', companyId: companyAId });
     });
 
+    it('reactivating a Product re-stamps its packagings/prices/stock above the tombstone (deactivate is unchanged)', async () => {
+      const p = await newProduct('REACT');
+      const [pkg, item, stock] = await withTenant(companyAId, async (tx) => [
+        await tx.productPackaging.create({ data: { productId: p.id, name: 'blok', qtyInBaseUnit: 10 } }),
+        await tx.priceListItem.create({ data: { priceListId: priceListAId, productId: p.id, price: 1000 } }),
+        await tx.stockLevel.create({ data: { productId: p.id, warehouseId: warehouseAId } }),
+      ] as const);
+      const children = () =>
+        withTenant(companyAId, async (tx) => [
+          (await tx.productPackaging.findUniqueOrThrow({ where: { id: pkg.id } })).changeSeq,
+          (await tx.priceListItem.findUniqueOrThrow({ where: { id: item.id } })).changeSeq,
+          (await tx.stockLevel.findUniqueOrThrow({
+            where: { productId_warehouseId: { productId: p.id, warehouseId: warehouseAId } },
+          })).changeSeq,
+        ]);
+
+      // Deactivation: tombstone as before, children untouched.
+      await withTenant(companyAId, (tx) => tx.product.update({ where: { id: p.id }, data: { isActive: false } }));
+      const [t1] = await tombstonesFor(companyAId, p.id);
+      expect(t1).toMatchObject({ entity: 'Product', companyId: companyAId });
+      expect(await children()).toEqual([pkg.changeSeq, item.changeSeq, stock.changeSeq]);
+
+      const reactivated = await withTenant(companyAId, (tx) =>
+        tx.product.update({ where: { id: p.id }, data: { isActive: true } }),
+      );
+      const after = await children();
+      for (const [i, seq] of [pkg.changeSeq, item.changeSeq, stock.changeSeq].entries()) {
+        expect(after[i]).toBeGreaterThan(seq);
+        expect(after[i]).toBeGreaterThan(t1!.changeSeq);
+      }
+      expect(reactivated.changeSeq).toBeGreaterThan(t1!.changeSeq);
+      expect(await tombstonesFor(companyAId, p.id)).toHaveLength(1);
+
+      // Soft delete -> undelete also counts; a plain update does not touch children.
+      await withTenant(companyAId, (tx) => tx.product.update({ where: { id: p.id }, data: { deletedAt: new Date() } }));
+      const beforeUndelete = await children();
+      await withTenant(companyAId, (tx) => tx.product.update({ where: { id: p.id }, data: { deletedAt: null } }));
+      const afterUndelete = await children();
+      afterUndelete.forEach((seq, i) => expect(seq).toBeGreaterThan(beforeUndelete[i]!));
+      await withTenant(companyAId, (tx) => tx.product.update({ where: { id: p.id }, data: { name: 'renamed' } }));
+      expect(await children()).toEqual(afterUndelete);
+    });
+
+    it('reactivating a Customer re-stamps its live outlets only, never another tenant’s', async () => {
+      const outletSeq = (companyId: string, id: string) =>
+        withTenant(companyId, async (tx) => (await tx.outlet.findUniqueOrThrow({ where: { id } })).changeSeq);
+      const a0 = await outletSeq(companyAId, outletAId);
+      const b0 = await outletSeq(companyBId, outletBId);
+
+      await withTenant(companyAId, (tx) => tx.customer.update({ where: { id: customerAId }, data: { isActive: false } }));
+      const [t] = (await tombstonesFor(companyAId, customerAId)).slice(-1);
+      expect(t).toMatchObject({ entity: 'Customer', companyId: companyAId });
+      expect(await outletSeq(companyAId, outletAId)).toBe(a0);
+
+      await withTenant(companyAId, (tx) => tx.customer.update({ where: { id: customerAId }, data: { isActive: true } }));
+      const a1 = await outletSeq(companyAId, outletAId);
+      expect(a1).toBeGreaterThan(a0);
+      expect(a1).toBeGreaterThan(t!.changeSeq);
+      expect(await outletSeq(companyBId, outletBId)).toBe(b0);
+    });
+
     it('SyncTombstone is scoped per tenant and fails closed without a tenant context', async () => {
       const p = await newProduct('RLS');
       await withTenant(companyAId, (tx) => tx.product.delete({ where: { id: p.id } }));
