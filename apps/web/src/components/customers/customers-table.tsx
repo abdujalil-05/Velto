@@ -37,6 +37,7 @@ export function CustomersTable({ customers, sort, onSort, canDelete = false, onD
             <SortableHeader column="balance" sort={sort} onSort={onSort} align="right">
               {t('balance')}
             </SortableHeader>
+            <th className="pb-2 pr-3 text-right font-medium">{t('advance')}</th>
             <th className="pb-2 font-medium">{t('status')}</th>
             {showActions && <th className="pb-2 text-right font-medium">{t('actions')}</th>}
           </tr>
@@ -58,7 +59,18 @@ export function CustomersTable({ customers, sort, onSort, canDelete = false, onD
                 </td>
                 <td className="py-2 pr-3 text-muted-foreground">{customer.phone ?? '—'}</td>
                 <td className={`py-2 pr-3 text-right tabular-nums ${balance > 0 ? 'text-destructive font-medium' : ''}`}>
-                  {formatMoney(customer.cachedBalance)} <span className="text-muted-foreground">{tCommon('somUnit')}</span>
+                  {balance < 0 ? formatMoney(customer.cachedBalance.replace('-', '')) : formatMoney(customer.cachedBalance)}{' '}
+                  <span className="text-muted-foreground">{tCommon('somUnit')}</span>
+                  {balance < 0 && <span className="ml-1 text-xs text-success">{t('credit')}</span>}
+                </td>
+                <td className="py-2 pr-3 text-right tabular-nums">
+                  {Number(customer.advance) > 0 ? (
+                    <>
+                      {formatMoney(customer.advance)} <span className="text-muted-foreground">{tCommon('somUnit')}</span>
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  )}
                 </td>
                 <td className="py-2">
                   {customer.isBlocked ? (

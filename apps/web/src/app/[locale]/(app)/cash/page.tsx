@@ -13,7 +13,7 @@ import {
   useCurrentCashSessionQuery,
   useOpenCashSessionMutation,
 } from '@/lib/api/cash-sessions';
-import { usePaymentsQuery } from '@/lib/api/payments';
+import { usePaymentsQuery, useReversePaymentMutation, type Payment } from '@/lib/api/payments';
 import { useCustomersQuery, type Customer } from '@/lib/api/customers';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
 import { useSort } from '@/lib/hooks/use-sort';
@@ -29,6 +29,7 @@ import { SearchSelect } from '@/components/shared/search-select';
 import { OpenSessionForm } from '@/components/cash/open-session-form';
 import { CloseSessionForm } from '@/components/cash/close-session-form';
 import { CashSessionsTable } from '@/components/cash/cash-sessions-table';
+import { ReverseDialog } from '@/components/shared/reverse-dialog';
 import { PaymentsTable } from '@/components/payments/payments-table';
 import { cn } from '@/lib/utils';
 
@@ -40,7 +41,7 @@ export default function CashPage() {
     <div className="space-y-8">
       <h1 className="text-xl font-semibold">{t('title')}</h1>
       {hasPermission('cash.read') && <CashSection />}
-      {hasPermission('payments.read') && <PaymentsSection canCreate={hasPermission('payments.create')} />}
+      {hasPermission('payments.read') && <PaymentsSection canCreate={hasPermission('payments.create')} canReverse={hasPermission('payments.reverse')} />}
     </div>
   );
 }
@@ -181,9 +182,14 @@ function CashSection() {
   );
 }
 
-function PaymentsSection({ canCreate }: { canCreate: boolean }) {
+function PaymentsSection({ canCreate, canReverse }: { canCreate: boolean; canReverse: boolean }) {
   const t = useTranslations('Payments');
   const locale = useLocale();
+  const [reverseTarget, setReverseTarget] = useState<Payment | null>(null);
+  const [reverseError, setReverseError] = useState<string | null>(null);
+  const reverseMutation = useReversePaymentMutation();
+  // One key per reversal attempt, reused on retry until the server accepts it.
+  const reverseKey = useRef<string | null>(null);
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [customerQuery, setCustomerQuery] = useState('');
   const [page, setPage] = useState(1);
@@ -288,10 +294,45 @@ function PaymentsSection({ canCreate }: { canCreate: boolean }) {
       {data && data.data.length > 0 && (
         <Card>
           <CardContent className="pt-6">
-            <PaymentsTable payments={data.data} sort={sort} onSort={toggleSort} />
+            <PaymentsTable
+              payments={data.data}
+              sort={sort}
+              onSort={toggleSort}
+              canReverse={canReverse}
+              onReverse={(payment) => {
+                reverseKey.current = null;
+                setReverseError(null);
+                setReverseTarget(payment);
+              }}
+            />
             <PaginationBar meta={data.meta} onPageChange={setPage} />
           </CardContent>
         </Card>
+      )}
+      {reverseTarget && (
+        <ReverseDialog
+          key={reverseTarget.id}
+          open
+          onOpenChange={(open) => !open && setReverseTarget(null)}
+          title={t('reverse.title', { number: reverseTarget.number })}
+          description={t('reverse.description')}
+          error={reverseError}
+          isPending={reverseMutation.isPending}
+          onConfirm={(reason) => {
+            setReverseError(null);
+            reverseMutation.mutate(
+              { id: reverseTarget.id, reason, idempotencyKey: (reverseKey.current ??= crypto.randomUUID()) },
+              {
+                onSuccess: () => {
+                  reverseKey.current = null;
+                  setReverseTarget(null);
+                  toast.success(t('reverse.success'));
+                },
+                onError: (err) => setReverseError(errorMessage(err, locale)),
+              },
+            );
+          }}
+        />
       )}
     </section>
   );

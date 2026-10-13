@@ -123,12 +123,17 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">{t('balance')}</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">{balance < 0 ? t('credit') : t('balance')}</CardTitle>
           </CardHeader>
           <CardContent>
             <p className={`text-2xl font-semibold ${balance > 0 ? 'text-destructive' : ''}`}>
-              {formatMoney(customer.balance)} <span className="text-sm text-muted-foreground">{tCommon('somUnit')}</span>
+              {formatMoney(customer.balance.replace('-', ''))} <span className="text-sm text-muted-foreground">{tCommon('somUnit')}</span>
             </p>
+            {Number(customer.advance) > 0 && (
+              <p className="mt-1 text-sm text-muted-foreground">
+                {t('advance')}: {formatMoney(customer.advance)} {tCommon('somUnit')}
+              </p>
+            )}
           </CardContent>
         </Card>
 

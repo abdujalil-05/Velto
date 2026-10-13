@@ -17,10 +17,10 @@ export function AgingReportTable({ rows }: { rows: AgingRow[] }) {
           <tr className="border-b border-border text-left text-xs text-muted-foreground">
             <th className="pb-2 pr-3 font-medium">{t('customer')}</th>
             <th className="pb-2 pr-3 text-right font-medium">{t('current')}</th>
-            <th className="pb-2 pr-3 text-right font-medium">{t('d1to30')}</th>
+            <th className="pb-2 pr-3 text-right font-medium">{t('d1to7')}</th>
+            <th className="pb-2 pr-3 text-right font-medium">{t('d8to30')}</th>
             <th className="pb-2 pr-3 text-right font-medium">{t('d31to60')}</th>
-            <th className="pb-2 pr-3 text-right font-medium">{t('d61to90')}</th>
-            <th className="pb-2 pr-3 text-right font-medium">{t('d90plus')}</th>
+            <th className="pb-2 pr-3 text-right font-medium">{t('d60plus')}</th>
             <th className="pb-2 text-right font-medium">{t('total')}</th>
           </tr>
         </thead>
@@ -33,10 +33,10 @@ export function AgingReportTable({ rows }: { rows: AgingRow[] }) {
                 </Link>
               </td>
               <Cell value={row.buckets.current} />
-              <Cell value={row.buckets.d1to30} />
-              <Cell value={row.buckets.d31to60} />
-              <Cell value={row.buckets.d61to90} severe />
-              <Cell value={row.buckets.d90plus} severe />
+              <Cell value={row.buckets.d1to7} />
+              <Cell value={row.buckets.d8to30} />
+              <Cell value={row.buckets.d31to60} severe />
+              <Cell value={row.buckets.d60plus} severe />
               <td className="py-2 text-right font-semibold tabular-nums">
                 {formatMoney(row.total)} <span className="text-muted-foreground">{tCommon('somUnit')}</span>
               </td>

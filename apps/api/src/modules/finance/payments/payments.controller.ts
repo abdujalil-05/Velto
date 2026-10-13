@@ -4,6 +4,7 @@ import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequirePermission } from '../../../common/decorators/require-permission.decorator';
 import { ReverseReasonDto } from '../../../common/dto/reverse-reason.dto';
 import { Idempotent } from '../../../common/idempotency/idempotent.decorator';
+import { AllocatePaymentDto } from '../dto/allocate-payment.dto';
 import { CreatePaymentDto } from '../dto/create-payment.dto';
 import { ListPaymentsQueryDto } from '../dto/list-payments.query';
 import { PaymentsService } from './payments.service';
@@ -28,6 +29,15 @@ export class PaymentsController {
   @RequirePermission('payments.create')
   create(@Body() dto: CreatePaymentDto, @CurrentUser() user: AuthenticatedUser) {
     return this.payments.create(dto, user);
+  }
+
+  // F2.1: later manual allocation of a payment's advance. Same grant as
+  // creating/allocating a payment (payments.create) — never ACCOUNTANT.
+  @Post(':id/allocate')
+  @Idempotent()
+  @RequirePermission('payments.create')
+  allocate(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AllocatePaymentDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.payments.allocate(id, dto, user);
   }
 
   @Post(':id/reverse')

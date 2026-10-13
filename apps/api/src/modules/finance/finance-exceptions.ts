@@ -133,3 +133,35 @@ export class PaymentExportedTo1cException extends AppException {
     );
   }
 }
+
+/** F2.1: only a POSTED payment's advance can be allocated later (REVERSED has none). */
+export class PaymentNotPostedException extends AppException {
+  constructor(status: string) {
+    super(
+      HttpStatus.CONFLICT,
+      'PAYMENT_NOT_POSTED',
+      {
+        uz: "Faqat o'tkazilgan (POSTED) to'lovni taqsimlash mumkin",
+        ru: 'Распределять можно только проведённый (POSTED) платёж',
+        en: 'Only a POSTED payment can be allocated',
+      },
+      { status },
+    );
+  }
+}
+
+/** F2.1: a later manual allocation is capped by the payment's unallocated remainder (advance). */
+export class AllocationExceedsAdvanceException extends AppException {
+  constructor(advance: string, requested: string) {
+    super(
+      HttpStatus.BAD_REQUEST,
+      'PAYMENT_ALLOCATION_EXCEEDS_ADVANCE',
+      {
+        uz: `To'lovning taqsimlanmagan qoldig'i (avans) ${advance}, so'ralgan ${requested}`,
+        ru: `Нераспределённый остаток платежа (аванс) ${advance}, запрошено ${requested}`,
+        en: `Payment unallocated remainder (advance) is ${advance}, but ${requested} was requested`,
+      },
+      { advance, requested },
+    );
+  }
+}

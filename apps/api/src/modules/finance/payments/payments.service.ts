@@ -1,15 +1,18 @@
 import { Injectable } from '@nestjs/common';
 import { InvoiceStatus, PaymentMethod, PaymentStatus, Prisma, withSavepoint, type TenantClient } from '@velto/database';
 import { AuditLogService, toAuditJson } from '../../../common/audit/audit-log.service';
+import type { AppException } from '../../../common/errors/app-exception';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { DocumentNumberingService } from '../../../common/document-numbering/document-numbering.service';
 import { paginate, resolveSort } from '../../../common/pagination/pagination.dto';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import { endOfDay, startOfDay } from '../../analytics/report-utils';
 import { CustomersService } from '../../customers/customers.service';
-import type { CreatePaymentDto, PaymentAllocationInputDto } from '../dto/create-payment.dto';
+import type { AllocatePaymentDto } from '../dto/allocate-payment.dto';
+import type { CreatePaymentDto } from '../dto/create-payment.dto';
 import type { ListPaymentsQueryDto } from '../dto/list-payments.query';
 import {
+  AllocationExceedsAdvanceException,
   AllocationExceedsInvoiceException,
   AllocationExceedsPaymentException,
   InvalidPaymentAmountException,
@@ -18,6 +21,7 @@ import {
   PaymentExportedTo1cException,
   PaymentInClosedCashSessionException,
   PaymentNotFoundException,
+  PaymentNotPostedException,
   PaymentReversalReasonRequiredException,
 } from '../finance-exceptions';
 import { VALID_ALLOCATION_WHERE, paymentAdvanceOf } from '../ledger-filters';
@@ -162,7 +166,7 @@ export class PaymentsService {
 
     const mode = dto.allocations?.length ? 'MANUAL' : 'FIFO';
     const allocations = dto.allocations?.length
-      ? await this.allocateManual(tx, { id: payment.id, customerId: payment.customerId, amount }, dto.allocations)
+      ? await this.allocateManual(tx, { id: payment.id, customerId: payment.customerId }, amount, dto.allocations, (cap, req) => new AllocationExceedsPaymentException(cap, req))
       : await this.allocateFifo(tx, { id: payment.id, customerId: payment.customerId, amount });
 
     // 6.7: "hech qachon to'g'ridan-to'g'ri UPDATE qilinmaydi" outside of a
@@ -194,6 +198,51 @@ export class PaymentsService {
     }
 
     return withAdvance(full);
+  }
+
+  /**
+   * F2.1 / §6.5: manually applies (part of) an existing POSTED payment's
+   * advance to the same customer's live invoices. Append-only: new
+   * PaymentAllocation rows only. Lock order = reverse(): payment FOR UPDATE
+   * (serializes two allocations of one advance) -> invoices (createdAt, id
+   * asc) -> customer. Σamount ≤ advance read under the payment lock.
+   */
+  async allocate(paymentId: string, dto: AllocatePaymentDto, user: AuthenticatedUser) {
+    const tx = this.tenantPrisma.client;
+
+    await tx.$queryRaw(Prisma.sql`SELECT id FROM "Payment" WHERE id = ${paymentId}::uuid FOR UPDATE`);
+    // SEC-023: same object-level scoping as getById() — an agent can only touch payments they collected.
+    const scopedCollectedBy = user.roles.includes('SALES_AGENT') ? user.id : undefined;
+    const before = await tx.payment.findFirst({
+      where: { id: paymentId, ...(scopedCollectedBy ? { collectedBy: scopedCollectedBy } : {}) },
+      include: PAYMENT_INCLUDE,
+    });
+    if (!before) throw new PaymentNotFoundException();
+    if (before.status !== PaymentStatus.POSTED) throw new PaymentNotPostedException(before.status);
+
+    const advanceBefore = paymentAdvanceOf(before);
+    const allocations = await this.allocateManual(
+      tx,
+      { id: before.id, customerId: before.customerId },
+      advanceBefore,
+      dto.allocations,
+      (cap, req) => new AllocationExceedsAdvanceException(cap, req),
+    );
+
+    await this.refreshCachedBalance(tx, before.customerId);
+
+    const full = await tx.payment.findUniqueOrThrow({ where: { id: paymentId }, include: PAYMENT_INCLUDE });
+    const result = withAdvance(full);
+    await this.auditLog.log(tx, {
+      companyId: user.companyId,
+      userId: user.id,
+      action: 'payment.allocate',
+      entity: 'Payment',
+      entityId: paymentId,
+      oldValue: toAuditJson({ advance: advanceBefore.toString() }),
+      newValue: toAuditJson({ mode: 'MANUAL_LATER', allocations, advance: result.advance }),
+    });
+    return result;
   }
 
   /**
@@ -305,7 +354,7 @@ export class PaymentsService {
     const openInvoiceIds = await tx.invoice.findMany({
       where: { customerId: payment.customerId, status: { in: [InvoiceStatus.OPEN, InvoiceStatus.PARTIALLY_PAID] } },
       select: { id: true },
-      orderBy: { createdAt: 'asc' },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
     });
 
     for (const { id: invoiceId } of openInvoiceIds) {
@@ -330,19 +379,37 @@ export class PaymentsService {
     return results;
   }
 
+  /**
+   * Manual allocation shared by create() (cap = payment amount) and
+   * allocate() (cap = advance). Duplicate invoice lines are merged; invoices
+   * are locked in (createdAt, id) order — the same order as allocateFifo and
+   * reverse() — so concurrent ledger writers never deadlock.
+   */
   private async allocateManual(
     tx: TenantClient,
-    payment: { id: string; customerId: string; amount: Prisma.Decimal },
-    inputs: PaymentAllocationInputDto[],
+    payment: { id: string; customerId: string },
+    cap: Prisma.Decimal,
+    inputs: { invoiceId: string; amount: Prisma.Decimal.Value }[],
+    exceeds: (cap: string, requested: string) => AppException,
   ): Promise<AllocationResult[]> {
-    const results: AllocationResult[] = [];
-    const requestedTotal = inputs.reduce((sum, a) => sum.plus(a.amount), new Prisma.Decimal(0));
-    if (requestedTotal.greaterThan(payment.amount)) {
-      throw new AllocationExceedsPaymentException(payment.amount.toString(), requestedTotal.toString());
-    }
-
+    const requestedByInvoice = new Map<string, Prisma.Decimal>();
     for (const input of inputs) {
-      const invoice = await this.lockAndFetchInvoice(tx, input.invoiceId);
+      const prev = requestedByInvoice.get(input.invoiceId) ?? new Prisma.Decimal(0);
+      requestedByInvoice.set(input.invoiceId, prev.plus(input.amount));
+    }
+    const requestedTotal = [...requestedByInvoice.values()].reduce((sum, a) => sum.plus(a), new Prisma.Decimal(0));
+    if (requestedTotal.greaterThan(cap)) throw exceeds(cap.toString(), requestedTotal.toString());
+
+    const ordered = await tx.invoice.findMany({
+      where: { id: { in: [...requestedByInvoice.keys()] } },
+      select: { id: true },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    if (ordered.length !== requestedByInvoice.size) throw new InvoiceNotFoundException();
+
+    const results: AllocationResult[] = [];
+    for (const { id: invoiceId } of ordered) {
+      const invoice = await this.lockAndFetchInvoice(tx, invoiceId);
       // Unlike allocateFifo's query above, this lookup isn't pre-filtered by
       // status — re-check it here so a CANCELLED (or already-PAID) invoice
       // can't be manually targeted and flipped back to PAID/PARTIALLY_PAID.
@@ -351,7 +418,7 @@ export class PaymentsService {
       }
 
       const outstanding = outstandingOf(invoice);
-      const requested = new Prisma.Decimal(input.amount);
+      const requested = requestedByInvoice.get(invoiceId)!;
       if (requested.greaterThan(outstanding)) {
         throw new AllocationExceedsInvoiceException(invoice.number, outstanding.toString(), requested.toString());
       }

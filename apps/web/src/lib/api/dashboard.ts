@@ -26,7 +26,7 @@ export interface DashboardData {
   topDebtors: {
     customerId: string;
     customerName: string;
-    buckets: { current: string; d1to30: string; d31to60: string; d61to90: string; d90plus: string };
+    buckets: { current: string; d1to7: string; d8to30: string; d31to60: string; d60plus: string };
     total: string;
   }[];
 }

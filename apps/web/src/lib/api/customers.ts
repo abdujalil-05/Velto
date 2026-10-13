@@ -21,6 +21,8 @@ export interface Customer {
   isBlocked: boolean;
   blockReason: string | null;
   cachedBalance: string;
+  /** Unallocated POSTED payments (Decimal string). */
+  advance: string;
   isActive: boolean;
   createdAt: string;
 }

@@ -12,9 +12,11 @@ import {
   downloadAgentPerformanceExcel,
   downloadOverviewReportExcel,
 } from '@/lib/api/reports';
-import { useAgingReportQuery, downloadAgingReportExcel } from '@/lib/api/receivables';
+import { useAgingReportQuery, downloadAgingReportExcel, tashkentToday } from '@/lib/api/receivables';
 import { errorMessage } from '@/lib/api/client';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -40,19 +42,20 @@ export default function ReportsPage() {
   const range = { from: from || undefined, to: to || undefined };
 
   const [agingPage, setAgingPage] = useState(1);
+  const [asOf, setAsOf] = useState(tashkentToday);
   const [isExporting, setIsExporting] = useState(false);
 
   const overviewQuery = useOverviewReportQuery(range, tab === 'overview');
   const salesQuery = useSalesReportQuery(range, tab === 'sales');
   const agentsQuery = useAgentPerformanceReportQuery(range, tab === 'agents');
-  const agingQuery = useAgingReportQuery({ page: agingPage, pageSize: 25 }, tab === 'aging');
+  const agingQuery = useAgingReportQuery({ page: agingPage, pageSize: 25, asOf: asOf || undefined }, tab === 'aging');
 
   const activeQuery = tab === 'overview' ? overviewQuery : tab === 'sales' ? salesQuery : tab === 'agents' ? agentsQuery : agingQuery;
 
   async function handleExport() {
     setIsExporting(true);
     try {
-      if (tab === 'aging') await downloadAgingReportExcel();
+      if (tab === 'aging') await downloadAgingReportExcel(asOf || tashkentToday());
       else if (tab === 'sales') await downloadSalesReportExcel(range);
       else if (tab === 'agents') await downloadAgentPerformanceExcel(range);
       else await downloadOverviewReportExcel(range);
@@ -91,6 +94,24 @@ export default function ReportsPage() {
         </div>
 
         <div className="flex items-center gap-3">
+          {tab === 'aging' && (
+            <div className="space-y-1">
+              <Label htmlFor="agingAsOf" className="text-xs">
+                {t('aging.asOf')}
+              </Label>
+              <Input
+                id="agingAsOf"
+                type="date"
+                value={asOf}
+                max={tashkentToday()}
+                onChange={(e) => {
+                  setAsOf(e.target.value);
+                  setAgingPage(1);
+                }}
+                className="w-auto"
+              />
+            </div>
+          )}
           {tab !== 'aging' && <DateRangePicker from={from} to={to} onFromChange={setFrom} onToChange={setTo} />}
           <Button variant="ghost" size="sm" onClick={() => activeQuery.refetch()} disabled={activeQuery.isFetching}>
             <RefreshCw className={cn('mr-2 h-4 w-4', activeQuery.isFetching && 'animate-spin')} />

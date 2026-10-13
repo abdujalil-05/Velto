@@ -7,10 +7,17 @@ import type { PaginatedResult } from './types';
 // Decimal fields arrive as strings.
 export interface AgingBuckets {
   current: string;
-  d1to30: string;
+  d1to7: string;
+  d8to30: string;
   d31to60: string;
-  d61to90: string;
-  d90plus: string;
+  d60plus: string;
+}
+
+export type AgingReport = PaginatedResult<AgingRow> & { asOf: string };
+
+/** Today's calendar date (YYYY-MM-DD) in Asia/Tashkent — the report's default `asOf` (TZ §6.5). */
+export function tashkentToday(): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tashkent' }).format(new Date());
 }
 
 export interface AgingRow {
@@ -23,6 +30,7 @@ export interface AgingRow {
 export interface AgingReportParams {
   page?: number;
   pageSize?: number;
+  asOf?: string;
   [key: string]: string | number | undefined;
 }
 
@@ -33,13 +41,13 @@ export interface AgingReportParams {
 export function useAgingReportQuery(params: AgingReportParams, enabled = true) {
   return useQuery({
     queryKey: ['reports', 'aging', params],
-    queryFn: () => apiFetch<PaginatedResult<AgingRow>>(`/reports/aging${toQueryString(params)}`),
+    queryFn: () => apiFetch<AgingReport>(`/reports/aging${toQueryString(params)}`),
     placeholderData: (previous) => previous,
     enabled,
   });
 }
 
 /** Streams the server-generated .xlsx (every indebted customer, not just one page) — not JSON, so it bypasses apiFetch. */
-export function downloadAgingReportExcel(): Promise<void> {
-  return apiDownload('/reports/aging/export', `qarzdorlik-${new Date().toISOString().slice(0, 10)}.xlsx`);
+export function downloadAgingReportExcel(asOf: string): Promise<void> {
+  return apiDownload(`/reports/aging/export${toQueryString({ asOf })}`, `qarzdorlik-${asOf}.xlsx`);
 }

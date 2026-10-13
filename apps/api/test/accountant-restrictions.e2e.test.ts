@@ -65,6 +65,7 @@ describe('E2E F1.4: ACCOUNTANT restrictions', () => {
 
   const denied: [string, 'post' | 'patch', string, string][] = [
     ['payments create', 'post', '/payments', 'payments.create'],
+    ['payments allocate (F2.1)', 'post', `/payments/${id}/allocate`, 'payments.create'],
     ['cash open', 'post', '/cash-sessions/open', 'cash.open'],
     ['cash close', 'post', `/cash-sessions/${id}/close`, 'cash.close'],
     ['order confirm', 'post', `/orders/${id}/confirm`, 'orders.update'],

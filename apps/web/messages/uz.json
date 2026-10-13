@@ -28,6 +28,11 @@
       "title": "Bekor qilishni tasdiqlang",
       "description": "«{name}» ni rostdan ham bekor qilmoqchimisiz? Bu amalni ortga qaytarib bo'lmaydi.",
       "confirm": "Ha, bekor qilish"
+    },
+    "reverse": {
+      "reason": "Sabab",
+      "reasonHint": "{min}–{max} belgi, majburiy",
+      "confirm": "Bekor qilish"
     }
   },
   "Nav": {
@@ -219,8 +224,12 @@
       "visitOutcome": {
         "ORDERED": "Buyurtma bilan",
         "NO_ORDER": "Buyurtmasiz"
-      }
-    }
+      },
+      "credit": "Kredit",
+      "advance": "Avans"
+    },
+    "credit": "Kredit",
+    "advance": "Avans"
   },
   "OrderStatus": {
     "DRAFT": "Qoralama",
@@ -325,11 +334,11 @@
   "Receivables": {
     "customer": "Mijoz",
     "current": "Joriy",
-    "d1to30": "1–30 kun",
     "d31to60": "31–60 kun",
-    "d61to90": "61–90 kun",
-    "d90plus": "90+ kun",
-    "total": "Jami"
+    "total": "Jami",
+    "d1to7": "1–7 kun",
+    "d8to30": "8–30 kun",
+    "d60plus": "60+ kun"
   },
   "Products": {
     "title": "Mahsulotlar",
@@ -435,6 +444,18 @@
       "allocationExceedsAmount": "Taqsimlangan summa to'lov summasidan oshib ketdi",
       "submit": "To'lovni saqlash",
       "created": "To'lov qo'shildi"
+    },
+    "status": "Holati",
+    "actions": "Amallar",
+    "statuses": {
+      "POSTED": "Qabul qilingan",
+      "REVERSED": "Bekor qilingan"
+    },
+    "reverse": {
+      "action": "Bekor qilish",
+      "title": "{number} to'lovini bekor qilish",
+      "description": "To'lov bekor qilinadi, fakturalar va mijoz balansi qayta hisoblanadi. Bu amalni qaytarib bo'lmaydi.",
+      "success": "To'lov bekor qilindi"
     }
   },
   "Stock": {
@@ -721,12 +742,13 @@
     "aging": {
       "customer": "Mijoz",
       "current": "Joriy",
-      "d1to30": "1–30 kun",
       "d31to60": "31–60 kun",
-      "d61to90": "61–90 kun",
-      "d90plus": "90+ kun",
       "total": "Jami",
-      "emptyState": "Qarzdorlik yo'q"
+      "emptyState": "Qarzdorlik yo'q",
+      "d1to7": "1–7 kun",
+      "d8to30": "8–30 kun",
+      "d60plus": "60+ kun",
+      "asOf": "Hisobot sanasi"
     }
   },
   "Agents": {

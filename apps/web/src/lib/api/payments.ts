@@ -5,6 +5,8 @@ import type { PaginatedResult } from './types';
 
 export type PaymentMethod = 'CASH' | 'CARD' | 'TRANSFER';
 
+export type PaymentStatus = 'POSTED' | 'REVERSED';
+
 export interface PaymentAllocation {
   id: string;
   invoiceId: string;
@@ -19,6 +21,9 @@ export interface Payment {
   customer: { id: string; name: string; code: string };
   amount: string;
   method: PaymentMethod;
+  status: PaymentStatus;
+  /** Unallocated POSTED amount (Decimal string). */
+  advance: string;
   createdAt: string;
   allocations: PaymentAllocation[];
 }
@@ -64,6 +69,25 @@ export function useCreatePaymentMutation() {
       // — both are rendered right next to the payments list on /cash.
       queryClient.invalidateQueries({ queryKey: ['customers'] });
       queryClient.invalidateQueries({ queryKey: ['cash-sessions'] });
+    },
+  });
+}
+
+export function useReversePaymentMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, reason, idempotencyKey }: { id: string; reason: string; idempotencyKey: string }) =>
+      apiFetch<Payment>(`/payments/${id}/reverse`, {
+        method: 'POST',
+        body: { reason },
+        headers: { 'Idempotency-Key': idempotencyKey },
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['payments'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['customers'] });
+      queryClient.invalidateQueries({ queryKey: ['cash-sessions'] });
+      queryClient.invalidateQueries({ queryKey: ['reports'] });
     },
   });
 }

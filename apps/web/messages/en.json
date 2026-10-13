@@ -28,6 +28,11 @@
       "title": "Confirm cancellation",
       "description": "Are you sure you want to cancel “{name}”? This action cannot be undone.",
       "confirm": "Yes, cancel"
+    },
+    "reverse": {
+      "reason": "Reason",
+      "reasonHint": "{min}–{max} characters, required",
+      "confirm": "Reverse"
     }
   },
   "Nav": {
@@ -219,8 +224,12 @@
       "visitOutcome": {
         "ORDERED": "Ordered",
         "NO_ORDER": "No order"
-      }
-    }
+      },
+      "credit": "Credit",
+      "advance": "Advance"
+    },
+    "credit": "Credit",
+    "advance": "Advance"
   },
   "OrderStatus": {
     "DRAFT": "Draft",
@@ -325,11 +334,11 @@
   "Receivables": {
     "customer": "Customer",
     "current": "Current",
-    "d1to30": "1–30 days",
     "d31to60": "31–60 days",
-    "d61to90": "61–90 days",
-    "d90plus": "90+ days",
-    "total": "Total"
+    "total": "Total",
+    "d1to7": "1–7 days",
+    "d8to30": "8–30 days",
+    "d60plus": "60+ days"
   },
   "Products": {
     "title": "Products",
@@ -435,6 +444,18 @@
       "allocationExceedsAmount": "Allocated amount exceeds the payment amount",
       "submit": "Save payment",
       "created": "Payment added"
+    },
+    "status": "Status",
+    "actions": "Actions",
+    "statuses": {
+      "POSTED": "Posted",
+      "REVERSED": "Reversed"
+    },
+    "reverse": {
+      "action": "Reverse",
+      "title": "Reverse payment {number}",
+      "description": "The payment will be reversed and invoices and the customer balance recalculated. This cannot be undone.",
+      "success": "Payment reversed"
     }
   },
   "Stock": {
@@ -721,12 +742,13 @@
     "aging": {
       "customer": "Customer",
       "current": "Current",
-      "d1to30": "1–30 days",
       "d31to60": "31–60 days",
-      "d61to90": "61–90 days",
-      "d90plus": "90+ days",
       "total": "Total",
-      "emptyState": "No outstanding debt"
+      "emptyState": "No outstanding debt",
+      "d1to7": "1–7 days",
+      "d8to30": "8–30 days",
+      "d60plus": "60+ days",
+      "asOf": "As of date"
     }
   },
   "Agents": {

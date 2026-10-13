@@ -56,3 +56,17 @@ export function useReceiveStockMutation() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['stock'] }),
   });
 }
+
+/** POST /stock/movements/:id/reverse — manual RECEIVE/ADJUST movements only (needs `stock.reverse`). */
+export function useReverseStockMovementMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, reason, idempotencyKey }: { id: string; reason: string; idempotencyKey: string }) =>
+      apiFetch<unknown>(`/stock/movements/${id}/reverse`, {
+        method: 'POST',
+        body: { reason },
+        headers: { 'Idempotency-Key': idempotencyKey },
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['stock'] }),
+  });
+}

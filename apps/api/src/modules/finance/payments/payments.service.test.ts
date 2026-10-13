@@ -6,7 +6,11 @@ import { AuditLogService } from '../../../common/audit/audit-log.service';
 import { DocumentNumberingService } from '../../../common/document-numbering/document-numbering.service';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import { CustomersService } from '../../customers/customers.service';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
+import { AllocatePaymentDto } from '../dto/allocate-payment.dto';
 import {
+  AllocationExceedsAdvanceException,
   AllocationExceedsInvoiceException,
   AllocationExceedsPaymentException,
   InvoiceNotFoundException,
@@ -14,6 +18,7 @@ import {
   PaymentExportedTo1cException,
   PaymentInClosedCashSessionException,
   PaymentNotFoundException,
+  PaymentNotPostedException,
 } from '../finance-exceptions';
 import { CashSessionsService } from '../cash-sessions/cash-sessions.service';
 import { PaymentsService } from './payments.service';
@@ -591,6 +596,201 @@ describe('PaymentsService (integration, real Postgres + RLS)', () => {
       );
       const reversedQ = await tenantPrisma.run(companyId, () => payments.reverse(q.id, 'export failed', user));
       expect(reversedQ.status).toBe('REVERSED');
+    });
+  });
+
+  describe('allocate() — later manual allocation of an advance (F2.1)', () => {
+    async function addInvoice(customerId: string, total: string, ageDays = 0) {
+      // Mirrors real invoice posting: cachedBalance recomputed from the ledger in the same tx.
+      const inv = await tenantPrisma.run(companyId, async (tx) => {
+        const created = await tx.invoice.create({
+          data: {
+            companyId,
+            number: `PAY-TEST-INV-${Date.now()}-${invoiceSeq++}`,
+            customerId,
+            total,
+            status: 'OPEN',
+            createdAt: new Date(Date.now() - ageDays * 24 * 3600 * 1000),
+          },
+        });
+        await tx.customer.update({ where: { id: customerId }, data: { cachedBalance: await customers.getBalance(tx, customerId) } });
+        return created;
+      });
+      return inv.id;
+    }
+
+    /** Customer with a pure-advance payment (no open invoices at payment time). */
+    async function customerWithAdvance(amount: number) {
+      const { customerId } = await createCustomerWithInvoices([]);
+      const payment = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount, method: 'TRANSFER' }, user));
+      expect(payment.advance).toBe(String(amount));
+      return { customerId, paymentId: payment.id };
+    }
+
+    async function expectLedgerConsistent(customerId: string, expectedBalance: string, expectedAdvance: string) {
+      const ledger = await customerLedger(customerId);
+      expect(ledger.balance.toString()).toBe(expectedBalance);
+      expect(ledger.advance).toBe(expectedAdvance);
+      expect((await cachedBalance(customerId)).toString()).toBe(expectedBalance);
+      expect(Number(await ledgerBalance(customerId))).toBe(Number(expectedBalance));
+    }
+
+    async function allocationCount(paymentId: string) {
+      return tenantPrisma.run(companyId, (tx) => tx.paymentAllocation.count({ where: { paymentId } }));
+    }
+
+    it('allocates the whole advance across two invoices: both PAID, advance 0, cache = ledger, audited', async () => {
+      const { customerId, paymentId } = await customerWithAdvance(50000);
+      const inv1 = await addInvoice(customerId, '30000', 2);
+      const inv2 = await addInvoice(customerId, '20000', 1);
+      await expectLedgerConsistent(customerId, '0', '50000');
+
+      const result = await tenantPrisma.run(companyId, () =>
+        payments.allocate(paymentId, { allocations: [{ invoiceId: inv2, amount: '20000' }, { invoiceId: inv1, amount: '30000.00' }] }, user),
+      );
+      expect(result.advance).toBe('0');
+      expect(result.allocations).toHaveLength(2);
+      for (const id of [inv1, inv2]) {
+        const inv = await tenantPrisma.run(companyId, (tx) => tx.invoice.findUniqueOrThrow({ where: { id } }));
+        expect(inv.status).toBe('PAID');
+      }
+      await expectLedgerConsistent(customerId, '0', '0');
+
+      const audits = await tenantPrisma.run(companyId, (tx) =>
+        tx.auditLog.findMany({ where: { action: 'payment.allocate', entityId: paymentId } }),
+      );
+      expect(audits).toHaveLength(1);
+      expect(audits[0]!.userId).toBe(user.id);
+      expect(audits[0]!.oldValue).toMatchObject({ advance: '50000' });
+      expect(audits[0]!.newValue).toMatchObject({ mode: 'MANUAL_LATER', advance: '0' });
+    });
+
+    it('partial: allocates part of the advance, invoice PARTIALLY_PAID, remainder stays advance; a second call uses the rest', async () => {
+      const { customerId, paymentId } = await customerWithAdvance(50000);
+      const inv = await addInvoice(customerId, '80000');
+
+      const first = await tenantPrisma.run(companyId, () =>
+        payments.allocate(paymentId, { allocations: [{ invoiceId: inv, amount: '30000.50' }] }, user),
+      );
+      expect(first.advance).toBe('19999.5');
+      expect((await tenantPrisma.run(companyId, (tx) => tx.invoice.findUniqueOrThrow({ where: { id: inv } }))).status).toBe('PARTIALLY_PAID');
+      await expectLedgerConsistent(customerId, '30000', '19999.5');
+
+      const second = await tenantPrisma.run(companyId, () =>
+        payments.allocate(paymentId, { allocations: [{ invoiceId: inv, amount: '19999.50' }] }, user),
+      );
+      expect(second.advance).toBe('0');
+      expect(await allocationCount(paymentId)).toBe(2); // append-only: a new row per allocation
+      expect((await tenantPrisma.run(companyId, (tx) => tx.invoice.findUniqueOrThrow({ where: { id: inv } }))).status).toBe('PARTIALLY_PAID');
+      await expectLedgerConsistent(customerId, '30000', '0');
+    });
+
+    it('rejects Σamount > advance and amount > invoice outstanding, writing nothing', async () => {
+      const { customerId, paymentId } = await customerWithAdvance(50000);
+      const inv1 = await addInvoice(customerId, '40000', 2);
+      const inv2 = await addInvoice(customerId, '10000', 1);
+
+      await expect(
+        tenantPrisma.run(companyId, () =>
+          payments.allocate(paymentId, { allocations: [{ invoiceId: inv1, amount: '40000' }, { invoiceId: inv2, amount: '10000.01' }] }, user),
+        ),
+      ).rejects.toBeInstanceOf(AllocationExceedsAdvanceException);
+      // Duplicate lines are summed per invoice before the outstanding check.
+      await expect(
+        tenantPrisma.run(companyId, () =>
+          payments.allocate(paymentId, { allocations: [{ invoiceId: inv2, amount: '6000' }, { invoiceId: inv2, amount: '5000' }] }, user),
+        ),
+      ).rejects.toBeInstanceOf(AllocationExceedsInvoiceException);
+      // inv1 OK, inv2 too much: the whole call rolls back (inv1 untouched).
+      await expect(
+        tenantPrisma.run(companyId, () =>
+          payments.allocate(paymentId, { allocations: [{ invoiceId: inv1, amount: '30000' }, { invoiceId: inv2, amount: '15000' }] }, user),
+        ),
+      ).rejects.toBeInstanceOf(AllocationExceedsInvoiceException);
+
+      expect(await allocationCount(paymentId)).toBe(0);
+      await expectLedgerConsistent(customerId, '0', '50000');
+    });
+
+    it('rejects a REVERSED payment (PAYMENT_NOT_POSTED) and an unknown payment id', async () => {
+      const { customerId, paymentId } = await customerWithAdvance(30000);
+      const inv = await addInvoice(customerId, '10000');
+      await tenantPrisma.run(companyId, () => payments.reverse(paymentId, 'duplicate entry', user));
+
+      await expect(
+        tenantPrisma.run(companyId, () => payments.allocate(paymentId, { allocations: [{ invoiceId: inv, amount: '10000' }] }, user)),
+      ).rejects.toBeInstanceOf(PaymentNotPostedException);
+      await expect(
+        tenantPrisma.run(companyId, () => payments.allocate(randomUUID(), { allocations: [{ invoiceId: inv, amount: '1' }] }, user)),
+      ).rejects.toBeInstanceOf(PaymentNotFoundException);
+      expect(await allocationCount(paymentId)).toBe(0);
+      await expectLedgerConsistent(customerId, '10000', '0');
+    });
+
+    it("rejects another customer's invoice and a CANCELLED invoice", async () => {
+      const { customerId, paymentId } = await customerWithAdvance(30000);
+      const { invoiceIds: foreign } = await createCustomerWithInvoices([{ total: '10000', ageDays: 1 }]);
+      const cancelled = await addInvoice(customerId, '10000');
+      await tenantPrisma.run(companyId, async (tx) => {
+        await tx.invoice.update({ where: { id: cancelled }, data: { status: 'CANCELLED' } });
+        await tx.customer.update({ where: { id: customerId }, data: { cachedBalance: await customers.getBalance(tx, customerId) } });
+      });
+
+      for (const invoiceId of [foreign[0]!, cancelled, randomUUID()]) {
+        await expect(
+          tenantPrisma.run(companyId, () => payments.allocate(paymentId, { allocations: [{ invoiceId, amount: '5000' }] }, user)),
+        ).rejects.toBeInstanceOf(InvoiceNotFoundException);
+      }
+      expect(await allocationCount(paymentId)).toBe(0);
+      await expectLedgerConsistent(customerId, '-30000', '30000');
+    });
+
+    it('SALES_AGENT cannot allocate a payment collected by someone else (SEC-023, not found)', async () => {
+      const { customerId, paymentId } = await customerWithAdvance(20000);
+      const inv = await addInvoice(customerId, '10000');
+      const agent: AuthenticatedUser = { ...user, id: randomUUID(), roles: ['SALES_AGENT'], permissions: ['payments.create'] };
+      await expect(
+        tenantPrisma.run(companyId, () => payments.allocate(paymentId, { allocations: [{ invoiceId: inv, amount: '10000' }] }, agent)),
+      ).rejects.toBeInstanceOf(PaymentNotFoundException);
+    });
+
+    it('race: two parallel allocations never spend the same advance twice', async () => {
+      for (let round = 0; round < 4; round++) {
+        const { customerId, paymentId } = await customerWithAdvance(50000);
+        const inv1 = await addInvoice(customerId, '40000', 2);
+        const inv2 = await addInvoice(customerId, '40000', 1);
+        // Opposite line order in the two requests: locks still taken in (createdAt, id) order — no deadlock.
+        const settled = await Promise.allSettled([
+          tenantPrisma.run(companyId, () =>
+            payments.allocate(paymentId, { allocations: [{ invoiceId: inv1, amount: '30000' }, { invoiceId: inv2, amount: '10000' }] }, user),
+          ),
+          tenantPrisma.run(companyId, () =>
+            payments.allocate(paymentId, { allocations: [{ invoiceId: inv2, amount: '30000' }, { invoiceId: inv1, amount: '10000' }] }, user),
+          ),
+        ]);
+        const ok = settled.filter((r) => r.status === 'fulfilled');
+        const failed = settled.flatMap((r) => (r.status === 'rejected' ? [r.reason] : []));
+        expect(ok).toHaveLength(1);
+        expect(failed).toHaveLength(1);
+        expect(failed[0]).toBeInstanceOf(AllocationExceedsAdvanceException);
+
+        const allocs = await tenantPrisma.run(companyId, (tx) => tx.paymentAllocation.findMany({ where: { paymentId } }));
+        expect(allocs.reduce((sum, a) => sum + Number(a.amount), 0)).toBe(40000);
+        await expectLedgerConsistent(customerId, '30000', '10000');
+      }
+    });
+
+    it('DTO: amount must be a positive Decimal string (≤ 2 fraction digits), invoiceId a UUID', async () => {
+      const errorsFor = async (amount: unknown, invoiceId: unknown = randomUUID()) =>
+        (await validate(plainToInstance(AllocatePaymentDto, { allocations: [{ invoiceId, amount }] }))).length;
+      expect(await errorsFor('100')).toBe(0);
+      expect(await errorsFor('0.01')).toBe(0);
+      expect(await errorsFor('1500000.50')).toBe(0);
+      for (const bad of ['0', '0.00', '-5', '1.234', '1e5', 'abc', '', 100, null, '1000000000000000']) {
+        expect(await errorsFor(bad)).toBeGreaterThan(0);
+      }
+      expect(await errorsFor('10', 'not-a-uuid')).toBeGreaterThan(0);
+      expect((await validate(plainToInstance(AllocatePaymentDto, { allocations: [] }))).length).toBeGreaterThan(0);
     });
   });
 });
