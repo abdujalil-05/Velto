@@ -220,4 +220,111 @@ describe('SyncService.pull (F4, integration)', () => {
     // and no Customer/Outlet tombstones leak to agents
     expect(shrunk.tombstones.filter((t) => t.entity === 'Customer' || t.entity === 'Outlet')).toHaveLength(0);
   });
+
+  // Reactivation (migration 20261013210000): children get a fresh changeSeq so a client whose cursor is past them
+  // still receives them. Client apply order is fixed: tombstones FIRST, then upserts. The tombstone written at
+  // deactivation has a LOWER changeSeq than the re-stamped rows, so applying in that order the upsert wins.
+  it('reactivated Product resends product + packagings + prices + stock past an old cursor; stale tombstone is older than the upserts', async () => {
+    const cid = await mkCompany('reactp');
+    const dir = userOf(cid, randomUUID(), 'OWNER');
+    const ids = await run(cid, async () => {
+      const tx = tenantPrisma.client;
+      const p = await tx.product.create({ data: { companyId: cid, sku: 'RP', name: 'RP', baseUnit: 'dona', vatRate: 12, updatedAt: OLD() } });
+      const pack = await tx.productPackaging.create({ data: { productId: p.id, name: 'box', qtyInBaseUnit: 10, updatedAt: OLD() } });
+      const pl = await tx.priceList.create({ data: { companyId: cid, name: 'PL' } });
+      await tx.priceListItem.create({ data: { priceListId: pl.id, productId: p.id, price: '5', updatedAt: OLD() } });
+      const wh = await tx.warehouse.create({ data: { companyId: cid, name: 'W' } });
+      await tx.stockLevel.create({ data: { productId: p.id, warehouseId: wh.id, onHand: '7', updatedAt: OLD() } });
+      return { p: p.id, pack: pack.id, pl: pl.id, wh: wh.id };
+    });
+    const first = await run(cid, () => sync.pull({}, dir));
+    expect(first.products.map((x) => x.id)).toContain(ids.p);
+    const c = first.cursor;
+    // precondition: the cursor is already past every child
+    const quiet = await run(cid, () => sync.pull({ cursor: c }, dir));
+    expect(quiet.products).toHaveLength(0);
+    expect(quiet.packagings).toHaveLength(0);
+    expect(quiet.prices).toHaveLength(0);
+    expect(quiet.stock).toHaveLength(0);
+
+    await run(cid, () => tenantPrisma.client.product.update({ where: { id: ids.p }, data: { isActive: false } }));
+    const off = await run(cid, () => sync.pull({ cursor: c }, dir));
+    expect(off.tombstones.map((t) => `${t.entity}:${t.entityId}`)).toContain(`Product:${ids.p}`);
+    expect(off.products).toHaveLength(0);
+
+    await run(cid, () => tenantPrisma.client.product.update({ where: { id: ids.p }, data: { isActive: true } }));
+    const on = await run(cid, () => sync.pull({ cursor: c }, dir));
+    expect(on.products.map((x) => x.id)).toEqual([ids.p]);
+    expect(on.packagings.map((x) => x.id)).toEqual([ids.pack]);
+    expect(on.prices.map((x) => x.productId)).toEqual([ids.p]);
+    expect(on.stock.map((x) => `${x.productId}:${x.warehouseId}`)).toEqual([`${ids.p}:${ids.wh}`]);
+    // tombstones-first then upserts => any tombstone for the product must be older than its re-stamped upsert
+    const prodSeq = on.products[0]!.changeSeq;
+    for (const t of on.tombstones.filter((x) => x.entityId === ids.p)) expect(t.changeSeq < prodSeq).toBe(true);
+  });
+
+  it('reactivated Customer resends customer + outlets past an old cursor; stale tombstones are older than the upserts', async () => {
+    const cid = await mkCompany('reactc');
+    const dir = userOf(cid, randomUUID(), 'OWNER');
+    const ids = await run(cid, async () => {
+      const tx = tenantPrisma.client;
+      const c = await tx.customer.create({ data: { companyId: cid, code: 'RC', name: 'RC', updatedAt: OLD() } });
+      const o = await tx.outlet.create({ data: { companyId: cid, customerId: c.id, name: 'RO', updatedAt: OLD() } });
+      return { c: c.id, o: o.id };
+    });
+    const c = (await run(cid, () => sync.pull({}, dir))).cursor;
+    const quiet = await run(cid, () => sync.pull({ cursor: c }, dir));
+    expect(quiet.customers).toHaveLength(0);
+    expect(quiet.outlets).toHaveLength(0);
+
+    await run(cid, () => tenantPrisma.client.customer.update({ where: { id: ids.c }, data: { isActive: false } }));
+    const off = await run(cid, () => sync.pull({ cursor: c }, dir));
+    expect(off.tombstones.map((t) => `${t.entity}:${t.entityId}`)).toContain(`Customer:${ids.c}`);
+    expect(off.customers).toHaveLength(0);
+
+    await run(cid, () => tenantPrisma.client.customer.update({ where: { id: ids.c }, data: { isActive: true } }));
+    const on = await run(cid, () => sync.pull({ cursor: c }, dir));
+    expect(on.customers.map((x) => x.id)).toEqual([ids.c]);
+    expect(on.outlets.map((x) => x.id)).toEqual([ids.o]);
+    const custSeq = on.customers[0]!.changeSeq;
+    for (const t of on.tombstones.filter((x) => x.entityId === ids.c)) expect(t.changeSeq < custSeq).toBe(true);
+  });
+
+  it('SALES_AGENT: reactivated in-scope Customer resends its outlets; out-of-scope reactivation leaks nothing', async () => {
+    const cid = await mkCompany('reacta');
+    const u = await systemPrisma.user.create({ data: { companyId: cid, firstName: 'U', lastName: 'A', phone: `+99890${Math.floor(1000000 + Math.random() * 8999999)}` } });
+    const ag = userOf(cid, u.id, 'SALES_AGENT');
+    const ids = await run(cid, async () => {
+      const tx = tenantPrisma.client;
+      const mk = async (code: string) => {
+        const c = await tx.customer.create({ data: { companyId: cid, code, name: code, updatedAt: OLD() } });
+        const o = await tx.outlet.create({ data: { companyId: cid, customerId: c.id, name: `O-${code}`, updatedAt: OLD() } });
+        return { c: c.id, o: o.id };
+      };
+      const inS = await mk('IN');
+      const outS = await mk('OUT');
+      const route = await tx.route.create({ data: { companyId: cid, agentId: ag.id, weekday: 1, name: 'R' } });
+      await tx.routeStop.create({ data: { routeId: route.id, outletId: inS.o, sortOrder: 1 } });
+      return { inS, outS };
+    });
+    const first = await run(cid, () => sync.pull({}, ag));
+    expect(first.customers.map((x) => x.id)).toEqual([ids.inS.c]);
+    const c = first.cursor;
+
+    const flip = (id: string, isActive: boolean) => run(cid, () => tenantPrisma.client.customer.update({ where: { id }, data: { isActive } }));
+    await flip(ids.inS.c, false);
+    await flip(ids.outS.c, false);
+    await flip(ids.inS.c, true);
+    await flip(ids.outS.c, true);
+
+    const on = await run(cid, () => sync.pull({ cursor: c }, ag));
+    expect(on.fullResync).toBe(false);
+    expect(on.customers.map((x) => x.id)).toEqual([ids.inS.c]);
+    expect(on.outlets.map((x) => x.id)).toEqual([ids.inS.o]);
+    // agents never get Customer/Outlet tombstones, and nothing of the out-of-scope customer
+    expect(on.tombstones.filter((t) => t.entity === 'Customer' || t.entity === 'Outlet')).toHaveLength(0);
+    const dump = JSON.stringify(on, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
+    expect(dump).not.toContain(ids.outS.c);
+    expect(dump).not.toContain(ids.outS.o);
+  });
 });
