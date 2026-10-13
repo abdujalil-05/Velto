@@ -166,6 +166,39 @@ describe('CustomersService (integration, real Postgres + RLS)', () => {
     expect(deleted.deletedAt).not.toBeNull();
   });
 
+  it('race: two parallel remove() on one customer — exactly one wins, the other gets CustomerNotFound, audited once', async () => {
+    const { customer } = await tenantPrisma.run(companyId, () => customers.create(dto('C-DEL-RACE'), user));
+    const id = (customer as { id: string }).id;
+
+    const settled = await Promise.allSettled([
+      tenantPrisma.run(companyId, () => customers.remove(id, user)),
+      tenantPrisma.run(companyId, () => customers.remove(id, user)),
+    ]);
+    expect(settled.filter((s) => s.status === 'fulfilled')).toHaveLength(1);
+    const rejected = settled.filter((s): s is PromiseRejectedResult => s.status === 'rejected');
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.reason).toBeInstanceOf(CustomerNotFoundException);
+
+    const audits = await tenantPrisma.run(companyId, (tx) =>
+      tx.auditLog.count({ where: { action: 'customer.delete', entityId: id } }),
+    );
+    expect(audits).toBe(1);
+  });
+
+  it('getById lastPayment ignores REVERSED payments', async () => {
+    const { customer } = await tenantPrisma.run(companyId, () => customers.create(dto('C-LASTPAY'), user));
+    const customerId = (customer as { id: string }).id;
+    const posted = await tenantPrisma.run(companyId, (tx) =>
+      tx.payment.create({ data: { companyId, number: 'PAY-TEST-LP-1', customerId, amount: '1000.00', method: 'CASH', createdAt: new Date(Date.now() - 60_000) } }),
+    );
+    await tenantPrisma.run(companyId, (tx) =>
+      tx.payment.create({ data: { companyId, number: 'PAY-TEST-LP-2', customerId, amount: '2000.00', method: 'CASH', status: 'REVERSED' } }),
+    );
+
+    const detail = await tenantPrisma.run(companyId, () => customers.getById(customerId, user));
+    expect((detail as unknown as { lastPayment: { id: string } | null }).lastPayment?.id).toBe(posted.id);
+  });
+
   it('SEC-023 (15.3): a SALES_AGENT only sees customers reached via their own orders/routes/visits', async () => {
     const { customer: ownCustomer } = await tenantPrisma.run(companyId, () => customers.create(dto('C-AGENT-OWN'), user));
     const { customer: otherCustomer } = await tenantPrisma.run(companyId, () => customers.create(dto('C-AGENT-OTHER'), user));

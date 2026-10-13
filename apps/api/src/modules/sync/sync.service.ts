@@ -2,6 +2,7 @@ import { HttpException, Injectable, Logger } from '@nestjs/common';
 import { withSavepoint } from '@velto/database';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
+import { CustomersService } from '../customers/customers.service';
 import { CreatePaymentDto } from '../finance/dto/create-payment.dto';
 import { PaymentsService } from '../finance/payments/payments.service';
 import { CreateVisitDto } from '../field/visits/dto/create-visit.dto';
@@ -27,6 +28,7 @@ export class SyncService {
     private readonly sales: SalesService,
     private readonly payments: PaymentsService,
     private readonly visits: VisitsService,
+    private readonly customers: CustomersService,
   ) {}
 
   /**
@@ -117,11 +119,37 @@ export class SyncService {
    * document's failure never blocks or rolls back the others in the batch.
    */
   async push(documents: SyncPushDocumentDto[], user: AuthenticatedUser): Promise<{ results: SyncPushResultItem[] }> {
+    await this.lockBatchCustomers(documents);
     const results: SyncPushResultItem[] = [];
     for (const doc of documents) {
       results.push(await this.pushOne(doc, user));
     }
     return { results };
+  }
+
+  /**
+   * The whole batch shares one request transaction, and PaymentsService.create()
+   * takes a Customer FOR UPDATE per document that is held to commit. Two
+   * batches touching the same customers in opposite order (A→B vs B→A) would
+   * deadlock (40P01) and fail both batches. Locking every customer the batch
+   * references up front, in one global order (id asc), makes the per-document
+   * locks re-entrant no-ops and the lock graph acyclic. Plain lockForUpdate
+   * (no deletedAt check): a missing/deleted customer must not fail the batch —
+   * each document still gets its own CustomerNotFound via lockActiveOrThrow.
+   * Payloads are unvalidated here, so only well-formed UUIDs are considered
+   * (a bad ::uuid cast would abort the whole transaction).
+   */
+  private async lockBatchCustomers(documents: SyncPushDocumentDto[]): Promise<void> {
+    const ids = new Set<string>();
+    for (const doc of documents) {
+      if (doc.type !== SyncDocType.PAYMENT && doc.type !== SyncDocType.ORDER) continue;
+      const customerId = (doc.payload as Record<string, unknown> | undefined)?.customerId;
+      if (typeof customerId === 'string' && UUID_RE.test(customerId)) ids.add(customerId.toLowerCase());
+    }
+    const tx = this.tenantPrisma.client;
+    for (const id of [...ids].sort()) {
+      await this.customers.lockForUpdate(tx, id);
+    }
   }
 
   private async pushOne(doc: SyncPushDocumentDto, user: AuthenticatedUser): Promise<SyncPushResultItem> {
@@ -177,6 +205,8 @@ export class SyncService {
 }
 
 const logger = new Logger('SyncService');
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // SEC-045: never leak an unexpected error's raw message (e.g. Prisma column/
 // table names) to the client — only HttpExceptions carry client-safe copy.

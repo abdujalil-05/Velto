@@ -33,7 +33,7 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
   const sales = new SalesService(tenantPrisma, auditLog, customers, stock, docNumbering, notifications);
   const payments = new PaymentsService(tenantPrisma, auditLog, customers, docNumbering);
   const visits = new VisitsService(tenantPrisma, auditLog);
-  const sync = new SyncService(tenantPrisma, sales, payments, visits);
+  const sync = new SyncService(tenantPrisma, sales, payments, visits, customers);
 
   const OUTLET_LAT = 41.2995;
   const OUTLET_LNG = 69.2401;
@@ -251,6 +251,50 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
       expect(results[0]?.status).toBe('REJECTED');
       expect(results[0]?.error?.code).toBe('SYNC_VALIDATION_FAILED');
       expect(results[1]?.status).toBe('ACCEPTED');
+    });
+
+    it('race: two parallel batches paying the same customers in opposite order (A→B vs B→A) never deadlock, both apply fully, clientId stays idempotent', async () => {
+      const [custA, custB] = await tenantPrisma.run(companyId, (tx) =>
+        Promise.all(
+          ['A', 'B'].map((k) => tx.customer.create({ data: { companyId, code: `SYNC-RACE-${k}-${Date.now()}`, name: `Race ${k}` } })),
+        ),
+      );
+      const payDoc = (cust: string) => {
+        const clientId = randomUUID();
+        return { type: SyncDocType.PAYMENT, clientId, payload: { customerId: cust, clientId, amount: 1000, method: 'CASH' } };
+      };
+      const ROUNDS = 4;
+      const allClientIds: string[] = [];
+
+      for (let round = 0; round < ROUNDS; round++) {
+        // Unknown customer in the batch: per-document REJECTED, never fails the batch.
+        const ghost = payDoc(randomUUID());
+        const batch1 = [payDoc(custA.id), ghost, payDoc(custB.id)];
+        const batch2 = [payDoc(custB.id), payDoc(custA.id)];
+        const settled = await Promise.allSettled([
+          tenantPrisma.run(companyId, () => sync.push(batch1, user)),
+          tenantPrisma.run(companyId, () => sync.push(batch2, user)),
+        ]);
+        for (const s of settled) {
+          if (s.status === 'rejected') throw s.reason; // e.g. 40P01 deadlock
+        }
+        const [r1, r2] = settled.map((s) => (s as PromiseFulfilledResult<{ results: { status: string; error?: { code: string } }[] }>).value.results);
+        expect(r1!.map((r) => r.status)).toEqual(['ACCEPTED', 'REJECTED', 'ACCEPTED']);
+        expect(r1![1]?.error?.code).toBe('CUSTOMER_NOT_FOUND');
+        expect(r2!.map((r) => r.status)).toEqual(['ACCEPTED', 'ACCEPTED']);
+
+        // Same batches again: idempotent by clientId.
+        const again = await tenantPrisma.run(companyId, () => sync.push([...batch2, ...batch1], user));
+        expect(again.results.map((r) => r.status)).toEqual(['DUPLICATE', 'DUPLICATE', 'DUPLICATE', 'REJECTED', 'DUPLICATE']);
+        allClientIds.push(...batch1.filter((d) => d !== ghost).map((d) => d.clientId), ...batch2.map((d) => d.clientId));
+      }
+
+      const counts = await tenantPrisma.run(companyId, (tx) =>
+        Promise.all([custA.id, custB.id].map((id) => tx.payment.count({ where: { customerId: id } }))),
+      );
+      expect(counts).toEqual([ROUNDS * 2, ROUNDS * 2]);
+      const byClientId = await tenantPrisma.run(companyId, (tx) => tx.payment.count({ where: { clientId: { in: allClientIds } } }));
+      expect(byClientId).toBe(allClientIds.length);
     });
   });
 });

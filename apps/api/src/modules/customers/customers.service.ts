@@ -149,7 +149,7 @@ export class CustomersService {
         take: 10,
         include: { lines: true },
       }),
-      tx.payment.findFirst({ where: { customerId: id }, orderBy: { createdAt: 'desc' } }),
+      tx.payment.findFirst({ where: { customerId: id, ...POSTED_PAYMENT_WHERE }, orderBy: { createdAt: 'desc' } }),
       tx.visit.findMany({
         where: { outlet: { customerId: id } },
         orderBy: { startedAt: 'desc' },
@@ -339,12 +339,15 @@ export class CustomersService {
    */
   async remove(id: string, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
-    const before = await tx.customer.findFirst({ where: { id, deletedAt: null } });
-    if (!before) throw new CustomerNotFoundException();
+    const exists = await tx.customer.findFirst({ where: { id, deletedAt: null }, select: { id: true } });
+    if (!exists) throw new CustomerNotFoundException();
 
     // Same customer-row lock ledger writers take (refreshCachedBalance), so the
     // balance below cannot change under us before the soft delete commits.
-    await this.lockForUpdate(tx, id);
+    // deletedAt is re-read AFTER the lock: a concurrent remove() that committed
+    // while we waited must make this one fail (CustomerNotFound), not delete
+    // and audit a second time.
+    const before = await this.lockActiveOrThrow(tx, id);
     // Ledger (source of truth), not cachedBalance. Only exactly 0 may be deleted:
     // debt (> 0) and credit/advance owed back to the customer (< 0) both block.
     const balance = await this.getBalance(tx, id);
