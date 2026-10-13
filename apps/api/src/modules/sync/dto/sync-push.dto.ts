@@ -30,12 +30,76 @@ export class SyncPushDocumentDto {
   payload!: Record<string, unknown>;
 }
 
-/** 7.3 / 10.3: "20 tadan guruhlangan hujjatlar" — up to 20 documents per push. */
+/**
+ * Absolute ceiling for one push batch; also the upper bound of the
+ * SYNC_PUSH_MAX_BATCH env var (env.schema.ts). The effective, configurable
+ * limit (default 20) is enforced in SyncService.push() — decorators are
+ * evaluated at class-definition time and can't read ConfigService.
+ */
+export const SYNC_PUSH_HARD_MAX_BATCH = 100;
+
+/** 7.3 / 10.3: "20 tadan guruhlangan hujjatlar" — up to SYNC_PUSH_MAX_BATCH (default 20) documents per push. */
 export class SyncPushDto {
   @IsArray()
   @ArrayMinSize(1)
-  @ArrayMaxSize(20)
+  @ArrayMaxSize(SYNC_PUSH_HARD_MAX_BATCH)
   @ValidateNested({ each: true })
   @Type(() => SyncPushDocumentDto)
   documents!: SyncPushDocumentDto[];
+}
+
+/**
+ * Per-document push outcome (F4). Client handling:
+ * - ACCEPTED / DUPLICATE: done; `id` = server id (DUPLICATE: the existing doc's id).
+ * - CONFLICT: not written; needs user action on the device (e.g. `PRICE_CHANGED`
+ *   — re-confirm at the new price, then re-push with a *new* clientId or the same one).
+ * - REJECTED: permanently refused (validation, blocked customer, permission) — surface `error`.
+ * - RETRY: transient server-side failure (serialization/deadlock/lock timeout/infra);
+ *   keep the item PENDING and retry later with backoff, same clientId.
+ */
+export type SyncDocStatus = 'ACCEPTED' | 'DUPLICATE' | 'REJECTED' | 'CONFLICT' | 'RETRY';
+
+export interface SyncLocalizedMessage {
+  uz: string;
+  ru: string;
+  en: string;
+}
+
+export interface SyncPushError {
+  /** Stable machine code, e.g. PRICE_CHANGED, SALES_CUSTOMER_BLOCKED, SYNC_VALIDATION_FAILED, SYNC_RETRY. */
+  code: string;
+  /** Uzbek message (kept a plain string for backward compatibility). */
+  message: string;
+  /** Trilingual message (new, optional). */
+  messages?: SyncLocalizedMessage;
+  /** Structured details, e.g. PriceChangedDetails for PRICE_CHANGED. */
+  details?: unknown;
+}
+
+/** `error.details` shape when `error.code === 'PRICE_CHANGED'`. Money as decimal strings (2 dp). */
+export interface PriceChangedDetails {
+  lines: {
+    lineIndex: number;
+    productId: string;
+    packagingId: string;
+    expectedUnitPrice: string;
+    serverUnitPrice: string;
+  }[];
+  expectedTotal: string;
+  serverTotal: string;
+}
+
+export interface SyncPushResultItem {
+  clientId: string;
+  status: SyncDocStatus;
+  id?: string;
+  /** Visit entries only: server-computed GPS verdict (stored value for DUPLICATE). */
+  gpsStatus?: string;
+  /** Visit entries only: decimal string metres from the outlet, null when not computable. */
+  distanceM?: string | null;
+  error?: SyncPushError;
+}
+
+export interface SyncPushResponse {
+  results: SyncPushResultItem[];
 }

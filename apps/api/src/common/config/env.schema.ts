@@ -23,6 +23,11 @@ export const envSchema = z.object({
   // empty means the webhook route always rejects, same fail-closed default
   // as an unset bot token.
   TELEGRAM_WEBHOOK_SECRET: z.string().default(''),
+  // 10.3 / F4: max documents per POST /sync/push (TZ default 20). Capped at
+  // SYNC_PUSH_HARD_MAX_BATCH (sync-push.dto.ts) — the whole batch shares one
+  // request transaction under Prisma's 5s timeout, so a larger value would
+  // only trade a 400 for a timed-out (RETRY-everything) batch.
+  SYNC_PUSH_MAX_BATCH: z.coerce.number().int().min(1).max(100).default(20),
   // Comma-separated list of origins allowed to call the API with credentials
   // (SEC-040..048: CORS must not be wide-open). Web and Mini App dev ports by default.
   CORS_ORIGINS: z.string().default('http://localhost:3000,http://localhost:3002'),

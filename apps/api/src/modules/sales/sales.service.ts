@@ -34,8 +34,10 @@ import {
   OverDeliveryException,
   PackagingMismatchException,
   PartialDeliveryNotAllowedException,
+  PriceChangedException,
   PriceNotFoundException,
   SalesOrderNotFoundException,
+  type PriceChangedLine,
 } from './sales-exceptions';
 
 // Customer/outlet/agent/warehouse/courier are included alongside lines so
@@ -230,11 +232,28 @@ export class SalesService {
    * credit-limit-driven approval tier (that whole workflow was removed).
    */
   async create(dto: CreateOrderDto, user: AuthenticatedUser) {
+    return (await this.createWithOutcome(dto, user)).order;
+  }
+
+  /**
+   * create() plus whether *this call* inserted the order (`created: false`
+   * = an existing order was returned for the same clientId, either via the
+   * fast-path lookup or the P2002 race recovery) — what offline sync needs
+   * to report ACCEPTED vs DUPLICATE exactly, even under a concurrent
+   * double-submit.
+   *
+   * F4: a line with `expectedUnitPrice` that differs from the server price
+   * throws PriceChangedException *before* anything is written or a document
+   * number is consumed. An existing clientId short-circuits first, so a
+   * retried, already-accepted order stays DUPLICATE even if the price list
+   * changed since.
+   */
+  async createWithOutcome(dto: CreateOrderDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
 
     if (dto.clientId) {
       const existing = await tx.salesOrder.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: ORDER_INCLUDE });
-      if (existing) return withTotal(existing);
+      if (existing) return { order: withTotal(existing), created: false };
     }
 
     if (dto.lines.length === 0) throw new EmptyOrderException();
@@ -285,8 +304,11 @@ export class SalesService {
     // different product still misses, exactly like the old `findFirst` filter.
     const packagingByIdProduct = new Map(packagingRows.map((p) => [`${p.id}:${p.productId}`, p]));
     const priceByProduct = new Map(priceRows.map((p) => [p.productId, p]));
+    const priceChanges: PriceChangedLine[] = [];
+    let expectedTotal = new Prisma.Decimal(0);
+    let serverTotal = new Prisma.Decimal(0);
 
-    for (const lineDto of dto.lines) {
+    for (const [lineIndex, lineDto] of dto.lines.entries()) {
       const product = productById.get(lineDto.productId);
       if (!product) throw new ProductNotFoundException();
 
@@ -300,6 +322,22 @@ export class SalesService {
       const discountPct = new Prisma.Decimal(lineDto.discountPct ?? 0);
       const lineTotal = calcLineTotal(baseQty, priceListItem.price, discountPct, product.vatRate);
 
+      // F4: compared as Decimal ("10000" == "10000.00"); no tolerance.
+      const expectedUnitPrice = lineDto.expectedUnitPrice !== undefined ? new Prisma.Decimal(lineDto.expectedUnitPrice) : null;
+      serverTotal = serverTotal.plus(lineTotal);
+      if (expectedUnitPrice && !expectedUnitPrice.equals(priceListItem.price)) {
+        priceChanges.push({
+          lineIndex,
+          productId: product.id,
+          packagingId: packaging.id,
+          expectedUnitPrice: expectedUnitPrice.toFixed(2),
+          serverUnitPrice: priceListItem.price.toFixed(2),
+        });
+        expectedTotal = expectedTotal.plus(calcLineTotal(baseQty, expectedUnitPrice, discountPct, product.vatRate));
+      } else {
+        expectedTotal = expectedTotal.plus(lineTotal);
+      }
+
       lines.push({
         productId: product.id,
         packagingId: packaging.id,
@@ -309,6 +347,10 @@ export class SalesService {
         vatRate: product.vatRate,
         lineTotal,
       });
+    }
+
+    if (priceChanges.length > 0) {
+      throw new PriceChangedException({ lines: priceChanges, expectedTotal: expectedTotal.toFixed(2), serverTotal: serverTotal.toFixed(2) });
     }
 
     const number = await this.docNumbering.next(tx, user.companyId, 'SO');
@@ -344,7 +386,7 @@ export class SalesService {
       // violation. Return the winner's order instead of a raw 500.
       if (dto.clientId && err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
         const existing = await tx.salesOrder.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: ORDER_INCLUDE });
-        if (existing) return withTotal(existing);
+        if (existing) return { order: withTotal(existing), created: false };
       }
       throw err;
     }
@@ -367,7 +409,7 @@ export class SalesService {
       newValue: toAuditJson(order),
     });
 
-    return withTotal(order);
+    return { order: withTotal(order), created: true };
   }
 
   /**

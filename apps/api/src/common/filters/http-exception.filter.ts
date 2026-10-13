@@ -5,7 +5,7 @@ import type { Response } from 'express';
 import { getTraceId } from '../trace/trace-context';
 import type { ApiErrorBody, LocalizedMessage } from '../errors/app-exception';
 
-const GENERIC_MESSAGES: Record<number, LocalizedMessage> = {
+export const GENERIC_MESSAGES: Record<number, LocalizedMessage> = {
   [HttpStatus.BAD_REQUEST]: { uz: "So'rov noto'g'ri", ru: 'Некорректный запрос', en: 'Bad request' },
   [HttpStatus.UNAUTHORIZED]: { uz: 'Tizimga kirish talab qilinadi', ru: 'Требуется авторизация', en: 'Authentication required' },
   [HttpStatus.FORBIDDEN]: { uz: 'Ruxsat berilmagan', ru: 'Доступ запрещён', en: 'Forbidden' },

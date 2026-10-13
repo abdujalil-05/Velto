@@ -23,6 +23,7 @@ import {
   OrderNotAssignedToCourierException,
   OverDeliveryException,
   PartialDeliveryNotAllowedException,
+  PriceChangedException,
   SalesOrderNotFoundException,
 } from './sales-exceptions';
 import { isDeliveredQtyCheckViolation } from './delivered-qty-check';
@@ -141,6 +142,68 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     );
     expect(second.id).toBe(first.id);
     expect(second.total.toString()).toBe(first.total.toString());
+  });
+
+  describe('F4 expectedUnitPrice (offline price confirmation)', () => {
+    const soCounter = () =>
+      tenantPrisma.run(companyId, (tx) =>
+        tx.documentCounter.findFirst({ where: { docType: 'SO', year: new Date().getFullYear() }, select: { lastNumber: true } }),
+      );
+
+    it('creates the order when expectedUnitPrice equals the server price (compared as Decimal, "10000.00" == 10000)', async () => {
+      const customerId = await createCustomer();
+      const { order, created } = await tenantPrisma.run(companyId, () =>
+        sales.createWithOutcome({ customerId, lines: [{ productId, packagingId, qty: 1, expectedUnitPrice: '10000.00' }] }, user),
+      );
+      expect(created).toBe(true);
+      expect(order.lines[0]?.unitPrice.toString()).toBe('10000');
+    });
+
+    it('throws PRICE_CHANGED with per-line and total details, writing nothing and consuming no SO number — never reprices', async () => {
+      const customerId = await createCustomer();
+      const clientId = randomUUID();
+      const before = await soCounter();
+      const err = await tenantPrisma
+        .run(companyId, () =>
+          sales.create(
+            {
+              customerId,
+              clientId,
+              lines: [
+                { productId, packagingId, qty: 2, expectedUnitPrice: '9000' },
+                { productId, packagingId, qty: 1, expectedUnitPrice: '10000' },
+              ],
+            },
+            user,
+          ),
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(PriceChangedException);
+      const body = (err as PriceChangedException).getResponse() as { code: string; details: unknown };
+      expect(body.code).toBe('PRICE_CHANGED');
+      // expected: 2*9000*1.12 + 1*10000*1.12 = 31360; server: 3*10000*1.12 = 33600
+      expect(body.details).toEqual({
+        lines: [{ lineIndex: 0, productId, packagingId, expectedUnitPrice: '9000.00', serverUnitPrice: '10000.00' }],
+        expectedTotal: '31360.00',
+        serverTotal: '33600.00',
+      });
+      const persisted = await tenantPrisma.run(companyId, (tx) => tx.salesOrder.findUnique({ where: { companyId_clientId: { companyId, clientId } } }));
+      expect(persisted).toBeNull();
+      expect((await soCounter())?.lastNumber).toBe(before?.lastNumber);
+    });
+
+    it('a resubmitted, already-created clientId returns the original order even if the price changed since (DUPLICATE wins over PRICE_CHANGED)', async () => {
+      const customerId = await createCustomer();
+      const clientId = randomUUID();
+      const first = await tenantPrisma.run(companyId, () =>
+        sales.createWithOutcome({ customerId, clientId, lines: [{ productId, packagingId, qty: 1, expectedUnitPrice: '10000' }] }, user),
+      );
+      const again = await tenantPrisma.run(companyId, () =>
+        sales.createWithOutcome({ customerId, clientId, lines: [{ productId, packagingId, qty: 1, expectedUnitPrice: '1' }] }, user),
+      );
+      expect(again.created).toBe(false);
+      expect(again.order.id).toBe(first.order.id);
+    });
   });
 
   it('rejects order creation outright for a blocked customer', async () => {

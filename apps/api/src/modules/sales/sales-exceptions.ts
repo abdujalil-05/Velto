@@ -184,3 +184,32 @@ export class CustomerBlockedException extends AppException {
     });
   }
 }
+
+/** One order line whose client-confirmed price no longer matches the server price (F4 offline sync). */
+export interface PriceChangedLine {
+  lineIndex: number;
+  productId: string;
+  packagingId: string;
+  expectedUnitPrice: string;
+  serverUnitPrice: string;
+}
+
+/**
+ * F4: an offline-created order line carried an `expectedUnitPrice` that no
+ * longer equals the server-resolved price. The order is never silently
+ * repriced — nothing is written and the agent re-confirms on the device.
+ */
+export class PriceChangedException extends AppException {
+  constructor(details: { lines: PriceChangedLine[]; expectedTotal: string; serverTotal: string }) {
+    super(
+      HttpStatus.CONFLICT,
+      'PRICE_CHANGED',
+      {
+        uz: "Narx o'zgargan — buyurtmani yangi narx bilan qayta tasdiqlang",
+        ru: 'Цена изменилась — подтвердите заказ по новой цене',
+        en: 'Price has changed — re-confirm the order at the new price',
+      },
+      details,
+    );
+  }
+}

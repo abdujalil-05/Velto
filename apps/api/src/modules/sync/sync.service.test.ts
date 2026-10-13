@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ConfigService } from '@nestjs/config';
-import { prisma, systemPrisma } from '@velto/database';
+import { ForbiddenException } from '@nestjs/common';
+import { Prisma, prisma, systemPrisma } from '@velto/database';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { AuditLogService } from '../../common/audit/audit-log.service';
+import { envSchema } from '../../common/config/env.schema';
 import { DocumentNumberingService } from '../../common/document-numbering/document-numbering.service';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { CustomersService } from '../customers/customers.service';
@@ -33,7 +35,7 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
   const sales = new SalesService(tenantPrisma, auditLog, customers, stock, docNumbering, notifications);
   const payments = new PaymentsService(tenantPrisma, auditLog, customers, docNumbering);
   const visits = new VisitsService(tenantPrisma, auditLog);
-  const sync = new SyncService(tenantPrisma, sales, payments, visits, customers);
+  const sync = new SyncService(tenantPrisma, sales, payments, visits, customers, new ConfigService({ SYNC_PUSH_MAX_BATCH: 20 }));
 
   const OUTLET_LAT = 41.2995;
   const OUTLET_LNG = 69.2401;
@@ -318,6 +320,146 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
       expect(counts).toEqual([ROUNDS * 2, ROUNDS * 2]);
       const byClientId = await tenantPrisma.run(companyId, (tx) => tx.payment.count({ where: { clientId: { in: allClientIds } } }));
       expect(byClientId).toBe(allClientIds.length);
+    });
+  });
+
+  describe('push F4: result statuses (ACCEPTED | DUPLICATE | REJECTED | CONFLICT | RETRY)', () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    const orderDoc = (opts: { expectedUnitPrice?: string; qty?: number; customer?: string } = {}) => {
+      const clientId = randomUUID();
+      const line = { productId, packagingId, qty: opts.qty ?? 1, ...(opts.expectedUnitPrice !== undefined && { expectedUnitPrice: opts.expectedUnitPrice }) };
+      return { type: SyncDocType.ORDER, clientId, payload: { customerId: opts.customer ?? customerId, clientId, lines: [line] } };
+    };
+    const payDoc = () => {
+      const clientId = randomUUID();
+      return { type: SyncDocType.PAYMENT, clientId, payload: { customerId, clientId, amount: 1000, method: 'CASH' } };
+    };
+    const reservedQty = () =>
+      tenantPrisma.run(companyId, async (tx) => (await tx.stockLevel.findFirst({ where: { productId, warehouseId } }))?.reserved.toString());
+    const soCounter = () =>
+      tenantPrisma.run(companyId, async (tx) => (await tx.documentCounter.findFirst({ where: { docType: 'SO', year: new Date().getFullYear() } }))?.lastNumber ?? 0);
+    const orderByClientId = (clientId: string) =>
+      tenantPrisma.run(companyId, (tx) => tx.salesOrder.findUnique({ where: { companyId_clientId: { companyId, clientId } } }));
+    const pgError = (prismaCode: string, sqlState?: string) =>
+      new Prisma.PrismaClientKnownRequestError('simulated', { code: prismaCode, clientVersion: 'test', ...(sqlState && { meta: { code: sqlState } }) });
+
+    it('ACCEPTED when expectedUnitPrice equals the server price', async () => {
+      const doc = orderDoc({ expectedUnitPrice: '10000.00' });
+      const { results } = await tenantPrisma.run(companyId, () => sync.push([doc], user));
+      expect(results[0]).toMatchObject({ clientId: doc.clientId, status: 'ACCEPTED' });
+      expect((await orderByClientId(doc.clientId))?.id).toBe(results[0]?.id);
+    });
+
+    it('CONFLICT PRICE_CHANGED with line + total details; no order, no SO/INV number, no reserve written; rest of batch unaffected', async () => {
+      const [counterBefore, reservedBefore, invoicesBefore] = await Promise.all([
+        soCounter(),
+        reservedQty(),
+        tenantPrisma.run(companyId, (tx) => tx.invoice.count()),
+      ]);
+      const changed = orderDoc({ expectedUnitPrice: '9500', qty: 2 });
+      const pay = payDoc();
+      const { results } = await tenantPrisma.run(companyId, () => sync.push([changed, pay], user));
+
+      expect(results[0]?.status).toBe('CONFLICT');
+      expect(results[0]?.id).toBeUndefined();
+      expect(results[0]?.error?.code).toBe('PRICE_CHANGED');
+      expect(results[0]?.error?.messages?.ru).toBeTruthy();
+      expect(results[0]?.error?.details).toEqual({
+        lines: [{ lineIndex: 0, productId, packagingId, expectedUnitPrice: '9500.00', serverUnitPrice: '10000.00' }],
+        expectedTotal: '21280.00', // 2 * 9500 * 1.12
+        serverTotal: '22400.00', // 2 * 10000 * 1.12
+      });
+      expect(results[1]?.status).toBe('ACCEPTED');
+
+      expect(await orderByClientId(changed.clientId)).toBeNull();
+      expect(await soCounter()).toBe(counterBefore);
+      expect(await reservedQty()).toBe(reservedBefore);
+      expect(await tenantPrisma.run(companyId, (tx) => tx.invoice.count())).toBe(invoicesBefore);
+    });
+
+    it('race: two parallel pushes of the same order clientId → exactly one ACCEPTED, one DUPLICATE with the same serverId, one order row', async () => {
+      const doc = orderDoc({ expectedUnitPrice: '10000' });
+      const settled = await Promise.all([
+        tenantPrisma.run(companyId, () => sync.push([doc], user)),
+        tenantPrisma.run(companyId, () => sync.push([doc], user)),
+      ]);
+      const statuses = settled.map((r) => r.results[0]?.status).sort();
+      expect(statuses).toEqual(['ACCEPTED', 'DUPLICATE']);
+      expect(settled[0].results[0]?.id).toBe(settled[1].results[0]?.id);
+      expect(await tenantPrisma.run(companyId, (tx) => tx.salesOrder.count({ where: { clientId: doc.clientId } }))).toBe(1);
+    });
+
+    it('P2002 lost race on clientId → DUPLICATE carrying the existing document id', async () => {
+      const doc = orderDoc();
+      const first = await tenantPrisma.run(companyId, () => sync.push([doc], user));
+      vi.spyOn(sales, 'createWithOutcome').mockRejectedValueOnce(pgError('P2002'));
+      const { results } = await tenantPrisma.run(companyId, () => sync.push([doc], user));
+      expect(results[0]).toMatchObject({ status: 'DUPLICATE', id: first.results[0]?.id });
+    });
+
+    it('P2002 with no existing doc for the clientId → RETRY (not a duplicate)', async () => {
+      vi.spyOn(sales, 'createWithOutcome').mockRejectedValueOnce(pgError('P2002'));
+      const { results } = await tenantPrisma.run(companyId, () => sync.push([orderDoc()], user));
+      expect(results[0]?.status).toBe('RETRY');
+    });
+
+    it.each([
+      ['40001 serialization failure', pgError('P2010', '40001')],
+      ['40P01 deadlock', pgError('P2034', '40P01')],
+      ['55P03 lock timeout', pgError('P2010', '55P03')],
+      ['unexpected infra error', new Error('connection reset')],
+    ])('%s → RETRY with a rolled-back savepoint; the rest of the batch still applies', async (_name, failure) => {
+      const doc = orderDoc();
+      // Real write first, then fail — proves the savepoint discards it.
+      vi.spyOn(sales, 'createWithOutcome').mockImplementationOnce(async (dto, u) => {
+        await sales.create(dto, u);
+        throw failure;
+      });
+      const pay = payDoc();
+      const { results } = await tenantPrisma.run(companyId, () => sync.push([doc, pay], user));
+      expect(results[0]).toMatchObject({ clientId: doc.clientId, status: 'RETRY', error: { code: 'SYNC_RETRY' } });
+      expect(results[0]?.error?.message).not.toContain('simulated');
+      expect(results[1]?.status).toBe('ACCEPTED');
+      expect(await orderByClientId(doc.clientId)).toBeNull();
+    });
+
+    it('REJECTED for a blocked customer with a stable code and trilingual message, without affecting other items', async () => {
+      const blocked = await tenantPrisma.run(companyId, (tx) =>
+        tx.customer.create({ data: { companyId, code: `SYNC-F4-BLK-${Date.now()}`, name: 'F4 Blocked', isBlocked: true } }),
+      );
+      const ok = orderDoc({ expectedUnitPrice: '10000' });
+      const { results } = await tenantPrisma.run(companyId, () => sync.push([orderDoc({ customer: blocked.id }), ok], user));
+      expect(results[0]?.status).toBe('REJECTED');
+      expect(results[0]?.error?.code).toBe('SALES_CUSTOMER_BLOCKED');
+      expect(results[0]?.error?.messages).toEqual({ uz: expect.any(String), ru: expect.any(String), en: expect.any(String) });
+      expect(results[1]?.status).toBe('ACCEPTED');
+    });
+
+    it('REJECTED for a permission failure (plain ForbiddenException → HTTP_403 with trilingual copy)', async () => {
+      vi.spyOn(sales, 'createWithOutcome').mockRejectedValueOnce(new ForbiddenException());
+      const { results } = await tenantPrisma.run(companyId, () => sync.push([orderDoc()], user));
+      expect(results[0]).toMatchObject({ status: 'REJECTED', error: { code: 'HTTP_403', messages: { en: 'Forbidden' } } });
+    });
+
+    it('batch limit comes from SYNC_PUSH_MAX_BATCH: over the limit → SYNC_BATCH_TOO_LARGE, nothing processed', async () => {
+      const small = new SyncService(tenantPrisma, sales, payments, visits, customers, new ConfigService({ SYNC_PUSH_MAX_BATCH: 2 }));
+      expect(small.maxBatch).toBe(2);
+      const docs = [payDoc(), payDoc(), payDoc()];
+      const err = await tenantPrisma.run(companyId, () => small.push(docs, user)).catch((e: unknown) => e);
+      expect((err as { getResponse(): { code: string } }).getResponse().code).toBe('SYNC_BATCH_TOO_LARGE');
+      const written = await tenantPrisma.run(companyId, (tx) => tx.payment.count({ where: { clientId: { in: docs.map((d) => d.clientId) } } }));
+      expect(written).toBe(0);
+      const { results } = await tenantPrisma.run(companyId, () => small.push(docs.slice(0, 2), user));
+      expect(results.map((r) => r.status)).toEqual(['ACCEPTED', 'ACCEPTED']);
+    });
+
+    it('env schema: SYNC_PUSH_MAX_BATCH defaults to 20 and is bounded 1..100', () => {
+      const base = { DATABASE_URL: 'x', DATABASE_SYSTEM_URL: 'x', REDIS_URL: 'x', JWT_ACCESS_SECRET: 'x'.repeat(32), S3_ENDPOINT: 'x', S3_ACCESS_KEY: 'x', S3_SECRET_KEY: 'x', S3_BUCKET: 'x' };
+      expect(envSchema.parse(base).SYNC_PUSH_MAX_BATCH).toBe(20);
+      expect(envSchema.parse({ ...base, SYNC_PUSH_MAX_BATCH: '50' }).SYNC_PUSH_MAX_BATCH).toBe(50);
+      expect(envSchema.safeParse({ ...base, SYNC_PUSH_MAX_BATCH: '0' }).success).toBe(false);
+      expect(envSchema.safeParse({ ...base, SYNC_PUSH_MAX_BATCH: '101' }).success).toBe(false);
     });
   });
 });

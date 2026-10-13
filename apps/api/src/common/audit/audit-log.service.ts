@@ -17,9 +17,11 @@ export interface AuditLogEntry {
  * Prisma rows often carry Date/Decimal values that aren't directly assignable
  * to Prisma.InputJsonValue. Both have `toJSON()` (Decimal -> string, Date ->
  * ISO string), so a round-trip through JSON gives a safe, storable snapshot.
+ * BigInt (e.g. the F4 `changeSeq` sync cursor) has no toJSON() and would make
+ * JSON.stringify throw — stored as its exact decimal string instead.
  */
 export function toAuditJson(value: unknown): Prisma.InputJsonValue {
-  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+  return JSON.parse(JSON.stringify(value, (_key, v: unknown) => (typeof v === 'bigint' ? v.toString() : v))) as Prisma.InputJsonValue;
 }
 
 const REDACTED = '***';
