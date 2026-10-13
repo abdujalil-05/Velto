@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { prisma, systemPrisma } from '@velto/database';
+import { AppException } from '../../../common/errors/app-exception';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { AuditLogService } from '../../../common/audit/audit-log.service';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
@@ -282,6 +283,22 @@ describe('VisitsService (integration, real Postgres + RLS)', () => {
     );
     expect(second.id).toBe(first.id);
     expect(second.outcome).toBe(first.outcome);
+  });
+
+  it('clientId dedup is owner-scoped: other agent gets CLIENT_ID_CONFLICT with no leak (TZ 11.2)', async () => {
+    const b = await systemPrisma.user.create({
+      data: { companyId, firstName: 'B', lastName: 'Idor', phone: `+99893${Math.floor(1_000_000 + Math.random() * 8_000_000)}` },
+    });
+    const bUser: AuthenticatedUser = { id: b.id, companyId, firstName: 'B', lastName: 'Idor', roles: ['SALES_AGENT'], permissions: [] };
+    const clientId = randomUUID();
+    const dto = { outletId: outletWithCoordsId, startedAt: new Date().toISOString(), latitude: OUTLET_LAT, longitude: OUTLET_LNG, outcome: 'ORDERED' as const, clientId };
+    const first = await tenantPrisma.run(companyId, () => visits.create(dto, agentUser));
+    const replay = await tenantPrisma.run(companyId, () => visits.create(dto, agentUser));
+    expect(replay.id).toBe(first.id);
+    const err = await tenantPrisma.run(companyId, () => visits.create(dto, bUser)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AppException);
+    expect(JSON.stringify((err as AppException).getResponse())).toContain('CLIENT_ID_CONFLICT');
+    expect(JSON.stringify((err as AppException).getResponse())).not.toContain(first.id);
   });
 
   it('list() filters by from/to (startedAt), leaving unbounded callers unaffected', async () => {

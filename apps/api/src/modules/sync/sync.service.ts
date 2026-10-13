@@ -1,4 +1,6 @@
 import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { assertClientIdReplayAllowed } from '../../common/idempotency/client-id-replay';
+import { ClientIdConflictException } from '../../common/errors/client-id-conflict.exception';
 import { ConfigService } from '@nestjs/config';
 import { Prisma, SyncEntity, withSavepoint } from '@velto/database';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
@@ -337,7 +339,7 @@ export class SyncService {
         throw new Error(`Unknown sync document type: ${doc.type as string}`);
       });
     } catch (error) {
-      return this.toFailureResult(doc, error);
+      return this.toFailureResult(doc, error, user);
     }
   }
 
@@ -356,9 +358,10 @@ export class SyncService {
    *   unexpected/infra error → RETRY. Safest default: the client keeps the
    *   document PENDING instead of dropping data on an error we can't classify.
    */
-  private async toFailureResult(doc: SyncPushDocumentDto, error: unknown): Promise<SyncPushResultItem> {
+  private async toFailureResult(doc: SyncPushDocumentDto, error: unknown, user: AuthenticatedUser): Promise<SyncPushResultItem> {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-      const existing = await this.findExistingByClientId(doc).catch(() => null);
+      const existing = await this.findExistingByClientId(doc, user).catch((e: unknown) => (e instanceof ClientIdConflictException ? e : null));
+      if (existing instanceof ClientIdConflictException) return { clientId: doc.clientId, status: 'REJECTED', error: toErrorDetail(existing) };
       if (existing) return { ...existing, clientId: doc.clientId, status: 'DUPLICATE' };
       return retryResult(doc, error);
     }
@@ -381,20 +384,23 @@ export class SyncService {
     return retryResult(doc, error);
   }
 
-  private async findExistingByClientId(doc: SyncPushDocumentDto): Promise<Omit<SyncPushResultItem, 'clientId' | 'status'> | null> {
+  private async findExistingByClientId(doc: SyncPushDocumentDto, user: AuthenticatedUser): Promise<Omit<SyncPushResultItem, 'clientId' | 'status'> | null> {
     const tx = this.tenantPrisma.client;
     const where = { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: doc.clientId } };
     switch (doc.type) {
       case SyncDocType.ORDER: {
-        const order = await tx.salesOrder.findUnique({ where, select: { id: true } });
+        const order = await tx.salesOrder.findUnique({ where, select: { id: true, agentId: true } });
+        if (order) assertClientIdReplayAllowed(order.agentId, user);
         return order ? { id: order.id } : null;
       }
       case SyncDocType.VISIT: {
-        const visit = await tx.visit.findUnique({ where, select: { id: true, gpsStatus: true, distanceM: true } });
+        const visit = await tx.visit.findUnique({ where, select: { id: true, agentId: true, gpsStatus: true, distanceM: true } });
+        if (visit) assertClientIdReplayAllowed(visit.agentId, user);
         return visit ? { id: visit.id, gpsStatus: visit.gpsStatus, distanceM: visit.distanceM?.toString() ?? null } : null;
       }
       case SyncDocType.PAYMENT: {
-        const payment = await tx.payment.findUnique({ where, select: { id: true } });
+        const payment = await tx.payment.findUnique({ where, select: { id: true, collectedBy: true } });
+        if (payment) assertClientIdReplayAllowed(payment.collectedBy, user);
         return payment ? { id: payment.id } : null;
       }
     }

@@ -144,6 +144,31 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     expect(second.total.toString()).toBe(first.total.toString());
   });
 
+  it('clientId dedup is owner-scoped: same agent replays OK, another agent gets CLIENT_ID_CONFLICT without a leak, office role unaffected (TZ 11.2)', async () => {
+  const mkAgent = async (n: string): Promise<AuthenticatedUser> => {
+    const u = await systemPrisma.user.create({
+      data: { companyId, firstName: n, lastName: 'Idor', phone: `+99893${Math.floor(1_000_000 + Math.random() * 8_000_000)}` },
+    });
+    return { id: u.id, companyId, firstName: n, lastName: 'Idor', roles: ['SALES_AGENT'], permissions: [] };
+  };
+  const customerId = await createCustomer();
+  const a = await mkAgent('A');
+  const b = await mkAgent('B');
+  const clientId = randomUUID();
+  const first = await tenantPrisma.run(companyId, () => sales.create({ customerId, clientId, lines: [{ productId, packagingId, qty: 1 }] }, a));
+  const replay = await tenantPrisma.run(companyId, () => sales.create({ customerId, clientId, lines: [{ productId, packagingId, qty: 1 }] }, a));
+  expect(replay.id).toBe(first.id);
+  const err = await tenantPrisma
+    .run(companyId, () => sales.create({ customerId, clientId, lines: [{ productId, packagingId, qty: 1 }] }, b))
+    .catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(AppException);
+  expect(JSON.stringify((err as AppException).getResponse())).toContain('CLIENT_ID_CONFLICT');
+  expect((err as AppException).getStatus()).toBe(409);
+  expect(JSON.stringify((err as AppException).getResponse())).not.toContain(first.id);
+  const office = await tenantPrisma.run(companyId, () => sales.create({ customerId, clientId, lines: [{ productId, packagingId, qty: 1 }] }, user));
+  expect(office.id).toBe(first.id);
+  });
+
   describe('F4 expectedUnitPrice (offline price confirmation)', () => {
     const soCounter = () =>
       tenantPrisma.run(companyId, (tx) =>

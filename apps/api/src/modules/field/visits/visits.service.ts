@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { assertClientIdReplayAllowed } from '../../../common/idempotency/client-id-replay';
 import { ConfigService } from '@nestjs/config';
 import { Prisma, withSavepoint, type TenantClient } from '@velto/database';
 import { AuditLogService, toAuditJson } from '../../../common/audit/audit-log.service';
@@ -105,7 +106,10 @@ export class VisitsService {
 
     if (dto.clientId) {
       const existing = await tx.visit.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: VISIT_INCLUDE });
-      if (existing) return existing;
+      if (existing) {
+        assertClientIdReplayAllowed(existing.agentId, user);
+        return existing;
+      }
     }
 
     // Clock-skew guard (after the clientId replay check so an already-accepted
@@ -171,7 +175,10 @@ export class VisitsService {
       // loser hits this unique violation. Return the winner's visit.
       if (dto.clientId && err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
         const existing = await tx.visit.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: VISIT_INCLUDE });
-        if (existing) return existing;
+        if (existing) {
+          assertClientIdReplayAllowed(existing.agentId, user);
+          return existing;
+        }
       }
       throw err;
     }

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { assertClientIdReplayAllowed } from '../../common/idempotency/client-id-replay';
 import { OrderStatus, Prisma, withSavepoint, type TenantClient } from '@velto/database';
 import { AuditLogService, toAuditJson } from '../../common/audit/audit-log.service';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
@@ -253,7 +254,10 @@ export class SalesService {
 
     if (dto.clientId) {
       const existing = await tx.salesOrder.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: ORDER_INCLUDE });
-      if (existing) return { order: withTotal(existing), created: false };
+      if (existing) {
+        assertClientIdReplayAllowed(existing.agentId, user);
+        return { order: withTotal(existing), created: false };
+      }
     }
 
     if (dto.lines.length === 0) throw new EmptyOrderException();
@@ -386,7 +390,10 @@ export class SalesService {
       // violation. Return the winner's order instead of a raw 500.
       if (dto.clientId && err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
         const existing = await tx.salesOrder.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: ORDER_INCLUDE });
-        if (existing) return { order: withTotal(existing), created: false };
+        if (existing) {
+          assertClientIdReplayAllowed(existing.agentId, user);
+          return { order: withTotal(existing), created: false };
+        }
       }
       throw err;
     }

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { assertClientIdReplayAllowed } from '../../common/idempotency/client-id-replay';
 import { Prisma, PurchaseOrderStatus, withSavepoint, type TenantClient } from '@velto/database';
 import { AuditLogService, toAuditJson } from '../../common/audit/audit-log.service';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
@@ -364,7 +365,10 @@ export class PurchasesService {
 
     // Fast path for sequential replays.
     const replay = await this.findReceiptByClientId(tx, dto.clientId);
-    if (replay) return replay;
+    if (replay) {
+      assertClientIdReplayAllowed(replay.receivedById, user, true);
+      return replay;
+    }
 
     type PreparedLine = {
       purchaseOrderLineId: string | null;
@@ -487,7 +491,10 @@ export class PurchasesService {
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
         const existing = await this.findReceiptByClientId(tx, dto.clientId);
-        if (existing) return existing;
+        if (existing) {
+          assertClientIdReplayAllowed(existing.receivedById, user, true);
+          return existing;
+        }
       }
       throw err;
     }

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { prisma, systemPrisma } from '@velto/database';
+import { AppException } from '../../../common/errors/app-exception';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { AuditLogService } from '../../../common/audit/audit-log.service';
 import { DocumentNumberingService } from '../../../common/document-numbering/document-numbering.service';
@@ -185,6 +186,28 @@ describe('PaymentsService (integration, real Postgres + RLS)', () => {
 
     expect(second.id).toBe(first.id);
     expect(second.amount.toString()).toBe(first.amount.toString());
+  });
+
+  it('clientId dedup is owner-scoped: other agent gets CLIENT_ID_CONFLICT with no leak (TZ 11.2)', async () => {
+    const mkAgent = async (n: string): Promise<AuthenticatedUser> => {
+      const u = await systemPrisma.user.create({
+        data: { companyId, firstName: n, lastName: 'Idor', phone: `+99893${Math.floor(1_000_000 + Math.random() * 8_000_000)}` },
+      });
+      return { id: u.id, companyId, firstName: n, lastName: 'Idor', roles: ['SALES_AGENT'], permissions: [] };
+    };
+    const { customerId } = await createCustomerWithInvoices([{ total: '10000', ageDays: 1 }]);
+    const a = await mkAgent('A');
+    const b = await mkAgent('B');
+    const clientId = randomUUID();
+    const first = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 100, method: 'CASH', clientId }, a));
+    const replay = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 100, method: 'CASH', clientId }, a));
+    expect(replay.id).toBe(first.id);
+    const err = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 100, method: 'CASH', clientId }, b)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AppException);
+    expect(JSON.stringify((err as AppException).getResponse())).toContain('CLIENT_ID_CONFLICT');
+    expect(JSON.stringify((err as AppException).getResponse())).not.toContain(first.id);
+    const office = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 100, method: 'CASH', clientId }, user));
+    expect(office.id).toBe(first.id);
   });
 
   it('leaves an over-payment unallocated once every open invoice is settled', async () => {
