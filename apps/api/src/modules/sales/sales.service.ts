@@ -18,6 +18,7 @@ import type { AssignCourierDto } from './dto/assign-courier.dto';
 import type { CancelOrderDto } from './dto/cancel-order.dto';
 import type { CreateOrderDto } from './dto/create-order.dto';
 import type { ListOrdersQueryDto } from './dto/list-orders.query';
+import { calcLineTotal } from './line-total';
 import {
   AmbiguousWarehouseException,
   CourierNotFoundException,
@@ -206,10 +207,7 @@ export class SalesService {
 
       const baseQty = new Prisma.Decimal(lineDto.qty).times(packaging.qtyInBaseUnit);
       const discountPct = new Prisma.Decimal(lineDto.discountPct ?? 0);
-      const lineTotal = baseQty
-        .times(priceListItem.price)
-        .times(new Prisma.Decimal(1).minus(discountPct.dividedBy(100)))
-        .times(new Prisma.Decimal(1).plus(product.vatRate.dividedBy(100)));
+      const lineTotal = calcLineTotal(baseQty, priceListItem.price, discountPct, product.vatRate);
 
       lines.push({
         productId: product.id,
