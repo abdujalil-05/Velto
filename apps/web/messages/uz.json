@@ -51,7 +51,8 @@
     "help": "Ma'lumot",
     "cash": "Kassa va to'lovlar",
     "purchases": "Xarid",
-    "reconciliation": "Solishtirish"
+    "reconciliation": "Solishtirish",
+    "visits": "Tashriflar"
   },
   "LanguageSwitcher": {
     "label": "Til"
@@ -650,7 +651,13 @@
       "address": "Manzil",
       "currency": "Valyuta",
       "timezone": "Vaqt mintaqasi",
-      "submit": "O'zgarishlarni saqlash"
+      "submit": "O'zgarishlarni saqlash",
+      "gpsRadiusRange": "10 dan 5000 gacha butun son",
+      "gpsAccuracyRange": "5 dan 1000 gacha butun son",
+      "gpsRadius": "Tashrif GPS radiusi (m)",
+      "gpsRadiusHelp": "Tashrif tasdiqlangan hisoblanishi uchun agent va nuqta orasidagi eng katta masofa. 10–5000, standart 150.",
+      "gpsAccuracy": "GPS maksimal aniqligi (m)",
+      "gpsAccuracyHelp": "Bundan kam aniq o'lchovlar past aniqlik deb belgilanadi. 5–1000, standart 100."
     }
   },
   "Audit": {
@@ -1582,6 +1589,37 @@
       "title": "Farqni tuzatamizmi?",
       "description": "Saqlangan qoldiq/balans proyeksiyasi jurnal asosida hisoblangan qiymat bilan qayta yoziladi. Jurnalning o'zi o'zgarmaydi. Amal audit jurnaliga yoziladi.",
       "confirm": "Jurnal qiymati bilan qayta yozish"
+    }
+  },
+  "Visits": {
+    "title": "Tashriflar",
+    "refresh": "Yangilash",
+    "retry": "Qayta urinish",
+    "noPermission": "Tashriflarni ko'rish uchun ruxsatingiz yo'q.",
+    "agent": "Agent",
+    "allAgents": "Barcha agentlar",
+    "outlet": "Nuqta",
+    "startedAt": "Boshlangan",
+    "outcome": "Natija",
+    "gpsStatus": "GPS holati",
+    "allGps": "Barcha GPS holatlari",
+    "distanceM": "Masofa (m)",
+    "accuracyM": "Aniqlik (m)",
+    "reason": "Sabab",
+    "emptyState": "Hozircha tashriflar yo'q. Agentlar nuqtalarga kelganda shu yerda paydo bo'ladi.",
+    "emptyFiltered": "Filtrlarga mos tashrif topilmadi.",
+    "outcomes": {
+      "ORDERED": "Buyurtma",
+      "NO_ORDER": "Buyurtmasiz",
+      "SKIPPED": "O'tkazib yuborilgan"
+    },
+    "gps": {
+      "VERIFIED": "Tasdiqlangan",
+      "OUTSIDE_RADIUS": "Radiusdan tashqarida",
+      "LOW_ACCURACY": "Past aniqlik",
+      "NO_PERMISSION": "GPS ruxsati yo'q",
+      "NO_FIX": "GPS signali yo'q",
+      "OUTLET_NO_COORDS": "Nuqtada koordinata yo'q"
     }
   }
 }

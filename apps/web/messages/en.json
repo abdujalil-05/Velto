@@ -51,7 +51,8 @@
     "help": "Help",
     "cash": "Cash & payments",
     "purchases": "Purchasing",
-    "reconciliation": "Reconciliation"
+    "reconciliation": "Reconciliation",
+    "visits": "Visits"
   },
   "LanguageSwitcher": {
     "label": "Language"
@@ -650,7 +651,13 @@
       "address": "Address",
       "currency": "Currency",
       "timezone": "Timezone",
-      "submit": "Save changes"
+      "submit": "Save changes",
+      "gpsRadiusRange": "Whole number from 10 to 5000",
+      "gpsAccuracyRange": "Whole number from 5 to 1000",
+      "gpsRadius": "Visit GPS radius (m)",
+      "gpsRadiusHelp": "Max distance between the agent and the outlet for a visit to count as verified. 10–5000, default 150.",
+      "gpsAccuracy": "Max GPS accuracy (m)",
+      "gpsAccuracyHelp": "Readings less accurate than this are flagged as low accuracy. 5–1000, default 100."
     }
   },
   "Audit": {
@@ -1582,6 +1589,37 @@
       "title": "Fix this finding?",
       "description": "This overwrites the stored stock/balance projection with the value calculated from the ledger. The ledger itself is not changed. The action is recorded in the audit log.",
       "confirm": "Overwrite with ledger value"
+    }
+  },
+  "Visits": {
+    "title": "Visits",
+    "refresh": "Refresh",
+    "retry": "Retry",
+    "noPermission": "You do not have permission to view visits.",
+    "agent": "Agent",
+    "allAgents": "All agents",
+    "outlet": "Outlet",
+    "startedAt": "Started",
+    "outcome": "Outcome",
+    "gpsStatus": "GPS status",
+    "allGps": "All GPS statuses",
+    "distanceM": "Distance (m)",
+    "accuracyM": "Accuracy (m)",
+    "reason": "Reason",
+    "emptyState": "No visits yet. Visits appear here once agents check in at outlets.",
+    "emptyFiltered": "No visits match the filters.",
+    "outcomes": {
+      "ORDERED": "Ordered",
+      "NO_ORDER": "No order",
+      "SKIPPED": "Skipped"
+    },
+    "gps": {
+      "VERIFIED": "Verified",
+      "OUTSIDE_RADIUS": "Outside radius",
+      "LOW_ACCURACY": "Low accuracy",
+      "NO_PERMISSION": "No GPS permission",
+      "NO_FIX": "No GPS fix",
+      "OUTLET_NO_COORDS": "Outlet has no coordinates"
     }
   }
 }

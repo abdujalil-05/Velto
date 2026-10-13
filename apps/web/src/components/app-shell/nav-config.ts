@@ -16,6 +16,7 @@ import {
   Wallet,
   Warehouse,
   type LucideIcon,
+  MapPin,
 } from 'lucide-react';
 
 export interface NavItem {
@@ -30,6 +31,7 @@ export interface NavItem {
     | 'couriers'
     | 'users'
     | 'routes'
+    | 'visits'
     | 'agents'
     | 'reports'
     | 'audit'
@@ -64,6 +66,7 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'purchases', href: '/purchases', icon: ClipboardList, permission: 'purchases.read' },
   { key: 'couriers', href: '/couriers', icon: Truck, permission: 'users.read' },
   { key: 'users', href: '/users', icon: IdCard, permission: 'users.read' },
+  { key: 'visits', href: '/visits', icon: MapPin, permission: 'field.read' },
   { key: 'agents', href: '/agents', icon: UserCog, permission: 'users.read' },
   { key: 'routes', href: '/routes', icon: Route, permission: 'routes.read' },
   { key: 'reports', href: '/reports', icon: BarChart3, permission: 'reports.read' },

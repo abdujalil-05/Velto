@@ -13,6 +13,8 @@ export interface CompanySettings {
   defaultVatRate: string;
   docPrefix: string;
   timezone: string;
+  visitGpsRadiusM: number;
+  gpsMaxAccuracyM: number;
   isActive: boolean;
 }
 
@@ -33,6 +35,8 @@ export interface UpdateSettingsInput {
   defaultVatRate?: number;
   docPrefix?: string;
   timezone?: string;
+  visitGpsRadiusM?: number;
+  gpsMaxAccuracyM?: number;
 }
 
 export function useUpdateSettingsMutation() {

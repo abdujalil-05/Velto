@@ -19,10 +19,13 @@ function settingsSchema(t: (key: string) => string) {
     address: z.string().max(500).optional().or(z.literal('')),
     currency: z.string().length(3, t('currencyLength')),
     timezone: z.string().min(1, t('required')).max(64),
+    visitGpsRadiusM: z.coerce.number({ invalid_type_error: t('gpsRadiusRange') }).int(t('gpsRadiusRange')).min(10, t('gpsRadiusRange')).max(5000, t('gpsRadiusRange')),
+    gpsMaxAccuracyM: z.coerce.number({ invalid_type_error: t('gpsAccuracyRange') }).int(t('gpsAccuracyRange')).min(5, t('gpsAccuracyRange')).max(1000, t('gpsAccuracyRange')),
   });
 }
 
-type SettingsFormValues = z.infer<ReturnType<typeof settingsSchema>>;
+type SettingsFormValues = z.input<ReturnType<typeof settingsSchema>>;
+type SettingsFormOutput = z.output<ReturnType<typeof settingsSchema>>;
 
 interface SettingsFormProps {
   settings: CompanySettings;
@@ -40,7 +43,7 @@ export function SettingsForm({ settings, readOnly, isSubmitting, submitError, on
     register,
     handleSubmit,
     formState: { errors },
-  } = useForm<SettingsFormValues>({
+  } = useForm<SettingsFormValues, unknown, SettingsFormOutput>({
     resolver: zodResolver(schema),
     defaultValues: {
       name: settings.name,
@@ -49,10 +52,12 @@ export function SettingsForm({ settings, readOnly, isSubmitting, submitError, on
       address: settings.address ?? '',
       currency: settings.currency,
       timezone: settings.timezone,
+      visitGpsRadiusM: settings.visitGpsRadiusM ?? 150,
+      gpsMaxAccuracyM: settings.gpsMaxAccuracyM ?? 100,
     },
   });
 
-  function submit(values: SettingsFormValues) {
+  function submit(values: SettingsFormOutput) {
     onSubmit({
       name: values.name,
       legalName: values.legalName || undefined,
@@ -60,6 +65,8 @@ export function SettingsForm({ settings, readOnly, isSubmitting, submitError, on
       address: values.address || undefined,
       currency: values.currency,
       timezone: values.timezone,
+      visitGpsRadiusM: values.visitGpsRadiusM,
+      gpsMaxAccuracyM: values.gpsMaxAccuracyM,
     });
   }
 
@@ -98,6 +105,18 @@ export function SettingsForm({ settings, readOnly, isSubmitting, submitError, on
           <Label htmlFor="timezone">{t('timezone')}</Label>
           <Input id="timezone" disabled={readOnly} {...register('timezone')} aria-invalid={!!errors.timezone} />
           {errors.timezone && <p className="text-sm text-destructive">{errors.timezone.message}</p>}
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="visitGpsRadiusM">{t('gpsRadius')}</Label>
+          <Input id="visitGpsRadiusM" type="number" inputMode="numeric" min={10} max={5000} step={1} disabled={readOnly} {...register('visitGpsRadiusM')} aria-invalid={!!errors.visitGpsRadiusM} />
+          <p className="text-xs text-muted-foreground">{t('gpsRadiusHelp')}</p>
+          {errors.visitGpsRadiusM && <p className="text-sm text-destructive">{errors.visitGpsRadiusM.message}</p>}
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="gpsMaxAccuracyM">{t('gpsAccuracy')}</Label>
+          <Input id="gpsMaxAccuracyM" type="number" inputMode="numeric" min={5} max={1000} step={1} disabled={readOnly} {...register('gpsMaxAccuracyM')} aria-invalid={!!errors.gpsMaxAccuracyM} />
+          <p className="text-xs text-muted-foreground">{t('gpsAccuracyHelp')}</p>
+          {errors.gpsMaxAccuracyM && <p className="text-sm text-destructive">{errors.gpsMaxAccuracyM.message}</p>}
         </div>
       </div>
 
