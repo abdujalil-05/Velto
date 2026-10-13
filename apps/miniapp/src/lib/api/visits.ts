@@ -3,16 +3,19 @@ import { apiFetch } from './client';
 import { toQueryString } from './query-string';
 import type { PaginatedResult } from './types';
 
-export type VisitOutcome = 'ORDERED' | 'NO_ORDER';
+import type { GpsStatus, VisitGpsFields } from '@/lib/gps-payload';
 
-export interface CreateVisitInput {
+export type VisitOutcome = 'ORDERED' | 'NO_ORDER' | 'SKIPPED';
+
+/** GPS fields are optional; gpsOk/gpsStatus are server-derived and must never be sent. */
+export interface CreateVisitInput extends VisitGpsFields {
   outletId: string;
   startedAt: string;
   endedAt?: string;
-  latitude: number;
-  longitude: number;
   outcome: VisitOutcome;
   noOrderReason?: string;
+  /** Required (non-blank) when outcome === 'SKIPPED'. */
+  skipReason?: string;
   clientId: string;
 }
 
@@ -21,6 +24,7 @@ export interface Visit {
   outletId: string;
   agentId: string;
   gpsOk: boolean | null;
+  gpsStatus?: GpsStatus;
   outcome: VisitOutcome;
   clientId: string | null;
 }

@@ -32,7 +32,22 @@
     "finishSuccess": "Route finished",
     "finished": "Route finished",
     "finishConfirmTitle": "Finish the route?",
-    "finishConfirmDescription": "Today's route ({count} stops) will be closed. You won't be able to add a visit to it afterwards."
+    "finishConfirmDescription": "Today's route ({count} stops) will be closed. You won't be able to add a visit to it afterwards.",
+    "finishNotReady": "Can't finish the route — some stops are still open",
+    "openStopsTitle": "Open stops",
+    "skipStop": "Skip",
+    "skipSuccess": "Stop skipped",
+    "skipConfirmTitle": "Skip this stop?",
+    "skipReasonLabel": "Reason (required)",
+    "skipReasonRequired": "Enter a reason",
+    "notOwned": "You can only act on your own route",
+    "openReason": {
+      "NO_VISIT": "No visit",
+      "OUTSIDE_RADIUS": "Far from the outlet",
+      "LOW_ACCURACY": "Low GPS accuracy",
+      "NO_PERMISSION": "No location permission",
+      "NO_FIX": "Location not available"
+    }
   },
   "Report": {
     "title": "Daily report",
@@ -91,11 +106,27 @@
     "noOrderReasonPlaceholder": "Why was there no order?",
     "notFound": "Outlet not found",
     "gpsUnknown": "Locating you — please wait for GPS",
-    "gpsTooFar": "You're more than 150m from the outlet — get closer",
     "takeOrder": "Take order",
     "noOrderConfirmTitle": "Finish the visit without an order?",
     "noOrderConfirmDescription": "The visit will be closed as “no order” and shown that way in today's report. It can't be reopened.",
-    "noOrderConfirmAction": "Yes, finish"
+    "noOrderConfirmAction": "Yes, finish",
+    "accuracy": "GPS accuracy",
+    "savedOnDevice": "Visit saved on this device — will be sent to the server",
+    "skipVisit": "Skip",
+    "skipConfirmTitle": "Skip this stop?",
+    "skipConfirmDescription": "The visit is saved as skipped, with your reason.",
+    "skipConfirmAction": "Yes, skip",
+    "skipReasonLabel": "Reason (required)",
+    "skipReasonPlaceholder": "Why was it skipped?",
+    "skipReasonRequired": "Enter a reason",
+    "gpsStatus": {
+      "VERIFIED": "GPS verified",
+      "OUTSIDE_RADIUS": "You are far from the outlet — visit saved, but GPS is not verified",
+      "LOW_ACCURACY": "Low GPS accuracy — visit saved, but GPS is not verified",
+      "NO_PERMISSION": "Location permission denied — visit saved, but GPS is not verified",
+      "NO_FIX": "Location not available — visit saved, but GPS is not verified",
+      "OUTLET_NO_COORDS": "The outlet has no coordinates — GPS could not be checked"
+    }
   },
   "Courier": {
     "title": "Deliveries",

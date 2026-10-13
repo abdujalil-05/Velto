@@ -32,7 +32,22 @@
     "finishSuccess": "Marshrut tugatildi",
     "finished": "Marshrut tugatilgan",
     "finishConfirmTitle": "Marshrutni tugatasizmi?",
-    "finishConfirmDescription": "Bugungi marshrut ({count} ta nuqta) yopiladi. Undan keyin bu marshrutga yangi tashrif qo'sha olmaysiz."
+    "finishConfirmDescription": "Bugungi marshrut ({count} ta nuqta) yopiladi. Undan keyin bu marshrutga yangi tashrif qo'sha olmaysiz.",
+    "finishNotReady": "Marshrutni tugatib bo'lmadi — yopilmagan nuqtalar bor",
+    "openStopsTitle": "Yopilmagan nuqtalar",
+    "skipStop": "O'tkazib yuborish",
+    "skipSuccess": "Nuqta o'tkazib yuborildi",
+    "skipConfirmTitle": "Nuqtani o'tkazib yuborasizmi?",
+    "skipReasonLabel": "Sabab (majburiy)",
+    "skipReasonRequired": "Sababni yozing",
+    "notOwned": "Siz faqat o'zingizning marshrutingiz bilan ishlay olasiz",
+    "openReason": {
+      "NO_VISIT": "Tashrif yo'q",
+      "OUTSIDE_RADIUS": "Nuqtadan uzoqda",
+      "LOW_ACCURACY": "GPS aniqligi past",
+      "NO_PERMISSION": "Joylashuvga ruxsat yo'q",
+      "NO_FIX": "Joylashuv aniqlanmadi"
+    }
   },
   "Report": {
     "title": "Kunlik hisobot",
@@ -91,11 +106,27 @@
     "noOrderReasonPlaceholder": "Nega buyurtma bo'lmadi?",
     "notFound": "Nuqta topilmadi",
     "gpsUnknown": "GPS aniqlanmoqda — joylashuvingiz aniqlanguncha kuting",
-    "gpsTooFar": "Siz nuqtadan 150m'dan uzoqdasiz — yaqinlashing",
     "takeOrder": "Buyurtma olish",
     "noOrderConfirmTitle": "Tashrifni buyurtmasiz yakunlaysizmi?",
     "noOrderConfirmDescription": "Tashrif «buyurtmasiz» deb yopiladi va bugungi hisobotga shu holda tushadi. Qayta ochib bo'lmaydi.",
-    "noOrderConfirmAction": "Ha, yakunlash"
+    "noOrderConfirmAction": "Ha, yakunlash",
+    "accuracy": "GPS aniqligi",
+    "savedOnDevice": "Tashrif qurilmada saqlandi — serverga yuboriladi",
+    "skipVisit": "O'tkazib yuborish",
+    "skipConfirmTitle": "Nuqtani o'tkazib yuborasizmi?",
+    "skipConfirmDescription": "Tashrif «o'tkazib yuborildi» deb sababi bilan saqlanadi.",
+    "skipConfirmAction": "Ha, o'tkazib yuborish",
+    "skipReasonLabel": "Sabab (majburiy)",
+    "skipReasonPlaceholder": "Nega o'tkazib yuborildi?",
+    "skipReasonRequired": "Sababni yozing",
+    "gpsStatus": {
+      "VERIFIED": "GPS tasdiqlandi",
+      "OUTSIDE_RADIUS": "Siz nuqtadan uzoqdasiz — tashrif saqlandi, lekin GPS tasdiqlanmagan",
+      "LOW_ACCURACY": "GPS aniqligi past — tashrif saqlandi, lekin GPS tasdiqlanmagan",
+      "NO_PERMISSION": "Joylashuvga ruxsat berilmagan — tashrif saqlandi, lekin GPS tasdiqlanmagan",
+      "NO_FIX": "Joylashuv aniqlanmadi — tashrif saqlandi, lekin GPS tasdiqlanmagan",
+      "OUTLET_NO_COORDS": "Nuqtaning koordinatalari yo'q — GPS tekshirib bo'lmadi"
+    }
   },
   "Courier": {
     "title": "Yetkazishlar",

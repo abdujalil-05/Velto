@@ -32,7 +32,22 @@
     "finishSuccess": "Маршрут завершён",
     "finished": "Маршрут завершён",
     "finishConfirmTitle": "Завершить маршрут?",
-    "finishConfirmDescription": "Маршрут на сегодня ({count} точек) будет закрыт. После этого добавить визит в него не получится."
+    "finishConfirmDescription": "Маршрут на сегодня ({count} точек) будет закрыт. После этого добавить визит в него не получится.",
+    "finishNotReady": "Маршрут нельзя завершить — есть незакрытые точки",
+    "openStopsTitle": "Незакрытые точки",
+    "skipStop": "Пропустить",
+    "skipSuccess": "Точка пропущена",
+    "skipConfirmTitle": "Пропустить точку?",
+    "skipReasonLabel": "Причина (обязательно)",
+    "skipReasonRequired": "Укажите причину",
+    "notOwned": "Вы можете работать только со своим маршрутом",
+    "openReason": {
+      "NO_VISIT": "Нет визита",
+      "OUTSIDE_RADIUS": "Далеко от точки",
+      "LOW_ACCURACY": "Низкая точность GPS",
+      "NO_PERMISSION": "Нет доступа к геолокации",
+      "NO_FIX": "Местоположение не определено"
+    }
   },
   "Report": {
     "title": "Дневной отчёт",
@@ -91,11 +106,27 @@
     "noOrderReasonPlaceholder": "Почему не было заказа?",
     "notFound": "Точка не найдена",
     "gpsUnknown": "Определяем ваше местоположение — подождите GPS",
-    "gpsTooFar": "Вы дальше 150м от точки — подойдите ближе",
     "takeOrder": "Оформить заказ",
     "noOrderConfirmTitle": "Завершить визит без заказа?",
     "noOrderConfirmDescription": "Визит закроется со статусом «без заказа» и попадёт в отчёт за сегодня. Переоткрыть его нельзя.",
-    "noOrderConfirmAction": "Да, завершить"
+    "noOrderConfirmAction": "Да, завершить",
+    "accuracy": "Точность GPS",
+    "savedOnDevice": "Визит сохранён на устройстве — будет отправлен на сервер",
+    "skipVisit": "Пропустить",
+    "skipConfirmTitle": "Пропустить точку?",
+    "skipConfirmDescription": "Визит будет сохранён как «пропущен» с причиной.",
+    "skipConfirmAction": "Да, пропустить",
+    "skipReasonLabel": "Причина (обязательно)",
+    "skipReasonPlaceholder": "Почему пропущено?",
+    "skipReasonRequired": "Укажите причину",
+    "gpsStatus": {
+      "VERIFIED": "GPS подтверждён",
+      "OUTSIDE_RADIUS": "Вы далеко от точки — визит сохранён, но GPS не подтверждён",
+      "LOW_ACCURACY": "Низкая точность GPS — визит сохранён, но GPS не подтверждён",
+      "NO_PERMISSION": "Нет доступа к геолокации — визит сохранён, но GPS не подтверждён",
+      "NO_FIX": "Местоположение не определено — визит сохранён, но GPS не подтверждён",
+      "OUTLET_NO_COORDS": "У точки нет координат — GPS проверить нельзя"
+    }
   },
   "Courier": {
     "title": "Доставки",

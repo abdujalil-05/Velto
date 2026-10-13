@@ -3,13 +3,15 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
-import { ShoppingCart, Wallet, XCircle } from 'lucide-react';
+import { toast } from 'sonner';
+import { ShoppingCart, SkipForward, Wallet, XCircle } from 'lucide-react';
 import { useRouter, Link } from '@/i18n/navigation';
 import { useOfflineCustomers, useOfflineOutlets } from '@/lib/offline/use-offline-data';
 import { useLastOrderQuery } from '@/lib/api/orders';
 import { useSyncEngine } from '@/lib/offline/sync-engine';
 import { enqueue } from '@/lib/offline/queue';
 import type { CreateVisitInput } from '@/lib/api/visits';
+import { buildVisitGpsFields, gpsFieldsToSearchParams, localGpsStatus } from '@/lib/gps-payload';
 import { useGeolocation } from '@/lib/hooks/use-geolocation';
 import { useTelegramBackButton } from '@/lib/hooks/use-telegram-back-button';
 import { distanceMeters, formatDate, formatMoney } from '@/lib/format';
@@ -21,8 +23,6 @@ import { Button, buttonVariants } from '@/components/ui/button';
 import { YandexMap } from '@/components/shared/yandex-map';
 import { ConfirmSheet } from '@/components/shared/confirm-sheet';
 import { cn } from '@/lib/utils';
-
-const GPS_RADIUS_M = 150;
 
 export default function VisitPage() {
   const t = useTranslations('Visit');
@@ -50,6 +50,8 @@ export default function VisitPage() {
   const startedAtRef = useRef(new Date().toISOString());
   const [noOrderDialogOpen, setNoOrderDialogOpen] = useState(false);
   const [noOrderReason, setNoOrderReason] = useState('');
+  const [skipDialogOpen, setSkipDialogOpen] = useState(false);
+  const [skipReason, setSkipReason] = useState('');
 
   const outletHasCoords = outlet?.latitude != null && outlet?.longitude != null;
   const distance =
@@ -57,57 +59,53 @@ export default function VisitPage() {
       ? distanceMeters(geo.latitude, geo.longitude, Number(outlet!.latitude), Number(outlet!.longitude))
       : null;
 
-  // Hard block (9.4-follow-up): a visit can't be logged without a live GPS
-  // reading, and — when the outlet has registered coordinates — not from
-  // outside the 150m radius either. No reason-based bypass anymore; an
-  // outlet with no registered coordinates at all is a data-quality gap, not
-  // the agent's fault, so it doesn't block (the server applies the same
-  // rule — see visits.service.ts). The button just stays disabled and
-  // re-enables itself automatically as `useGeolocation`'s live watch closes
-  // the distance.
-  const gpsUnknown = geo.latitude == null || geo.longitude == null;
-  const gpsFar = distance != null && distance > GPS_RADIUS_M;
-  const canProceed = !gpsUnknown && !gpsFar;
+  // The server decides the GPS status (radius, accuracy thresholds); the
+  // client only reports what the device gave. Nothing blocks the visit: it is
+  // always saved, and an unverified GPS result is surfaced as a warning.
+  const gpsFields = useMemo(() => buildVisitGpsFields(geo), [geo]);
+  const gpsHint = localGpsStatus(gpsFields, outletHasCoords);
 
   const isLoading = outlets.isLoading || customers.isLoading;
 
   const buildVisitPayload = useCallback(
-    (outcome: 'ORDERED' | 'NO_ORDER'): CreateVisitInput => ({
+    (outcome: 'NO_ORDER' | 'SKIPPED', reason: string): CreateVisitInput => ({
       outletId,
       startedAt: startedAtRef.current,
       endedAt: new Date().toISOString(),
-      latitude: geo.latitude ?? Number(outlet?.latitude ?? 0),
-      longitude: geo.longitude ?? Number(outlet?.longitude ?? 0),
+      ...gpsFields,
       outcome,
-      noOrderReason: outcome === 'NO_ORDER' ? noOrderReason.trim() || undefined : undefined,
+      ...(outcome === 'NO_ORDER' ? { noOrderReason: reason.trim() || undefined } : { skipReason: reason.trim() }),
       clientId: '',
     }),
-    [outletId, geo.latitude, geo.longitude, outlet, noOrderReason],
+    [outletId, gpsFields],
   );
 
   async function handleOrder() {
-    if (!canProceed) return;
-    const search = new URLSearchParams({
-      outletId,
-      visitStartedAt: startedAtRef.current,
-      visitLat: String(geo.latitude ?? outlet?.latitude ?? ''),
-      visitLng: String(geo.longitude ?? outlet?.longitude ?? ''),
-    });
+    const search = new URLSearchParams({ outletId, visitStartedAt: startedAtRef.current });
+    gpsFieldsToSearchParams(gpsFields, search);
     router.push(`/order/new?${search.toString()}`);
   }
 
-  // Closing a visit as NO_ORDER is not undoable from the device: the moment
-  // `enqueue` resolves the document is durable in IndexedDB and owned by the
-  // queue, which will push it on the next sync whether or not the agent
-  // changes their mind. Hence the confirmation, and the "will be sent" note
-  // the sheet renders via `queued` — ConfirmSheet owns the in-flight lock.
-  async function handleNoOrder() {
-    if (!canProceed) return;
-    const payload = buildVisitPayload('NO_ORDER');
-    await enqueue('visit', payload as unknown as Record<string, unknown>);
+  // Closing a visit is not undoable from the device: the moment `enqueue`
+  // resolves the document is durable in IndexedDB and owned by the queue.
+  // "Saved on device" is not "accepted by server" — the toast says so.
+  async function saveClosedVisit(outcome: 'NO_ORDER' | 'SKIPPED', reason: string) {
+    await enqueue('visit', buildVisitPayload(outcome, reason) as unknown as Record<string, unknown>);
     syncEngine.notifyQueueChanged();
-    setNoOrderDialogOpen(false);
+    toast.success(t('savedOnDevice'));
+    if (gpsHint) toast.warning(t(`gpsStatus.${gpsHint}`));
     router.push('/route');
+  }
+
+  async function handleNoOrder() {
+    await saveClosedVisit('NO_ORDER', noOrderReason);
+    setNoOrderDialogOpen(false);
+  }
+
+  async function handleSkip() {
+    if (!skipReason.trim()) return;
+    await saveClosedVisit('SKIPPED', skipReason);
+    setSkipDialogOpen(false);
   }
 
   if (isLoading) {
@@ -163,14 +161,20 @@ export default function VisitPage() {
         </p>
       )}
 
-      {!canProceed && (
-        <Alert variant="destructive">
-          <AlertDescription>{gpsUnknown ? t('gpsUnknown') : t('gpsTooFar')}</AlertDescription>
+      {geo.accuracyM != null && (
+        <p className="text-xs text-muted-foreground">
+          {t('accuracy')}: ±{Math.round(geo.accuracyM)} {t('metersShort')}
+        </p>
+      )}
+
+      {gpsHint && (
+        <Alert>
+          <AlertDescription>{geo.loading ? t('gpsUnknown') : t(`gpsStatus.${gpsHint}`)}</AlertDescription>
         </Alert>
       )}
 
       <div className="space-y-3 pt-2">
-        <Button size="lg" className="w-full justify-start gap-3 text-base" disabled={!canProceed} onClick={handleOrder}>
+        <Button size="lg" className="w-full justify-start gap-3 text-base" onClick={handleOrder}>
           <ShoppingCart className="h-5 w-5" />
           {t('takeOrder')}
         </Button>
@@ -185,11 +189,19 @@ export default function VisitPage() {
           size="lg"
           variant="outline"
           className="w-full justify-start gap-3 text-base"
-          disabled={!canProceed}
           onClick={() => setNoOrderDialogOpen(true)}
         >
           <XCircle className="h-5 w-5" />
           {t('leaveNoOrder')}
+        </Button>
+        <Button
+          size="lg"
+          variant="outline"
+          className="w-full justify-start gap-3 text-base"
+          onClick={() => setSkipDialogOpen(true)}
+        >
+          <SkipForward className="h-5 w-5" />
+          {t('skipVisit')}
         </Button>
       </div>
 
@@ -211,6 +223,30 @@ export default function VisitPage() {
             placeholder={t('noOrderReasonPlaceholder')}
             rows={2}
           />
+        </div>
+      </ConfirmSheet>
+
+      <ConfirmSheet
+        open={skipDialogOpen}
+        onOpenChange={setSkipDialogOpen}
+        title={t('skipConfirmTitle')}
+        description={t('skipConfirmDescription')}
+        itemName={`${customer.name} · ${outlet.name}`}
+        queued
+        confirmLabel={t('skipConfirmAction')}
+        onConfirm={handleSkip}
+        confirmDisabled={!skipReason.trim()}
+      >
+        <div className="space-y-1.5">
+          <label className="text-sm font-medium">{t('skipReasonLabel')}</label>
+          <Textarea
+            value={skipReason}
+            onChange={(e) => setSkipReason(e.target.value)}
+            placeholder={t('skipReasonPlaceholder')}
+            rows={2}
+            required
+          />
+          {!skipReason.trim() && <p className="text-xs text-destructive">{t('skipReasonRequired')}</p>}
         </div>
       </ConfirmSheet>
     </div>

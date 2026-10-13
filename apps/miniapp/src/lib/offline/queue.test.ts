@@ -103,4 +103,16 @@ describe('queueRepository (10.3 guaranteed delivery)', () => {
     expect(todayOrders.map((e) => e.clientId)).not.toContain(visit);
     expect(todayOrders.map((e) => e.clientId)).not.toContain(failedOrder);
   });
+
+  it('keeps new-shape visit payloads (SKIPPED + GPS fields) and legacy lat/lng-only visits intact', async () => {
+    const skipped = await queueRepository.enqueue('visit', { outletId: 'o1', outcome: 'SKIPPED', skipReason: 'closed', permissionDenied: true });
+    const withAcc = await queueRepository.enqueue('visit', { outletId: 'o1', outcome: 'NO_ORDER', latitude: 1, longitude: 2, accuracyM: 9, capturedAt: '2026-10-13T08:00:00.000Z' });
+    const legacy = await queueRepository.enqueue('visit', { outletId: 'o1', outcome: 'ORDERED', latitude: 1, longitude: 2 });
+    const byId = new Map((await queueRepository.listPending()).map((e) => [e.clientId, e]));
+    expect(byId.get(skipped)?.payload).toMatchObject({ outcome: 'SKIPPED', skipReason: 'closed', permissionDenied: true });
+    expect(byId.get(skipped)?.payload).not.toHaveProperty('latitude');
+    expect(byId.get(withAcc)?.payload).toMatchObject({ accuracyM: 9, capturedAt: '2026-10-13T08:00:00.000Z' });
+    expect(byId.get(legacy)?.payload).toMatchObject({ latitude: 1, longitude: 2 });
+    expect(byId.get(legacy)?.status).toBe('PENDING');
+  });
 });
