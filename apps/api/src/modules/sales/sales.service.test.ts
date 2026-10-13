@@ -503,4 +503,48 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
       tenantPrisma.run(companyId, () => sales.deliver(order.id, courierOnly)),
     ).rejects.toBeInstanceOf(OrderNotAssignedToCourierException);
   });
+
+  // TZ 16.1 P0: "5 qatorli buyurtma ... server line total, VAT/discount va order total'ni qayta hisoblaydi".
+  // Formula (sales.service create()): baseQty * price * (1 - disc/100) * (1 + vat/100), stored Decimal(18,2).
+  it('16.1 P0: 5-line order — server recomputes every line total (VAT + discount + packaging) and order total exactly', async () => {
+    const customerId = await createCustomer();
+    const tag = Date.now();
+    const spec = [
+      // price, qty, packQty, disc, vat -> expected lineTotal
+      { price: '10000', qty: 3, pack: 1, disc: 0, vat: 12, total: '33600' },
+      { price: '25000', qty: 2, pack: 1, disc: 10, vat: 12, total: '50400' },
+      { price: '3333.33', qty: 3, pack: 1, disc: 5, vat: 15, total: '10924.99' }, // 10924.988075 -> 2dp
+      { price: '1500', qty: 2, pack: 6, disc: 12.5, vat: 0, total: '15750' }, // 2 boxes x 6 = 12 base
+      { price: '799.90', qty: 7, pack: 1, disc: 33.33, vat: 12, total: '4181.02' }, // 4181.0197072 -> 2dp
+    ];
+    const lines = await tenantPrisma.run(companyId, async (tx) => {
+      const priceList = await tx.priceList.findFirstOrThrow({ where: { isDefault: true } });
+      const out: { productId: string; packagingId: string; qty: number; discountPct: number }[] = [];
+      for (const [i, sp] of spec.entries()) {
+        const product = await tx.product.create({
+          data: { companyId, sku: `VAT5-${tag}-${i}`, name: `VAT5 ${i}`, baseUnit: 'dona', vatRate: sp.vat },
+        });
+        const pk = await tx.productPackaging.create({
+          data: { productId: product.id, name: 'pk', qtyInBaseUnit: sp.pack, isDefault: true },
+        });
+        await tx.priceListItem.create({ data: { priceListId: priceList.id, productId: product.id, price: sp.price } });
+        out.push({ productId: product.id, packagingId: pk.id, qty: sp.qty, discountPct: sp.disc });
+      }
+      return out;
+    });
+
+    const order = await tenantPrisma.run(companyId, () => sales.create({ customerId, lines }, user));
+    expect(order.lines).toHaveLength(5);
+    const byProduct = new Map(order.lines.map((l) => [l.productId, l]));
+    spec.forEach((sp, i) => {
+      const l = byProduct.get(lines[i]!.productId)!;
+      expect(l.lineTotal.toString(), `line ${i + 1}`).toBe(sp.total);
+      expect(l.qty.toString(), `qty ${i + 1}`).toBe(String(sp.qty * sp.pack));
+      expect(l.unitPrice.toString()).toBe(new (l.unitPrice.constructor as new (v: string) => typeof l.unitPrice)(sp.price).toString());
+      expect(l.vatRate.toString()).toBe(String(sp.vat));
+      expect(l.discountPct.toString()).toBe(String(sp.disc));
+    });
+    // 33600 + 50400 + 10924.99 + 15750 + 4181.02
+    expect(order.total.toString()).toBe('114856.01');
+  });
 });
