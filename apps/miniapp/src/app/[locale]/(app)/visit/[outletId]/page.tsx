@@ -11,7 +11,7 @@ import { useLastOrderQuery } from '@/lib/api/orders';
 import { useSyncEngine } from '@/lib/offline/sync-engine';
 import { enqueue } from '@/lib/offline/queue';
 import type { CreateVisitInput } from '@/lib/api/visits';
-import { buildVisitGpsFields, gpsFieldsToSearchParams, localGpsStatus } from '@/lib/gps-payload';
+import { buildVisitGpsFields, localGpsStatus, stashVisitGps } from '@/lib/gps-payload';
 import { useGeolocation } from '@/lib/hooks/use-geolocation';
 import { useTelegramBackButton } from '@/lib/hooks/use-telegram-back-button';
 import { distanceMeters, formatDate, formatMoney } from '@/lib/format';
@@ -82,7 +82,7 @@ export default function VisitPage() {
 
   async function handleOrder() {
     const search = new URLSearchParams({ outletId, visitStartedAt: startedAtRef.current });
-    gpsFieldsToSearchParams(gpsFields, search);
+    stashVisitGps(outletId, gpsFields);
     router.push(`/order/new?${search.toString()}`);
   }
 

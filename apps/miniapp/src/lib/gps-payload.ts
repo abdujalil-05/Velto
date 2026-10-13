@@ -22,28 +22,24 @@ export function buildVisitGpsFields(geo: GpsFixInput): VisitGpsFields {
   };
 }
 
-/** Serialises the GPS fields into the /order/new handoff query (the visit is enqueued there once the order is saved). */
-export function gpsFieldsToSearchParams(fields: VisitGpsFields, into: URLSearchParams): void {
-  if (fields.latitude != null) into.set('visitLat', String(fields.latitude));
-  if (fields.longitude != null) into.set('visitLng', String(fields.longitude));
-  if (fields.accuracyM != null) into.set('visitAcc', String(fields.accuracyM));
-  if (fields.capturedAt) into.set('visitAt', fields.capturedAt);
-  if (fields.permissionDenied) into.set('visitDenied', '1');
+/**
+ * In-memory handoff of the visit GPS fix from the visit page to /order/new (TZ §11.3: coordinates must never
+ * appear in the URL / webview history). Module state only: lost on reload, in which case the order page
+ * degrades to no coordinates (NO_FIX) instead of failing.
+ */
+const gpsHandoff = new Map<string, VisitGpsFields>();
+
+export function stashVisitGps(outletId: string, fields: VisitGpsFields): void {
+  gpsHandoff.set(outletId, { ...fields });
 }
 
-export function gpsFieldsFromSearchParams(sp: URLSearchParams): VisitGpsFields {
-  if (sp.get('visitDenied') === '1') return { permissionDenied: true };
-  const lat = sp.get('visitLat');
-  const lng = sp.get('visitLng');
-  if (lat == null || lng == null || lat === '' || lng === '' || Number.isNaN(Number(lat)) || Number.isNaN(Number(lng))) return {};
-  const acc = sp.get('visitAcc');
-  const at = sp.get('visitAt');
-  return {
-    latitude: Number(lat),
-    longitude: Number(lng),
-    ...(acc != null && acc !== '' && !Number.isNaN(Number(acc)) ? { accuracyM: Number(acc) } : {}),
-    ...(at ? { capturedAt: at } : {}),
-  };
+/** Returns the stashed fields (or {} if lost) without consuming them, so a re-render keeps working. */
+export function peekVisitGps(outletId: string): VisitGpsFields {
+  return { ...(gpsHandoff.get(outletId) ?? {}) };
+}
+
+export function clearVisitGps(outletId: string): void {
+  gpsHandoff.delete(outletId);
 }
 
 export type GpsStatus = 'VERIFIED' | 'OUTSIDE_RADIUS' | 'LOW_ACCURACY' | 'NO_PERMISSION' | 'NO_FIX' | 'OUTLET_NO_COORDS';

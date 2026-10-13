@@ -22,7 +22,7 @@ import { enqueue } from '@/lib/offline/queue';
 import { useSyncEngine } from '@/lib/offline/sync-engine';
 import { useLastOrderQuery, type CreateOrderInput } from '@/lib/api/orders';
 import type { CreateVisitInput } from '@/lib/api/visits';
-import { gpsFieldsFromSearchParams } from '@/lib/gps-payload';
+import { clearVisitGps, peekVisitGps } from '@/lib/gps-payload';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
 import { useTelegramBackButton } from '@/lib/hooks/use-telegram-back-button';
 import { formatMoney } from '@/lib/format';
@@ -209,11 +209,12 @@ export default function NewOrderPage() {
           outletId: outlet.id,
           startedAt: visitStartedAt,
           endedAt: new Date().toISOString(),
-          ...gpsFieldsFromSearchParams(searchParams),
+          ...peekVisitGps(outlet.id),
           outcome: 'ORDERED',
           clientId: '',
         };
         await enqueue('visit', visitPayload as unknown as Record<string, unknown>);
+        clearVisitGps(outlet.id);
       }
 
       syncEngine.notifyQueueChanged();
