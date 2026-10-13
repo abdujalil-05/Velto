@@ -77,8 +77,8 @@ describe('E2E F1.4: ACCOUNTANT restrictions', () => {
 
   it.each(denied)('%s => 403 + auth.permission_denied audit', async (_label, method, path, permission) => {
     const traceId = `trace-acc-${randomUUID()}`;
-    await request(app.getHttpServer())
-      [method](path)
+    const agent = request(app.getHttpServer());
+    await agent[method](path)
       .set('Authorization', `Bearer ${token}`)
       .set('x-request-id', traceId)
       .set('Idempotency-Key', randomUUID())

@@ -11,6 +11,11 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     root: './',
+    // DB-heavy integration suites (real Postgres + RLS, lock-order/race tests)
+    // contend for the same DB when all files run in parallel; the 5s default
+    // flakes under full-suite load while the tests pass alone.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
   },
   plugins: [swc.vite()],
 });
