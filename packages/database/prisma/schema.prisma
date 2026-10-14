@@ -131,6 +131,7 @@ model User {
   agentVisits                 Visit[]                 @relation("AgentVisits")
   auditLogs                   AuditLog[]
   exportJobs                  ExportJob[]
+  createdImportJobs           ImportJob[]             @relation("ImportJobCreator")
   notifications               Notification[]
   purchaseOrders              PurchaseOrder[]         @relation("PurchaseOrderCreatedBy")
   goodsReceipts               GoodsReceipt[]          @relation("GoodsReceiptReceivedBy")
@@ -248,7 +249,7 @@ model Customer {
   deletedAt       DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
-  changeSeq       BigInt   @default(dbgenerated("nextval('sync_change_seq'::regclass)")) // F4: global sync cursor, trigger-maintained
+  changeSeq       BigInt    @default(dbgenerated("nextval('sync_change_seq'::regclass)")) // F4: global sync cursor, trigger-maintained
 
   company   Company    @relation(fields: [companyId], references: [id])
   priceList PriceList? @relation(fields: [priceListId], references: [id])
@@ -287,7 +288,7 @@ model Outlet {
   deletedAt  DateTime?
   createdAt  DateTime   @default(now())
   updatedAt  DateTime   @updatedAt
-  changeSeq  BigInt   @default(dbgenerated("nextval('sync_change_seq'::regclass)")) // F4: global sync cursor, trigger-maintained
+  changeSeq  BigInt     @default(dbgenerated("nextval('sync_change_seq'::regclass)")) // F4: global sync cursor, trigger-maintained
 
   company  Company  @relation(fields: [companyId], references: [id])
   customer Customer @relation(fields: [customerId], references: [id])
@@ -350,7 +351,7 @@ model Product {
   deletedAt    DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
-  changeSeq    BigInt   @default(dbgenerated("nextval('sync_change_seq'::regclass)")) // F4: global sync cursor, trigger-maintained
+  changeSeq    BigInt    @default(dbgenerated("nextval('sync_change_seq'::regclass)")) // F4: global sync cursor, trigger-maintained
 
   company  Company          @relation(fields: [companyId], references: [id])
   category ProductCategory? @relation(fields: [categoryId], references: [id])
@@ -1077,11 +1078,17 @@ model ImportJob {
   status    String // PENDING PROCESSING DONE FAILED
   fileUrl   String
   errorLog  Json?
+  // F5: null for pre-F5 rows. Cross-tenant guard trigger
+  // importjob_createdby_same_company (20261014090000).
+  createdBy String?  @db.Uuid
+  progress  Int? // 0..100, CHECK ImportJob_progress_range_check
   createdAt DateTime @default(now())
 
   company Company @relation(fields: [companyId], references: [id])
+  creator User?   @relation("ImportJobCreator", fields: [createdBy], references: [id])
 
   @@index([companyId, status])
+  @@index([companyId, createdAt(sort: Desc)])
 }
 
 // 11.1: "Buxgalter /export/1c'da davrni tanlaydi -> fayl BullMQ orqali fon
@@ -1093,21 +1100,32 @@ model ImportJob {
 // products missing `externalCode`, still exported by falling back to `sku`)
 // even on a DONE job, not only on FAILED.
 model ExportJob {
-  id          String   @id @default(uuid()) @db.Uuid
-  companyId   String   @db.Uuid
-  type        String // "1c"
-  format      String // "XML" | "EXCEL"
-  periodFrom  DateTime
-  periodTo    DateTime
-  status      String // PENDING PROCESSING DONE FAILED
-  fileUrl     String?
-  errorLog    Json?
-  requestedBy String?  @db.Uuid
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id             String   @id @default(uuid()) @db.Uuid
+  companyId      String   @db.Uuid
+  type           String // "1c"
+  format         String // "XML" | "EXCEL"
+  periodFrom     DateTime
+  periodTo       DateTime
+  status         String // PENDING PROCESSING DONE FAILED
+  fileUrl        String?
+  errorLog       Json?
+  requestedBy    String?  @db.Uuid
+  // F5 (20261014090000): sha256 lower-case hex of the produced file, null
+  // until DONE; CHECKs: fileHash ~ ^[0-9a-f]{64}$, recordCount >= 0,
+  // mappingVersion >= 1, attemptCount >= 0.
+  fileHash       String?
+  recordCount    Int?
+  mappingVersion Int?
+  attemptCount   Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   company Company @relation(fields: [companyId], references: [id])
   user    User?   @relation(fields: [requestedBy], references: [id])
+  // Not expressible in Prisma — partial unique index in SQL only:
+  // "ExportJob_active_period_key" UNIQUE (companyId, type, format, periodFrom,
+  // periodTo) WHERE status IN ('PENDING','PROCESSING'). A second active
+  // export for the same key fails with P2002; DONE/FAILED never block.
 
   @@index([companyId, status])
 }

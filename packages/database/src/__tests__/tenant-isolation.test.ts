@@ -1676,4 +1676,127 @@ describe('tenant isolation (RLS)', () => {
       ).rejects.toThrow(/row-level security/i);
     });
   });
+  describe('F5 ExportJob / ImportJob tracking columns and guards', () => {
+    const CHECK = /check constraint|violates/i;
+    const CROSS = /cross-tenant reference/i;
+    const UNIQUE = /Unique constraint|unique/i;
+    const HASH = 'a'.repeat(64);
+    const exportData = (companyId: string, over: Record<string, unknown> = {}) => ({
+      companyId,
+      type: '1c',
+      format: 'XML',
+      periodFrom: new Date('2031-01-01T00:00:00Z'),
+      periodTo: new Date('2031-01-31T23:59:59Z'),
+      status: 'PENDING',
+      ...over,
+    });
+
+    afterAll(async () => {
+      await systemPrisma.exportJob.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
+      await systemPrisma.importJob.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
+    });
+
+    it('ExportJob tracking columns default safely, are CHECKed, and stay tenant-scoped', async () => {
+      const job = await withTenant(companyAId, (tx) =>
+        tx.exportJob.create({ data: exportData(companyAId, { format: 'EXCEL', requestedBy: courierAId }) }),
+      );
+      expect(job.attemptCount).toBe(0);
+      expect(job.fileHash).toBeNull();
+      expect(job.recordCount).toBeNull();
+      expect(job.mappingVersion).toBeNull();
+
+      const done = await withTenant(companyAId, (tx) =>
+        tx.exportJob.update({
+          where: { id: job.id },
+          data: { status: 'DONE', fileHash: HASH, recordCount: 0, mappingVersion: 1, attemptCount: 1 },
+        }),
+      );
+      expect(done.fileHash).toBe(HASH);
+
+      for (const data of [
+        { fileHash: 'A'.repeat(64) },
+        { fileHash: 'abc' },
+        { recordCount: -1 },
+        { mappingVersion: 0 },
+        { attemptCount: -1 },
+      ]) {
+        await expect(
+          withTenant(companyAId, (tx) => tx.exportJob.update({ where: { id: job.id }, data })),
+        ).rejects.toThrow(CHECK);
+      }
+
+      expect(await withTenant(companyBId, (tx) => tx.exportJob.findMany({ where: { id: job.id } }))).toHaveLength(0);
+      const touched = await withTenant(companyBId, (tx) =>
+        tx.exportJob.updateMany({ where: { id: job.id }, data: { attemptCount: 9 } }),
+      );
+      expect(touched.count).toBe(0);
+    });
+
+    it('ExportJob.requestedBy cannot point at another tenant’s user', async () => {
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.exportJob.create({
+            data: exportData(companyAId, { periodFrom: new Date('2031-03-01T00:00:00Z'), requestedBy: userBId }),
+          }),
+        ),
+      ).rejects.toThrow(CROSS);
+    });
+
+    it('at most one active (PENDING/PROCESSING) export per company+type+format+period; DONE/FAILED never block', async () => {
+      const key = { periodFrom: new Date('2031-02-01T00:00:00Z'), periodTo: new Date('2031-02-28T23:59:59Z') };
+      const first = await withTenant(companyAId, (tx) => tx.exportJob.create({ data: exportData(companyAId, key) }));
+
+      await expect(
+        withTenant(companyAId, (tx) => tx.exportJob.create({ data: exportData(companyAId, key) })),
+      ).rejects.toThrow(UNIQUE);
+      await withTenant(companyAId, (tx) => tx.exportJob.update({ where: { id: first.id }, data: { status: 'PROCESSING' } }));
+      await expect(
+        withTenant(companyAId, (tx) => tx.exportJob.create({ data: exportData(companyAId, { ...key, status: 'PROCESSING' }) })),
+      ).rejects.toThrow(UNIQUE);
+
+      // Other format and other tenant are independent keys.
+      await withTenant(companyAId, (tx) => tx.exportJob.create({ data: exportData(companyAId, { ...key, format: 'EXCEL' }) }));
+      await withTenant(companyBId, (tx) => tx.exportJob.create({ data: exportData(companyBId, key) }));
+
+      // Re-export allowed once the active one finishes (DONE or FAILED).
+      await withTenant(companyAId, (tx) => tx.exportJob.update({ where: { id: first.id }, data: { status: 'DONE' } }));
+      const second = await withTenant(companyAId, (tx) => tx.exportJob.create({ data: exportData(companyAId, key) }));
+      await withTenant(companyAId, (tx) => tx.exportJob.update({ where: { id: second.id }, data: { status: 'FAILED' } }));
+      await withTenant(companyAId, (tx) => tx.exportJob.create({ data: exportData(companyAId, key) }));
+    });
+
+    it('ImportJob.createdBy is same-tenant only, progress is 0..100, rows stay tenant-scoped', async () => {
+      const base = { companyId: companyAId, type: 'customers', status: 'PENDING', fileUrl: 'import/f5-test.xlsx' };
+      const legacy = await withTenant(companyAId, (tx) => tx.importJob.create({ data: base }));
+      expect(legacy.createdBy).toBeNull();
+      expect(legacy.progress).toBeNull();
+
+      const job = await withTenant(companyAId, (tx) =>
+        tx.importJob.create({ data: { ...base, createdBy: courierAId, progress: 0 } }),
+      );
+      await withTenant(companyAId, (tx) => tx.importJob.update({ where: { id: job.id }, data: { progress: 100 } }));
+
+      await expect(
+        withTenant(companyAId, (tx) => tx.importJob.create({ data: { ...base, createdBy: userBId } })),
+      ).rejects.toThrow(CROSS);
+      await expect(
+        withTenant(companyAId, (tx) => tx.importJob.update({ where: { id: job.id }, data: { createdBy: userBId } })),
+      ).rejects.toThrow(CROSS);
+      for (const progress of [-1, 101]) {
+        await expect(
+          withTenant(companyAId, (tx) => tx.importJob.update({ where: { id: job.id }, data: { progress } })),
+        ).rejects.toThrow(CHECK);
+      }
+
+      const listed = await withTenant(companyAId, (tx) =>
+        tx.importJob.findMany({ where: { companyId: companyAId }, orderBy: { createdAt: 'desc' } }),
+      );
+      expect(new Set(listed.map((j) => j.id))).toEqual(new Set([legacy.id, job.id]));
+      expect(await withTenant(companyBId, (tx) => tx.importJob.findMany())).toHaveLength(0);
+      const touched = await withTenant(companyBId, (tx) =>
+        tx.importJob.updateMany({ where: { id: job.id }, data: { progress: 50 } }),
+      );
+      expect(touched.count).toBe(0);
+    });
+  });
 });
