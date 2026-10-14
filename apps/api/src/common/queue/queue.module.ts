@@ -24,6 +24,8 @@ import Redis from 'ioredis';
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
         connection: new Redis(config.getOrThrow<string>('REDIS_URL'), { maxRetriesPerRequest: null }),
+        // Single place the prefix is applied: nestjs/bullmq merges these root options into every registerQueue() queue and @Processor worker (incl. job schedulers).
+        prefix: config.getOrThrow<string>('BULLMQ_PREFIX'),
       }),
     }),
   ],

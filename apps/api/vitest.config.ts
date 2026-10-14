@@ -11,6 +11,8 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     root: './',
+    // Unique BULLMQ_PREFIX per test file + own-prefix Redis key cleanup.
+    setupFiles: ['./test/setup-bull-prefix.ts'],
     // DB-heavy integration suites (real Postgres + RLS, lock-order/race tests)
     // contend for the same DB when all files run in parallel; the 5s default
     // flakes under full-suite load while the tests pass alone.
