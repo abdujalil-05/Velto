@@ -1,10 +1,13 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { Logger } from '@nestjs/common';
 import type { Job } from 'bullmq';
+import { getTraceId } from '../../common/trace/trace-context';
+import { IMPORT_COMMIT_FAILED } from './import-exceptions';
 import { Prisma, type TenantClient } from '@velto/database';
 import { AuditLogService, toAuditJson } from '../../common/audit/audit-log.service';
 import { runJobWithTrace } from '../../common/queue/trace-job';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
-import { IMPORT_COMMIT_CHUNK, IMPORT_QUEUE, type ImportJobData, type ImportJobReport, type RowError } from './import.constants';
+import { IMPORT_COMMIT_CHUNK, IMPORT_QUEUE, type ImportCommitState, type ImportJobData, type ImportJobReport, type RowError } from './import.constants';
 import { localizeRowErrors } from './row-messages';
 import type { CustomerImportRow } from './parsers/customers-parser';
 import type { ProductImportRow } from './parsers/products-parser';
@@ -26,6 +29,8 @@ interface CommitResult {
  */
 @Processor(IMPORT_QUEUE)
 export class ImportProcessor extends WorkerHost {
+  private readonly logger = new Logger(ImportProcessor.name);
+
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     private readonly auditLog: AuditLogService,
@@ -50,13 +55,18 @@ export class ImportProcessor extends WorkerHost {
       const rows = stored?.rows ?? [];
       const type = importJob.type;
 
-      // Chunked: each chunk is its own committed transaction that also writes
-      // ImportJob.progress, so pollers see it advance. A crash mid-way keeps
-      // the stored report (rows) intact; a retry skips already-created rows
-      // (existence check per chunk) — never duplicates.
-      const result: CommitResult = { createdCount: 0, skippedCount: 0, errors: [] };
+      // Chunked + resumable: each chunk commits its rows AND the cursor
+      // (errorLog.commit: nextIndex + running counters) in ONE transaction.
+      // A retry after a partial failure resumes at nextIndex, so rows created
+      // by an earlier attempt of this job are never re-visited (and never
+      // reported as "already exists"), and the counters stay cumulative.
+      const result: CommitResult = {
+        createdCount: stored?.commit?.createdCount ?? 0,
+        skippedCount: stored?.commit?.skippedCount ?? 0,
+        errors: [...(stored?.commit?.errors ?? [])],
+      };
       const categoryIdByName = new Map<string, string>();
-      for (let i = 0; i < rows.length; i += IMPORT_COMMIT_CHUNK) {
+      for (let i = stored?.commit?.nextIndex ?? 0; i < rows.length; i += IMPORT_COMMIT_CHUNK) {
         const chunk = rows.slice(i, i + IMPORT_COMMIT_CHUNK);
         const progress = Math.min(99, Math.floor(((i + chunk.length) / rows.length) * 100));
         const part = await this.tenantPrisma.run(companyId, async (tx) => {
@@ -64,7 +74,14 @@ export class ImportProcessor extends WorkerHost {
             type === 'customers'
               ? await this.commitCustomers(tx, companyId, chunk as CustomerImportRow[])
               : await this.commitProducts(tx, companyId, chunk as ProductImportRow[], categoryIdByName);
-          await tx.importJob.update({ where: { id: importJobId }, data: { progress } });
+          const commit: ImportCommitState = {
+            nextIndex: i + chunk.length,
+            createdCount: result.createdCount + r.createdCount,
+            skippedCount: result.skippedCount + r.skippedCount,
+            errors: [...result.errors, ...r.errors],
+          };
+          // jsonb merge keeps the (large) stored rows untouched on the client side.
+          await tx.$executeRaw`UPDATE "ImportJob" SET "progress" = ${progress}, "errorLog" = COALESCE("errorLog", '{}'::jsonb) || ${JSON.stringify({ commit })}::jsonb WHERE "id" = ${importJobId}::uuid`;
           return r;
         });
         result.createdCount += part.createdCount;
@@ -100,15 +117,23 @@ export class ImportProcessor extends WorkerHost {
       // Only the last attempt is terminal; earlier ones stay PROCESSING so the retry can run.
       const isLastAttempt = (job.attemptsMade ?? 0) + 1 >= (job.opts?.attempts ?? 1);
       if (isLastAttempt) {
-        const stored = await this.tenantPrisma.run(companyId, (tx) => tx.importJob.findFirst({ where: { id: importJobId } }));
-        const prev = (stored?.errorLog ?? {}) as unknown as Partial<ImportJobReport<never>>;
-        const rest = { ...(prev as Record<string, unknown>), rows: undefined };
+        this.logger.error(`import ${importJobId}: commit failed trace=${getTraceId() ?? '-'}`, err instanceof Error ? err.stack : String(err));
+        const cur = await this.tenantPrisma.run(companyId, (tx) => tx.importJob.findFirst({ where: { id: importJobId } }));
+        const prev = (cur?.errorLog ?? {}) as unknown as Partial<ImportJobReport<never>>;
         await this.tenantPrisma.run(companyId, (tx) =>
           tx.importJob.update({
             where: { id: importJobId },
             data: {
               status: 'FAILED',
-              errorLog: { ...rest, message: err instanceof Error ? err.message : String(err) } as Prisma.InputJsonValue,
+              errorLog: {
+                totalRows: prev.totalRows,
+                validCount: prev.validCount,
+                invalidCount: prev.invalidCount,
+                errors: prev.errors ?? [],
+                createdCount: prev.commit?.createdCount ?? 0,
+                skippedCount: prev.commit?.skippedCount ?? 0,
+                ...IMPORT_COMMIT_FAILED,
+              } as unknown as Prisma.InputJsonValue,
             },
           }),
         );

@@ -7,9 +7,10 @@ import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { StorageService } from '../../common/storage/storage.service';
 import { runWithTraceId } from '../../common/trace/trace-context';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
-import { ImportAlreadyConfirmedException, ImportJobNotFoundException, InvalidImportFileException } from './import-exceptions';
+import { ImportAlreadyConfirmedException, ImportJobNotFoundException, ImportQueueUnavailableException, InvalidImportFileException } from './import-exceptions';
 import type { ImportJobData, ImportJobReport } from './import.constants';
 import { ImportService } from './import.service';
+import { ImportRecoveryService } from './import-recovery.service';
 import type { CustomerImportRow } from './parsers/customers-parser';
 import { buildTestWorkbook } from './parsers/test-workbook';
 
@@ -101,5 +102,28 @@ describe('ImportService (integration, real Postgres + RLS)', () => {
     await expect(tenantPrisma.run(companyId, () => importService.confirm(created.id, user))).rejects.toBeInstanceOf(
       ImportAlreadyConfirmedException,
     );
+  });
+
+  it('confirm() reverts to PENDING and throws a trilingual 503 when enqueue fails; re-confirm then works', async () => {
+    const buffer = await buildTestWorkbook(CUSTOMER_HEADERS, [['C-3', 'Third Customer']]);
+    const created = await tenantPrisma.run(companyId, () => importService.uploadAndValidate('customers', buffer, user));
+
+    queueAdd.mockRejectedValueOnce(new Error('ECONNREFUSED redis'));
+    await expect(tenantPrisma.run(companyId, () => importService.confirm(created.id, user))).rejects.toBeInstanceOf(ImportQueueUnavailableException);
+    const reverted = await tenantPrisma.run(companyId, () => importService.getById(created.id));
+    expect(reverted.status).toBe('PENDING');
+
+    const again = await tenantPrisma.run(companyId, () => importService.confirm(created.id, user));
+    expect(again.status).toBe('PROCESSING');
+  });
+
+  it('recovery sweep re-enqueues a PROCESSING job missing from the queue (idempotent jobId)', async () => {
+    const buffer = await buildTestWorkbook(CUSTOMER_HEADERS, [['C-4', 'Fourth']]);
+    const created = await tenantPrisma.run(companyId, () => importService.uploadAndValidate('customers', buffer, user));
+    await tenantPrisma.run(companyId, (tx) => tx.importJob.update({ where: { id: created.id }, data: { status: 'PROCESSING' } }));
+    const add = vi.fn().mockResolvedValue(undefined);
+    const recovery = new ImportRecoveryService(tenantPrisma, { add, getJob: vi.fn().mockResolvedValue(undefined) } as unknown as Queue<ImportJobData>);
+    await recovery.sweep();
+    expect(add).toHaveBeenCalledWith('commit', expect.objectContaining({ importJobId: created.id, companyId }), expect.objectContaining({ jobId: `import-${created.id}` }));
   });
 });

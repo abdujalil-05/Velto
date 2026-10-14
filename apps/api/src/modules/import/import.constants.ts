@@ -47,4 +47,24 @@ export interface ImportJobReport<T> {
   rows?: T[]; // present only between validate() and confirm()
   createdCount?: number; // present only after confirm()
   skippedCount?: number; // present only after confirm()
+  commit?: ImportCommitState; // present only while PROCESSING (chunk cursor)
+}
+
+/** Abuse limits for uploaded workbooks (zip bombs / huge sheets). */
+export const IMPORT_LIMITS = {
+  maxUncompressedBytes: 50 * 1024 * 1024,
+  maxCompressionRatio: 100,
+  maxZipEntries: 1000,
+  maxDataRows: 20_000,
+  /** Physical rows scanned (incl. blank formatted rows) before giving up. */
+  maxScannedRows: 100_000,
+  maxColumns: 100,
+};
+
+/** Resume cursor persisted inside ImportJob.errorLog.commit, updated atomically with every committed chunk. */
+export interface ImportCommitState {
+  nextIndex: number;
+  createdCount: number;
+  skippedCount: number;
+  errors: RowError[];
 }

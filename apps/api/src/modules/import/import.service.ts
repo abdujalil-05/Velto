@@ -1,6 +1,8 @@
+import { AppException } from '../../common/errors/app-exception';
 import { AuditLogService, toAuditJson } from '../../common/audit/audit-log.service';
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { getTraceId } from '../../common/trace/trace-context';
 import type { Queue } from 'bullmq';
 import { Prisma, type TenantClient } from '@velto/database';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
@@ -9,7 +11,7 @@ import { StorageService } from '../../common/storage/storage.service';
 import { TenantContext } from '../../common/tenant/tenant-context';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import type { ListImportsQueryDto } from './dto/list-imports.query';
-import { ImportAlreadyConfirmedException, ImportJobNotFoundException, InvalidImportFileException } from './import-exceptions';
+import { ImportAlreadyConfirmedException, ImportJobNotFoundException, ImportQueueUnavailableException, InvalidImportFileException } from './import-exceptions';
 import { addTracedJob } from '../../common/queue/trace-job';
 import { localizeRowErrors } from './row-messages';
 import { IMPORT_JOB_OPTS, IMPORT_QUEUE, type ImportJobData, type ImportJobReport, type ImportType } from './import.constants';
@@ -21,6 +23,8 @@ const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.s
 /** 9.2/11.1 M15: "/import ... Shablon yuklab olish -> fayl yuklash -> validatsiya xatolari jadvali -> tasdiqlash". */
 @Injectable()
 export class ImportService {
+  private readonly logger = new Logger(ImportService.name);
+
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     private readonly storage: StorageService,
@@ -49,7 +53,8 @@ export class ImportService {
     let report: ImportJobReport<CustomerImportRow | ProductImportRow>;
     try {
       report = type === 'customers' ? await this.validateCustomers(tx, buffer) : await this.validateProducts(tx, buffer);
-    } catch {
+    } catch (err) {
+      if (err instanceof AppException) throw err;
       throw new InvalidImportFileException('could not parse workbook — check it matches the template');
     }
 
@@ -126,9 +131,18 @@ export class ImportService {
     // Deferred until this request's transaction actually commits — same
     // enqueue-before-commit race as Export1cService.create(). Fixed jobId
     // makes a duplicate enqueue a no-op in BullMQ.
-    TenantContext.afterCommit(() =>
-      addTracedJob(this.queue, 'commit', { importJobId: id, companyId: user.companyId, userId: user.id }, { ...IMPORT_JOB_OPTS, jobId: `import-${id}` }),
-    );
+    TenantContext.afterCommit(async () => {
+      try {
+        await addTracedJob(this.queue, 'commit', { importJobId: id, companyId: user.companyId, userId: user.id }, { ...IMPORT_JOB_OPTS, jobId: `import-${id}` });
+      } catch (err) {
+        this.logger.error(`import ${id}: enqueue failed (${err instanceof Error ? err.name : 'error'}) trace=${getTraceId() ?? '-'}`);
+        // Revert so the user can confirm again instead of a stuck PROCESSING job.
+        await this.tenantPrisma.run(user.companyId, (t) =>
+          t.importJob.updateMany({ where: { id, status: 'PROCESSING' }, data: { status: 'PENDING', progress: 0 } }),
+        );
+        throw new ImportQueueUnavailableException();
+      }
+    });
     return tx.importJob.findFirstOrThrow({ where: { id } });
   }
 }

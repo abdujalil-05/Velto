@@ -1,4 +1,7 @@
 import ExcelJS from 'exceljs';
+import { IMPORT_LIMITS } from '../import.constants';
+import { ImportFileTooLargeException } from '../import-exceptions';
+import { assertZipWithinLimits } from './zip-guard';
 
 export interface WorkbookRow {
   rowNumber: number; // 1-based spreadsheet row number (header is row 1)
@@ -16,6 +19,7 @@ export function isBlankCell(value: ExcelJS.CellValue): boolean {
  * not a contract the parser depends on.
  */
 export async function readWorkbookRows(buffer: Buffer): Promise<WorkbookRow[]> {
+  assertZipWithinLimits(buffer);
   const workbook = new ExcelJS.Workbook();
   // exceljs's bundled types predate Node's generic Buffer<ArrayBufferLike>
   // and don't structurally match it — see export-1c-excel.test.ts for the
@@ -23,6 +27,8 @@ export async function readWorkbookRows(buffer: Buffer): Promise<WorkbookRow[]> {
   await workbook.xlsx.load(buffer as never);
   const sheet = workbook.worksheets[0];
   if (!sheet) return [];
+
+  if (sheet.columnCount > IMPORT_LIMITS.maxColumns) throw new ImportFileTooLargeException('too many columns');
 
   const columnIndexByKey = new Map<string, number>();
   sheet.getRow(1).eachCell({ includeEmpty: true }, (cell, colNumber) => {
@@ -35,10 +41,12 @@ export async function readWorkbookRows(buffer: Buffer): Promise<WorkbookRow[]> {
   const rows: WorkbookRow[] = [];
 
   for (let r = 2; r <= sheet.rowCount; r++) {
+    if (r > IMPORT_LIMITS.maxScannedRows) throw new ImportFileTooLargeException('too many rows');
     const row = sheet.getRow(r);
     const isEmptyRow = knownColumns.every((colNumber) => isBlankCell(row.getCell(colNumber).value));
     if (isEmptyRow) continue;
 
+    if (rows.length >= IMPORT_LIMITS.maxDataRows) throw new ImportFileTooLargeException('too many data rows');
     rows.push({
       rowNumber: r,
       get(fieldKey: string) {
