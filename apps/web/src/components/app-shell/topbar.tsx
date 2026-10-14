@@ -6,6 +6,7 @@ import { LogOut, Menu, X } from 'lucide-react';
 import { Link, usePathname } from '@/i18n/navigation';
 import { Button } from '@/components/ui/button';
 import { LanguageSwitcher } from '@/components/language-switcher';
+import { NotificationBell } from '@/components/notifications/notification-bell';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { useAuth } from '@/lib/auth/auth-context';
 import { cn } from '@/lib/utils';
@@ -43,6 +44,7 @@ export function Topbar() {
 
         <div className="flex-1" />
 
+        <NotificationBell />
         <ThemeToggle />
         <LanguageSwitcher />
 

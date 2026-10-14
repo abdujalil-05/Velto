@@ -741,7 +741,7 @@
     "cancel": "Bekor qilish",
     "confirmImport": "Importni tasdiqlash",
     "processing": "Qayta ishlanmoqda...",
-    "doneMessage": "Import yakunlandi",
+    "doneMessage": "Import yakunlandi: {created} ta yaratildi, {skipped} ta o'tkazib yuborildi",
     "failedGeneric": "Import muvaffaqiyatsiz tugadi",
     "totalRows": "Jami qatorlar",
     "validRows": "To'g'ri",
@@ -762,7 +762,11 @@
       "PROCESSING": "Qayta ishlanmoqda",
       "DONE": "Yakunlandi",
       "FAILED": "Xato"
-    }
+    },
+    "noPermissionPage": "Importni ko'rish uchun ruxsatingiz yo'q",
+    "createOnlyNote": "Import faqat yaratadi: kodi/SKU allaqachon mavjud qatorlar o'tkazib yuboriladi, mavjud yozuvlar yangilanmaydi.",
+    "retry": "Qayta urinish",
+    "createdBy": "Yaratgan"
   },
   "Reports": {
     "title": "Hisobotlar",
@@ -816,6 +820,22 @@
       "d8to30": "8–30 kun",
       "d60plus": "60+ kun",
       "asOf": "Hisobot sanasi"
+    },
+    "exportCsv": "CSV ga eksport",
+    "info": {
+      "title": "Hisobot ta'rifi",
+      "period": "Davr: {from} – {to} (vaqt zonasi {timeZone})",
+      "asOfDate": "Sana holatiga: {asOf} (vaqt zonasi {timeZone})",
+      "currency": "Valyuta: so'm (UZS)",
+      "statuses": "Hisobga olinadigan buyurtmalar: SUBMITTED, CONFIRMED, DELIVERED, CLOSED (DRAFT va CANCELLED hisobga olinmaydi)",
+      "notes": {
+        "amount": "Summa: DELIVERED/CLOSED buyurtmalar uchun yetkazilgan miqdor (hisob-faktura jami), qolganlari uchun buyurtma summasi.",
+        "avgCheck": "O'rtacha chek = Aylanma / Buyurtmalar soni",
+        "routeCompletion": "Marshrut bajarilishi % = Bajarilgan tashriflar / Rejalashtirilgan tashriflar × 100",
+        "effectiveVisit": "Samarali tashrif % = Buyurtma bilan tugagan tashriflar / Bajarilgan tashriflar × 100",
+        "debtSnapshot": "Qarzdorlik joriy holat bo'yicha (davrga bog'liq emas); muddati o'tgan qarz % = Muddati o'tgan qarz / Jami qarzdorlik × 100",
+        "aging": "Kechikish kunlari = hisobot sanasi − (hisob-faktura sanasi + mijozning to'lov muddati kunlari), kompaniya vaqt zonasidagi kalendar kunlarida."
+      }
     }
   },
   "Agents": {
@@ -1621,5 +1641,16 @@
       "NO_FIX": "GPS signali yo'q",
       "OUTLET_NO_COORDS": "Nuqtada koordinata yo'q"
     }
+  },
+  "Notifications": {
+    "title": "Bildirishnomalar",
+    "bell": "Bildirishnomalar",
+    "bellWithCount": "Bildirishnomalar, o'qilmagan: {count}",
+    "unreadOnly": "Faqat o'qilmagan",
+    "markAllRead": "Hammasini o'qilgan deb belgilash",
+    "empty": "Hozircha bildirishnoma yo'q",
+    "emptyUnread": "O'qilmagan bildirishnoma yo'q",
+    "retry": "Qayta urinish",
+    "unread": "O'qilmagan"
   }
 }

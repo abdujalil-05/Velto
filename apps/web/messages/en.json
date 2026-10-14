@@ -741,7 +741,7 @@
     "cancel": "Cancel",
     "confirmImport": "Confirm import",
     "processing": "Processing...",
-    "doneMessage": "Import finished",
+    "doneMessage": "Import finished: {created} created, {skipped} skipped",
     "failedGeneric": "Import failed",
     "totalRows": "Total rows",
     "validRows": "Valid",
@@ -762,7 +762,11 @@
       "PROCESSING": "Processing",
       "DONE": "Done",
       "FAILED": "Failed"
-    }
+    },
+    "noPermissionPage": "You don't have permission to view imports",
+    "createOnlyNote": "Import is create-only: rows whose code/SKU already exists are skipped, existing records are never updated.",
+    "retry": "Retry",
+    "createdBy": "Created by"
   },
   "Reports": {
     "title": "Reports",
@@ -816,6 +820,22 @@
       "d8to30": "8–30 days",
       "d60plus": "60+ days",
       "asOf": "As of date"
+    },
+    "exportCsv": "Export to CSV",
+    "info": {
+      "title": "Report definition",
+      "period": "Period: {from} – {to} (time zone {timeZone})",
+      "asOfDate": "As of date: {asOf} (time zone {timeZone})",
+      "currency": "Currency: UZS (so'm)",
+      "statuses": "Counted orders: SUBMITTED, CONFIRMED, DELIVERED, CLOSED (DRAFT and CANCELLED are excluded)",
+      "notes": {
+        "amount": "Amount: for DELIVERED/CLOSED orders the delivered quantity (invoice total), for the rest the order amount.",
+        "avgCheck": "Average check = Turnover / Order count",
+        "routeCompletion": "Route completion % = Completed visits / Planned visits × 100",
+        "effectiveVisit": "Effective visit % = Visits that ended with an order / Completed visits × 100",
+        "debtSnapshot": "Debt is the current state (not tied to the period); overdue share % = Overdue debt / Total debt × 100",
+        "aging": "Days overdue = as-of date − (invoice date + customer payment term days), counted in calendar days of the company time zone."
+      }
     }
   },
   "Agents": {
@@ -1621,5 +1641,16 @@
       "NO_FIX": "No GPS fix",
       "OUTLET_NO_COORDS": "Outlet has no coordinates"
     }
+  },
+  "Notifications": {
+    "title": "Notifications",
+    "bell": "Notifications",
+    "bellWithCount": "Notifications, {count} unread",
+    "unreadOnly": "Unread only",
+    "markAllRead": "Mark all read",
+    "empty": "No notifications yet",
+    "emptyUnread": "No unread notifications",
+    "retry": "Retry",
+    "unread": "Unread"
   }
 }

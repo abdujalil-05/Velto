@@ -6,9 +6,18 @@ import type { PaginatedResult } from './types';
 export type ImportType = 'customers' | 'products';
 export type ImportStatus = 'PENDING' | 'PROCESSING' | 'DONE' | 'FAILED';
 
+export interface ImportRowMessage {
+  uz: string;
+  ru: string;
+  en: string;
+}
+
 export interface ImportRowError {
   row: number;
+  /** uz text (legacy shape) — fallback when `i18n` is absent. */
   messages: string[];
+  /** Same messages, trilingual and parallel to `messages`. */
+  i18n?: ImportRowMessage[];
 }
 
 export interface ImportErrorLog {
@@ -29,6 +38,9 @@ export interface ImportJob {
   status: ImportStatus;
   fileUrl: string;
   errorLog: ImportErrorLog | null;
+  /** 0-100, advanced by the commit worker after each chunk. */
+  progress: number;
+  createdBy: string | null;
   createdAt: string;
 }
 
@@ -47,15 +59,18 @@ export function useImportJobsQuery(params: ListImportsParams) {
   });
 }
 
+/** Poll every 3s, backing off x1.5 up to 15s while the job stays in PROCESSING; stops on any other status (the API throttles). */
+const POLL_BASE_MS = 3_000;
+const POLL_MAX_MS = 15_000;
+
 export function useImportJobQuery(id: string | null, poll: boolean) {
   return useQuery({
     queryKey: ['imports', id],
     queryFn: () => apiFetch<ImportJob>(`/import/${id}`),
     enabled: !!id,
     refetchInterval: (query) => {
-      if (!poll) return false;
-      const status = query.state.data?.status;
-      return status === 'PROCESSING' ? 1500 : false;
+      if (!poll || query.state.data?.status !== 'PROCESSING') return false;
+      return Math.min(POLL_MAX_MS, Math.round(POLL_BASE_MS * 1.5 ** Math.min(query.state.dataUpdateCount, 6)));
     },
   });
 }

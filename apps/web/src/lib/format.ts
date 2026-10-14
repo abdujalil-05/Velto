@@ -19,6 +19,12 @@ export function formatDate(date: string | Date, locale: string): string {
   return new Intl.DateTimeFormat(DATE_LOCALES[locale] ?? 'en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(d);
 }
 
+/** Calendar date of an instant in a given IANA time zone (report ranges are company-TZ days, not browser-local). */
+export function formatDateInZone(date: string | Date, locale: string, timeZone: string): string {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  return new Intl.DateTimeFormat(DATE_LOCALES[locale] ?? 'en-GB', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone }).format(d);
+}
+
 export function formatDateTime(date: string | Date, locale: string): string {
   const d = typeof date === 'string' ? new Date(date) : date;
   return new Intl.DateTimeFormat(DATE_LOCALES[locale] ?? 'en-GB', {

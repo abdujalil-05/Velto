@@ -3,17 +3,19 @@
 import { useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { toast } from 'sonner';
-import { Download, RefreshCw } from 'lucide-react';
+import { Download, FileText, RefreshCw } from 'lucide-react';
 import {
   useSalesReportQuery,
   useAgentPerformanceReportQuery,
   useOverviewReportQuery,
-  downloadSalesReportExcel,
-  downloadAgentPerformanceExcel,
-  downloadOverviewReportExcel,
+  downloadSalesReport,
+  downloadAgentPerformanceReport,
+  downloadOverviewReport,
+  type ReportExportFormat,
 } from '@/lib/api/reports';
-import { useAgingReportQuery, downloadAgingReportExcel, tashkentToday } from '@/lib/api/receivables';
+import { useAgingReportQuery, downloadAgingReport, tashkentToday } from '@/lib/api/receivables';
 import { errorMessage } from '@/lib/api/client';
+import { useAuth } from '@/lib/auth/auth-context';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -25,6 +27,7 @@ import { DateRangePicker } from '@/components/reports/date-range-picker';
 import { SalesReportTab } from '@/components/reports/sales-report-tab';
 import { AgentPerformanceTab } from '@/components/reports/agent-performance-tab';
 import { OverviewTab } from '@/components/reports/overview-tab';
+import { ReportInfo } from '@/components/reports/report-info';
 import { AgingReportTable } from '@/components/reports/aging-report-table';
 import { cn } from '@/lib/utils';
 
@@ -35,6 +38,8 @@ export default function ReportsPage() {
   const t = useTranslations('Reports');
   const tCommon = useTranslations('Common');
   const locale = useLocale();
+  const { hasPermission } = useAuth();
+  const canExport = hasPermission('reports.export');
 
   const [tab, setTab] = useState<Tab>('overview');
   const [from, setFrom] = useState('');
@@ -43,7 +48,7 @@ export default function ReportsPage() {
 
   const [agingPage, setAgingPage] = useState(1);
   const [asOf, setAsOf] = useState(tashkentToday);
-  const [isExporting, setIsExporting] = useState(false);
+  const [exportingFormat, setExportingFormat] = useState<ReportExportFormat | null>(null);
 
   const overviewQuery = useOverviewReportQuery(range, tab === 'overview');
   const salesQuery = useSalesReportQuery(range, tab === 'sales');
@@ -52,17 +57,17 @@ export default function ReportsPage() {
 
   const activeQuery = tab === 'overview' ? overviewQuery : tab === 'sales' ? salesQuery : tab === 'agents' ? agentsQuery : agingQuery;
 
-  async function handleExport() {
-    setIsExporting(true);
+  async function handleExport(format: ReportExportFormat) {
+    setExportingFormat(format);
     try {
-      if (tab === 'aging') await downloadAgingReportExcel(asOf || tashkentToday());
-      else if (tab === 'sales') await downloadSalesReportExcel(range);
-      else if (tab === 'agents') await downloadAgentPerformanceExcel(range);
-      else await downloadOverviewReportExcel(range);
+      if (tab === 'aging') await downloadAgingReport(asOf || tashkentToday(), format);
+      else if (tab === 'sales') await downloadSalesReport(range, format);
+      else if (tab === 'agents') await downloadAgentPerformanceReport(range, format);
+      else await downloadOverviewReport(range, format);
     } catch (err) {
       toast.error(errorMessage(err, locale));
     } finally {
-      setIsExporting(false);
+      setExportingFormat(null);
     }
   }
 
@@ -70,10 +75,18 @@ export default function ReportsPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold">{t('title')}</h1>
-        <Button variant="outline" size="sm" onClick={handleExport} disabled={isExporting}>
-          <Download className={cn('mr-2 h-4 w-4', isExporting && 'animate-pulse')} />
-          {tCommon('export')}
-        </Button>
+        {canExport && (
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={() => handleExport('xlsx')} disabled={exportingFormat !== null}>
+              <Download className={cn('mr-2 h-4 w-4', exportingFormat === 'xlsx' && 'animate-pulse')} />
+              {tCommon('export')}
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => handleExport('csv')} disabled={exportingFormat !== null}>
+              <FileText className={cn('mr-2 h-4 w-4', exportingFormat === 'csv' && 'animate-pulse')} />
+              {t('exportCsv')}
+            </Button>
+          </div>
+        )}
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -143,10 +156,37 @@ export default function ReportsPage() {
 
       {!activeQuery.isLoading && !activeQuery.isError && (
         <>
-          {tab === 'overview' && overviewQuery.data && <OverviewTab report={overviewQuery.data} />}
-          {tab === 'sales' && salesQuery.data && <SalesReportTab report={salesQuery.data} />}
-          {tab === 'agents' && agentsQuery.data && <AgentPerformanceTab report={agentsQuery.data} />}
+          {tab === 'overview' && overviewQuery.data && (
+            <>
+              <ReportInfo
+                range={overviewQuery.data.range}
+                timeZone={overviewQuery.data.timeZone}
+                statusFiltered
+                notes={['amount', 'avgCheck', 'debtSnapshot']}
+              />
+              <OverviewTab report={overviewQuery.data} />
+            </>
+          )}
+          {tab === 'sales' && salesQuery.data && (
+            <>
+              <ReportInfo range={salesQuery.data.range} timeZone={salesQuery.data.timeZone} statusFiltered notes={['amount', 'avgCheck']} />
+              <SalesReportTab report={salesQuery.data} />
+            </>
+          )}
+          {tab === 'agents' && agentsQuery.data && (
+            <>
+              <ReportInfo
+                range={agentsQuery.data.range}
+                timeZone={agentsQuery.data.timeZone}
+                statusFiltered
+                notes={['amount', 'routeCompletion', 'effectiveVisit', 'avgCheck']}
+              />
+              <AgentPerformanceTab report={agentsQuery.data} />
+            </>
+          )}
           {tab === 'aging' && agingQuery.data && (
+            <>
+            <ReportInfo asOf={agingQuery.data.asOf} timeZone={agingQuery.data.timeZone} notes={['aging']} />
             <Card>
               <CardContent className="pt-6">
                 {agingQuery.data.data.length === 0 ? (
@@ -159,6 +199,7 @@ export default function ReportsPage() {
                 )}
               </CardContent>
             </Card>
+            </>
           )}
         </>
       )}

@@ -13,7 +13,7 @@ export interface AgingBuckets {
   d60plus: string;
 }
 
-export type AgingReport = PaginatedResult<AgingRow> & { asOf: string };
+export type AgingReport = PaginatedResult<AgingRow> & { asOf: string; timeZone: string };
 
 /** Today's calendar date (YYYY-MM-DD) in Asia/Tashkent — the report's default `asOf` (TZ §6.5). */
 export function tashkentToday(): string {
@@ -48,6 +48,7 @@ export function useAgingReportQuery(params: AgingReportParams, enabled = true) {
 }
 
 /** Streams the server-generated .xlsx (every indebted customer, not just one page) — not JSON, so it bypasses apiFetch. */
-export function downloadAgingReportExcel(asOf: string): Promise<void> {
-  return apiDownload(`/reports/aging/export${toQueryString({ asOf })}`, `qarzdorlik-${asOf}.xlsx`);
+export function downloadAgingReport(asOf: string, format: 'xlsx' | 'csv'): Promise<void> {
+  const path = format === 'csv' ? '/reports/aging/export.csv' : '/reports/aging/export';
+  return apiDownload(`${path}${toQueryString({ asOf })}`, `qarzdorlik-${asOf}.${format}`);
 }
