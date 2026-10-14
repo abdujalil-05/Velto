@@ -47,3 +47,14 @@ describe('report-utils', () => {
     });
   });
 });
+
+import { isFormulaLike } from './report-export';
+
+describe('isFormulaLike (CSV formula-injection defence)', () => {
+  it.each(['+998901234567', '-5', '(99) 123-45-67', '+998 90 123-45-67', '  -12.5', 'Ali', 'a=b'])('keeps %j intact', (v) => {
+    expect(isFormulaLike(v)).toBe(false);
+  });
+  it.each(['=1+1', '@SUM(A1)', '+cmd|x', '-cmd', '\tx', '\rx', '  =1+1', ' @x', '+1+cmd', '-A1'])('neutralises %j', (v) => {
+    expect(isFormulaLike(v)).toBe(true);
+  });
+});

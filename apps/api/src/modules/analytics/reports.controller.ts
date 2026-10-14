@@ -1,10 +1,13 @@
 import { Controller, Get, Header, Query, StreamableFile } from '@nestjs/common';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { AgentPerformanceReportService } from './agent-performance.service';
 import { DashboardService } from './dashboard.service';
 import { DateRangeQueryDto } from './dto/date-range.query';
 import { OverviewReportService } from './overview-report.service';
-import { CSV_MIME, renderReport, XLSX_MIME } from './report-export';
+import { CSV_MIME, XLSX_MIME } from './report-export';
+import { ReportExportService } from './report-export-audit.service';
 import { agentPerformanceTable, overviewReportTable, salesReportTable } from './report-tables';
 import { SalesReportService } from './sales-report.service';
 
@@ -15,6 +18,7 @@ export class ReportsController {
     private readonly salesReport: SalesReportService,
     private readonly agentPerformance: AgentPerformanceReportService,
     private readonly overview: OverviewReportService,
+    private readonly exporter: ReportExportService,
   ) {}
 
   // 9.3: the home dashboard, not one of the 4 "/reports" tabs — kept on this
@@ -36,16 +40,18 @@ export class ReportsController {
   @RequirePermission('reports.export')
   @Header('Content-Type', XLSX_MIME)
   @Header('Content-Disposition', 'attachment; filename="sotuv-hisoboti.xlsx"')
-  async exportSales(@Query() query: DateRangeQueryDto) {
-    return new StreamableFile(await renderReport(salesReportTable(await this.salesReport.getSalesReport(query), new Date()), 'xlsx'));
+  async exportSales(@Query() query: DateRangeQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    const table = salesReportTable(await this.salesReport.getSalesReport(query), new Date());
+    return new StreamableFile(await this.exporter.exportReport(user, 'sales', 'xlsx', { from: query.from, to: query.to }, table));
   }
 
   @Get('sales/export.csv')
   @RequirePermission('reports.export')
   @Header('Content-Type', CSV_MIME)
   @Header('Content-Disposition', 'attachment; filename="sotuv-hisoboti.csv"')
-  async exportSalesCsv(@Query() query: DateRangeQueryDto) {
-    return new StreamableFile(await renderReport(salesReportTable(await this.salesReport.getSalesReport(query), new Date()), 'csv'));
+  async exportSalesCsv(@Query() query: DateRangeQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    const table = salesReportTable(await this.salesReport.getSalesReport(query), new Date());
+    return new StreamableFile(await this.exporter.exportReport(user, 'sales', 'csv', { from: query.from, to: query.to }, table));
   }
 
   @Get('agents')
@@ -58,16 +64,18 @@ export class ReportsController {
   @RequirePermission('reports.export')
   @Header('Content-Type', XLSX_MIME)
   @Header('Content-Disposition', 'attachment; filename="agentlar-hisoboti.xlsx"')
-  async exportAgents(@Query() query: DateRangeQueryDto) {
-    return new StreamableFile(await renderReport(agentPerformanceTable(await this.agentPerformance.getAgentPerformance(query), new Date()), 'xlsx'));
+  async exportAgents(@Query() query: DateRangeQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    const table = agentPerformanceTable(await this.agentPerformance.getAgentPerformance(query), new Date());
+    return new StreamableFile(await this.exporter.exportReport(user, 'agents', 'xlsx', { from: query.from, to: query.to }, table));
   }
 
   @Get('agents/export.csv')
   @RequirePermission('reports.export')
   @Header('Content-Type', CSV_MIME)
   @Header('Content-Disposition', 'attachment; filename="agentlar-hisoboti.csv"')
-  async exportAgentsCsv(@Query() query: DateRangeQueryDto) {
-    return new StreamableFile(await renderReport(agentPerformanceTable(await this.agentPerformance.getAgentPerformance(query), new Date()), 'csv'));
+  async exportAgentsCsv(@Query() query: DateRangeQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    const table = agentPerformanceTable(await this.agentPerformance.getAgentPerformance(query), new Date());
+    return new StreamableFile(await this.exporter.exportReport(user, 'agents', 'csv', { from: query.from, to: query.to }, table));
   }
 
   @Get('overview')
@@ -80,15 +88,17 @@ export class ReportsController {
   @RequirePermission('reports.export')
   @Header('Content-Type', XLSX_MIME)
   @Header('Content-Disposition', 'attachment; filename="umumiy-hisobot.xlsx"')
-  async exportOverview(@Query() query: DateRangeQueryDto) {
-    return new StreamableFile(await renderReport(overviewReportTable(await this.overview.getOverview(query), new Date()), 'xlsx'));
+  async exportOverview(@Query() query: DateRangeQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    const table = overviewReportTable(await this.overview.getOverview(query), new Date());
+    return new StreamableFile(await this.exporter.exportReport(user, 'overview', 'xlsx', { from: query.from, to: query.to }, table));
   }
 
   @Get('overview/export.csv')
   @RequirePermission('reports.export')
   @Header('Content-Type', CSV_MIME)
   @Header('Content-Disposition', 'attachment; filename="umumiy-hisobot.csv"')
-  async exportOverviewCsv(@Query() query: DateRangeQueryDto) {
-    return new StreamableFile(await renderReport(overviewReportTable(await this.overview.getOverview(query), new Date()), 'csv'));
+  async exportOverviewCsv(@Query() query: DateRangeQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    const table = overviewReportTable(await this.overview.getOverview(query), new Date());
+    return new StreamableFile(await this.exporter.exportReport(user, 'overview', 'csv', { from: query.from, to: query.to }, table));
   }
 }

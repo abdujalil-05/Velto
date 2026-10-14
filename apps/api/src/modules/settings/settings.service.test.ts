@@ -3,6 +3,7 @@ import { prisma, systemPrisma } from '@velto/database';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { AuditLogService } from '../../common/audit/audit-log.service';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
+import { companyTimeZone } from '../analytics/report-utils';
 import { SettingsService } from './settings.service';
 
 describe('SettingsService GPS thresholds (integration, real Postgres + RLS)', () => {
@@ -37,5 +38,19 @@ describe('SettingsService GPS thresholds (integration, real Postgres + RLS)', ()
     await tenantPrisma.run(companyId, () => settings.update(companyId, { name: 'Renamed' }, user));
     const rows = await systemPrisma.auditLog.findMany({ where: { companyId, action: 'company.gps_settings_update' } });
     expect(rows).toHaveLength(1);
+  });
+
+  it('rejects a non-IANA timezone with INVALID_TIMEZONE and accepts a valid one', async () => {
+    await expect(tenantPrisma.run(companyId, () => settings.update(companyId, { timezone: 'Mars/Olympus' }, user))).rejects.toMatchObject({
+      response: { code: 'INVALID_TIMEZONE' },
+    });
+    const ok = await tenantPrisma.run(companyId, () => settings.update(companyId, { timezone: 'Asia/Samarkand' }, user));
+    expect(ok.timezone).toBe('Asia/Samarkand');
+  });
+
+  it('companyTimeZone falls back to Asia/Tashkent for a legacy invalid stored value', async () => {
+    await systemPrisma.company.update({ where: { id: companyId }, data: { timezone: 'Legacy/Nowhere' } });
+    const tz = await tenantPrisma.run(companyId, (tx) => companyTimeZone(tx));
+    expect(tz).toBe('Asia/Tashkent');
   });
 });

@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { OrderStatus, Prisma, type TenantClient } from '@velto/database';
 import { companyDay, type CompanyDay } from '../field/company-day';
 import { ORDER_LINE_AMOUNTS_SELECT } from '../sales/line-total';
@@ -12,10 +13,28 @@ export interface DateRange {
 /** Fallback when Company.timezone is unreadable; the schema default. */
 export const DEFAULT_TIME_ZONE = 'Asia/Tashkent';
 
-/** Company.timezone of the current tenant (TZ §7.1: day boundaries by company timezone). */
+/** True when `timeZone` is an IANA zone the runtime's Intl accepts. */
+export function isValidTimeZone(timeZone: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-GB', { timeZone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const tzLogger = new Logger('companyTimeZone');
+
+/** Company.timezone of the current tenant (TZ §7.1); a legacy invalid value falls back to Asia/Tashkent with a warning. */
 export async function companyTimeZone(tx: TenantClient): Promise<string> {
   const company = await tx.company.findFirst({ select: { timezone: true } });
-  return company?.timezone ?? DEFAULT_TIME_ZONE;
+  const stored = company?.timezone;
+  if (!stored) return DEFAULT_TIME_ZONE;
+  if (!isValidTimeZone(stored)) {
+    tzLogger.warn(`Invalid stored company timezone "${stored}", falling back to ${DEFAULT_TIME_ZONE}`);
+    return DEFAULT_TIME_ZONE;
+  }
+  return stored;
 }
 
 /** UTC instant of 00:00:00.000 of the company-timezone day containing `date`. */

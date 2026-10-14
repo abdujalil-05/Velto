@@ -1,13 +1,19 @@
 import { Controller, Get, Header, Query, StreamableFile } from '@nestjs/common';
+import { CurrentUser } from '../../../common/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { RequirePermission } from '../../../common/decorators/require-permission.decorator';
-import { CSV_MIME, renderReport, XLSX_MIME } from '../../analytics/report-export';
+import { CSV_MIME, XLSX_MIME } from '../../analytics/report-export';
+import { ReportExportService } from '../../analytics/report-export-audit.service';
 import { AgingAsOfQueryDto, AgingReportQueryDto } from '../dto/aging-report.query';
 import { agingReportTable } from './aging-report-table';
 import { AgingReportService } from './aging-report.service';
 
 @Controller('reports')
 export class AgingReportController {
-  constructor(private readonly agingReport: AgingReportService) {}
+  constructor(
+    private readonly agingReport: AgingReportService,
+    private readonly exporter: ReportExportService,
+  ) {}
 
   @Get('aging')
   @RequirePermission('reports.read')
@@ -21,15 +27,17 @@ export class AgingReportController {
   @RequirePermission('reports.export')
   @Header('Content-Type', XLSX_MIME)
   @Header('Content-Disposition', 'attachment; filename="qarzdorlik.xlsx"')
-  async agingExport(@Query() query: AgingAsOfQueryDto) {
-    return new StreamableFile(await renderReport(agingReportTable(await this.agingReport.getAllRows(query.asOf), new Date()), 'xlsx'));
+  async agingExport(@Query() query: AgingAsOfQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    const table = agingReportTable(await this.agingReport.getAllRows(query.asOf), new Date());
+    return new StreamableFile(await this.exporter.exportReport(user, 'aging', 'xlsx', { asOf: query.asOf }, table));
   }
 
   @Get('aging/export.csv')
   @RequirePermission('reports.export')
   @Header('Content-Type', CSV_MIME)
   @Header('Content-Disposition', 'attachment; filename="qarzdorlik.csv"')
-  async agingExportCsv(@Query() query: AgingAsOfQueryDto) {
-    return new StreamableFile(await renderReport(agingReportTable(await this.agingReport.getAllRows(query.asOf), new Date()), 'csv'));
+  async agingExportCsv(@Query() query: AgingAsOfQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    const table = agingReportTable(await this.agingReport.getAllRows(query.asOf), new Date());
+    return new StreamableFile(await this.exporter.exportReport(user, 'aging', 'csv', { asOf: query.asOf }, table));
   }
 }

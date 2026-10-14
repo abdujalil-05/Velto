@@ -48,11 +48,23 @@ export function periodMeta(range: { from: Date; to: Date }, timeZone: string): [
   return [['Davr (dan)', companyDay(range.from, timeZone).date], ['Davr (gacha)', companyDay(range.to, timeZone).date]];
 }
 
+/**
+ * Spreadsheet formula-injection check (after optional leading whitespace): cells starting with
+ * `=`, `@`, tab or CR, or `+`/`-` followed by something that is not a digit/phone/number
+ * character, are neutralised. Numbers and phones (`+998901234567`, `-5`, `(99) 123-45-67`) stay intact.
+ */
+export function isFormulaLike(raw: string): boolean {
+  if (/^[\t\r]/.test(raw)) return true;
+  const t = raw.trimStart();
+  if (/^[=@\t\r]/.test(t)) return true;
+  if (/^[+-]/.test(t)) return !/^[+-][\s]*[\d(.,]/.test(t) || !/^[+-][\d\s().,-]*$/.test(t);
+  return false;
+}
+
 function csvCell(cell: ReportCell): string {
   if (cell === null) return '';
   const raw = typeof cell === 'number' ? String(cell) : typeof cell === 'string' ? cell : cell.toFixed(2);
-  // Neutralise spreadsheet formula injection from user-controlled names.
-  const safe = typeof cell === 'string' && /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
+  const safe = typeof cell === 'string' && isFormulaLike(raw) ? `'${raw}` : raw;
   return /[",\r\n;]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 

@@ -2,7 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { AuditLogService, toAuditJson } from '../../common/audit/audit-log.service';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
-import { CompanyNotFoundException } from './settings-exceptions';
+import { isValidTimeZone } from '../analytics/report-utils';
+import { CompanyNotFoundException, InvalidTimeZoneException } from './settings-exceptions';
 import type { UpdateSettingsDto } from './dto/update-settings.dto';
 
 @Injectable()
@@ -22,6 +23,7 @@ export class SettingsService {
   }
 
   async update(companyId: string, dto: UpdateSettingsDto, user: AuthenticatedUser) {
+    if (dto.timezone !== undefined && !isValidTimeZone(dto.timezone)) throw new InvalidTimeZoneException(dto.timezone);
     const tx = this.tenantPrisma.client;
     const before = await this.get(companyId);
 
