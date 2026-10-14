@@ -7,6 +7,7 @@ import { AuditLogService } from '../../common/audit/audit-log.service';
 import { DocumentNumberingService } from '../../common/document-numbering/document-numbering.service';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { AppException } from '../../common/errors/app-exception';
+import { localDateString } from '../analytics/report-utils';
 import { CustomerHasOutstandingBalanceException, CustomerNotFoundException } from '../customers/customers-exceptions';
 import { CustomersService } from '../customers/customers.service';
 import { PaymentsService } from '../finance/payments/payments.service';
@@ -413,8 +414,9 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
       sales.create({ customerId, lines: [{ productId, packagingId, qty: 1 }] }, user),
     );
 
-    const today = new Date().toISOString().slice(0, 10);
-    const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    // Company-timezone calendar days (same helper the service uses), not UTC.
+    const today = localDateString(new Date());
+    const tomorrow = localDateString(new Date(Date.now() + 24 * 60 * 60 * 1000));
 
     const todayList = await tenantPrisma.run(companyId, () =>
       sales.list({ page: 1, pageSize: 100, customerId, from: today, to: today }, user),

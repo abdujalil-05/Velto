@@ -15,6 +15,7 @@ import {
 } from '../field-exceptions';
 import { distanceMeters, evaluateGps } from '../geo';
 import { VisitsService } from './visits.service';
+import { localDateString } from '../../analytics/report-utils';
 
 describe('VisitsService (integration, real Postgres + RLS)', () => {
   let companyId: string;
@@ -315,8 +316,9 @@ describe('VisitsService (integration, real Postgres + RLS)', () => {
       ),
     );
 
-    const today = new Date().toISOString().slice(0, 10);
-    const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    // Company-timezone calendar days (same helper the service uses), not UTC.
+    const today = localDateString(new Date());
+    const tomorrow = localDateString(new Date(Date.now() + 24 * 60 * 60 * 1000));
 
     const todayList = await tenantPrisma.run(companyId, () =>
       visits.list({ page: 1, pageSize: 100, agentId: agentUser.id, from: today, to: today }, directorUser),
