@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { InvoiceStatus, PaymentStatus, Prisma } from '@velto/database';
 import { paginate } from '../../../common/pagination/pagination.dto';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
+import { companyDay } from '../../field/company-day';
+import { companyTimeZone, DEFAULT_TIME_ZONE } from '../../analytics/report-utils';
 
 /** TZ §6.5 default buckets: muddati kelmagan, 1–7, 8–30, 31–60, 60+ (i.e. 61 and more) days past due. */
 export interface AgingBuckets {
@@ -19,19 +21,11 @@ export interface AgingRow {
   total: Prisma.Decimal;
 }
 
-export const AGING_TIME_ZONE = 'Asia/Tashkent';
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const localDateFmt = new Intl.DateTimeFormat('en-CA', {
-  timeZone: AGING_TIME_ZONE,
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-});
-
-/** Calendar date (YYYY-MM-DD) of an instant in Asia/Tashkent. */
-export function tashkentDate(at: Date): string {
-  return localDateFmt.format(at);
+/** Calendar date (YYYY-MM-DD) of an instant in the company timezone. */
+export function companyDate(at: Date, timeZone: string = DEFAULT_TIME_ZONE): string {
+  return companyDay(at, timeZone).date;
 }
 
 /** Day index of a YYYY-MM-DD calendar date — pure calendar arithmetic, no clock/DST involved. */
@@ -41,11 +35,11 @@ function dayIndex(date: string): number {
 
 /**
  * Calendar days past due as of `asOf` (TZ §6.5 "kalendar farqi aniq belgilanadi"):
- * due date = Tashkent calendar day of Invoice.createdAt + Customer.paymentTermDays;
+ * due date = company-timezone calendar day of Invoice.createdAt + Customer.paymentTermDays;
  * 0 or negative = not yet overdue (due today counts as "muddati kelmagan").
  */
-export function daysPastDue(invoiceCreatedAt: Date, paymentTermDays: number, asOf: string): number {
-  return dayIndex(asOf) - (dayIndex(tashkentDate(invoiceCreatedAt)) + paymentTermDays);
+export function daysPastDue(invoiceCreatedAt: Date, paymentTermDays: number, asOf: string, timeZone: string = DEFAULT_TIME_ZONE): number {
+  return dayIndex(asOf) - (dayIndex(companyDate(invoiceCreatedAt, timeZone)) + paymentTermDays);
 }
 
 export function bucketFor(days: number): keyof AgingBuckets {
@@ -66,20 +60,22 @@ export class AgingReportService {
    * (reused for the dashboard's "top 10 qarzdor" list via pageSize=10).
    */
   async getAging(query: { page: number; pageSize: number; asOf?: string }) {
-    const asOf = query.asOf ?? tashkentDate(new Date());
-    const rows = await this.computeRows(asOf);
+    const timeZone = await companyTimeZone(this.tenantPrisma.client);
+    const asOf = query.asOf ?? companyDate(new Date(), timeZone);
+    const rows = await this.computeRows(asOf, timeZone);
     const start = (query.page - 1) * query.pageSize;
     const data = rows.slice(start, start + query.pageSize);
-    return { ...paginate(data, rows.length, query.page, query.pageSize), asOf };
+    return { ...paginate(data, rows.length, query.page, query.pageSize), asOf, timeZone };
   }
 
   /** 9.1 "Excel eksport" needs every indebted customer, not just one page — same rows/asOf as the screen. */
-  async getAllRows(asOfInput?: string): Promise<{ asOf: string; rows: AgingRow[] }> {
-    const asOf = asOfInput ?? tashkentDate(new Date());
-    return { asOf, rows: await this.computeRows(asOf) };
+  async getAllRows(asOfInput?: string): Promise<{ asOf: string; timeZone: string; rows: AgingRow[] }> {
+    const timeZone = await companyTimeZone(this.tenantPrisma.client);
+    const asOf = asOfInput ?? companyDate(new Date(), timeZone);
+    return { asOf, timeZone, rows: await this.computeRows(asOf, timeZone) };
   }
 
-  private async computeRows(asOf: string): Promise<AgingRow[]> {
+  private async computeRows(asOf: string, timeZone: string): Promise<AgingRow[]> {
     const tx = this.tenantPrisma.client;
 
     // PAID invoices are included on purpose: as of a past date they may still
@@ -98,15 +94,15 @@ export class AgingReportService {
     const byCustomer = new Map<string, AgingRow>();
 
     for (const invoice of invoices) {
-      if (tashkentDate(invoice.createdAt) > asOf) continue; // not issued yet on asOf
+      if (companyDate(invoice.createdAt, timeZone) > asOf) continue; // not issued yet on asOf
 
       // §6.5 "valid allocations": made on/before asOf and not reversed on/before asOf.
       const allocated = invoice.allocations.reduce((sum, a) => {
-        if (tashkentDate(a.createdAt) > asOf) return sum;
+        if (companyDate(a.createdAt, timeZone) > asOf) return sum;
         const p = a.payment;
         if (p.status === PaymentStatus.REVERSED) {
           // Reversed with no reversal row cannot happen (DB trigger); treat as reversed (safest: debt shown).
-          if (!p.reversal || tashkentDate(p.reversal.createdAt) <= asOf) return sum;
+          if (!p.reversal || companyDate(p.reversal.createdAt, timeZone) <= asOf) return sum;
         }
         return sum.plus(a.amount);
       }, new Prisma.Decimal(0));
@@ -131,7 +127,7 @@ export class AgingReportService {
         byCustomer.set(invoice.customerId, entry);
       }
 
-      const bucket = bucketFor(daysPastDue(invoice.createdAt, invoice.customer.paymentTermDays, asOf));
+      const bucket = bucketFor(daysPastDue(invoice.createdAt, invoice.customer.paymentTermDays, asOf, timeZone));
       entry.buckets[bucket] = entry.buckets[bucket].plus(outstanding);
       entry.total = entry.total.plus(outstanding);
     }

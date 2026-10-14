@@ -3,7 +3,7 @@ import { InvoiceStatus, Prisma } from '@velto/database';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { VALID_ALLOCATION_WHERE } from '../finance/ledger-filters';
 import type { DateRangeQueryDto } from './dto/date-range.query';
-import { COUNTED_ORDER_STATUSES, DAY_MS, resolveDateRange, ORDER_AMOUNT_SELECT, orderTotal } from './report-utils';
+import { COUNTED_ORDER_STATUSES, DAY_MS, companyTimeZone, resolveDateRange, ORDER_AMOUNT_SELECT, orderTotal } from './report-utils';
 
 /** 9.2 "Hisobotlar ... umumiy" — company-wide summary for the window: turnover, active/new customers, and outstanding debt (17.2 KPI defs). */
 @Injectable()
@@ -11,8 +11,9 @@ export class OverviewReportService {
   constructor(private readonly tenantPrisma: TenantPrismaService) {}
 
   async getOverview(query: DateRangeQueryDto) {
-    const { start, end } = resolveDateRange(query.from, query.to);
     const tx = this.tenantPrisma.client;
+    const timeZone = await companyTimeZone(tx);
+    const { start, end } = resolveDateRange(query.from, query.to, 30, timeZone);
 
     const [orders, newCustomers, totalCustomers, openInvoices] = await Promise.all([
       tx.salesOrder.findMany({
@@ -52,6 +53,7 @@ export class OverviewReportService {
     const orderCount = orders.length;
     return {
       range: { from: start, to: end },
+      timeZone,
       turnover,
       orderCount,
       avgCheck: orderCount > 0 ? turnover.dividedBy(orderCount) : new Prisma.Decimal(0),

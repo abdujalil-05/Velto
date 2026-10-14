@@ -1,15 +1,12 @@
 import { Controller, Get, Header, Query, StreamableFile } from '@nestjs/common';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { AgentPerformanceReportService } from './agent-performance.service';
-import { buildAgentPerformanceExcel } from './agent-performance-excel';
 import { DashboardService } from './dashboard.service';
 import { DateRangeQueryDto } from './dto/date-range.query';
 import { OverviewReportService } from './overview-report.service';
-import { buildOverviewReportExcel } from './overview-report-excel';
+import { CSV_MIME, renderReport, XLSX_MIME } from './report-export';
+import { agentPerformanceTable, overviewReportTable, salesReportTable } from './report-tables';
 import { SalesReportService } from './sales-report.service';
-import { buildSalesReportExcel } from './sales-report-excel';
-
-const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 @Controller('reports')
 export class ReportsController {
@@ -34,14 +31,21 @@ export class ReportsController {
     return this.salesReport.getSalesReport(query);
   }
 
-  // M11 "Excel eksport": same window/filters as the JSON endpoint above.
+  // TZ §7.3/§16.1: exports reuse the screen's DTO + service call; only the renderer differs.
   @Get('sales/export')
   @RequirePermission('reports.export')
   @Header('Content-Type', XLSX_MIME)
   @Header('Content-Disposition', 'attachment; filename="sotuv-hisoboti.xlsx"')
   async exportSales(@Query() query: DateRangeQueryDto) {
-    const report = await this.salesReport.getSalesReport(query);
-    return new StreamableFile(await buildSalesReportExcel(report));
+    return new StreamableFile(await renderReport(salesReportTable(await this.salesReport.getSalesReport(query), new Date()), 'xlsx'));
+  }
+
+  @Get('sales/export.csv')
+  @RequirePermission('reports.export')
+  @Header('Content-Type', CSV_MIME)
+  @Header('Content-Disposition', 'attachment; filename="sotuv-hisoboti.csv"')
+  async exportSalesCsv(@Query() query: DateRangeQueryDto) {
+    return new StreamableFile(await renderReport(salesReportTable(await this.salesReport.getSalesReport(query), new Date()), 'csv'));
   }
 
   @Get('agents')
@@ -55,8 +59,15 @@ export class ReportsController {
   @Header('Content-Type', XLSX_MIME)
   @Header('Content-Disposition', 'attachment; filename="agentlar-hisoboti.xlsx"')
   async exportAgents(@Query() query: DateRangeQueryDto) {
-    const report = await this.agentPerformance.getAgentPerformance(query);
-    return new StreamableFile(await buildAgentPerformanceExcel(report));
+    return new StreamableFile(await renderReport(agentPerformanceTable(await this.agentPerformance.getAgentPerformance(query), new Date()), 'xlsx'));
+  }
+
+  @Get('agents/export.csv')
+  @RequirePermission('reports.export')
+  @Header('Content-Type', CSV_MIME)
+  @Header('Content-Disposition', 'attachment; filename="agentlar-hisoboti.csv"')
+  async exportAgentsCsv(@Query() query: DateRangeQueryDto) {
+    return new StreamableFile(await renderReport(agentPerformanceTable(await this.agentPerformance.getAgentPerformance(query), new Date()), 'csv'));
   }
 
   @Get('overview')
@@ -70,7 +81,14 @@ export class ReportsController {
   @Header('Content-Type', XLSX_MIME)
   @Header('Content-Disposition', 'attachment; filename="umumiy-hisobot.xlsx"')
   async exportOverview(@Query() query: DateRangeQueryDto) {
-    const report = await this.overview.getOverview(query);
-    return new StreamableFile(await buildOverviewReportExcel(report));
+    return new StreamableFile(await renderReport(overviewReportTable(await this.overview.getOverview(query), new Date()), 'xlsx'));
+  }
+
+  @Get('overview/export.csv')
+  @RequirePermission('reports.export')
+  @Header('Content-Type', CSV_MIME)
+  @Header('Content-Disposition', 'attachment; filename="umumiy-hisobot.csv"')
+  async exportOverviewCsv(@Query() query: DateRangeQueryDto) {
+    return new StreamableFile(await renderReport(overviewReportTable(await this.overview.getOverview(query), new Date()), 'csv'));
   }
 }

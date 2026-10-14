@@ -1,4 +1,5 @@
-import { OrderStatus, Prisma } from '@velto/database';
+import { OrderStatus, Prisma, type TenantClient } from '@velto/database';
+import { companyDay, type CompanyDay } from '../field/company-day';
 import { ORDER_LINE_AMOUNTS_SELECT } from '../sales/line-total';
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
@@ -8,39 +9,66 @@ export interface DateRange {
   end: Date;
 }
 
-export function startOfDay(date: Date): Date {
-  const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  return d;
+/** Fallback when Company.timezone is unreadable; the schema default. */
+export const DEFAULT_TIME_ZONE = 'Asia/Tashkent';
+
+/** Company.timezone of the current tenant (TZ §7.1: day boundaries by company timezone). */
+export async function companyTimeZone(tx: TenantClient): Promise<string> {
+  const company = await tx.company.findFirst({ select: { timezone: true } });
+  return company?.timezone ?? DEFAULT_TIME_ZONE;
 }
 
-export function endOfDay(date: Date): Date {
-  const d = new Date(date);
-  d.setHours(23, 59, 59, 999);
-  return d;
+/** UTC instant of 00:00:00.000 of the company-timezone day containing `date`. */
+export function startOfDay(date: Date, timeZone: string = DEFAULT_TIME_ZONE): Date {
+  return companyDay(date, timeZone).start;
 }
 
-/**
- * `YYYY-MM-DD` from the *local* date parts — day buckets must be keyed the
- * same way the startOfDay()-based axis loops walk them; `toISOString()` is
- * UTC and shifts rows into the neighbouring bucket for any non-UTC server.
- */
-export function localDateString(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+/** UTC instant of 23:59:59.999 of the company-timezone day containing `date`. */
+export function endOfDay(date: Date, timeZone: string = DEFAULT_TIME_ZONE): Date {
+  return new Date(companyDay(date, timeZone).end.getTime() - 1);
 }
 
-/** ISO 8601: Monday=1 ... Sunday=7 — matches how Route.weekday (6.8: "1-7") is validated in CreateRouteDto. */
-export function isoWeekday(date: Date): number {
-  return ((date.getDay() + 6) % 7) + 1;
+/** `YYYY-MM-DD` of the company-timezone calendar day — the key day buckets and axes share. */
+export function localDateString(date: Date, timeZone: string = DEFAULT_TIME_ZONE): string {
+  return companyDay(date, timeZone).date;
 }
 
-/** Inclusive [start, end] window. `to` (if given) is extended to its end-of-day boundary. Defaults to the last `defaultDays` days ending today. */
-export function resolveDateRange(from?: string, to?: string, defaultDays = 30): DateRange {
-  const end = to ? endOfDay(new Date(to)) : endOfDay(new Date());
-  const start = from ? startOfDay(new Date(from)) : startOfDay(new Date(end.getTime() - (defaultDays - 1) * DAY_MS));
+/** ISO 8601 in the company timezone: Monday=1 ... Sunday=7 — matches Route.weekday (6.8: "1-7"). */
+export function isoWeekday(date: Date, timeZone: string = DEFAULT_TIME_ZONE): number {
+  return companyDay(date, timeZone).isoWeekday;
+}
+
+/** Company-timezone day for a `YYYY-MM-DD` string (exact), or for the day containing a full ISO instant. */
+export function companyDayOf(input: string, timeZone: string = DEFAULT_TIME_ZONE): CompanyDay {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input)) return companyDay(new Date(input), timeZone);
+  let probe = new Date(`${input}T12:00:00Z`);
+  let day = companyDay(probe, timeZone);
+  for (let i = 0; i < 2 && day.date !== input; i += 1) {
+    const diff = Math.round((Date.parse(`${input}T00:00:00Z`) - Date.parse(`${day.date}T00:00:00Z`)) / DAY_MS);
+    probe = new Date(probe.getTime() + diff * DAY_MS);
+    day = companyDay(probe, timeZone);
+  }
+  return day;
+}
+
+/** Every company-timezone calendar day touched by [start, end], in order (DST-safe, unlike +24h stepping). */
+export function eachCompanyDay(start: Date, end: Date, timeZone: string = DEFAULT_TIME_ZONE): CompanyDay[] {
+  const days: CompanyDay[] = [];
+  let day = companyDay(start, timeZone);
+  while (day.start.getTime() <= end.getTime()) {
+    days.push(day);
+    day = companyDay(day.end, timeZone);
+  }
+  return days;
+}
+
+/** Inclusive [start, end] window in the company timezone. `to` extends to its end-of-day. Defaults to the last `defaultDays` days ending today. */
+export function resolveDateRange(from?: string, to?: string, defaultDays = 30, timeZone: string = DEFAULT_TIME_ZONE): DateRange {
+  const endDay = to ? companyDayOf(to, timeZone) : companyDay(new Date(), timeZone);
+  const end = new Date(endDay.end.getTime() - 1);
+  const start = from
+    ? companyDayOf(from, timeZone).start
+    : companyDay(new Date(endDay.start.getTime() - (defaultDays - 1) * DAY_MS + 12 * 3_600_000), timeZone).start;
   return { start, end };
 }
 

@@ -2,25 +2,16 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, describe, expect, it } from 'vitest';
 import { InvoiceStatus, OrderStatus, PaymentMethod, PaymentStatus, prisma, systemPrisma, VisitOutcome } from '@velto/database';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
+import ExcelJS from 'exceljs';
 import { AgingReportService } from '../finance/reports/aging-report.service';
+import { buildReportCsv, buildReportXlsx, xlsxHeaderRow } from './report-export';
+import { agentPerformanceTable, overviewReportTable, salesReportTable } from './report-tables';
 import { AgentPerformanceReportService } from './agent-performance.service';
 import { DashboardService } from './dashboard.service';
 import { OverviewReportService } from './overview-report.service';
-import { isoWeekday } from './report-utils';
+import { eachCompanyDay, isoWeekday, localDateString, resolveDateRange } from './report-utils';
 import { SalesReportService } from './sales-report.service';
 
-// isoWeekday() and startOfDay()/endOfDay() (report-utils.ts) all use LOCAL
-// time, so a "today" query string built from it must be local too —
-// Date#toISOString() gives the UTC date instead, which silently disagrees
-// with the local one for part of every day (Tashkent is UTC+5, so from
-// 00:00-04:59 local the UTC date is still "yesterday"). Using it here would
-// make this test flaky specifically in that window.
-function localDateString(d: Date): string {
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
 
 describe('Analytics reports (integration, real Postgres + RLS)', () => {
   const tenantPrisma = new TenantPrismaService();
@@ -37,11 +28,11 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
   // Each test gets its own tenant/company so aggregate assertions (turnover
   // totals, active-customer counts, ...) aren't polluted by other tests'
   // fixtures sharing the same RLS-scoped company.
-  async function createCompany(slugPrefix: string) {
+  async function createCompany(slugPrefix: string, timezone?: string) {
     const tenant = await systemPrisma.tenant.create({
       data: { slug: `${slugPrefix}-${Date.now()}-${randomUUID().slice(0, 8)}`, name: 'Analytics Test Tenant' },
     });
-    const company = await systemPrisma.company.create({ data: { tenantId: tenant.id, name: 'Analytics Test Co' } });
+    const company = await systemPrisma.company.create({ data: { tenantId: tenant.id, name: 'Analytics Test Co', ...(timezone ? { timezone } : {}) } });
     return company.id;
   }
 
@@ -312,6 +303,120 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
       const result = await tenantPrisma.run(companyId, () => dashboard.getDashboard());
       expect(result.today.overdueDebt.toString()).toBe('120000');
       expect(result.today.overdueDebtChangePct).toBe(0);
+    });
+  });
+
+  describe('F5.4: export == endpoint (same DTO, same service, same rows)', () => {
+    const generatedAt = new Date('2026-08-10T10:00:00Z');
+
+    async function setup() {
+      const companyId = await createCompany('export-parity');
+      const fx = await seedBaseFixtures(companyId);
+      const day = (n: number) => new Date(Date.now() - n * 24 * 3600 * 1000);
+      await createOrder(companyId, fx, { status: OrderStatus.CONFIRMED, total: '50000', createdAt: day(3) });
+      await createOrder(companyId, fx, {
+        status: OrderStatus.DELIVERED,
+        total: '134399.99',
+        createdAt: day(2),
+        line: { qty: '4', deliveredQty: '1', unitPrice: '33333.33', discountPct: '10', vatRate: '12' },
+      });
+      await createOrder(companyId, fx, { status: OrderStatus.CANCELLED, total: '77777', createdAt: day(2) });
+      await createOrder(companyId, fx, { status: OrderStatus.SUBMITTED, total: '12000', createdAt: day(40) }); // outside window
+      const query = { from: localDateString(day(5)), to: localDateString(day(1)) };
+      return { companyId, query };
+    }
+
+    function parseCsv(buf: Buffer): string[][] {
+      expect([...buf.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+      return buf.toString('utf8').slice(1).trimEnd().split('\r\n').map((l) => l.split(','));
+    }
+    const fmt = (v: unknown) => (typeof v === 'object' && v !== null ? (v as { toFixed(n: number): string }).toFixed(2) : String(v ?? ''));
+
+    it('sales: XLSX and CSV sections equal the endpoint rows; delivered-qty amount kept (F2.4)', async () => {
+      const { companyId, query } = await setup();
+      const report = await tenantPrisma.run(companyId, () => salesReport.getSalesReport(query));
+      const table = salesReportTable(report, generatedAt);
+      expect(report.summary.turnover.toString()).toBe('83600'); // 50000 + 33600 (1 delivered of 4), CANCELLED/outside excluded
+      expect(table.sections[0]!.rows).toEqual(report.byDay.map((d) => [d.date, d.turnover]));
+      expect(table.sections[1]!.rows).toEqual(report.byAgent.map((a) => [a.agentName, a.orderCount, a.turnover]));
+      expect(table.meta).toContainEqual(['Davr (dan)', query.from]);
+      expect(table.meta).toContainEqual(['Davr (gacha)', query.to]);
+      expect(table.meta).toContainEqual(['Yaratilgan vaqt', '2026-08-10 15:00:00 (Asia/Tashkent)']);
+
+      const csv = parseCsv(buildReportCsv(table)).map((r) => r.join(','));
+      for (const d of report.byDay) expect(csv).toContain(`${d.date},${d.turnover.toFixed(2)}`);
+      expect(csv).toContain(`Aylanma,${report.summary.turnover.toFixed(2)}`);
+
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load((await buildReportXlsx(table)) as never);
+      const days = wb.getWorksheet('Kunlar')!;
+      const headerRow = xlsxHeaderRow(table);
+      expect(days.getRow(headerRow).values).toEqual([undefined, 'Sana', 'Aylanma']);
+      const got: unknown[][] = [];
+      days.eachRow((r, n) => {
+        if (n > headerRow) got.push((r.values as unknown[]).slice(1));
+      });
+      expect(got).toEqual(report.byDay.map((d) => [d.date, d.turnover.toNumber()]));
+    });
+
+    it('agents: export rows == endpoint rows (CSV)', async () => {
+      const { companyId, query } = await setup();
+      const report = await tenantPrisma.run(companyId, () => agentPerformance.getAgentPerformance(query));
+      const rows = parseCsv(buildReportCsv(agentPerformanceTable(report, generatedAt)));
+      const headerIdx = rows.findIndex((r) => r[0] === 'Agent');
+      expect(rows.slice(headerIdx + 1)).toEqual(
+        report.agents.map((a) => [a.agentName, a.plannedVisits, a.completedVisits, a.routeCompletionPct, a.effectiveVisitPct, a.orderCount, a.turnover, a.avgCheck].map(fmt)),
+      );
+      expect(report.agents[0]!.turnover.toString()).toBe('83600');
+    });
+
+    it('overview: export rows == endpoint values (CSV)', async () => {
+      const { companyId, query } = await setup();
+      const report = await tenantPrisma.run(companyId, () => overview.getOverview(query));
+      const rows = parseCsv(buildReportCsv(overviewReportTable(report, generatedAt)));
+      const find = (label: string) => rows.find((r) => r[0] === label)?.[1];
+      expect(find('Aylanma')).toBe(report.turnover.toFixed(2));
+      expect(find('Buyurtmalar soni')).toBe(String(report.orderCount));
+      expect(find('Faol mijozlar')).toBe(String(report.activeCustomers));
+      expect(find('Jami qarzdorlik')).toBe(report.totalDebt.toFixed(2));
+      expect(report.turnover.toString()).toBe('83600');
+    });
+
+    it('CSV escapes quotes/commas/newlines and neutralises formula-leading names', () => {
+      const csv = buildReportCsv({
+        title: 'T',
+        meta: [],
+        notes: [],
+        sections: [{ name: 'S', columns: [{ header: 'A' }, { header: 'B' }], rows: [['a "q", b\nc', '=SUM(A1)']] }],
+      }).toString('utf8');
+      expect(csv).toContain('"a ""q"", b\nc",\'=SUM(A1)');
+    });
+  });
+
+  describe('F5.4: day boundaries follow Company.timezone', () => {
+    it('sales byDay buckets and range use the company zone (Pacific/Auckland), not Tashkent', async () => {
+      const companyId = await createCompany('tz-nz', 'Pacific/Auckland');
+      const fx = await seedBaseFixtures(companyId);
+      // 2026-06-29T13:00Z = 2026-06-30 01:00 NZST (UTC+12); in Tashkent it would be 2026-06-29 18:00.
+      await createOrder(companyId, fx, { status: OrderStatus.CONFIRMED, total: '1000', createdAt: new Date('2026-06-29T13:00:00Z') });
+      // 2026-06-30T11:59Z = 2026-06-30 23:59 NZST: still the 30th. 12:00Z = next local midnight.
+      await createOrder(companyId, fx, { status: OrderStatus.CONFIRMED, total: '10', createdAt: new Date('2026-06-30T11:59:00Z') });
+      await createOrder(companyId, fx, { status: OrderStatus.CONFIRMED, total: '5', createdAt: new Date('2026-06-30T12:00:00Z') });
+
+      const report = await tenantPrisma.run(companyId, () => salesReport.getSalesReport({ from: '2026-06-30', to: '2026-06-30' }));
+      expect(report.timeZone).toBe('Pacific/Auckland');
+      expect(report.range.from.toISOString()).toBe('2026-06-29T12:00:00.000Z');
+      expect(report.range.to.toISOString()).toBe('2026-06-30T11:59:59.999Z');
+      expect(report.byDay.map((d) => [d.date, d.turnover.toString()])).toEqual([['2026-06-30', '1010']]);
+    });
+
+    it('resolveDateRange / eachCompanyDay: exact local-midnight bounds and ISO weekday per zone', () => {
+      const r = resolveDateRange('2026-06-30', '2026-07-01', 30, 'America/New_York');
+      expect(r.start.toISOString()).toBe('2026-06-30T04:00:00.000Z');
+      expect(r.end.toISOString()).toBe('2026-07-02T03:59:59.999Z');
+      expect(eachCompanyDay(r.start, r.end, 'America/New_York').map((d) => d.date)).toEqual(['2026-06-30', '2026-07-01']);
+      expect(isoWeekday(new Date('2026-06-30T03:00:00Z'), 'America/New_York')).toBe(1); // Mon 29 Jun 23:00 NY
+      expect(isoWeekday(new Date('2026-06-30T03:00:00Z'), 'Asia/Tashkent')).toBe(2);
     });
   });
 });

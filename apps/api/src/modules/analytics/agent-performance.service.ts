@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma, VisitOutcome } from '@velto/database';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import type { DateRangeQueryDto } from './dto/date-range.query';
-import { COUNTED_ORDER_STATUSES, DAY_MS, isoWeekday, resolveDateRange, ORDER_AMOUNT_SELECT, orderTotal } from './report-utils';
+import { COUNTED_ORDER_STATUSES, companyTimeZone, eachCompanyDay, resolveDateRange, ORDER_AMOUNT_SELECT, orderTotal } from './report-utils';
 
 /** 9.2 "agent samaradorligi (asosiy)" / 17.2 KPI: route completion and effective-visit ratio, plus order count/turnover/avg-check, per agent over the window. */
 @Injectable()
@@ -10,14 +10,15 @@ export class AgentPerformanceReportService {
   constructor(private readonly tenantPrisma: TenantPrismaService) {}
 
   async getAgentPerformance(query: DateRangeQueryDto) {
-    const { start, end } = resolveDateRange(query.from, query.to);
     const tx = this.tenantPrisma.client;
+    const timeZone = await companyTimeZone(tx);
+    const { start, end } = resolveDateRange(query.from, query.to, 30, timeZone);
 
     const agents = await tx.user.findMany({
       where: { isActive: true, roles: { some: { role: { code: 'SALES_AGENT' } } } },
       select: { id: true, firstName: true, lastName: true },
     });
-    if (agents.length === 0) return { range: { from: start, to: end }, agents: [] };
+    if (agents.length === 0) return { range: { from: start, to: end }, timeZone, agents: [] };
     const agentIds = agents.map((a) => a.id);
 
     const [routes, visits, orders] = await Promise.all([
@@ -39,8 +40,8 @@ export class AgentPerformanceReportService {
     // count of every route whose weekday matches that day (17.2 "Marshrut
     // bajarilishi" needs a denominator across the range, not just one day).
     const plannedByAgent = new Map<string, number>();
-    for (let t = start.getTime(); t <= end.getTime(); t += DAY_MS) {
-      const weekday = isoWeekday(new Date(t));
+    for (const day of eachCompanyDay(start, end, timeZone)) {
+      const weekday = day.isoWeekday;
       for (const route of routes) {
         if (route.weekday !== weekday) continue;
         // A courier-served route (agentId null) never matches the
@@ -89,6 +90,6 @@ export class AgentPerformanceReportService {
     });
 
     rows.sort((a, b) => b.turnover.comparedTo(a.turnover));
-    return { range: { from: start, to: end }, agents: rows };
+    return { range: { from: start, to: end }, timeZone, agents: rows };
   }
 }

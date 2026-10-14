@@ -2,15 +2,15 @@ import { Injectable } from '@nestjs/common';
 import { InvoiceStatus, PaymentStatus, Prisma, type TenantClient } from '@velto/database';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { VALID_ALLOCATION_WHERE } from '../finance/ledger-filters';
+import { companyDay } from '../field/company-day';
 import { AgingReportService } from '../finance/reports/aging-report.service';
 import {
   COUNTED_ORDER_STATUSES,
   DAY_MS,
-  endOfDay,
-  isoWeekday,
+  companyTimeZone,
+  eachCompanyDay,
   localDateString,
   pctChange,
-  startOfDay,
   ORDER_AMOUNT_SELECT,
   orderTotal,
 } from './report-utils';
@@ -27,10 +27,14 @@ export class DashboardService {
   async getDashboard() {
     const tx = this.tenantPrisma.client;
     const now = new Date();
-    const todayStart = startOfDay(now);
-    const todayEnd = endOfDay(now);
-    const yesterdayStart = new Date(todayStart.getTime() - DAY_MS);
-    const yesterdayEnd = new Date(todayEnd.getTime() - DAY_MS);
+    const timeZone = await companyTimeZone(tx);
+    const today = companyDay(now, timeZone);
+    const yesterday = companyDay(new Date(today.start.getTime() - 1), timeZone);
+    const todayStart = today.start;
+    const todayEnd = new Date(today.end.getTime() - 1);
+    const yesterdayStart = yesterday.start;
+    const yesterdayEnd = new Date(yesterday.end.getTime() - 1);
+    const trendStart = companyDay(new Date(todayStart.getTime() - 29 * DAY_MS + 12 * 3_600_000), timeZone).start;
 
     const [
       todayOrders,
@@ -49,8 +53,8 @@ export class DashboardService {
       this.paymentsTotal(tx, yesterdayStart, yesterdayEnd),
       this.overdueDebtAsOf(tx, now),
       this.overdueDebtAsOf(tx, yesterdayEnd),
-      this.turnoverByDay(tx, new Date(todayStart.getTime() - 29 * DAY_MS), todayEnd),
-      this.agentsToday(tx, todayStart, todayEnd),
+      this.turnoverByDay(tx, trendStart, todayEnd, timeZone),
+      this.agentsToday(tx, todayStart, todayEnd, today.isoWeekday),
       this.agingReport.getAging({ page: 1, pageSize: 10 }),
     ]);
 
@@ -117,7 +121,7 @@ export class DashboardService {
     return total;
   }
 
-  private async turnoverByDay(tx: TenantClient, start: Date, end: Date) {
+  private async turnoverByDay(tx: TenantClient, start: Date, end: Date, timeZone: string) {
     const orders = await tx.salesOrder.findMany({
       where: { createdAt: { gte: start, lte: end }, status: { in: COUNTED_ORDER_STATUSES } },
       select: { createdAt: true, ...ORDER_AMOUNT_SELECT },
@@ -125,26 +129,24 @@ export class DashboardService {
 
     const byDay = new Map<string, Prisma.Decimal>();
     for (const order of orders) {
-      const key = localDateString(order.createdAt);
+      const key = localDateString(order.createdAt, timeZone);
       byDay.set(key, (byDay.get(key) ?? new Prisma.Decimal(0)).plus(orderTotal(order)));
     }
 
     const days: { date: string; turnover: Prisma.Decimal }[] = [];
-    for (let t = start.getTime(); t <= end.getTime(); t += DAY_MS) {
-      const key = localDateString(new Date(t));
-      days.push({ date: key, turnover: byDay.get(key) ?? new Prisma.Decimal(0) });
+    for (const day of eachCompanyDay(start, end, timeZone)) {
+      days.push({ date: day.date, turnover: byDay.get(day.date) ?? new Prisma.Decimal(0) });
     }
     return days;
   }
 
-  private async agentsToday(tx: TenantClient, start: Date, end: Date) {
+  private async agentsToday(tx: TenantClient, start: Date, end: Date, weekday: number) {
     const agents = await tx.user.findMany({
       where: { isActive: true, roles: { some: { role: { code: 'SALES_AGENT' } } } },
       select: { id: true, firstName: true, lastName: true },
     });
     if (agents.length === 0) return [];
     const agentIds = agents.map((a) => a.id);
-    const weekday = isoWeekday(start);
 
     const [routesToday, visitsToday, ordersToday] = await Promise.all([
       tx.route.findMany({

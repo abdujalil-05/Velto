@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@velto/database';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import type { DateRangeQueryDto } from './dto/date-range.query';
-import { COUNTED_ORDER_STATUSES, DAY_MS, localDateString, resolveDateRange, ORDER_AMOUNT_SELECT, effectiveLineTotal, orderTotal } from './report-utils';
+import { COUNTED_ORDER_STATUSES, companyTimeZone, eachCompanyDay, localDateString, resolveDateRange, ORDER_AMOUNT_SELECT, effectiveLineTotal, orderTotal } from './report-utils';
 
 /** 9.2 "Hisobotlar ... sotuv" — turnover/order-count trend plus the agents and products driving it, for the given window (default: last 30 days). */
 @Injectable()
@@ -10,8 +10,9 @@ export class SalesReportService {
   constructor(private readonly tenantPrisma: TenantPrismaService) {}
 
   async getSalesReport(query: DateRangeQueryDto) {
-    const { start, end } = resolveDateRange(query.from, query.to);
     const tx = this.tenantPrisma.client;
+    const timeZone = await companyTimeZone(tx);
+    const { start, end } = resolveDateRange(query.from, query.to, 30, timeZone);
 
     const orders = await tx.salesOrder.findMany({
       where: { createdAt: { gte: start, lte: end }, status: { in: COUNTED_ORDER_STATUSES } },
@@ -35,7 +36,7 @@ export class SalesReportService {
       const amount = orderTotal(order);
       turnover = turnover.plus(amount);
 
-      const dayKey = localDateString(order.createdAt);
+      const dayKey = localDateString(order.createdAt, timeZone);
       byDay.set(dayKey, (byDay.get(dayKey) ?? new Prisma.Decimal(0)).plus(amount));
 
       if (order.agentId) {
@@ -55,13 +56,13 @@ export class SalesReportService {
 
     const orderCount = orders.length;
     const byDayArray: { date: string; turnover: Prisma.Decimal }[] = [];
-    for (let t = start.getTime(); t <= end.getTime(); t += DAY_MS) {
-      const key = localDateString(new Date(t));
-      byDayArray.push({ date: key, turnover: byDay.get(key) ?? new Prisma.Decimal(0) });
+    for (const day of eachCompanyDay(start, end, timeZone)) {
+      byDayArray.push({ date: day.date, turnover: byDay.get(day.date) ?? new Prisma.Decimal(0) });
     }
 
     return {
       range: { from: start, to: end },
+      timeZone,
       summary: {
         turnover,
         orderCount,
