@@ -11,7 +11,8 @@ import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import type { ListImportsQueryDto } from './dto/list-imports.query';
 import { ImportAlreadyConfirmedException, ImportJobNotFoundException, InvalidImportFileException } from './import-exceptions';
 import { addTracedJob } from '../../common/queue/trace-job';
-import { IMPORT_QUEUE, type ImportJobData, type ImportJobReport, type ImportType } from './import.constants';
+import { localizeRowErrors } from './row-messages';
+import { IMPORT_JOB_OPTS, IMPORT_QUEUE, type ImportJobData, type ImportJobReport, type ImportType } from './import.constants';
 import { parseCustomersWorkbook, type CustomerImportRow } from './parsers/customers-parser';
 import { parseProductsWorkbook, type ProductImportRow } from './parsers/products-parser';
 
@@ -58,6 +59,8 @@ export class ImportService {
         type,
         status: 'PENDING',
         fileUrl,
+        createdBy: user.id,
+        progress: 0,
         errorLog: report as unknown as Prisma.InputJsonValue,
       },
     });
@@ -67,14 +70,14 @@ export class ImportService {
     const existing = await tx.customer.findMany({ where: { deletedAt: null }, select: { code: true } });
     const existingCodes = new Set(existing.map((c) => c.code));
     const { totalRows, validRows, errors } = await parseCustomersWorkbook(buffer, existingCodes);
-    return { totalRows, validCount: validRows.length, invalidCount: errors.length, errors, rows: validRows };
+    return { totalRows, validCount: validRows.length, invalidCount: errors.length, errors: localizeRowErrors(errors), rows: validRows };
   }
 
   private async validateProducts(tx: TenantClient, buffer: Buffer): Promise<ImportJobReport<ProductImportRow>> {
     const existing = await tx.product.findMany({ where: { deletedAt: null }, select: { sku: true } });
     const existingSkus = new Set(existing.map((p) => p.sku));
     const { totalRows, validRows, errors } = await parseProductsWorkbook(buffer, existingSkus);
-    return { totalRows, validCount: validRows.length, invalidCount: errors.length, errors, rows: validRows };
+    return { totalRows, validCount: validRows.length, invalidCount: errors.length, errors: localizeRowErrors(errors), rows: validRows };
   }
 
   async list(query: ListImportsQueryDto) {
@@ -98,14 +101,20 @@ export class ImportService {
     return job;
   }
 
-  /** Only a freshly validated (PENDING) job can be confirmed — not one already committing/committed/failed, and not twice. */
+  /**
+   * Only a freshly validated (PENDING) job can be confirmed. The PENDING ->
+   * PROCESSING transition is a single conditional UPDATE (row lock), so two
+   * concurrent confirms cannot both win; the loser gets 409. Valid rows only
+   * are written (invalid/existing rows stay in the report) — see processor.
+   */
   async confirm(id: string, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
     const job = await tx.importJob.findFirst({ where: { id } });
     if (!job) throw new ImportJobNotFoundException();
-    if (job.status !== 'PENDING') throw new ImportAlreadyConfirmedException();
 
-    const updated = await tx.importJob.update({ where: { id }, data: { status: 'PROCESSING' } });
+    const { count } = await tx.importJob.updateMany({ where: { id, status: 'PENDING' }, data: { status: 'PROCESSING', progress: 0 } });
+    if (count !== 1) throw new ImportAlreadyConfirmedException();
+
     await this.auditLog.log(tx, {
       companyId: user.companyId,
       userId: user.id,
@@ -115,8 +124,11 @@ export class ImportService {
       newValue: toAuditJson({ type: job.type }),
     });
     // Deferred until this request's transaction actually commits — same
-    // enqueue-before-commit race as Export1cService.create().
-    TenantContext.afterCommit(() => addTracedJob(this.queue, 'commit', { importJobId: id, companyId: user.companyId, userId: user.id }));
-    return updated;
+    // enqueue-before-commit race as Export1cService.create(). Fixed jobId
+    // makes a duplicate enqueue a no-op in BullMQ.
+    TenantContext.afterCommit(() =>
+      addTracedJob(this.queue, 'commit', { importJobId: id, companyId: user.companyId, userId: user.id }, { ...IMPORT_JOB_OPTS, jobId: `import-${id}` }),
+    );
+    return tx.importJob.findFirstOrThrow({ where: { id } });
   }
 }

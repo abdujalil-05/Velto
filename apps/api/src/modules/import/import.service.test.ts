@@ -96,7 +96,7 @@ describe('ImportService (integration, real Postgres + RLS)', () => {
       tenantPrisma.run(companyId, () => importService.confirm(created.id, user)),
     );
     expect(confirmed.status).toBe('PROCESSING');
-    expect(queueAdd).toHaveBeenCalledWith('commit', { importJobId: created.id, companyId, userId: user.id, traceId: 'known-trace-id-123' });
+    expect(queueAdd).toHaveBeenCalledWith('commit', { importJobId: created.id, companyId, userId: user.id, traceId: 'known-trace-id-123' }, expect.objectContaining({ jobId: `import-${created.id}`, attempts: 3 }));
 
     await expect(tenantPrisma.run(companyId, () => importService.confirm(created.id, user))).rejects.toBeInstanceOf(
       ImportAlreadyConfirmedException,

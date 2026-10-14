@@ -7,6 +7,7 @@ import ExcelJS from 'exceljs';
 import { prisma, systemPrisma } from '@velto/database';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
+import { StorageService } from '../src/common/storage/storage.service';
 
 /**
  * TZ 11.4: payment, allocation, stock adjustment, order confirm/cancel, role
@@ -61,7 +62,10 @@ describe('E2E: mandatory audit events (TZ 11.4)', () => {
   }
 
   beforeAll(async () => {
-    const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(StorageService)
+      .useValue({ upload: async (i: { keyPrefix: string; extension: string }) => `memory://${i.keyPrefix}/audit.${i.extension}` })
+      .compile();
     app = moduleRef.createNestApplication();
     configureApp(app, ['http://localhost:3000']);
     await app.init();
@@ -198,8 +202,8 @@ describe('E2E: mandatory audit events (TZ 11.4)', () => {
     expect(rows[0].userId).toBe(userId);
   });
 
-  // Requires MinIO (S3_ENDPOINT, docker-compose service not running in this env => upload 500).
-  it.skip('11.4: import commit audit carries actor userId [GAP: ImportProcessor logs without userId; ImportService.confirm logs nothing]', async () => {
+  // Storage is replaced by an in-memory fake (no MinIO needed); production keeps the S3 adapter.
+  it('11.4: import commit audit carries actor userId', async () => {
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('customers');
     ws.addRow(['code', 'name', 'phone', 'contactPerson', 'paymentTermDays', 'outletName', 'outletAddress', 'outletLatitude', 'outletLongitude']);

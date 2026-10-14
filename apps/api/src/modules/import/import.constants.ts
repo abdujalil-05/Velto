@@ -7,15 +7,28 @@ export type ImportType = 'customers' | 'products';
 export interface ImportJobData extends TraceableJobData {
   importJobId: string;
   companyId: string;
-  /** Actor who confirmed the import (ImportJob has no creator column); used for the audit row. */
+  /** Actor who confirmed the import; used for the audit row (ImportJob.createdBy holds the uploader). */
   userId?: string;
 }
 
 /** Shared shape for a single row's problems, regardless of import type. */
+export interface RowMessage {
+  uz: string;
+  ru: string;
+  en: string;
+}
+
 export interface RowError {
   row: number; // 1-based, matching the spreadsheet's visible row number (header = row 1)
-  messages: string[];
+  messages: string[]; // uz text (legacy shape, kept for the web table)
+  i18n?: RowMessage[]; // same messages, trilingual (parallel to `messages`)
 }
+
+/** Rows per commit transaction; progress is persisted (and visible to pollers) after each chunk. */
+export const IMPORT_COMMIT_CHUNK = 200;
+
+/** Queue retry policy: exponential backoff, bounded attempts (7.5). */
+export const IMPORT_JOB_OPTS = { attempts: 3, backoff: { type: 'exponential' as const, delay: 5_000 }, removeOnComplete: 1000, removeOnFail: 5000 };
 
 /**
  * Stored as ImportJob.errorLog (Json?) — despite the field's name (inherited

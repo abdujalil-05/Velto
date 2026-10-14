@@ -85,7 +85,11 @@ describe('ImportProcessor (integration, real Postgres + RLS)', () => {
     const report = updated.errorLog as unknown as ImportJobReport<never>;
     expect(report.createdCount).toBe(0);
     expect(report.skippedCount).toBe(1);
-    expect(report.errors).toContainEqual({ row: 2, messages: ['code "C-RACE" allaqachon mavjud'] });
+    expect(report.errors).toContainEqual({
+      row: 2,
+      messages: ['code "C-RACE" allaqachon mavjud'],
+      i18n: [expect.objectContaining({ uz: 'code "C-RACE" allaqachon mavjud', ru: expect.stringContaining('уже существует'), en: expect.stringContaining('already exists') })],
+    });
   });
 
   it('creates a product with a default packaging, auto-creating a new category and reusing an existing one case-insensitively', async () => {
