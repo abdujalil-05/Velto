@@ -41,12 +41,18 @@ describe('E2E F2.5: reconciliation', () => {
     const tenant = await systemPrisma.tenant.create({ data: { slug: `test-recon-e2e-${Date.now()}`, name: 'RECON' } });
     companyId = (await systemPrisma.company.create({ data: { tenantId: tenant.id, name: 'RECON Co' } })).id;
 
+    const permIdCache = new Map<string, string>(); // roles overlap heavily: upsert each permission once, not per role
     for (const roleCode of ['OWNER', 'ACCOUNTANT', 'SALES_AGENT']) {
       const permissionIds: string[] = [];
       for (const key of permissionKeysForRole(roleCode)) {
         const [module, code] = key.split('.');
-        const p = await systemPrisma.permission.upsert({ where: { module_code: { module, code } }, update: {}, create: { module, code } });
-        permissionIds.push(p.id);
+        const cacheKey = `${module}.${code}`;
+        let id = permIdCache.get(cacheKey);
+        if (!id) {
+          id = (await systemPrisma.permission.upsert({ where: { module_code: { module, code } }, update: {}, create: { module, code } })).id;
+          permIdCache.set(cacheKey, id);
+        }
+        permissionIds.push(id);
       }
       const phone = `+99890${Math.floor(1_000_000 + Math.random() * 8_000_000)}`;
       const user = await systemPrisma.user.create({

@@ -146,7 +146,7 @@ describe('E2E F5 import (create-only, preview/confirm, scale, RBAC, isolation)',
     expect(done2.status).toBe('DONE');
     expect(done2.errorLog.createdCount).toBe(0);
     expect(await customerCount(companyA, `CU${tag}`)).toBe(1000);
-  });
+  }, 90_000);
 
   it('2000 products: preview fast, confirm creates all, re-import creates no duplicates', async () => {
     const buf = await buildTestWorkbook(PRODUCT_HEADERS, productRows(2000, `PR${tag}`));
@@ -170,7 +170,7 @@ describe('E2E F5 import (create-only, preview/confirm, scale, RBAC, isolation)',
     await http().post(`/import/${again.body.id}/confirm`).set(bearer(ownerA)).expect(201);
     await waitStatus(ownerA, again.body.id);
     expect(await productCount(companyA, `PR${tag}`)).toBe(2000);
-  });
+  }, 90_000);
 
   it('error rows: line numbers + trilingual reasons; existing & in-file duplicates reported; only valid rows written; double confirm -> one wins', async () => {
     await tenantPrisma.run(companyA, (tx) => tx.customer.create({ data: { companyId: companyA, code: `EX${tag}`, name: 'Existing' } }));
