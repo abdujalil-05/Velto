@@ -27,6 +27,9 @@ export interface RowError {
 /** Rows per commit transaction; progress is persisted (and visible to pollers) after each chunk. */
 export const IMPORT_COMMIT_CHUNK = 200;
 
+/** A 200-row chunk tx must not hit Prisma's 5 s default under CPU/DB load (it rolled back and failed imports); progress is still persisted per chunk. */
+export const IMPORT_CHUNK_TX_OPTIONS = { timeout: 60_000, maxWait: 10_000 };
+
 /** Queue retry policy: exponential backoff, bounded attempts (7.5). */
 export const IMPORT_JOB_OPTS = { attempts: 3, backoff: { type: 'exponential' as const, delay: 5_000 }, removeOnComplete: 1000, removeOnFail: 5000 };
 

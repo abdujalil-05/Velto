@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import argon2 from 'argon2';
@@ -78,6 +78,10 @@ describe('E2E F5 import (create-only, preview/confirm, scale, RBAC, isolation)',
     app = moduleRef.createNestApplication();
     configureApp(app, ['http://localhost:3000']);
     await app.init();
+  });
+
+  // Every test gets its own tenants/users so a failure cannot cascade into the others.
+  beforeEach(async () => {
     companyA = await seedCompany('A');
     companyB = await seedCompany('B');
     ownerA = await seedUser(companyA, 'OWNER');
@@ -94,15 +98,18 @@ describe('E2E F5 import (create-only, preview/confirm, scale, RBAC, isolation)',
   const upload = (who: { token: string }, type: 'customers' | 'products', buf: Buffer) =>
     http().post(`/import/${type}`).set(bearer(who)).attach('file', buf, { filename: 'x.xlsx', contentType: XLSX });
 
-  async function waitStatus(who: { token: string }, id: string, want = 'DONE') {
-    for (let i = 0; i < 200; i++) {
+  /** Deadline (default 80 s, below the 150 s test timeout) stays below the test timeout; the failure message carries the last http/status/progress/body. */
+  async function waitStatus(who: { token: string }, id: string, want = 'DONE', deadlineMs = 80_000) {
+    const end = Date.now() + deadlineMs;
+    let last = 'no response';
+    while (Date.now() < end) {
       const res = await http().get(`/import/${id}`).set(bearer(who));
-      if (res.status === 200 && res.body.status === 'FAILED') throw new Error(`import FAILED: ${JSON.stringify(res.body.errorLog).slice(0, 300)}`);
+      last = `http=${res.status} status=${res.body?.status} progress=${res.body?.progress} body=${JSON.stringify(res.body?.errorLog ?? res.body).slice(0, 200)}`;
+      if (res.status === 200 && res.body.status === 'FAILED') throw new Error(`import ${id} FAILED: ${last}`);
       if (res.status === 200 && res.body.status === want) return res.body;
-      if (res.status !== 200 && res.status !== 429) throw new Error(`poll failed: ${res.status}`);
       await new Promise((r) => setTimeout(r, res.status === 429 ? 2000 : 500));
     }
-    throw new Error('import did not finish');
+    throw new Error(`import ${id} not ${want} within ${deadlineMs} ms; last: ${last}`);
   }
 
   const customerRows = (n: number, prefix: string) =>
@@ -146,7 +153,7 @@ describe('E2E F5 import (create-only, preview/confirm, scale, RBAC, isolation)',
     expect(done2.status).toBe('DONE');
     expect(done2.errorLog.createdCount).toBe(0);
     expect(await customerCount(companyA, `CU${tag}`)).toBe(1000);
-  }, 90_000);
+  }, 150_000);
 
   it('2000 products: preview fast, confirm creates all, re-import creates no duplicates', async () => {
     const buf = await buildTestWorkbook(PRODUCT_HEADERS, productRows(2000, `PR${tag}`));
@@ -170,7 +177,7 @@ describe('E2E F5 import (create-only, preview/confirm, scale, RBAC, isolation)',
     await http().post(`/import/${again.body.id}/confirm`).set(bearer(ownerA)).expect(201);
     await waitStatus(ownerA, again.body.id);
     expect(await productCount(companyA, `PR${tag}`)).toBe(2000);
-  }, 90_000);
+  }, 150_000);
 
   it('error rows: line numbers + trilingual reasons; existing & in-file duplicates reported; only valid rows written; double confirm -> one wins', async () => {
     await tenantPrisma.run(companyA, (tx) => tx.customer.create({ data: { companyId: companyA, code: `EX${tag}`, name: 'Existing' } }));
@@ -206,10 +213,11 @@ describe('E2E F5 import (create-only, preview/confirm, scale, RBAC, isolation)',
   });
 
   it('list is ordered createdAt desc and tenant-scoped', async () => {
+    for (const n of [1, 2]) await upload(ownerA, 'customers', await buildTestWorkbook(CUSTOMER_HEADERS, customerRows(n, `LS${n}${tag}`))).expect(201);
     const res = await http().get('/import?pageSize=100').set(bearer(ownerA)).expect(200);
     const times = res.body.data.map((j: any) => new Date(j.createdAt).getTime());
     expect(times).toEqual([...times].sort((a, b) => b - a));
-    expect(res.body.data.length).toBeGreaterThan(0);
+    expect(res.body.data.length).toBe(2);
     const resB = await http().get('/import').set(bearer(ownerB)).expect(200);
     expect(resB.body.data).toHaveLength(0);
   });

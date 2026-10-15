@@ -7,7 +7,7 @@ import { Prisma, type TenantClient } from '@velto/database';
 import { AuditLogService, toAuditJson } from '../../common/audit/audit-log.service';
 import { runJobWithTrace } from '../../common/queue/trace-job';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
-import { IMPORT_COMMIT_CHUNK, IMPORT_QUEUE, type ImportCommitState, type ImportJobData, type ImportJobReport, type RowError } from './import.constants';
+import { IMPORT_COMMIT_CHUNK, IMPORT_CHUNK_TX_OPTIONS, IMPORT_QUEUE, type ImportCommitState, type ImportJobData, type ImportJobReport, type RowError } from './import.constants';
 import { localizeRowErrors } from './row-messages';
 import type { CustomerImportRow } from './parsers/customers-parser';
 import type { ProductImportRow } from './parsers/products-parser';
@@ -27,7 +27,9 @@ interface CommitResult {
  * findFirst-then-create pattern) since time has passed since validation and
  * another request could have taken the same code/sku meanwhile.
  */
-@Processor(IMPORT_QUEUE)
+// Lock renewal is a timer on the shared event loop (API + worker in one process): under CPU/DB starvation the default 30 s lock expired mid-job
+// ("Missing lock ... moveToFinished"). 120 s lock + tolerant stalled count; safe because the commit resumes from its persisted cursor and is idempotent.
+@Processor(IMPORT_QUEUE, { lockDuration: 120_000, maxStalledCount: 5 })
 export class ImportProcessor extends WorkerHost {
   private readonly logger = new Logger(ImportProcessor.name);
 
@@ -70,6 +72,9 @@ export class ImportProcessor extends WorkerHost {
         const chunk = rows.slice(i, i + IMPORT_COMMIT_CHUNK);
         const progress = Math.min(99, Math.floor(((i + chunk.length) / rows.length) * 100));
         const part = await this.tenantPrisma.run(companyId, async (tx) => {
+          // Row lock + cursor check: if another run of the same job (e.g. BullMQ stalled-redelivery after a lock expiry) already advanced the cursor, this run yields.
+          const cur = await tx.$queryRaw<{ n: string }[]>`SELECT COALESCE("errorLog"->'commit'->>'nextIndex', '0') AS n FROM "ImportJob" WHERE "id" = ${importJobId}::uuid AND "status" = 'PROCESSING' FOR UPDATE`;
+          if (cur.length === 0 || Number(cur[0].n) !== i) return null;
           const r =
             type === 'customers'
               ? await this.commitCustomers(tx, companyId, chunk as CustomerImportRow[])
@@ -83,7 +88,10 @@ export class ImportProcessor extends WorkerHost {
           // jsonb merge keeps the (large) stored rows untouched on the client side.
           await tx.$executeRaw`UPDATE "ImportJob" SET "progress" = ${progress}, "errorLog" = COALESCE("errorLog", '{}'::jsonb) || ${JSON.stringify({ commit })}::jsonb WHERE "id" = ${importJobId}::uuid`;
           return r;
-        });
+        }, IMPORT_CHUNK_TX_OPTIONS);
+        // Yield so lock renewal / HTTP handlers run between chunks.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        if (part === null) return; // another run owns this job
         result.createdCount += part.createdCount;
         result.skippedCount += part.skippedCount;
         result.errors.push(...part.errors);
