@@ -1870,7 +1870,7 @@ describe('tenant isolation (RLS)', () => {
       ).id;
     });
 
-    it('insert: only PENDING_HANDOVER (agent CASH) or POSTED, never pre-resolved', async () => {
+    it('insert: only PENDING_HANDOVER (agent-collected) or POSTED, never pre-resolved', async () => {
       const base = { companyId: companyAId, customerId, amount: '1.00', method: 'CASH' as const, collectedBy: agentId };
       for (const status of ['REJECTED', 'REVERSED'] as const) {
         await expect(
@@ -1886,14 +1886,49 @@ describe('tenant isolation (RLS)', () => {
       ).rejects.toThrow(/handover columns/);
       await expect(
         withTenant(companyAId, (tx) =>
-          tx.payment.create({ data: { ...base, number: 'PAY-HO-BAD-CARD', method: 'CARD', status: 'PENDING_HANDOVER' } }),
-        ),
-      ).rejects.toThrow();
-      await expect(
-        withTenant(companyAId, (tx) =>
           tx.payment.create({ data: { ...base, number: 'PAY-HO-BAD-NOAGENT', collectedBy: null, status: 'PENDING_HANDOVER' } }),
         ),
       ).rejects.toThrow();
+    });
+
+    it('agent CARD/TRANSFER payments are PENDING_HANDOVER too, and can be accepted', async () => {
+      for (const method of ['CARD', 'TRANSFER'] as const) {
+        const p = await withTenant(companyAId, (tx) =>
+          tx.payment.create({
+            data: {
+              companyId: companyAId,
+              number: `PAY-HO-${method}-${Date.now()}-${++seq}`,
+              customerId,
+              amount: '10.00',
+              method,
+              status: 'PENDING_HANDOVER',
+              collectedBy: agentId,
+            },
+          }),
+        );
+        expect(p.status).toBe('PENDING_HANDOVER');
+        expect((await accept(p.id)).status).toBe('POSTED');
+      }
+    });
+
+    it('self-resolve is forbidden at DB level: collector cannot accept or reject own handover', async () => {
+      const agentSessionId = (
+        await withTenant(companyAId, (tx) => tx.cashSession.create({ data: { companyId: companyAId, userId: agentId, openAmount: '0.00' } }))
+      ).id;
+      const p = await newPending();
+      await expect(accept(p.id, { handoverActorId: agentId, handoverCashSessionId: agentSessionId })).rejects.toThrow(
+        /may not resolve their own handover/,
+      );
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.payment.update({
+            where: { id: p.id },
+            data: { status: 'REJECTED', handoverActorId: agentId, handoverAt: new Date(), handoverRejectReason: 'x' },
+          }),
+        ),
+      ).rejects.toThrow(/may not resolve their own handover/);
+      const still = await withTenant(companyAId, (tx) => tx.payment.findUniqueOrThrow({ where: { id: p.id } }));
+      expect(still.status).toBe('PENDING_HANDOVER');
     });
 
     it('PENDING_HANDOVER cannot be allocated (no FIFO in transit)', async () => {
