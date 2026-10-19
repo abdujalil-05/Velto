@@ -6,13 +6,13 @@ describe('rbac-catalog: F1.4 role grants', () => {
   it('ACCOUNTANT grant snapshot is exact', () => {
     expect([...permissionKeysForRole('ACCOUNTANT')].sort()).toEqual(
       [
-        'cash.read', 'customers.read', 'integrations.export1c', 'invoices.read', 'payments.read',
+        'cash.read', 'customers.read', 'integrations.ack1c', 'integrations.export1c', 'invoices.read', 'payments.read',
         'purchases.read', 'reconciliation.read', 'reports.export', 'reports.read',
       ],
     );
   });
 
-  it('ACCOUNTANT holds no write permission anywhere', () => {
+  it('ACCOUNTANT holds no write permission except the single ADR-003c exception integrations.ack1c', () => {
     const keys = permissionKeysForRole('ACCOUNTANT');
     const forbidden = [
       'payments.create', 'cash.open', 'cash.close', 'orders.create', 'orders.update', 'orders.cancel',
@@ -26,9 +26,17 @@ describe('rbac-catalog: F1.4 role grants', () => {
       expect(ALL_PERMISSION_KEYS, `${key} must exist in the catalog`).toContain(key);
       expect(keys, key).not.toContain(key);
     }
-    // Generic guard: only read/export actions (export1c is the 1C export) are allowed.
+    // Generic guard: only read/export actions (export1c is the 1C export) are allowed,
+    // plus exactly one write exception (ADR-003c): integrations.ack1c.
     const allowedActions = new Set(['read', 'export', 'export1c']);
-    for (const key of keys) expect(allowedActions.has(key.split('.')[1]!), key).toBe(true);
+    const ADR_003C_EXCEPTIONS = ['integrations.ack1c'];
+    const writes = keys.filter((key) => !allowedActions.has(key.split('.')[1]!));
+    expect(writes).toEqual(ADR_003C_EXCEPTIONS);
+  });
+
+  it('ADR-003c exception: integrations.ack1c → OWNER + ACCOUNTANT only', () => {
+    const holders = SYSTEM_ROLES.filter((r) => permissionKeysForRole(r.code).includes('integrations.ack1c')).map((r) => r.code);
+    expect(holders.sort()).toEqual(['ACCOUNTANT', 'OWNER']);
   });
 
   it('F2.1: payments.reverse / stock.reverse granted only to OWNER and SALES_DIRECTOR', () => {

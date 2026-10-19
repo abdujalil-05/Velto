@@ -1,3 +1,4 @@
+import { Throttle } from '@nestjs/throttler';
 import { Controller, Get, Header, Query, StreamableFile } from '@nestjs/common';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
@@ -25,6 +26,7 @@ export class AgingReportController {
   // rows as the screen (computeRows); reports.export, not reports.read (§7.3).
   @Get('aging/export')
   @RequirePermission('reports.export')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Header('Content-Type', XLSX_MIME)
   @Header('Content-Disposition', 'attachment; filename="qarzdorlik.xlsx"')
   async agingExport(@Query() query: AgingAsOfQueryDto, @CurrentUser() user: AuthenticatedUser) {
@@ -34,6 +36,7 @@ export class AgingReportController {
 
   @Get('aging/export.csv')
   @RequirePermission('reports.export')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Header('Content-Type', CSV_MIME)
   @Header('Content-Disposition', 'attachment; filename="qarzdorlik.csv"')
   async agingExportCsv(@Query() query: AgingAsOfQueryDto, @CurrentUser() user: AuthenticatedUser) {

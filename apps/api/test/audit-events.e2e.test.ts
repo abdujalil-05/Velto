@@ -195,7 +195,7 @@ describe('E2E: mandatory audit events (TZ 11.4)', () => {
   });
 
   it('11.4: export (1C) is a separate audit event with actor [GAP: Export1cService writes no AuditLog]', async () => {
-    const res = await auth(http().post('/export/1c')).send({ from: '2026-01-01', to: '2026-12-31', format: 'EXCEL' });
+    const res = await auth(http().post('/export/1c')).send({ from: '2026-01-01', to: '2026-09-30', format: 'EXCEL' });
     expect(res.status).toBe(201);
     const rows = await inTenant((tx) => tx.auditLog.findMany({ where: { action: { contains: 'export' } } }));
     expect(rows.length).toBe(1);

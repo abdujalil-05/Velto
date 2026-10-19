@@ -1,6 +1,7 @@
 import { memoryStorage } from 'multer';
 import { Controller, Get, Header, Param, ParseUUIDPipe, Post, Query, StreamableFile, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Throttle } from '@nestjs/throttler';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
@@ -38,6 +39,7 @@ export class ImportController {
   }
 
   @Post('customers')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @RequirePermission(IMPORT_WRITE)
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } }))
   uploadCustomers(@UploadedFile() file: Express.Multer.File | undefined, @CurrentUser() user: AuthenticatedUser) {
@@ -46,6 +48,7 @@ export class ImportController {
   }
 
   @Post('products')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @RequirePermission(IMPORT_WRITE)
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } }))
   uploadProducts(@UploadedFile() file: Express.Multer.File | undefined, @CurrentUser() user: AuthenticatedUser) {

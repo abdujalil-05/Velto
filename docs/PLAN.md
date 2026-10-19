@@ -43,7 +43,7 @@ Boshlang'ich holat: kod bazasi katta qismi yozilgan (audit 2026-10-12, `STATUS.m
 ## Faza 5 — Hisobot, import/eksport, 1C (TZ §7.3, M09/M10/M12)
 - F5.1 Hisobot eksporti = ekrandagi filtrlar (test); hisobot formulalari ekranda.
 - F5.2 Import: 1000 mijoz/2000 mahsulot preview, xato qatorlari, takroriy importda dublikat yo'q (test).
-- F5.3 1C eksport: pilot konfiguratsiya mapping'i (foydalanuvchi/buxgalter ishtiroki), CSV/XLSX fallback, takroriy eksport himoyasi.
+- F5.3 ✅ (F5.3+, 2026-10-19; G4 buxgalter imzosi ochiq) 1C eksport: pilot konfiguratsiya mapping'i (foydalanuvchi/buxgalter ishtiroki), CSV/XLSX fallback, takroriy eksport himoyasi.
 - F5.4 Notifications/job holatlari UI; audit UI.
 
 ## Faza 6 — Platforma (TZ M00/M11)
@@ -62,7 +62,7 @@ Boshlang'ich holat: kod bazasi katta qismi yozilgan (audit 2026-10-12, `STATUS.m
 Tartib: hujjat gigienasi → moliya/ma'lumot → 1C → offline/PWA → platforma → chiniqtirish. Faqat Mode A (ADR-028).
 - F8.0 Hujjat gigienasi (TZ v5 havolalari, ADR nomlash, ziddiyatlar) — **BAJARILDI (2026-10-19)**.
 - F8.1 ✅ **BAJARILDI (2026-10-19, branch `feat/f8-1-payment-handover`)**: `PENDING_HANDOVER` oqimi + REJECTED (sabab majburiy); agent to'lovi har qanday usulda PENDING_HANDOVER; `payments.handover` faqat OWNER+CASHIER. Ochiq qoldi: opening balance importi, ADR-032 OWNER alert. Asl doira: `PENDING_HANDOVER` oqimi (ADR-029: agent naqdi qarzni kamaytirmaydi, kassir smenada qabul qilgach POSTED+FIFO; kassir/ofis to'lovi darhol POSTED), majburiy rad etish sababi, opening balance importi (sana, manba, sign-off), summa chegarasidan oshgan reversal/adjust uchun OWNER alert+audit (ADR-032; chegara TBD). → `db-rls`, `finance-stock`, `qa-engineer`
-- F5.3+ 1C: ExportJob `GENERATED → ACCOUNTING_ACCEPTED | FAILED_REVIEW`, qo'lda ACK UI (checksum+izoh, audit), retry/fileHash/CSV zaxira/reversal bilan lock/davr TZ (ADR-024/025/030), signed URL + expiry, web 1C eksport sahifasi. → `integrations-dev`, `web-dev`
+- F5.3+ ✅ **BAJARILDI (2026-10-19, branch `feat/f5-3-1c-hardening`, ADR-034..039; pilot buxgalter imzosi G4 ochiq)** 1C: ExportJob `GENERATED → ACCOUNTING_ACCEPTED | FAILED_REVIEW`, qo'lda ACK UI (checksum+izoh, audit), retry/fileHash/CSV zaxira/reversal bilan lock/davr TZ (ADR-024/025/030), signed URL + expiry, web 1C eksport sahifasi. → `integrations-dev`, `web-dev`
 - F4.5 Offline/PWA: PWA manifest, holat yorliqlari (saved on device / synced / rejected), qurilma matritsasi (`docs/OFFLINE-DEVICE-MATRIX.md`, pilot qurilmalar ro'yxati foydalanuvchidan). → `miniapp-dev`, `qa-engineer`
 - F6 Platforma: trial holati, onboarding yo'li, UI yorlig'i "Ichki hisob" / "Внутренний счёт" / "Internal invoice" (ADR-033). **PLATFORM_ADMIN support access QILINMAYDI (ADR-003b)** — F6.1 dagi "cheklangan support kirishi" bekor. → `web-dev`, `i18n-sync`
 - F7 Chiniqtirish: outbox qarori (ochiq), rate-limit, `/health/live|ready`, runbook'lar, restore drill, yagona yuk profili (TZ §12.5) bo'yicha perf. → `devops`, `qa-engineer`

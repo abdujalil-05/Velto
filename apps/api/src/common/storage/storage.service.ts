@@ -1,13 +1,21 @@
 import { randomUUID } from 'node:crypto';
-import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import type { Readable } from 'node:stream';
+import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { TenantContext } from '../tenant/tenant-context';
 
 export interface UploadFileInput {
   buffer: Buffer;
   mimeType: string;
   extension: string;
   keyPrefix: string;
+}
+
+export interface PutObjectInput {
+  key: string;
+  buffer: Buffer;
+  mimeType: string;
 }
 
 /** S3-compatible (MinIO in dev/self-hosted, any S3 provider in prod — 11.2/14.4 SCA-005). */
@@ -43,5 +51,20 @@ export class StorageService {
       }),
     );
     return `${this.publicEndpoint}/${this.bucket}/${key}`;
+  }
+
+  /** Writes to an exact key (idempotent overwrite). Returns the key, never a public URL: private files go through signed/streamed download. */
+  async putObject(input: PutObjectInput): Promise<string> {
+    await this.client.send(new PutObjectCommand({ Bucket: this.bucket, Key: input.key, Body: input.buffer, ContentType: input.mimeType }));
+    return input.key;
+  }
+
+  async getObject(key: string): Promise<{ stream: Readable; size?: number }> {
+    // Defence in depth: reads are confined to the current tenant's export prefix (also blocks '..' traversal).
+    if (!key.startsWith(`exports/1c/${TenantContext.companyId}/`) || key.split('/').includes('..')) {
+      throw new Error('Storage key is outside the current tenant prefix');
+    }
+    const res = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
+    return { stream: res.Body as Readable, size: res.ContentLength };
   }
 }

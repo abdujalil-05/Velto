@@ -11,6 +11,21 @@ function stub() {
 }
 
 describe('AuditLogService redaction', () => {
+  it('keeps fileHash visible while token/password/other hash keys stay masked', async () => {
+    const { create, tx } = stub();
+    await new AuditLogService().log(tx, {
+      ...entry,
+      newValue: { fileHash: 'abc123', ackChecksum: 'abc123', downloadToken: 't', password: 'p', passwordHash: 'h' },
+    });
+    expect(create.mock.calls[0][0].data.newValue).toEqual({
+      fileHash: 'abc123',
+      ackChecksum: 'abc123',
+      downloadToken: '***',
+      password: '***',
+      passwordHash: '***',
+    });
+  });
+
   it('masks secret keys recursively, keeps others', async () => {
     const { create, tx } = stub();
     await new AuditLogService().log(tx, {

@@ -82,7 +82,11 @@ export const PERMISSION_DEFS: { module: string; actions: string[] }[] = [
   { module: 'roles', actions: ['read'] },
   { module: 'audit', actions: ['read'] },
   { module: 'settings', actions: ['read', 'update'] },
-  { module: 'integrations', actions: ['export1c'] },
+  // `ack1c` (F5.3 / ADR-030): manual "accepted / failed review" confirmation
+  // of a GENERATED 1C export, checksum-matched. OWNER + ACCOUNTANT: the
+  // accountant loads the file into 1C and records the outcome. This is the
+  // single, explicit ADR-003c exception (ACCOUNTANT otherwise read/export-only).
+  { module: 'integrations', actions: ['export1c', 'ack1c'] },
   // F2.5 (§6.4/§6.5): drift reconciliation. `read` = view runs/findings
   // (OWNER, ACCOUNTANT — read-only, fits ADR-003c); `fix` = rebuild a
   // projection from the ledger / mark a finding FIXED — OWNER only.
@@ -130,6 +134,8 @@ export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
     'customers.read', 'invoices.read', 'payments.read', 'cash.read', 'reports.read',
     'reports.export', 'integrations.export1c', 'purchases.read',
     'reconciliation.read',
+    // ADR-003c exception (only write ACCOUNTANT holds): manual 1C import ACK.
+    'integrations.ack1c',
   ],
 };
 

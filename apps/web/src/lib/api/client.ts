@@ -148,7 +148,7 @@ export async function apiFetch<T = void>(path: string, options: ApiFetchOptions 
  * export has to surface the backend's trilingual message like every other
  * error, not a raw English string.
  */
-export async function apiDownload(path: string, fallbackFilename: string): Promise<void> {
+export async function apiDownloadWithHash(path: string, fallbackFilename: string): Promise<{ sha256: string | null }> {
   const send = (token: string | null) =>
     fetch(`${API_URL}${path}`, {
       credentials: 'include',
@@ -186,4 +186,10 @@ export async function apiDownload(path: string, fallbackFilename: string): Promi
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+  // Only readable cross-origin if the API lists it in Access-Control-Expose-Headers.
+  return { sha256: res.headers.get('x-content-sha256') };
+}
+
+export async function apiDownload(path: string, fallbackFilename: string): Promise<void> {
+  await apiDownloadWithHash(path, fallbackFilename);
 }

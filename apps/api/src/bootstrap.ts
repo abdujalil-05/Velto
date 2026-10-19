@@ -19,7 +19,8 @@ export function configureApp(app: INestApplication, corsOrigins: string[]): void
   // credentials: true is required alongside an explicit origin allowlist
   // (never '*') for the httpOnly refresh-token cookie (see auth.controller.ts)
   // to be sent/accepted cross-origin between the web/miniapp origins and this API.
-  app.enableCors({ origin: corsOrigins, credentials: true });
+  // exposedHeaders: the web UI must read the download's SHA-256 and filename cross-origin (ADR-030).
+  app.enableCors({ origin: corsOrigins, credentials: true, exposedHeaders: ['X-Content-SHA256', 'Content-Disposition'] });
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,

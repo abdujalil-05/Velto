@@ -324,7 +324,7 @@ Bu hisobni har bir pilot uchun mijozning haqiqiy raqamlari bilan to‘ldirish ke
 | `SALES_AGENT` | Agent | O‘ziga biriktirilgan mijoz/nuqtalar, tashrif, buyurtma, ruxsat berilgan to‘lovni qayd etish | Telegram Mini App + PWA fallback |
 | `WAREHOUSE` | Omborchi | Ombor qabul qilish, qoldiq, buyurtmani yig‘ish/chiqarish doirasidagi ruxsatlar | Web |
 | `CASHIER` | Kassir | To‘lovni qabul qilish va kassa smenasi | Web |
-| `ACCOUNTANT` | Buxgalter | Moliyaviy hisobotlar, qarzdorlik reconciliation va 1C/Excel eksporti; posted yozuvlarni bevosita tahrirlash vakolati default’da yo‘q | Web |
+| `ACCOUNTANT` | Buxgalter | Moliyaviy hisobotlar, qarzdorlik reconciliation va 1C/Excel eksporti; posted yozuvlarni bevosita tahrirlash vakolati default’da yo‘q; ADR-003c istisnosi: `integrations.ack1c` (1C ACK qayd etish) | Web |
 | `COURIER` | Kuryer | Faqat o‘ziga biriktirilgan buyurtmalarni ko‘rish va yetkazish (`customers.read`, `catalog.read`, `orders.read`, `orders.deliver`); ADR-003a | Telegram Mini App |
 | `PLATFORM_ADMIN` | Platforma administratori | SaaS tenant va platforma operatsiyasi; mijoz biznes ma’lumotiga odatiy holatda kirish yo‘q. MVP’da rol/endpoint sifatida mavjud emas (ADR-003b) | Alohida, cheklangan admin konteksti |
 
@@ -1628,7 +1628,7 @@ Quyidagi masalalar implementatsiyadan oldin repository va pilot bilan tasdiqlani
 | ADR-003 | Role set | Yuklangan TZ v4.0 va ADR-003a bo‘yicha 7 operational role (jumladan `ACCOUNTANT` va `COURIER`) + ajratilgan platform admin; amaldagi repository/DB holatini audit qilib migration rejasini aniqlash | Repository/DB audit, seed va permission tests |
 | ADR-003a | COURIER roli (qabul qilindi, 2026-10-12) | COURIER MVP’da 7-operatsion rol sifatida qoladi ("oddiy yetkazish", M05); faqat o‘z buyurtmalari. §5.2 dagi to‘liq logistika (reys, ekspeditor GPS, dalolatnoma) qurilmaydi | `rbac-catalog.test.ts`, `sales.service.test.ts` (SEC-023) |
 | ADR-003b | PLATFORM_ADMIN (qabul qilindi, 2026-10-12) | MVP’da tenant roli emas: tenant provisioning faqat `velto_system` skriptlari (`bootstrap-owner.ts`, `seed.ts`) orqali; UI/endpoint va tenant ma’lumotiga support access yo‘q [v1.1]; zarur bo‘lsa auditli qo‘lda skript | `rbac-catalog.test.ts` (rol yo‘qligi) |
-| ADR-003c | ACCOUNTANT cheklovi (qabul qilindi, 2026-10-12) | Faqat o‘qish va eksport (8 kalit, `audit.read` yo‘q); posted payment/invoice/stock/cash o‘zgartirilmaydi, tuzatish reversal oqimi (F2.1) orqali | `accountant-restrictions.e2e.test.ts` |
+| ADR-003c | ACCOUNTANT cheklovi (qabul qilindi, 2026-10-12) | Faqat o‘qish va eksport (`audit.read` yo‘q). ADR-003c istisnosi: `integrations.ack1c` (2026-10-19; 1C importi natijasini qo‘lda qayd etish, OWNER + ACCOUNTANT) — yagona yozish ruxsati; posted payment/invoice/stock/cash o‘zgartirilmaydi, tuzatish reversal oqimi (F2.1) orqali | `accountant-restrictions.e2e.test.ts` |
 | ADR-004 | 1C export format | Pilotdagi real 1C config asosida; CSV/XLSX fallback | Buxgalter acceptance sign-off |
 | ADR-005 | Currency/tax rules | MVP UZS; VAT company/product configuration, hardcoded rate yo‘q | Buxgalter bilan spec review |
 | ADR-006 | Customer/agent GPS | 150m boshlang‘ich radius; accuracy/spoofing caveat va manual review policy | Field test va biznes roziligi |

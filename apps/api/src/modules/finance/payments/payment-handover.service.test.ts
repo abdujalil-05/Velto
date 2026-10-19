@@ -20,6 +20,7 @@ import {
 } from '../finance-exceptions';
 import { localDateString } from '../../analytics/report-utils';
 import { paymentPostedWithin } from '../ledger-filters';
+import { insertExportJob } from '../../integrations/export-1c/export-job-fixtures';
 import { PaymentsService } from './payments.service';
 
 /** ADR-029 / TZ §6.5, F-01: agent cash PENDING_HANDOVER -> cashier accept (POSTED + FIFO) / reject. */
@@ -279,14 +280,8 @@ describe('Payment handover (integration, real Postgres + RLS)', () => {
     const p3 = await collect(30000);
 
     // An export of the collection instant does not contain p1 (posted later) -> reversible.
-    await tenantPrisma.run(companyId, (tx) =>
-      tx.exportJob.createMany({
-        data: [
-          { companyId, type: '1c', format: 'XML', periodFrom: p1.createdAt, periodTo: p1.createdAt, status: 'DONE' },
-          { companyId, type: '1c', format: 'XML', periodFrom: p2.handoverAt!, periodTo: p2.handoverAt!, status: 'DONE' },
-        ],
-      }),
-    );
+    await insertExportJob(tenantPrisma, companyId, { periodFrom: p1.createdAt, periodTo: p1.createdAt, status: 'GENERATED' });
+    await insertExportJob(tenantPrisma, companyId, { periodFrom: p2.handoverAt!, periodTo: p2.handoverAt!, status: 'GENERATED' });
     const inP1Collection = await tenantPrisma.run(companyId, (tx) =>
       tx.payment.findMany({ where: { id: { in: [p1.id, p2.id] }, ...paymentPostedWithin({ gte: p1.createdAt, lte: p1.createdAt }) } }),
     );

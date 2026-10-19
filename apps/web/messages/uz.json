@@ -52,7 +52,8 @@
     "cash": "Kassa va to'lovlar",
     "purchases": "Xarid",
     "reconciliation": "Solishtirish",
-    "visits": "Tashriflar"
+    "visits": "Tashriflar",
+    "export1c": "1C eksport"
   },
   "LanguageSwitcher": {
     "label": "Til"
@@ -1665,5 +1666,67 @@
     "emptyUnread": "O'qilmagan bildirishnoma yo'q",
     "retry": "Qayta urinish",
     "unread": "O'qilmagan"
+  },
+  "Export1c": {
+    "legacyNoChecksum": "Bu eski eksport — tasdiqlash/yuklash uchun qayta eksport qiling",
+    "title": "1C eksport",
+    "subtitle": "Davr bo'yicha 1C uchun fayl yarating, yuklab oling va natijani tasdiqlang.",
+    "refresh": "Yangilash",
+    "retry": "Qayta urinish",
+    "noPermission": "1C eksportidan foydalanish uchun ruxsatingiz yo'q.",
+    "throttled": "So'rovlar juda ko'p. Bir daqiqa kutib, qayta urinib ko'ring.",
+    "created": "Eksport navbatga qo'yildi. U quyidagi ro'yxatda paydo bo'ladi.",
+    "empty": "Hali eksport yo'q. Yuqorida davr va formatni tanlab, birinchi eksportni yarating.",
+    "failedUnknown": "Fayl yaratilmadi. Eksportni qayta yarating.",
+    "download": "Yuklab olish",
+    "form": {
+      "from": "Davr boshi",
+      "to": "Davr oxiri",
+      "format": "Format",
+      "create": "Eksport yaratish",
+      "hint": "Davr oxiri kechadan kech bo'lmasligi kerak ({date}, kompaniya vaqt zonasi).",
+      "periodInvalid": "To'g'ri davr tanlang: boshi oxiridan keyin bo'lmasin, oxiri kechadan kech bo'lmasin.",
+      "xmlUnverified": "XML (CommerceML) 1C bilan pilotda hali tasdiqlanmagan. Excel afzal."
+    },
+    "format": {
+      "EXCEL": "Excel",
+      "CSV": "CSV",
+      "XML": "XML (pilot tasdiqlanmagan)"
+    },
+    "status": {
+      "QUEUED": "Navbatda",
+      "PROCESSING": "Yaratilmoqda",
+      "GENERATED": "Tayyor",
+      "FAILED": "Xato",
+      "ACCOUNTING_ACCEPTED": "Buxgalteriya qabul qildi",
+      "FAILED_REVIEW": "1C da rad etildi"
+    },
+    "col": {
+      "status": "Holat",
+      "period": "Davr",
+      "format": "Format",
+      "records": "Yozuvlar",
+      "file": "Fayl / SHA-256",
+      "generated": "Yaratilgan",
+      "ack": "Tasdiq"
+    },
+    "hash": {
+      "copy": "SHA-256 ni nusxalash",
+      "copied": "SHA-256 nusxalandi.",
+      "copyFailed": "Nusxalab bo'lmadi.",
+      "match": "Yuklangan fayl SHA-256 ga mos",
+      "mismatch": "Yuklangan fayl SHA-256 ga MOS EMAS. Uni 1C ga yuklamang.",
+      "unavailable": "Fayl yuklandi; SHA-256 ni brauzerda solishtirib bo'lmadi."
+    },
+    "ack": {
+      "accept": "Qabul qilindi",
+      "reject": "Xato (rad etildi)",
+      "acceptTitle": "1C da qabul qilinganini tasdiqlash",
+      "acceptDescription": "{file} fayli 1C ga muvaffaqiyatli yuklanganini tasdiqlang. Keyin o'zgartirib bo'lmaydi.",
+      "rejectTitle": "1C dagi xatoni bildirish",
+      "rejectDescription": "{file} fayli 1C tomonidan nega rad etilganini yozing. Keyin o'zgartirib bo'lmaydi.",
+      "doneAccepted": "Qabul qilingan deb belgilandi.",
+      "doneRejected": "Rad etilgan deb belgilandi."
+    }
   }
 }
