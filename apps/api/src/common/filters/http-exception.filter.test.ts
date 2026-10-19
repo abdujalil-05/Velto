@@ -248,5 +248,46 @@ describe('AllExceptionsFilter', () => {
       expect(status).toHaveBeenCalledWith(HttpStatus.INTERNAL_SERVER_ERROR);
       expect(Sentry.captureException).toHaveBeenCalledTimes(1);
     });
+
+    it.each([
+      ['P2034', 'Transaction failed due to a write conflict or a deadlock. Please retry your transaction'],
+      ['P2010', 'Raw query failed. Code: `40P01`. Message: `ERROR: deadlock detected`'],
+      ['P2010', 'Raw query failed. Code: `40001`. Message: `could not serialize access due to concurrent update`'],
+      ['40P01', 'deadlock detected'],
+      ['40001', 'serialization failure'],
+    ])('maps tx conflict %s (%s) to 503 SERVICE_BUSY Retry-After 1, warn only, no Sentry', (code, message) => {
+      const filter = new AllExceptionsFilter();
+      const { host, status, json, setHeader } = mockHost();
+
+      filter.catch(prismaErr(code, message), host);
+
+      expect(status).toHaveBeenCalledWith(HttpStatus.SERVICE_UNAVAILABLE);
+      expect(json.mock.calls[0]![0].code).toBe('SERVICE_BUSY');
+      expect(setHeader).toHaveBeenCalledWith('Retry-After', '1');
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+    });
+
+    it('maps a plain Error whose text says "deadlock detected" (driver adapter) to 503', () => {
+      const filter = new AllExceptionsFilter();
+      const { host, status, setHeader } = mockHost();
+
+      filter.catch(new Error('ERROR: deadlock detected'), host);
+
+      expect(status).toHaveBeenCalledWith(HttpStatus.SERVICE_UNAVAILABLE);
+      expect(setHeader).toHaveBeenCalledWith('Retry-After', '1');
+    });
+
+    it('keeps other Prisma errors (P2002) as 500 + Sentry', () => {
+      const filter = new AllExceptionsFilter();
+      const { host, status, setHeader } = mockHost();
+
+      filter.catch(prismaErr('P2002', 'Unique constraint failed'), host);
+
+      expect(status).toHaveBeenCalledWith(HttpStatus.INTERNAL_SERVER_ERROR);
+      expect(setHeader).not.toHaveBeenCalled();
+      expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    });
   });
 });
