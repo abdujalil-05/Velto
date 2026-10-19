@@ -101,9 +101,9 @@ describe('E2E F8.1: payment handover (ADR-029)', () => {
     await app.close();
   });
 
-  it('SEC-054: SALES_AGENT and ACCOUNTANT accept/reject => 403 + auth.permission_denied audit; payment untouched', async () => {
+  it('SEC-054: SALES_AGENT, ACCOUNTANT and SALES_DIRECTOR accept/reject => 403 + auth.permission_denied audit; payment untouched', async () => {
     const p = await pay('AGENT', customerA, 1000);
-    for (const role of ['AGENT', 'ACCOUNTANT']) {
+    for (const role of ['AGENT', 'ACCOUNTANT', 'DIRECTOR']) {
       for (const op of ['accept', 'reject'] as const) {
         const traceId = `trace-ho-${randomUUID()}`;
         const r = http().post(`/payments/${p.body.id}/handover/${op}`).set(auth(role)).set('x-request-id', traceId).set('Idempotency-Key', randomUUID());
@@ -119,19 +119,14 @@ describe('E2E F8.1: payment handover (ADR-029)', () => {
 
   it('accept without an open cash session => 409 PAYMENT_HANDOVER_CASH_SESSION_NOT_OPEN; payment stays PENDING_HANDOVER', async () => {
     const p = await pay('AGENT', customerA, 1000);
-    const res = await accept('DIRECTOR', p.body.id).expect(409);
+    const res = await accept('CASHIER', p.body.id).expect(409);
     expect(res.body.code).toBe('PAYMENT_HANDOVER_CASH_SESSION_NOT_OPEN');
     expect((await dbPayment(companyA, p.body.id)).status).toBe('PENDING_HANDOVER');
   });
 
-  it('CASHIER / OWNER / SALES_DIRECTOR with an open shift accept => 200 POSTED, audited with handover actor', async () => {
-    for (const role of ['CASHIER', 'OWNER', 'DIRECTOR']) {
-      // SALES_DIRECTOR has payments.handover but no cash.open in the catalog => seed its shift in the DB.
-      if (role === 'DIRECTOR') {
-        await tenantPrisma.run(companyA, (tx) =>
-          tx.cashSession.create({ data: { companyId: companyA, userId: tokens.DIRECTOR!.userId, openAmount: 0 } }),
-        );
-      } else await openShift(role);
+  it('CASHIER / OWNER with an open shift accept => 200 POSTED, audited with handover actor', async () => {
+    for (const role of ['CASHIER', 'OWNER']) {
+      await openShift(role);
       const p = await pay('AGENT', customerA, 2000);
       const res = await accept(role, p.body.id).expect(201);
       expect(res.body.status).toBe('POSTED');
@@ -144,9 +139,9 @@ describe('E2E F8.1: payment handover (ADR-029)', () => {
     }
   });
 
-  it('reject by OWNER/CASHIER/DIRECTOR with reason => REJECTED, no ledger effect, no shift needed', async () => {
+  it('reject by OWNER/CASHIER with reason => REJECTED, no ledger effect, no shift needed', async () => {
     const before = await cachedBalance(companyA, customerA);
-    for (const role of ['CASHIER', 'OWNER', 'DIRECTOR']) {
+    for (const role of ['CASHIER', 'OWNER']) {
       const p = await pay('AGENT', customerA, 3000);
       const res = await reject(role, p.body.id, '  Pul kelmadi  ').expect(201);
       expect(res.body.status).toBe('REJECTED');
@@ -269,5 +264,36 @@ describe('E2E F8.1: payment handover (ADR-029)', () => {
       await accept('CASHIER', p.body.id).expect(201);
       expect((await dbPayment(companyA, p.body.id)).status).toBe('POSTED');
     }
+  });
+
+  it('ADR-029 POST /payments/statuses: agent sees only own; foreign agent / other tenant absent; >100 => 400 PAYMENT_STATUSES_LIMIT', async () => {
+    const customer = (await newCustomer(companyA)).id;
+    const customerB = (await newCustomer(companyB)).id;
+    const mine = await pay('AGENT', customer, 111);
+    const theirs = await pay('AGENT2', customer, 222);
+    const foreignTenant = await pay('AGENT_B', customerB, 333);
+    const statuses = (k: string, body: object) => http().post('/payments/statuses').set(auth(k)).send(body);
+
+    const res = await statuses('AGENT', { ids: [mine.body.id, theirs.body.id, foreignTenant.body.id, randomUUID()] }).expect(200);
+    expect(res.body.map((r: { id: string }) => r.id)).toEqual([mine.body.id]);
+    expect(res.body[0]).toMatchObject({ status: 'PENDING_HANDOVER' });
+
+    const byClient = await statuses('AGENT', { clientIds: [randomUUID()] }).expect(200);
+    expect(byClient.body).toEqual([]);
+
+    // Office role sees every same-tenant payment, still never another tenant's.
+    const office = await statuses('CASHIER', { ids: [mine.body.id, theirs.body.id, foreignTenant.body.id] }).expect(200);
+    expect(office.body.map((r: { id: string }) => r.id).sort()).toEqual([mine.body.id, theirs.body.id].sort());
+
+    // ACCOUNTANT (payments.read, not SALES_AGENT) is not owner-scoped: documents current behaviour = same-tenant office view.
+    const acc = await statuses('ACCOUNTANT', { ids: [mine.body.id, theirs.body.id, foreignTenant.body.id] }).expect(200);
+    expect(acc.body.map((r: { id: string }) => r.id).sort()).toEqual([mine.body.id, theirs.body.id].sort());
+
+    const many = (n: number) => Array.from({ length: n }, () => randomUUID());
+    const over = await statuses('AGENT', { ids: many(60), clientIds: many(41) }).expect(400);
+    expect(over.body.code).toBe('PAYMENT_STATUSES_LIMIT');
+    await statuses('AGENT', { ids: many(101) }).expect(400);
+    await statuses('AGENT', {}).expect(400);
+    await statuses('AGENT', { ids: many(60), clientIds: many(40) }).expect(200);
   });
 });
