@@ -8,7 +8,9 @@ import {
 import { Reflector } from '@nestjs/core';
 import { firstValueFrom, from, type Observable } from 'rxjs';
 import { AuditLogService } from '../audit/audit-log.service';
+import type { TenantTxOptions } from '@velto/database';
 import { TenantPrismaService } from '../tenant/tenant-prisma.service';
+import { TENANT_TX_OPTIONS_KEY } from '../tenant/tenant-tx-options.decorator';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { REQUIRE_PERMISSION_KEY } from '../decorators/require-permission.decorator';
 import { PermissionDeniedException } from './auth-exceptions';
@@ -53,6 +55,11 @@ export class TenantContextInterceptor implements NestInterceptor {
     }
 
     const requiredPermission = this.reflector.getAllAndOverride<string | undefined>(REQUIRE_PERMISSION_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+
+    const txOptions = this.reflector.getAllAndOverride<TenantTxOptions | undefined>(TENANT_TX_OPTIONS_KEY, [
       context.getHandler(),
       context.getClass(),
     ]);
@@ -107,6 +114,6 @@ export class TenantContextInterceptor implements NestInterceptor {
       request.user = authenticatedUser;
 
       return firstValueFrom(next.handle());
-    });
+    }, txOptions);
   }
 }

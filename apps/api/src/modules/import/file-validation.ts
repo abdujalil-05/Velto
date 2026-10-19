@@ -1,4 +1,5 @@
 import { InvalidImportFileException } from './import-exceptions';
+import type { SpreadsheetFormat } from './parsers/read-workbook';
 
 const MAX_IMPORT_BYTES = 10 * 1024 * 1024; // 10MB — comfortably above what 2000 rows (11.4) produce
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -30,4 +31,28 @@ export function validateImportFile(file: UploadedFile): Buffer {
   }
 
   return b;
+}
+
+// Browsers/OSes declare .csv inconsistently (Windows: application/vnd.ms-excel).
+const CSV_MIMES = new Set(['text/csv', 'application/csv', 'text/plain', 'application/vnd.ms-excel']);
+
+/**
+ * .xlsx (validated exactly as validateImportFile) or UTF-8 .csv. A CSV is
+ * accepted only by extension + a CSV-ish declared type, and must be valid
+ * UTF-8 text with no NUL bytes (rejects binaries renamed to .csv).
+ */
+export function validateSpreadsheetUpload(file: UploadedFile): { buffer: Buffer; format: SpreadsheetFormat } {
+  if (!file) throw new InvalidImportFileException('no file uploaded');
+  const isCsv = file.originalname.toLowerCase().endsWith('.csv') && CSV_MIMES.has(file.mimetype);
+  if (!isCsv) return { buffer: validateImportFile(file), format: 'xlsx' };
+
+  if (file.size > MAX_IMPORT_BYTES) throw new InvalidImportFileException('file exceeds 10MB limit');
+  const b = file.buffer;
+  if (b.length === 0 || b.includes(0)) throw new InvalidImportFileException('unrecognized file format (expected a UTF-8 .csv file)');
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(b);
+  } catch {
+    throw new InvalidImportFileException('csv is not valid UTF-8');
+  }
+  return { buffer: b, format: 'csv' };
 }

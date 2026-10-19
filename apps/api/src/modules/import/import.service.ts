@@ -14,7 +14,7 @@ import type { ListImportsQueryDto } from './dto/list-imports.query';
 import { ImportAlreadyConfirmedException, ImportJobNotFoundException, ImportQueueUnavailableException, InvalidImportFileException } from './import-exceptions';
 import { addTracedJob } from '../../common/queue/trace-job';
 import { localizeRowErrors } from './row-messages';
-import { IMPORT_JOB_OPTS, IMPORT_QUEUE, type ImportJobData, type ImportJobReport, type ImportType } from './import.constants';
+import { IMPORT_JOB_OPTS, IMPORT_QUEUE, IMPORT_TYPES, type ImportJobData, type ImportJobReport, type ImportType } from './import.constants';
 import { parseCustomersWorkbook, type CustomerImportRow } from './parsers/customers-parser';
 import { parseProductsWorkbook, type ProductImportRow } from './parsers/products-parser';
 
@@ -87,7 +87,7 @@ export class ImportService {
 
   async list(query: ListImportsQueryDto) {
     const tx = this.tenantPrisma.client;
-    const where: Prisma.ImportJobWhereInput = query.type ? { type: query.type } : {};
+    const where: Prisma.ImportJobWhereInput = { type: query.type ?? { in: IMPORT_TYPES } };
     const [data, total] = await Promise.all([
       tx.importJob.findMany({
         where,
@@ -101,7 +101,7 @@ export class ImportService {
   }
 
   async getById(id: string) {
-    const job = await this.tenantPrisma.client.importJob.findFirst({ where: { id } });
+    const job = await this.tenantPrisma.client.importJob.findFirst({ where: { id, type: { in: IMPORT_TYPES } } });
     if (!job) throw new ImportJobNotFoundException();
     return job;
   }
@@ -114,7 +114,7 @@ export class ImportService {
    */
   async confirm(id: string, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
-    const job = await tx.importJob.findFirst({ where: { id } });
+    const job = await tx.importJob.findFirst({ where: { id, type: { in: IMPORT_TYPES } } });
     if (!job) throw new ImportJobNotFoundException();
 
     const { count } = await tx.importJob.updateMany({ where: { id, status: 'PENDING' }, data: { status: 'PROCESSING', progress: 0 } });

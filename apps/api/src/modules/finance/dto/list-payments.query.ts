@@ -1,5 +1,5 @@
 import { IsDateString, IsEnum, IsOptional, IsUUID } from 'class-validator';
-import { PaymentStatus } from '@velto/database';
+import { PaymentSource, PaymentStatus } from '@velto/database';
 import { PaginationQueryDto } from '../../../common/pagination/pagination.dto';
 
 export class ListPaymentsQueryDto extends PaginationQueryDto {
@@ -29,4 +29,11 @@ export class ListPaymentsQueryDto extends PaginationQueryDto {
   @IsOptional()
   @IsEnum(PaymentStatus)
   status?: PaymentStatus;
+
+  // F6: COLLECTION = money received, OPENING = carried-over opening credit.
+  // Omitted + a from/to period => COLLECTION only ("yig'ilgan" in a period
+  // never includes opening balances); omitted without a period => both.
+  @IsOptional()
+  @IsEnum(PaymentSource)
+  source?: PaymentSource;
 }

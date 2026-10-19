@@ -1,7 +1,7 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import type { Job } from 'bullmq';
 import { createHash } from 'node:crypto';
-import { InvoiceStatus, Prisma, type ExportFormat, type TenantClient } from '@velto/database';
+import { InvoiceKind, InvoiceStatus, PaymentSource, Prisma, type ExportFormat, type PaymentMethod, type TenantClient } from '@velto/database';
 import { runJobWithTrace } from '../../../common/queue/trace-job';
 import { StorageService } from '../../../common/storage/storage.service';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
@@ -11,6 +11,11 @@ import { buildExport1cCsv, type CsvDocument } from './export-1c-csv';
 import { companyDay } from '../../field/company-day';
 import { EXPORT_1C_MAPPING_VERSION, EXPORT_1C_QUEUE, export1cStorageKey, type Export1cJobData } from './export-1c.constants';
 import { paymentPostedAt, paymentPostedWithin } from '../../finance/ledger-filters';
+
+function collectionMethod(payment: { id: string; method: PaymentMethod | null }): PaymentMethod {
+  if (payment.method === null) throw new Error(`payment ${payment.id}: COLLECTION payment without method violates Payment_source_shape_check`);
+  return payment.method;
+}
 
 /**
  * Network/connection failures (e.g. S3 unreachable) surface from the AWS SDK
@@ -143,9 +148,11 @@ export class Export1cProcessor extends WorkerHost {
 
   /** 11.1: "Eksport qilinadi: kontragentlar, sotish hujjatlari, to'lovlar" — sales documents are Invoices (6.6: "1 order = 1 invoice soddalashtirilgan"), not SalesOrders, since those are the actual accounting-facing documents. */
   private async loadExportData(tx: TenantClient, periodFrom: Date, periodTo: Date, timeZone: string): Promise<ExportData> {
-    const [invoices, payments] = await Promise.all([
+    const [invoices, collected] = await Promise.all([
+      // F6: OPENING invoices/payments (opening balance batch) already exist in
+      // 1C — exporting them again would double-count debt/credit there.
       tx.invoice.findMany({
-        where: { createdAt: { gte: periodFrom, lte: periodTo }, status: { not: InvoiceStatus.CANCELLED } },
+        where: { kind: InvoiceKind.SALE, createdAt: { gte: periodFrom, lte: periodTo }, status: { not: InvoiceStatus.CANCELLED } },
         include: { customer: true, lines: { include: { product: true } } },
         orderBy: { createdAt: 'asc' },
       }),
@@ -153,11 +160,13 @@ export class Export1cProcessor extends WorkerHost {
         // REVERSED payments are never exported as ordinary payments (no storno document in MVP).
         // ADR-029: period/date = paymentPostedAt (accepted handover -> handoverAt);
         // PENDING_HANDOVER/REJECTED never reach 1C.
-        where: { ...paymentPostedWithin({ gte: periodFrom, lte: periodTo }), status: 'POSTED' },
+        where: { ...paymentPostedWithin({ gte: periodFrom, lte: periodTo }), status: 'POSTED', source: PaymentSource.COLLECTION },
         include: { customer: true },
         orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       }),
     ]);
+    // COLLECTION payments always carry a method (DB CHECK Payment_source_shape_check).
+    const payments = collected.map((p) => ({ ...p, method: collectionMethod(p) }));
 
     const customersById = new Map<string, CommerceMlCustomer>();
     const missingExternalCode = new Set<string>();

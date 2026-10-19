@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { InvoiceStatus, PaymentStatus, Prisma, type TenantClient } from '@velto/database';
+import { InvoiceStatus, PaymentSource, PaymentStatus, Prisma, type TenantClient } from '@velto/database';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { VALID_ALLOCATION_WHERE, paymentPostedAt, paymentPostedWithin } from '../finance/ledger-filters';
 import { companyDay } from '../field/company-day';
@@ -83,8 +83,12 @@ export class DashboardService {
     return { turnover: orders.reduce((sum, o) => sum.plus(orderTotal(o)), new Prisma.Decimal(0)), count: orders.length };
   }
 
+  /** Money collected in the window — F6 OPENING credit is a carried-over balance, not a collection. */
   private async paymentsTotal(tx: TenantClient, start: Date, end: Date) {
-    const agg = await tx.payment.aggregate({ where: { ...paymentPostedWithin({ gte: start, lte: end }), status: PaymentStatus.POSTED }, _sum: { amount: true } });
+    const agg = await tx.payment.aggregate({
+      where: { ...paymentPostedWithin({ gte: start, lte: end }), status: PaymentStatus.POSTED, source: PaymentSource.COLLECTION },
+      _sum: { amount: true },
+    });
     return agg._sum.amount ?? new Prisma.Decimal(0);
   }
 

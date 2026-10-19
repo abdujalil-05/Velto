@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma, StockMovementType, type TenantClient } from '@velto/database';
+import { Prisma, StockMovementType, type StockMovement, type TenantClient } from '@velto/database';
 import { AuditLogService, toAuditJson } from '../../common/audit/audit-log.service';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { paginate, resolveSort } from '../../common/pagination/pagination.dto';
@@ -169,39 +169,14 @@ export class StockService {
   async adjust(dto: AdjustStockDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
     await this.assertProductAndWarehouseExist(tx, dto.productId, dto.warehouseId);
-    await this.ensureStockLevelRow(tx, dto.productId, dto.warehouseId);
 
-    const locked = await this.lockStockLevel(tx, dto.productId, dto.warehouseId);
-    const resultingOnHand = locked.onHand.plus(dto.qty);
-    if (resultingOnHand.isNegative()) {
-      throw new InvalidStockQtyException(
-        `Adjustment would take on-hand stock negative (current: ${locked.onHand.toString()}, adjustment: ${dto.qty})`,
-      );
-    }
-    // onHand must never drop below what's already reserved for pending
-    // orders — otherwise issue() (below) would have to either go negative
-    // itself or silently under-deliver a confirmed order.
-    if (resultingOnHand.lessThan(locked.reserved)) {
-      throw new InvalidStockQtyException(
-        `Adjustment would take on-hand stock (${resultingOnHand.toString()}) below what's already reserved (${locked.reserved.toString()}) for pending orders`,
-      );
-    }
-
-    await tx.stockLevel.update({
-      where: { productId_warehouseId: { productId: dto.productId, warehouseId: dto.warehouseId } },
-      data: { onHand: { increment: dto.qty } },
-    });
-
-    const movement = await tx.stockMovement.create({
-      data: {
-        companyId: user.companyId,
-        productId: dto.productId,
-        warehouseId: dto.warehouseId,
-        type: StockMovementType.ADJUST,
-        qty: dto.qty,
-        refType: 'Manual',
-        note: dto.reason,
-      },
+    const movement = await this.applyAdjust(tx, {
+      companyId: user.companyId,
+      productId: dto.productId,
+      warehouseId: dto.warehouseId,
+      qty: dto.qty,
+      refType: 'Manual',
+      note: dto.reason,
     });
 
     await this.auditLog.log(tx, {
@@ -214,6 +189,83 @@ export class StockService {
     });
 
     return this.getLevel(tx, dto.productId, dto.warehouseId);
+  }
+
+  /**
+   * F6 opening stock: the same ADJUST path as adjust() (StockLevel row lock,
+   * onHand/reserved floor, append-only movement), tagged with a reference
+   * document instead of 'Manual'. Callers lock pairs in (productId,
+   * warehouseId) order first (lockLevelsForUpdate) and write the audit row.
+   */
+  async adjustForRef(tx: TenantClient, params: StockMoveParams & { note?: string }) {
+    return this.applyAdjust(tx, params);
+  }
+
+  /**
+   * Ensures StockLevel rows exist for `pairs` and locks them FOR UPDATE in
+   * (productId, warehouseId) order — the one lock order every bulk stock
+   * writer uses, so two bulk writers cannot deadlock.
+   */
+  async lockLevelsForUpdate(
+    tx: TenantClient,
+    pairs: { productId: string; warehouseId: string }[],
+  ): Promise<{ productId: string; warehouseId: string; onHand: Prisma.Decimal; reserved: Prisma.Decimal }[]> {
+    if (pairs.length === 0) return [];
+    const productIds = pairs.map((p) => p.productId);
+    const warehouseIds = pairs.map((p) => p.warehouseId);
+    await tx.$executeRaw(Prisma.sql`
+      INSERT INTO "StockLevel" ("productId", "warehouseId", "onHand", "reserved", "updatedAt")
+      SELECT t.p, t.w, 0, 0, CURRENT_TIMESTAMP
+      FROM unnest(${productIds}::uuid[], ${warehouseIds}::uuid[]) AS t(p, w)
+      ORDER BY t.p, t.w
+      ON CONFLICT ("productId", "warehouseId") DO NOTHING
+    `);
+    return tx.$queryRaw(Prisma.sql`
+      SELECT sl."productId"::text AS "productId", sl."warehouseId"::text AS "warehouseId", sl."onHand", sl."reserved"
+      FROM "StockLevel" sl
+      JOIN unnest(${productIds}::uuid[], ${warehouseIds}::uuid[]) AS t(p, w) ON sl."productId" = t.p AND sl."warehouseId" = t.w
+      ORDER BY sl."productId", sl."warehouseId"
+      FOR UPDATE OF sl
+    `);
+  }
+
+  private async applyAdjust(tx: TenantClient, params: Omit<StockMoveParams, 'refId'> & { refId?: string; note?: string }) {
+    await this.ensureStockLevelRow(tx, params.productId, params.warehouseId);
+    const qty = new Prisma.Decimal(params.qty);
+
+    const locked = await this.lockStockLevel(tx, params.productId, params.warehouseId);
+    const resultingOnHand = locked.onHand.plus(qty);
+    if (resultingOnHand.isNegative()) {
+      throw new InvalidStockQtyException(
+        `Adjustment would take on-hand stock negative (current: ${locked.onHand.toString()}, adjustment: ${qty.toString()})`,
+      );
+    }
+    // onHand must never drop below what's already reserved for pending
+    // orders — otherwise issue() (below) would have to either go negative
+    // itself or silently under-deliver a confirmed order.
+    if (resultingOnHand.lessThan(locked.reserved)) {
+      throw new InvalidStockQtyException(
+        `Adjustment would take on-hand stock (${resultingOnHand.toString()}) below what's already reserved (${locked.reserved.toString()}) for pending orders`,
+      );
+    }
+
+    await tx.stockLevel.update({
+      where: { productId_warehouseId: { productId: params.productId, warehouseId: params.warehouseId } },
+      data: { onHand: { increment: qty } },
+    });
+
+    return tx.stockMovement.create({
+      data: {
+        companyId: params.companyId,
+        productId: params.productId,
+        warehouseId: params.warehouseId,
+        type: StockMovementType.ADJUST,
+        qty,
+        refType: params.refType,
+        refId: params.refId,
+        note: params.note,
+      },
+    });
   }
 
   /**
@@ -233,8 +285,38 @@ export class StockService {
     if (!original) throw new StockMovementNotFoundException();
     if (!isReversibleMovementKind(original)) throw new StockMovementNotReversibleException(original.type, original.refType);
 
+    const reversal = await this.compensate(tx, original, trimmedReason, user.companyId);
+
+    await this.auditLog.log(tx, {
+      companyId: user.companyId,
+      userId: user.id,
+      action: 'stock.reverse',
+      entity: 'StockMovement',
+      entityId: reversal.id,
+      oldValue: toAuditJson(original),
+      newValue: toAuditJson(reversal),
+    });
+
+    return { movement: reversal, level: await this.getLevel(tx, original.productId, original.warehouseId) };
+  }
+
+  /**
+   * F6: compensates a reference-document movement (opening stock void). The
+   * caller decides eligibility (the reference document's own rules), holds
+   * the StockLevel lock order and writes the audit row.
+   */
+  async reverseForRef(tx: TenantClient, original: StockMovement, reason: string, companyId: string) {
+    return this.compensate(tx, original, reason, companyId);
+  }
+
+  /**
+   * Same-type, opposite-sign movement pointing at `original` (reversesMovementId
+   * + reason, same refType/refId); the original row is never touched. StockLevel
+   * is locked before the already-reversed check so two reversals serialize.
+   */
+  private async compensate(tx: TenantClient, original: StockMovement, reason: string, companyId: string) {
     const locked = await this.lockStockLevel(tx, original.productId, original.warehouseId);
-    const existing = await tx.stockMovement.findUnique({ where: { reversesMovementId: movementId }, select: { id: true } });
+    const existing = await tx.stockMovement.findUnique({ where: { reversesMovementId: original.id }, select: { id: true } });
     if (existing) throw new StockMovementAlreadyReversedException();
 
     const delta = original.qty.negated();
@@ -248,30 +330,19 @@ export class StockService {
       data: { onHand: { increment: delta } },
     });
 
-    const reversal = await tx.stockMovement.create({
+    return tx.stockMovement.create({
       data: {
-        companyId: user.companyId,
+        companyId,
         productId: original.productId,
         warehouseId: original.warehouseId,
         type: original.type,
         qty: delta,
-        refType: 'Manual',
+        refType: original.refType,
+        refId: original.refId,
         reversesMovementId: original.id,
-        reason: trimmedReason,
+        reason,
       },
     });
-
-    await this.auditLog.log(tx, {
-      companyId: user.companyId,
-      userId: user.id,
-      action: 'stock.reverse',
-      entity: 'StockMovement',
-      entityId: reversal.id,
-      oldValue: toAuditJson(original),
-      newValue: toAuditJson(reversal),
-    });
-
-    return { movement: reversal, level: await this.getLevel(tx, original.productId, original.warehouseId) };
   }
 
   /**

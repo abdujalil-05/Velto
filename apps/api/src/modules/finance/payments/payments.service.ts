@@ -71,6 +71,7 @@ export class PaymentsService {
       ...(query.customerId ? { customerId: query.customerId } : {}),
       ...(scopedCollectedBy ? { collectedBy: scopedCollectedBy } : {}),
       ...(query.status ? { status: query.status } : {}),
+      ...(query.source ? { source: query.source } : query.from || query.to ? { source: PaymentSource.COLLECTION } : {}),
       // ADR-029: the period is the posting date coalesce(handoverAt, createdAt),
       // same rule as 1C export/dashboards — an accepted handover counts on the
       // day the cashier accepted it. PENDING_HANDOVER has handoverAt null, so
