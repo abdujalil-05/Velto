@@ -11,7 +11,7 @@ import { useOfflineCustomers } from '@/lib/offline/use-offline-data';
 import { useOpenInvoicesQuery } from '@/lib/api/invoices';
 import { enqueue } from '@/lib/offline/queue';
 import { useSyncEngine } from '@/lib/offline/sync-engine';
-import type { CreatePaymentInput, PaymentMethod } from '@/lib/api/payments';
+import { useInTransitQuery, type CreatePaymentInput, type PaymentMethod } from '@/lib/api/payments';
 import { useTelegramBackButton } from '@/lib/hooks/use-telegram-back-button';
 import { formatMoney } from '@/lib/format';
 import { Card, CardContent } from '@/components/ui/card';
@@ -41,6 +41,7 @@ export default function NewPaymentPage() {
 
   const openInvoices = useOpenInvoicesQuery(syncEngine.isOnline ? customerId : null);
 
+  const inTransit = useInTransitQuery(syncEngine.isOnline ? customerId : null);
   const [amount, setAmount] = useState('');
   const [method, setMethod] = useState<PaymentMethod>('CASH');
   const [submitting, setSubmitting] = useState(false);
@@ -111,6 +112,7 @@ export default function NewPaymentPage() {
           <CardContent className="flex flex-col items-center gap-3 py-10 text-center">
             <Check className="h-10 w-10 text-success" />
             <p className="font-medium">{t('saved')}</p>
+            <p className="text-sm text-muted-foreground">{t('handoverNotice')}</p>
             <pre className="whitespace-pre-wrap rounded-md bg-muted p-3 text-left text-xs">{savedReceipt}</pre>
           </CardContent>
         </Card>
@@ -139,6 +141,12 @@ export default function NewPaymentPage() {
             {formatMoney(customer.cachedBalance)} {tCommon('somUnit')}
           </p>
           <FreshnessLabel kind="balance" />
+          <p className="text-xs text-muted-foreground">{t('debtNotReducedNote')}</p>
+          {inTransit.data && inTransit.data.count > 0 && (
+            <p className="text-sm font-medium tabular-nums">
+              {t('inTransit')}: {formatMoney(inTransit.data.amount)} {tCommon('somUnit')} ({inTransit.data.count})
+            </p>
+          )}
         </CardContent>
       </Card>
 

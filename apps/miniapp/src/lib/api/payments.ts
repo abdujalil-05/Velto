@@ -5,6 +5,9 @@ import type { PaginatedResult } from './types';
 
 export type PaymentMethod = 'CASH' | 'CARD' | 'TRANSFER';
 
+/** ADR-029: agent cash stays PENDING_HANDOVER (no debt reduction) until the cashier accepts (POSTED) or rejects. */
+export type PaymentStatus = 'PENDING_HANDOVER' | 'POSTED' | 'REJECTED';
+
 export interface Payment {
   id: string;
   number: string;
@@ -13,6 +16,9 @@ export interface Payment {
   amount: string;
   method: PaymentMethod;
   createdAt: string;
+  status: PaymentStatus;
+  handoverAt: string | null;
+  handoverRejectReason: string | null;
   allocations: { id: string; invoiceId: string; amount: string; invoice: { number: string } }[];
 }
 
@@ -51,5 +57,19 @@ export function useCreatePaymentMutation() {
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['customers'] });
     },
+  });
+}
+
+export interface InTransit {
+  amount: string;
+  count: number;
+}
+
+/** Cash I collected that the cashier has not accepted yet — separate from the customer's debt. Online only. */
+export function useInTransitQuery(customerId: string | null) {
+  return useQuery({
+    queryKey: ['payments', 'in-transit', customerId],
+    queryFn: () => apiFetch<InTransit>(`/payments/in-transit${toQueryString({ customerId: customerId ?? undefined })}`),
+    enabled: !!customerId,
   });
 }

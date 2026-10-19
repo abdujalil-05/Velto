@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { QueueEntry } from './queue';
-import { attentionCount, entryDisplayName, exportFileName, localizedError, parsePriceChanged, sortQueueForScreen, statusView } from './queue-view';
+import { attentionCount, isRejectedHandover, needsAttention, entryDisplayName, exportFileName, localizedError, parsePriceChanged, sortQueueForScreen, statusView } from './queue-view';
 
 function e(over: Partial<QueueEntry>): QueueEntry {
   return { clientId: 'x', type: 'order', status: 'PENDING', payload: {}, createdAt: '2026-01-01T00:00:00Z', schemaVersion: 1, attemptCount: 0, ...over };
@@ -53,5 +53,23 @@ describe('queue-view', () => {
 
   it('builds a filesystem-safe export name', () => {
     expect(exportFileName(new Date('2026-01-02T03:04:05.678Z'))).toBe('velto-unsynced-2026-01-02T03-04-05-678Z.json');
+  });
+
+  it('maps ADR-029 payment handover status after server ACK', () => {
+    expect(statusView('PENDING', 'POSTED').labelKey).toBe('onDevice');
+    expect(statusView('SYNCED').labelKey).toBe('onServer');
+    expect(statusView('SYNCED', 'PENDING_HANDOVER')).toEqual({ labelKey: 'handoverPending', variant: 'warning' });
+    expect(statusView('SYNCED', 'POSTED').labelKey).toBe('handoverPosted');
+    expect(statusView('SYNCED', 'REJECTED')).toEqual({ labelKey: 'handoverRejected', variant: 'destructive' });
+  });
+
+  it('treats a cashier-rejected payment as needs-attention and sorts it first', () => {
+    const rejected = e({ clientId: 'r', type: 'payment', status: 'SYNCED', paymentStatus: 'REJECTED', createdAt: '2026-01-03T00:00:00Z' });
+    const pending = e({ clientId: 'p', type: 'payment', status: 'SYNCED', paymentStatus: 'PENDING_HANDOVER' });
+    const waiting = e({ clientId: 'w', status: 'PENDING', createdAt: '2026-01-02T00:00:00Z' });
+    expect(isRejectedHandover(rejected)).toBe(true);
+    expect(needsAttention(rejected)).toBe(true);
+    expect(needsAttention(pending)).toBe(false);
+    expect(sortQueueForScreen([pending, waiting, rejected]).map((x) => x.clientId)).toEqual(['r', 'w', 'p']);
   });
 });

@@ -1,16 +1,17 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslations } from 'next-intl';
 import { toast } from 'sonner';
 import { Download } from 'lucide-react';
 import { useRouter } from '@/i18n/navigation';
 import { useTelegramBackButton } from '@/lib/hooks/use-telegram-back-button';
+import { usePaymentsQuery } from '@/lib/api/payments';
 import { useSyncEngine } from '@/lib/offline/sync-engine';
 import { queueRepository } from '@/lib/offline/queue';
 import { useOfflineCustomers, useOfflineOutlets, useOfflineProducts } from '@/lib/offline/use-offline-data';
-import { downloadJson, entryDisplayName, exportFileName, sortQueueForScreen } from '@/lib/offline/queue-view';
+import { downloadJson, entryDisplayName, exportFileName, needsAttention, sortQueueForScreen } from '@/lib/offline/queue-view';
 import { ConfirmSheet } from '@/components/shared/confirm-sheet';
 import { QueueItemCard } from '@/components/queue/queue-item-card';
 import { LogoutButton } from '@/components/queue/logout-button';
@@ -40,10 +41,22 @@ export default function QueuePage() {
   const products = useOfflineProducts();
 
   const productName = useCallback((id: string) => products.data?.find((p) => p.id === id)?.name ?? '—', [products.data]);
+  // Learn the cashier's decision (POSTED/REJECTED) for payments still waiting on handover — online only.
+  const awaitingHandover = (entries.data ?? []).some((e) => e.type === 'payment' && e.paymentStatus === 'PENDING_HANDOVER');
+  const handover = usePaymentsQuery({ pageSize: 100 }, engine.isOnline && awaitingHandover);
+  useEffect(() => {
+    const items = handover.data?.data;
+    if (!items) return;
+    void Promise.all(items.map((p) => queueRepository.applyHandoverStatus(p.id, p.status, p.handoverRejectReason))).then((r) => {
+      if (r.some(Boolean)) void entries.refetch();
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handover.data]);
+
   const rows = sortQueueForScreen(entries.data ?? []);
-  const attention = rows.filter((e) => e.status === 'FAILED' || e.status === 'CONFLICT');
+  const attention = rows.filter(needsAttention);
   const waiting = rows.filter((e) => e.status === 'PENDING' || e.status === 'SYNCING');
-  const synced = rows.filter((e) => e.status === 'SYNCED');
+  const synced = rows.filter((e) => e.status === 'SYNCED' && !needsAttention(e));
 
   function refresh() {
     void entries.refetch();
