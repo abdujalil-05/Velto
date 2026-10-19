@@ -7,6 +7,7 @@ import { prisma, systemPrisma } from '@velto/database';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
+import { uniquePhone } from './unique-phone';
 
 /**
  * §16.3 / SEC-020..024, SEC-054: "ruxsat rad etilsa 403 + audit event",
@@ -17,7 +18,7 @@ describe('E2E §16.3: permission denied => 403 + audit event (+ traceId), no cro
   let companyA: string;
   let userA: string;
   let accessToken: string;
-  const phone = `+99890${Math.floor(1_000_000 + Math.random() * 8_000_000)}`;
+  const phone = uniquePhone();
   const password = 'CorrectHorseBattery9'; // nosemgrep: ajinabraham.njsscan.generic.hardcoded_secrets.node_password
   const secretCustomerName = `TenantB-Secret-${Date.now()}`;
   const tenantPrisma = new TenantPrismaService();

@@ -9,6 +9,7 @@ import { permissionKeysForRole } from '../../../packages/database/src/rbac-catal
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
+import { uniquePhone } from './unique-phone';
 
 /**
  * F2.1 / SEC-054: payment and stock-movement reversal are denied to ACCOUNTANT
@@ -37,7 +38,7 @@ describe('E2E F2.1: reversal endpoints RBAC', () => {
         const p = await systemPrisma.permission.upsert({ where: { module_code: { module, code } }, update: {}, create: { module, code } });
         permissionIds.push(p.id);
       }
-      const phone = `+99890${Math.floor(1_000_000 + Math.random() * 8_000_000)}`;
+      const phone = uniquePhone();
       const user = await systemPrisma.user.create({
         data: { companyId, firstName: roleCode, lastName: 'Rev', phone, passwordHash: await argon2.hash(password, { type: argon2.argon2id }) },
       });

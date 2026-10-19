@@ -8,6 +8,7 @@ import { permissionKeysForRole } from '../../../packages/database/src/rbac-catal
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
+import { uniquePhone } from './unique-phone';
 
 /** F4: BigInt changeSeq must serialize (decimal string) through the real HTTP stack, in /sync/pull and in plain CRUD responses. */
 describe('E2E F4: BigInt changeSeq serialization + /sync/pull shape', () => {
@@ -29,7 +30,7 @@ describe('E2E F4: BigInt changeSeq serialization + /sync/pull shape', () => {
       const [module, code] = key.split('.');
       permissionIds.push((await systemPrisma.permission.upsert({ where: { module_code: { module, code } }, update: {}, create: { module, code } })).id);
     }
-    const phone = `+99890${Math.floor(1_000_000 + Math.random() * 8_000_000)}`;
+    const phone = uniquePhone();
     const user = await systemPrisma.user.create({
       data: { companyId: cid, firstName: 'O', lastName: 'F4', phone, passwordHash: await argon2.hash(password, { type: argon2.argon2id }) },
     });

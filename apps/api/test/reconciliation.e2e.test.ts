@@ -15,6 +15,7 @@ import { ReconciliationAdminService } from '../src/modules/reconciliation/reconc
 import type { AuthenticatedUser } from '../src/common/auth/auth.types';
 import { ReconciliationScheduleProcessor } from '../src/modules/reconciliation/reconciliation-schedule.processor';
 import type { DetectResult, ReconciliationService } from '../src/modules/reconciliation/reconciliation.service';
+import { uniquePhone } from './unique-phone';
 
 /** F2.5: reconciliation API RBAC, manual run, fix, daily alert dedupe, scheduler isolation. */
 describe('E2E F2.5: reconciliation', () => {
@@ -54,7 +55,7 @@ describe('E2E F2.5: reconciliation', () => {
         }
         permissionIds.push(id);
       }
-      const phone = `+99890${Math.floor(1_000_000 + Math.random() * 8_000_000)}`;
+      const phone = uniquePhone();
       const user = await systemPrisma.user.create({
         data: { companyId, firstName: roleCode, lastName: 'Recon', phone, passwordHash: await argon2.hash(password, { type: argon2.argon2id }) },
       });

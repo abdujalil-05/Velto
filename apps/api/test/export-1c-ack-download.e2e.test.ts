@@ -11,6 +11,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { StorageService } from '../src/common/storage/storage.service';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
+import { uniquePhone } from './unique-phone';
 
 /** F5.3 / ADR-030: 1C export download (private stream) + manual ACK + throttles. Real Postgres + RLS, StorageService test double. */
 describe('E2E F5.3: 1C export download / ACK / limits', () => {
@@ -34,7 +35,7 @@ describe('E2E F5.3: 1C export download / ACK / limits', () => {
   };
 
   async function seedUser(companyId: string, key: string, roleCodes: string[]) {
-    const phone = `+99890${Math.floor(1_000_000 + Math.random() * 8_000_000)}`;
+    const phone = uniquePhone();
     const user = await systemPrisma.user.create({
       data: { companyId, firstName: key, lastName: 'Export1c', phone, passwordHash: await argon2.hash(password, { type: argon2.argon2id }) },
     });

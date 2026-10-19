@@ -8,6 +8,7 @@ import { prisma, systemPrisma } from '@velto/database';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { StorageService } from '../src/common/storage/storage.service';
+import { uniquePhone } from './unique-phone';
 
 /**
  * TZ 11.4: payment, allocation, stock adjustment, order confirm/cancel, role
@@ -27,7 +28,7 @@ describe('E2E: mandatory audit events (TZ 11.4)', () => {
   let packagingId: string;
   let warehouseId: string;
   let targetUserId: string;
-  const rnd = () => `+99890${Math.floor(1_000_000 + Math.random() * 8_000_000)}`;
+  const rnd = () => uniquePhone();
   const phone = rnd();
   const password = 'CorrectHorseBattery9'; // nosemgrep: ajinabraham.njsscan.generic.hardcoded_secrets.node_password
   const http = () => request(app.getHttpServer());

@@ -12,6 +12,7 @@ import { StorageService } from '../src/common/storage/storage.service';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
 import { localDateString } from '../src/modules/analytics/report-utils';
 import { buildTestWorkbook } from '../src/modules/import/parsers/test-workbook';
+import { uniquePhone } from './unique-phone';
 
 const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const CUST_HEADERS = ['customerCode', 'debt', 'credit', 'docRef', 'docDate'];
@@ -29,7 +30,7 @@ describe('E2E opening balances (ADR-041..043)', () => {
   let app: INestApplication;
   const tenantPrisma = new TenantPrismaService();
   const password = 'CorrectHorseBattery9'; // nosemgrep: ajinabraham.njsscan.generic.hardcoded_secrets.node_password
-  const rnd = () => `+99893${Math.floor(1_000_000 + Math.random() * 8_000_000)}`;
+  const rnd = () => uniquePhone();
   const tag = randomUUID().slice(0, 6);
   const today = localDateString(new Date(), 'Asia/Tashkent');
   let companyA: string;

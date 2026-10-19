@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHmac, randomInt, randomUUID } from 'node:crypto';
 import argon2 from 'argon2';
 import Redis from 'ioredis';
 import { prisma, systemPrisma } from '@velto/database';
@@ -24,7 +24,7 @@ import { LoginRateLimiterService } from './login-rate-limiter.service';
 // and login() intentionally searches across all of them (15.2: "login'da
 // companyId so'ralmaydi").
 function uniquePhone(): string {
-  return `+99890${Math.floor(1_000_000 + Math.random() * 8_000_000)}`;
+  return `+998${String(randomInt(0, 1_000_000_000)).padStart(9, '0')}`;
 }
 
 describe('AuthService (integration, real Postgres + Redis)', () => {

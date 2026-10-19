@@ -9,6 +9,7 @@ import { PERMISSION_DEFS, permissionKeysForRole } from '../../../packages/databa
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
+import { uniquePhone } from './unique-phone';
 
 /**
  * F1.4 / SEC-020..024, SEC-054, §16.3: an ACCOUNTANT (real catalog grant) is
@@ -20,7 +21,7 @@ describe('E2E F1.4: ACCOUNTANT restrictions', () => {
   let companyId: string;
   let userId: string;
   let token: string;
-  const phone = `+99890${Math.floor(1_000_000 + Math.random() * 8_000_000)}`;
+  const phone = uniquePhone();
   const password = 'CorrectHorseBattery9'; // nosemgrep: ajinabraham.njsscan.generic.hardcoded_secrets.node_password
   const tenantPrisma = new TenantPrismaService();
   const id = randomUUID();

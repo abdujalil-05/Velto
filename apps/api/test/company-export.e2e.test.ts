@@ -16,6 +16,7 @@ import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service'
 import { Export1cRecoveryService } from '../src/modules/integrations/export-1c/export-1c-recovery.service';
 import { CompanyExportProcessor, companyExportHeartbeat } from '../src/modules/company-export/company-export.processor';
 import type { CompanyExportJobData } from '../src/modules/company-export/company-export.constants';
+import { uniquePhone } from './unique-phone';
 
 /** ADR-045: company data export (DSR/offboarding). Real Postgres + RLS + Redis worker, StorageService test double. */
 describe('E2E ADR-045: company export', () => {
@@ -54,7 +55,7 @@ describe('E2E ADR-045: company export', () => {
   };
 
   async function seedUser(companyId: string, key: string, roleCodes: string[]) {
-    const phone = `+99890${Math.floor(1_000_000 + Math.random() * 8_000_000)}`;
+    const phone = uniquePhone();
     const user = await systemPrisma.user.create({
       data: { companyId, firstName: key, lastName: 'CompanyExport', phone, passwordHash: await argon2.hash(password, { type: argon2.argon2id }) },
     });

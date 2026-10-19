@@ -9,6 +9,7 @@ import { permissionKeysForRole } from '../../../packages/database/src/rbac-catal
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
+import { uniquePhone } from './unique-phone';
 
 /**
  * F8.1 / ADR-029 / TZ §6.5, §6.7.2, §5.4.2 F-01 (HTTP level, real Postgres + RLS):
@@ -27,7 +28,7 @@ describe('E2E F8.1: payment handover (ADR-029)', () => {
   const rid = () => randomUUID().slice(0, 8);
 
   async function seedUser(companyId: string, key: string, roleCodes: string[]) {
-    const phone = `+99890${Math.floor(1_000_000 + Math.random() * 8_000_000)}`;
+    const phone = uniquePhone();
     const user = await systemPrisma.user.create({
       data: { companyId, firstName: key, lastName: 'Handover', phone, passwordHash: await argon2.hash(password, { type: argon2.argon2id }) },
     });

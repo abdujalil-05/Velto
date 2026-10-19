@@ -9,6 +9,7 @@ import { permissionKeysForRole } from '../../../packages/database/src/rbac-catal
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
+import { uniquePhone } from './unique-phone';
 
 /** F3: offline visit push (§8/10.3), tenant isolation (SEC-001..005, SEC-023), server-only GPS status, GPS settings. */
 describe('E2E F3: visits via /sync/push + /visits, isolation, GPS settings', () => {
@@ -51,7 +52,7 @@ describe('E2E F3: visits via /sync/push + /visits, isolation, GPS settings', () 
     return { cid, roleIds, outletId: outlet.id };
   }
   async function mkUser(key: string, cid: string, roleId: string) {
-    const phone = `+99890${Math.floor(1_000_000 + Math.random() * 8_000_000)}`;
+    const phone = uniquePhone();
     const user = await systemPrisma.user.create({
       data: { companyId: cid, firstName: key, lastName: 'F3v', phone, passwordHash: await argon2.hash(password, { type: argon2.argon2id }) },
     });

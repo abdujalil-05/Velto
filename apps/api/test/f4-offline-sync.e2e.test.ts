@@ -10,6 +10,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
 import { SalesService } from '../src/modules/sales/sales.service';
+import { uniquePhone } from './unique-phone';
 
 /**
  * F4.3/F4.4 (TZ §8.5, §16.2): offline sync QA over HTTP on real Postgres + RLS.
@@ -75,7 +76,7 @@ describe('E2E F4 offline sync (TZ 8.5 / 16.2)', () => {
     return { cid: c, roleIds };
   }
   async function mkUser(key: string, c: string, roleId: string) {
-    const phone = `+99890${Math.floor(1_000_000 + Math.random() * 8_000_000)}`;
+    const phone = uniquePhone();
     const user = await systemPrisma.user.create({
       data: { companyId: c, firstName: key, lastName: 'F4o', phone, passwordHash: await argon2.hash(password, { type: argon2.argon2id }) },
     });
