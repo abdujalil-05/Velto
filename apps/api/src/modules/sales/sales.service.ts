@@ -646,7 +646,9 @@ export class SalesService {
       where: { id },
       data: {
         status: OrderStatus.CANCELLED,
-        note: dto.reason ? `${order.note ?? ''}\n[Bekor qilindi]: ${dto.reason}`.trim() : order.note,
+        cancelReason: dto.reason,
+        cancelledAt: new Date(),
+        cancelledBy: user.id,
       },
       include: ORDER_INCLUDE,
     });

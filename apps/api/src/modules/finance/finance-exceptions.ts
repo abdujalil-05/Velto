@@ -244,3 +244,13 @@ export class PaymentStatusesLimitException extends AppException {
     );
   }
 }
+
+export class PaymentOpeningNotReversibleException extends AppException {
+  constructor() {
+    super(HttpStatus.CONFLICT, 'PAYMENT_OPENING_NOT_REVERSIBLE', {
+      uz: "Boshlang'ich qoldiq to'lovini bu yerda bekor qilib yoki taqsimlab bo'lmaydi; faqat boshlang'ich qoldiq partiyasini bekor qilish orqali",
+      ru: 'Платёж начального остатка нельзя отменить или распределить здесь; только через аннулирование партии начальных остатков',
+      en: 'An opening balance payment cannot be reversed or allocated here; void the opening batch instead',
+    });
+  }
+}

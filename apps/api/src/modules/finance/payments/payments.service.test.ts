@@ -873,4 +873,31 @@ describe('PaymentsService (integration, real Postgres + RLS)', () => {
     }
     expect(outcomes.size).toBeGreaterThan(0);
   });
+  it('F6: OPENING payment cannot be reversed or allocated (409 PAYMENT_OPENING_NOT_REVERSIBLE), only via batch void', async () => {
+    const customer = await systemPrisma.customer.create({ data: { companyId, name: 'Opening Cust', code: `OB-${Date.now()}` } });
+    const batch = await systemPrisma.openingBalanceBatch.create({
+      data: {
+        companyId, kind: 'CUSTOMER_BALANCE', asOfDate: new Date('2026-10-01'), source: 'ob.xlsx', fileHash: `h-${Date.now()}`,
+        createdBy: user.id, creditTotal: '50.00', rowCount: 1,
+      },
+    });
+    const opening = await systemPrisma.payment.create({
+      data: {
+        companyId, number: `OB-2026-${String(Date.now()).slice(-6)}`, customerId: customer.id, amount: '50.00',
+        source: 'OPENING', method: null, openingBatchId: batch.id,
+      },
+    });
+    await systemPrisma.openingBalanceBatch.update({
+      where: { id: batch.id },
+      data: { status: 'POSTED', postedBy: user.id, postedAt: new Date() },
+    });
+    const rev = await tenantPrisma.run(companyId, () => payments.reverse(opening.id, 'xato kiritilgan', user)).catch((e: unknown) => e);
+    expect(rev).toBeInstanceOf(AppException);
+    expect((rev as AppException).getStatus()).toBe(409);
+    expect(JSON.stringify((rev as AppException).getResponse())).toContain('PAYMENT_OPENING_NOT_REVERSIBLE');
+    const alloc = await tenantPrisma.run(companyId, () => payments.allocate(opening.id, {} as never, user)).catch((e: unknown) => e);
+    expect(JSON.stringify((alloc as AppException).getResponse())).toContain('PAYMENT_OPENING_NOT_REVERSIBLE');
+    const still = await systemPrisma.payment.findUniqueOrThrow({ where: { id: opening.id } });
+    expect(still.status).toBe('POSTED');
+  });
 });

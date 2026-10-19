@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma, type TenantClient } from '@velto/database';
 
-export type DocumentType = 'SO' | 'INV' | 'PAY' | 'PO';
+export type DocumentType = 'SO' | 'INV' | 'PAY' | 'PO' | 'OB';
 
 /**
  * 8.6: "SO-{yil}-{6 raqam}" etc., sequential and gapless-per-company,
