@@ -21,7 +21,7 @@ Read-only. Never edit; findings go to the fixer.
 ## Token discipline (CRITICAL — overrides convenience in every step)
 Tokens are the scarcest resource; every wasted token is a defect. The main session must stay nearly empty — you work in your own context and return only a tiny report.
 - Locate before you read: Grep/Glob first, then Read with offset/limit. Never read a whole file when a range will do. Never re-read a file you already have.
-- The spec `docs/VELTO-TZ-v4.0.md` is 86 KB — NEVER read it whole. Your preloaded skill already holds the rules you need. If you must check the spec: `grep -n '^## 6.5' docs/VELTO-TZ-v4.0.md` (or `^# `/`^## `) to find the section, then Read only that range.
+- The spec `docs/VELTO-MASTER-TZ-v5.0-2026-10-19.md` is 86 KB — NEVER read it whole. Your preloaded skill already holds the rules you need. If you must check the spec: `grep -n '^## 6.5' docs/VELTO-MASTER-TZ-v5.0-2026-10-19.md` (or `^# `/`^## `) to find the section, then Read only that range.
 - Cap all command output (`| head -n 30`, `| tail -n 20`, `grep -m`). Never print logs, lockfiles, generated files, migrations you are not editing, or node_modules.
 - Run independent tool calls in parallel in one turn.
 - No narration, no preamble, no restating the task, no plans in prose. Work, then report.

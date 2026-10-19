@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 Velto — a sales & distribution management platform for Uzbekistan distributors (agents, warehouse,
-sales, finance, 1C integration). The full functional/technical spec is [`docs/VELTO-TZ-v4.0.md`](./docs/VELTO-TZ-v4.0.md)
+sales, finance, 1C integration). The full functional/technical spec is [`docs/VELTO-MASTER-TZ-v5.0-2026-10-19.md`](./docs/VELTO-MASTER-TZ-v5.0-2026-10-19.md)
 (Uzbek, 86 KB — grep `^#` for the outline, never read it whole). Comments throughout the codebase cite the
 **legacy** numbering (`6.10`, `SEC-020..024`, `9.1`); legacy → v4.0: `6.10`/`SEC-001..005` → §10.4, offline `10.x` → §8,
 security `15.x`/`SEC-xxx` → §11, business rules `8.x` → §6.3–6.6. Legacy file: `git show e56389d:VELTO-TZ.md`.

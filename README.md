@@ -33,7 +33,7 @@ apps/
 packages/
   database/   Prisma sxema, migratsiyalar, tenant-aware klient, seed/bootstrap
 deploy/       nginx, PM2, MinIO siyosati, deploy.sh
-docs/         VELTO-TZ-v4.0.md — texnik topshiriq (asosiy manba)
+docs/         VELTO-MASTER-TZ-v5.0-2026-10-19.md — texnik topshiriq (asosiy manba)
 .claude/      Claude Code subagentlari va skill'lari
 ```
 
@@ -102,7 +102,7 @@ Testlarning ko'pi mock'siz, RLS yoqilgan haqiqiy Postgres'ga qarshi integratsiya
 - **Pul va miqdor:** `Decimal` (`Float` hech qachon). `StockMovement`, `Payment`, `AuditLog` faqat qo'shiladi, o'zgartirilmaydi.
 - **Offline:** Mini App'da Dexie + har qator uchun AES-GCM, lokal navbat, `/sync/pull` va `/sync/push`.
 
-Batafsil: [`CLAUDE.md`](./CLAUDE.md) va [`docs/VELTO-TZ-v4.0.md`](./docs/VELTO-TZ-v4.0.md).
+Batafsil: [`CLAUDE.md`](./CLAUDE.md) va [`docs/VELTO-MASTER-TZ-v5.0-2026-10-19.md`](./docs/VELTO-MASTER-TZ-v5.0-2026-10-19.md).
 
 ## Deploy
 
@@ -110,7 +110,7 @@ Production bitta domen ostida, nginx orqali (`/velto/`, `/velto/api/`, `/velto/a
 
 ## Hujjatlar va Claude Code
 
-- Texnik topshiriq: `docs/VELTO-TZ-v4.0.md` (hajmi katta — `grep -n '^#'` bilan bo'limni toping)
+- Texnik topshiriq: `docs/VELTO-MASTER-TZ-v5.0-2026-10-19.md` (hajmi katta — `grep -n '^#'` bilan bo'limni toping)
 - Claude Code uchun qoidalar va subagent jadvali: `CLAUDE.md`
 - Subagentlar `.claude/agents/`, ularning skill'lari `.claude/skills/velto-*`
 
