@@ -256,9 +256,17 @@ export class SyncService {
     if (documents.length > max) throw new SyncBatchTooLargeException(max, documents.length);
 
     await this.lockBatchCustomers(documents);
-    const results: SyncPushResultItem[] = [];
-    for (const doc of documents) {
-      results.push(await this.pushOne(doc, user));
+    // F7 40P01: each document's DocumentCounter row lock is held to COMMIT, so
+    // a batch [ORDER, PAYMENT] next to a batch [PAYMENT, ORDER] (different
+    // customers) took SO/PAY in opposite order and deadlocked. Process by
+    // counter docType asc (VISIT: none, then PAY, then SO) — stable within a
+    // type, results returned in input order. Safe: the three types never read
+    // each other's rows within a batch (an order is SUBMITTED, no invoice, so
+    // a payment's FIFO cannot see it). Also shortens the SO counter hold.
+    const results: SyncPushResultItem[] = new Array(documents.length);
+    const order = documents.map((doc, i) => ({ doc, i })).sort((a, b) => PROCESS_RANK[a.doc.type] - PROCESS_RANK[b.doc.type] || a.i - b.i);
+    for (const { doc, i } of order) {
+      results[i] = await this.pushOne(doc, user);
     }
     return { results };
   }
@@ -282,10 +290,11 @@ export class SyncService {
       const customerId = (doc.payload as Record<string, unknown> | undefined)?.customerId;
       if (typeof customerId === 'string' && UUID_RE.test(customerId)) ids.add(customerId.toLowerCase());
     }
-    const tx = this.tenantPrisma.client;
-    for (const id of [...ids].sort()) {
-      await this.customers.lockForUpdate(tx, id);
-    }
+    if (ids.size === 0) return;
+    // One statement; ORDER BY id makes Postgres take the row locks in id asc.
+    await this.tenantPrisma.client.$queryRaw(
+      Prisma.sql`SELECT id FROM "Customer" WHERE id = ANY(${[...ids].sort()}::uuid[]) ORDER BY id FOR UPDATE`,
+    );
   }
 
   private async pushOne(doc: SyncPushDocumentDto, user: AuthenticatedUser): Promise<SyncPushResultItem> {
@@ -414,6 +423,9 @@ const logger = new Logger('SyncService');
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const PRICE_CHANGED = 'PRICE_CHANGED';
+
+/** push() processing order = DocumentCounter docType asc (none < PAY < SO); see DocumentNumberingService. */
+const PROCESS_RANK: Record<SyncDocType, number> = { [SyncDocType.VISIT]: 0, [SyncDocType.PAYMENT]: 1, [SyncDocType.ORDER]: 2 };
 
 /** Postgres errors that will fail identically on every retry (22001 value too long, 22003 numeric out of range). */
 const DETERMINISTIC_SQLSTATES = new Set(['22001', '22003']);

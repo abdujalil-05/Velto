@@ -262,7 +262,12 @@ export class SalesService {
 
     if (dto.lines.length === 0) throw new EmptyOrderException();
 
-    const customer = await this.customers.findActiveOrThrow(tx, dto.customerId);
+    // F7 40P01: the SalesOrder INSERT's FK check takes FOR KEY SHARE on the
+    // customer row. Taken there — AFTER the SO counter — it waited on a sync
+    // push holding Customer FOR UPDATE while that push waited on our counter.
+    // Take the same (weakest) lock up front instead, before any counter, per
+    // the global order in DocumentNumberingService; fresh deletedAt read after.
+    const customer = await this.customers.lockKeyShareActiveOrThrow(tx, dto.customerId);
     if (customer.isBlocked) throw new CustomerBlockedException(customer.blockReason);
 
     const outletId = await this.resolveOutlet(tx, dto.customerId, dto.outletId);

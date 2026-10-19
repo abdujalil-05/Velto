@@ -10,6 +10,21 @@ export type DocumentType = 'SO' | 'INV' | 'PAY' | 'PO' | 'OB';
  * requests could read the same max and both insert the same number), so
  * this atomically increments a counter row via `INSERT ... ON CONFLICT DO
  * UPDATE ... RETURNING`, which Postgres serializes per row.
+ *
+ * GLOBAL WRITER LOCK ORDER (F7, 40P01 fix; TZ §6.3 forbids reuse, does not
+ * promise gapless, line 930 wants numbering inside the business tx — so the
+ * counter stays in-tx, rolled back with it, and is taken LAST):
+ *   1. advisory xact locks (Idempotency-Key, export1c, route)
+ *   2. header row FOR UPDATE: SalesOrder | Payment | CashSession | PO | OpeningBatch
+ *   3. Customer(s), id asc — FOR UPDATE (ledger writers, sync push batch) or
+ *      FOR KEY SHARE (order create). Never after step 4.
+ *   4. StockLevel (productId, warehouseId) asc — deliver/confirm/reserve
+ *   5. DocumentCounter, several types only in docType asc (INV < OB < PAY < PO < SO)
+ *   6. INSERTs (FK KEY SHARE on rows already locked in 3 or never FOR UPDATE'd)
+ * Two documented exceptions, both acyclic: after PAY, Invoice FOR UPDATE of a
+ * customer whose lock is held (step 3 guards them); after SO, a courier
+ * order's StockLevel reservation (no StockLevel holder ever waits for SO/PAY —
+ * deliver takes INV only). Regression: sync/lock-order-deadlock.test.ts.
  */
 @Injectable()
 export class DocumentNumberingService {
