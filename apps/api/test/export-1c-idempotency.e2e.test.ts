@@ -74,7 +74,7 @@ describe('E2E: 1C export create idempotency + CORS exposed headers', () => {
 
   it('CORS exposes X-Content-SHA256 and Content-Disposition, keeps credentials', async () => {
     const res = await http().get('/export/1c').set('Origin', 'http://localhost:3000').set('Authorization', `Bearer ${token}`).expect(200);
-    expect(res.headers['access-control-expose-headers']).toBe('X-Content-SHA256,Content-Disposition');
+    expect(res.headers['access-control-expose-headers']).toBe('X-Content-SHA256,Content-Disposition,Retry-After');
     expect(res.headers['access-control-allow-credentials']).toBe('true');
     expect(res.headers['access-control-allow-origin']).toBe('http://localhost:3000');
   });

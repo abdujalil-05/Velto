@@ -30,6 +30,7 @@ async function buildApp(opts: { readOnly?: boolean; redis?: unknown; storage?: u
   const app = (await b.compile()).createNestApplication();
   configureApp(app, ['http://localhost:3000']);
   await app.init();
+  await app.listen(0, '127.0.0.1'); // own stable port: supertest's per-request ephemeral listen can race other workers under load
   return app;
 }
 
@@ -185,6 +186,7 @@ describe('F7 D4: sync throttle (SEC-015) + Redis-down auth', () => {
     const blocked = await push('a', 0);
     expect(blocked.status).toBe(429);
     expect(blocked.body.code).toBe('RATE_LIMITED');
+    expect(Number(blocked.headers['retry-after'])).toBeGreaterThanOrEqual(1);
     expect(blocked.body.message.uz).toBeDefined();
     expect((await push('b', 0)).status).not.toBe(429);
   });
