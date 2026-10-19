@@ -1,5 +1,6 @@
 import ExcelJS from 'exceljs';
 import type { Prisma } from '@velto/database';
+import { sanitizeCell } from '../../common/export/spreadsheet-safety';
 import { companyDay } from '../field/company-day';
 
 /** Cell value: Decimals are written as numbers in XLSX and as exact `.toFixed(2)` strings in CSV. */
@@ -48,23 +49,10 @@ export function periodMeta(range: { from: Date; to: Date }, timeZone: string): [
   return [['Davr (dan)', companyDay(range.from, timeZone).date], ['Davr (gacha)', companyDay(range.to, timeZone).date]];
 }
 
-/**
- * Spreadsheet formula-injection check (after optional leading whitespace): cells starting with
- * `=`, `@`, tab or CR, or `+`/`-` followed by something that is not a digit/phone/number
- * character, are neutralised. Numbers and phones (`+998901234567`, `-5`, `(99) 123-45-67`) stay intact.
- */
-export function isFormulaLike(raw: string): boolean {
-  if (/^[\t\r]/.test(raw)) return true;
-  const t = raw.trimStart();
-  if (/^[=@\t\r]/.test(t)) return true;
-  if (/^[+-]/.test(t)) return !/^[+-][\s]*[\d(.,]/.test(t) || !/^[+-][\d\s().,-]*$/.test(t);
-  return false;
-}
-
 function csvCell(cell: ReportCell): string {
   if (cell === null) return '';
   const raw = typeof cell === 'number' ? String(cell) : typeof cell === 'string' ? cell : cell.toFixed(2);
-  const safe = typeof cell === 'string' && isFormulaLike(raw) ? `'${raw}` : raw;
+  const safe = typeof cell === 'string' ? (sanitizeCell(raw) as string) : raw;
   return /[",\r\n;]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 
@@ -102,7 +90,7 @@ export async function buildReportXlsx(table: ReportTable): Promise<Buffer> {
     sheet.addRow([]);
     sheet.addRow(section.columns.map((c) => c.header)).font = { bold: true };
     for (const row of section.rows) {
-      sheet.addRow(row.map((cell) => (cell !== null && typeof cell === 'object' ? cell.toNumber() : cell)));
+      sheet.addRow(row.map((cell) => (cell !== null && typeof cell === 'object' ? cell.toNumber() : sanitizeCell(cell))));
     }
     section.columns.forEach((c, i) => {
       if (c.money) sheet.getColumn(i + 1).numFmt = NUMBER_FORMAT;
