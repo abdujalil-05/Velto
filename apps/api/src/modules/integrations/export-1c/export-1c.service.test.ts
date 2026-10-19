@@ -37,20 +37,27 @@ describe('Export1cService (integration, real Postgres + RLS)', () => {
     await systemPrisma.$disconnect();
   });
 
-  it('creates a PENDING job and enqueues it for the worker', async () => {
+  it('creates a QUEUED job and enqueues it for the worker', async () => {
     const job = await runWithTraceId('known-trace-id-123', () =>
       tenantPrisma.run(companyId, () => export1c.create({ from: '2026-07-01', to: '2026-07-31' }, user)),
     );
-    expect(job.status).toBe('PENDING');
-    expect(job.format).toBe('XML'); // default per 11.1
-    expect(queueAdd).toHaveBeenCalledWith('export', { exportJobId: job.id, companyId, traceId: 'known-trace-id-123' });
+    expect(job.status).toBe('QUEUED');
+    expect(job.format).toBe('EXCEL'); // XML not pilot-validated
+    expect(queueAdd).toHaveBeenCalledWith('export', { exportJobId: job.id, companyId, traceId: 'known-trace-id-123' }, expect.objectContaining({ attempts: 3, jobId: `export-${job.id}` }));
   });
 
-  it('accepts an explicit EXCEL format', async () => {
+  it('day boundaries follow Company.timezone (Asia/Tashkent), not the server clock; CSV accepted', async () => {
+    const job = await tenantPrisma.run(companyId, () => export1c.create({ from: '2026-07-01', to: '2026-07-31', format: 'CSV' }, user));
+    expect(job.format).toBe('CSV');
+    expect(job.periodFrom.toISOString()).toBe('2026-06-30T19:00:00.000Z'); // 2026-07-01 00:00 +05
+    expect(job.periodTo.toISOString()).toBe('2026-07-31T18:59:59.999Z'); // 2026-07-31 23:59:59.999 +05
+  });
+
+  it('accepts an explicit XML format', async () => {
     const job = await tenantPrisma.run(companyId, () =>
-      export1c.create({ from: '2026-07-01', to: '2026-07-31', format: 'EXCEL' }, user),
+      export1c.create({ from: '2026-07-01', to: '2026-07-31', format: 'XML' }, user),
     );
-    expect(job.format).toBe('EXCEL');
+    expect(job.format).toBe('XML');
   });
 
   it('rejects a period where "from" is after "to"', async () => {

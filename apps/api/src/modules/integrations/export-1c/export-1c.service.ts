@@ -10,19 +10,9 @@ import type { CreateExportDto } from './dto/create-export.dto';
 import type { ListExportsQueryDto } from './dto/list-exports.query';
 import { AuditLogService, toAuditJson } from '../../../common/audit/audit-log.service';
 import { addTracedJob } from '../../../common/queue/trace-job';
-import { EXPORT_1C_QUEUE, type Export1cJobData } from './export-1c.constants';
-
-function startOfDay(date: Date): Date {
-  const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
-
-function endOfDay(date: Date): Date {
-  const d = new Date(date);
-  d.setHours(23, 59, 59, 999);
-  return d;
-}
+import { lockExport1cExclusive } from '../../../common/locks/export1c-lock';
+import { companyDay } from '../../field/company-day';
+import { EXPORT_1C_JOB_OPTS, EXPORT_1C_QUEUE, type Export1cJobData } from './export-1c.constants';
 
 /** 11.1: "Buxgalter /export/1c'da davrni tanlaydi -> fayl BullMQ orqali fon rejimida generatsiya qilinadi -> yuklab olinadi." */
 @Injectable()
@@ -34,19 +24,23 @@ export class Export1cService {
   ) {}
 
   async create(dto: CreateExportDto, user: AuthenticatedUser) {
-    const periodFrom = startOfDay(new Date(dto.from));
-    const periodTo = endOfDay(new Date(dto.to));
+    const tx = this.tenantPrisma.client;
+    // TZ §7.1: day boundaries follow Company.timezone, never the server clock.
+    const company = await tx.company.findFirst({ select: { timezone: true } });
+    const tz = company?.timezone ?? 'Asia/Tashkent';
+    const periodFrom = companyDay(new Date(dto.from), tz).start;
+    const periodTo = new Date(companyDay(new Date(dto.to), tz).end.getTime() - 1);
     if (periodFrom > periodTo) throw new InvalidExportPeriodException();
 
-    const tx = this.tenantPrisma.client;
+    await lockExport1cExclusive(); // ADR-025: serialize with payments.reverse() (shared)
     const job = await tx.exportJob.create({
       data: {
         companyId: user.companyId,
         type: '1c',
-        format: dto.format ?? 'XML',
+        format: dto.format ?? 'EXCEL', // XML stays opt-in: CommerceML not yet validated on a pilot 1C configuration
         periodFrom,
         periodTo,
-        status: 'PENDING',
+        status: 'QUEUED',
         requestedBy: user.id,
       },
     });
@@ -64,7 +58,7 @@ export class Export1cService {
     // here immediately would let the worker dequeue and query for this
     // ExportJob row before the surrounding TenantPrismaService.run()
     // transaction (TenantContextInterceptor wraps the whole request) commits.
-    TenantContext.afterCommit(() => addTracedJob(this.queue, 'export', { exportJobId: job.id, companyId: user.companyId }));
+    TenantContext.afterCommit(() => addTracedJob(this.queue, 'export', { exportJobId: job.id, companyId: user.companyId }, { ...EXPORT_1C_JOB_OPTS, jobId: `export-${job.id}` }));
     return job;
   }
 

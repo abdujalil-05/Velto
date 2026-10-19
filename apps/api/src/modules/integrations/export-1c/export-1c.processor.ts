@@ -1,12 +1,15 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import type { Job } from 'bullmq';
-import { InvoiceStatus, type TenantClient } from '@velto/database';
+import { createHash } from 'node:crypto';
+import { InvoiceStatus, Prisma, type ExportFormat, type TenantClient } from '@velto/database';
 import { runJobWithTrace } from '../../../common/queue/trace-job';
 import { StorageService } from '../../../common/storage/storage.service';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import { buildCommerceMlXml, type CommerceMlCustomer, type CommerceMlDocument } from './commerce-ml';
 import { buildExport1cWorkbook, type PaymentDocumentRow, type SalesDocumentRow } from './export-1c-excel';
-import { EXPORT_1C_QUEUE, type Export1cJobData } from './export-1c.constants';
+import { buildExport1cCsv, type CsvDocument } from './export-1c-csv';
+import { companyDay } from '../../field/company-day';
+import { EXPORT_1C_MAPPING_VERSION, EXPORT_1C_QUEUE, export1cStorageKey, type Export1cJobData } from './export-1c.constants';
 import { paymentPostedAt, paymentPostedWithin } from '../../finance/ledger-filters';
 
 /**
@@ -33,6 +36,7 @@ interface ExportData {
   documents: CommerceMlDocument[];
   salesDocuments: SalesDocumentRow[];
   payments: PaymentDocumentRow[];
+  csvDocuments: CsvDocument[];
   missingExternalCode: string[];
 }
 
@@ -60,64 +64,84 @@ export class Export1cProcessor extends WorkerHost {
   private async handle(job: Job<Export1cJobData>): Promise<void> {
     const { exportJobId, companyId } = job.data;
 
+    // Idempotency: only a QUEUED job is picked up. Redelivery of a job that is
+    // already PROCESSING/GENERATED/FAILED (or acknowledged) is a no-op.
     const exportJob = await this.tenantPrisma.run(companyId, async (tx) => {
       const found = await tx.exportJob.findFirst({ where: { id: exportJobId } });
-      if (!found) return null;
-      await tx.exportJob.update({ where: { id: exportJobId }, data: { status: 'PROCESSING' } });
+      if (!found || found.status !== 'QUEUED') return null;
+      await tx.exportJob.update({ where: { id: exportJobId }, data: { status: 'PROCESSING', attemptCount: { increment: 1 } } });
       return found;
     });
-    if (!exportJob) return; // job/company mismatch — nothing to process
+    if (!exportJob) return;
 
     try {
-      const data = await this.tenantPrisma.run(companyId, (tx) => this.loadExportData(tx, exportJob.periodFrom, exportJob.periodTo));
+      // One REPEATABLE READ snapshot: invoices, payments and customers must be mutually consistent.
+      const data = await this.tenantPrisma.run(
+        companyId,
+        async (tx) => {
+          const company = await tx.company.findFirst({ select: { timezone: true } });
+          return this.loadExportData(tx, exportJob.periodFrom, exportJob.periodTo, company?.timezone ?? 'Asia/Tashkent');
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+      );
 
-      const { buffer, mimeType, extension } =
-        exportJob.format === 'EXCEL'
-          ? {
-              buffer: await buildExport1cWorkbook(data),
-              mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-              extension: 'xlsx',
-            }
-          : {
-              buffer: Buffer.from(
-                buildCommerceMlXml({ generatedAt: new Date(), customers: data.customers, documents: data.documents, currency: 'UZS' }),
-                'utf-8',
-              ),
-              mimeType: 'application/xml',
-              extension: 'xml',
-            };
-
-      const fileUrl = await this.storage.upload({ buffer, mimeType, extension, keyPrefix: `exports/1c/${companyId}` });
+      const { buffer, mimeType, extension } = await this.render(exportJob.format, data);
+      const storageKey = export1cStorageKey(companyId, exportJobId, extension);
+      // Deterministic key: a retry overwrites the same object, so no orphan files.
+      await this.storage.putObject({ key: storageKey, buffer, mimeType });
+      const fileHash = createHash('sha256').update(buffer).digest('hex');
 
       await this.tenantPrisma.run(companyId, (tx) =>
         tx.exportJob.update({
           where: { id: exportJobId },
           data: {
-            status: 'DONE',
-            fileUrl,
+            status: 'GENERATED',
+            storageKey,
+            fileName: `1c-export-${exportJob.periodFrom.toISOString().slice(0, 10)}_${exportJob.periodTo.toISOString().slice(0, 10)}.${extension}`,
+            fileSize: buffer.length,
+            fileHash,
+            recordCount: data.documents.length,
+            mappingVersion: EXPORT_1C_MAPPING_VERSION,
+            generatedAt: new Date(),
             // Non-fatal: still a successful export, but the accountant needs
             // to know these lines won't match cleanly in 1C (11.1: "Product.
             // externalCode maydoni majburiy") until product data is fixed.
             errorLog:
               data.missingExternalCode.length > 0
                 ? { warnings: data.missingExternalCode.map((sku) => `Mahsulot "${sku}" uchun externalCode kiritilmagan`) }
-                : undefined,
+                : Prisma.DbNull,
           },
         }),
       );
     } catch (err) {
+      // Only the last attempt is terminal; earlier ones go back to QUEUED so BullMQ's retry can run.
+      const isLastAttempt = (job.attemptsMade ?? 0) + 1 >= (job.opts?.attempts ?? 1);
       await this.tenantPrisma.run(companyId, (tx) =>
-        tx.exportJob.update({
-          where: { id: exportJobId },
-          data: { status: 'FAILED', errorLog: { message: describeError(err) } },
+        tx.exportJob.updateMany({
+          where: { id: exportJobId, status: 'PROCESSING' },
+          data: { status: isLastAttempt ? 'FAILED' : 'QUEUED', errorLog: { message: describeError(err) } },
         }),
       );
-      throw err; // BullMQ still records the failure (retries/observability)
+      throw err; // BullMQ retries (backoff) or records the failure
     }
   }
 
+  private async render(format: ExportFormat, data: ExportData): Promise<{ buffer: Buffer; mimeType: string; extension: string }> {
+    if (format === 'EXCEL') {
+      return { buffer: await buildExport1cWorkbook(data), mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', extension: 'xlsx' };
+    }
+    if (format === 'CSV') {
+      return { buffer: buildExport1cCsv(data.csvDocuments), mimeType: 'text/csv; charset=utf-8', extension: 'csv' };
+    }
+    return {
+      buffer: Buffer.from(buildCommerceMlXml({ generatedAt: new Date(), customers: data.customers, documents: data.documents, currency: 'UZS' }), 'utf-8'),
+      mimeType: 'application/xml',
+      extension: 'xml',
+    };
+  }
+
   /** 11.1: "Eksport qilinadi: kontragentlar, sotish hujjatlari, to'lovlar" — sales documents are Invoices (6.6: "1 order = 1 invoice soddalashtirilgan"), not SalesOrders, since those are the actual accounting-facing documents. */
-  private async loadExportData(tx: TenantClient, periodFrom: Date, periodTo: Date): Promise<ExportData> {
+  private async loadExportData(tx: TenantClient, periodFrom: Date, periodTo: Date, timeZone: string): Promise<ExportData> {
     const [invoices, payments] = await Promise.all([
       tx.invoice.findMany({
         where: { createdAt: { gte: periodFrom, lte: periodTo }, status: { not: InvoiceStatus.CANCELLED } },
@@ -137,6 +161,8 @@ export class Export1cProcessor extends WorkerHost {
     const customersById = new Map<string, CommerceMlCustomer>();
     const missingExternalCode = new Set<string>();
     const documents: CommerceMlDocument[] = [];
+    const csvDocuments: CsvDocument[] = [];
+    const day = (d: Date) => companyDay(d, timeZone).date;
 
     const toCommerceMlCustomer = (c: { id: string; code: string; name: string; phone: string | null }): CommerceMlCustomer => ({
       id: c.id,
@@ -169,6 +195,34 @@ export class Export1cProcessor extends WorkerHost {
       });
     }
 
+    for (const invoice of invoices) {
+      csvDocuments.push({
+        docType: 'SALE',
+        id: invoice.id,
+        number: invoice.number,
+        date: day(invoice.createdAt),
+        partnerCode: invoice.customer.code,
+        partnerName: invoice.customer.name,
+        total: invoice.total.toString(),
+        method: '',
+        lines: invoice.lines.map((l) => ({ sku: l.product.sku, externalCode: l.product.externalCode, qty: l.qty.toString(), unitPrice: l.unitPrice.toString(), lineTotal: l.lineTotal.toString() })),
+      });
+    }
+
+    for (const payment of payments) {
+      csvDocuments.push({
+        docType: 'PAYMENT',
+        id: payment.id,
+        number: payment.number,
+        date: day(paymentPostedAt(payment)),
+        partnerCode: payment.customer.code,
+        partnerName: payment.customer.name,
+        total: payment.amount.toString(),
+        method: payment.method,
+        lines: [],
+      });
+    }
+
     for (const payment of payments) {
       customersById.set(payment.customer.id, toCommerceMlCustomer(payment.customer));
 
@@ -187,6 +241,7 @@ export class Export1cProcessor extends WorkerHost {
       documents,
       salesDocuments: invoices.map((i) => ({ number: i.number, date: i.createdAt, customerName: i.customer.name, total: i.total.toString() })),
       payments: payments.map((p) => ({ number: p.number, date: paymentPostedAt(p), customerName: p.customer.name, amount: p.amount.toString(), method: p.method })),
+      csvDocuments,
       missingExternalCode: [...missingExternalCode],
     };
   }

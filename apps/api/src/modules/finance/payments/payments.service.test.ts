@@ -24,6 +24,7 @@ import {
   PaymentNotPostedException,
 } from '../finance-exceptions';
 import { CashSessionsService } from '../cash-sessions/cash-sessions.service';
+import { insertExportJob } from '../../integrations/export-1c/export-job-fixtures';
 import { PaymentsService } from './payments.service';
 
 describe('PaymentsService (integration, real Postgres + RLS)', () => {
@@ -608,14 +609,8 @@ describe('PaymentsService (integration, real Postgres + RLS)', () => {
       const p = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 50000, method: 'TRANSFER' }, user));
       const q = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 1000, method: 'TRANSFER' }, user));
 
-      await tenantPrisma.run(companyId, (tx) =>
-        tx.exportJob.createMany({
-          data: [
-            { companyId, type: '1c', format: 'XML', periodFrom: p.createdAt, periodTo: p.createdAt, status: 'DONE' },
-            { companyId, type: '1c', format: 'XML', periodFrom: q.createdAt, periodTo: q.createdAt, status: 'FAILED' },
-          ],
-        }),
-      );
+      await insertExportJob(tenantPrisma, companyId, { periodFrom: p.createdAt, periodTo: p.createdAt, status: 'GENERATED' });
+      await insertExportJob(tenantPrisma, companyId, { periodFrom: q.createdAt, periodTo: q.createdAt, status: 'FAILED' });
 
       await expect(tenantPrisma.run(companyId, () => payments.reverse(p.id, 'after export', user))).rejects.toBeInstanceOf(
         PaymentExportedTo1cException,
@@ -796,11 +791,7 @@ describe('PaymentsService (integration, real Postgres + RLS)', () => {
       // TRANSFER advance inside a DONE 1C export period.
       const { customerId: expCustomer, paymentId: expPay } = await customerWithAdvance(20000);
       const exported = await tenantPrisma.run(companyId, (tx) => tx.payment.findUniqueOrThrow({ where: { id: expPay } }));
-      await tenantPrisma.run(companyId, (tx) =>
-        tx.exportJob.create({
-          data: { companyId, type: '1c', format: 'XML', periodFrom: exported.createdAt, periodTo: exported.createdAt, status: 'DONE' },
-        }),
-      );
+      await insertExportJob(tenantPrisma, companyId, { periodFrom: exported.createdAt, periodTo: exported.createdAt, status: 'GENERATED' });
       const expInv = await addInvoice(expCustomer, '20000');
       const expResult = await tenantPrisma.run(companyId, () =>
         payments.allocate(expPay, { allocations: [{ invoiceId: expInv, amount: '20000' }] }, cashier),
