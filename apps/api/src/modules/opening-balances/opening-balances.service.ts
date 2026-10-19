@@ -23,6 +23,7 @@ import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { companyDayOf, companyTimeZone, localDateString } from '../analytics/report-utils';
 import { InvalidImportFileException } from '../import/import-exceptions';
 import { readWorkbookRows, type SpreadsheetFormat, type WorkbookRow } from '../import/parsers/read-workbook';
+import { StockReversalInsufficientException } from '../stock/stock-exceptions';
 import { StockService } from '../stock/stock.service';
 import type { ListOpeningBatchesQueryDto } from './dto/list-opening-batches.query';
 import type { PostOpeningBatchDto } from './dto/post-opening-batch.dto';
@@ -501,11 +502,49 @@ export class OpeningBalancesService {
       where: { refType: OPENING_REF_TYPE, refId: batch.id, reversesMovementId: null },
       orderBy: [{ productId: 'asc' }, { warehouseId: 'asc' }],
     });
-    await this.stock.lockLevelsForUpdate(tx, movements);
+    const levels = await this.stock.lockLevelsForUpdate(tx, movements);
     const moved = await pairsWithMovements(tx, sortedUnique(movements.map((m) => m.productId)), batch.id);
     if (movements.some((m) => moved.has(pairKey(m.productId, m.warehouseId)))) throw new OpeningBatchTouchedException('STOCK_MOVED');
+    if (movements.length === 0) return;
 
-    for (const m of movements) await this.stock.reverseForRef(tx, m, reason, user.companyId);
+    // Bulk compensation under the locks taken above — same effect as reverseForRef per
+    // row: opposite-sign ADJUST pointing at the original (reversesMovementId + reason;
+    // the unique index is the already-reversed backstop), onHand decremented per pair.
+    const delta = new Map<string, { productId: string; warehouseId: string; q: Prisma.Decimal }>();
+    for (const m of movements) {
+      const key = pairKey(m.productId, m.warehouseId);
+      const cur = delta.get(key);
+      delta.set(key, { productId: m.productId, warehouseId: m.warehouseId, q: (cur?.q ?? zero()).plus(m.qty) });
+    }
+    for (const l of levels) {
+      const d = delta.get(pairKey(l.productId, l.warehouseId))?.q;
+      if (!d) continue;
+      const resulting = l.onHand.minus(d);
+      if (resulting.isNegative() || resulting.lessThan(l.reserved)) {
+        throw new StockReversalInsufficientException(l.onHand.toString(), l.reserved.toString(), d.negated().toString());
+      }
+    }
+    await tx.stockMovement.createMany({
+      data: movements.map((m) => ({
+        companyId: user.companyId,
+        productId: m.productId,
+        warehouseId: m.warehouseId,
+        type: m.type,
+        qty: m.qty.negated(),
+        refType: m.refType,
+        refId: m.refId,
+        reversesMovementId: m.id,
+        reason,
+      })),
+    });
+    const pairs = [...delta.values()];
+    const updated = await tx.$executeRaw(Prisma.sql`
+      UPDATE "StockLevel" sl
+      SET "onHand" = sl."onHand" - t.q, "updatedAt" = CURRENT_TIMESTAMP
+      FROM unnest(${pairs.map((d) => d.productId)}::uuid[], ${pairs.map((d) => d.warehouseId)}::uuid[], ${pairs.map((d) => d.q.toString())}::numeric[]) AS t(p, w, q)
+      WHERE sl."productId" = t.p AND sl."warehouseId" = t.w
+    `);
+    if (updated !== pairs.length) throw new OpeningBatchTouchedException('STOCK_MOVED');
   }
 
   // -------------------------------------------------------------------------

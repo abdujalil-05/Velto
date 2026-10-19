@@ -344,6 +344,31 @@ describe('Opening balances invariants (integration)', () => {
     const ledgers = await run((tx) => Promise.all(custs.map(async (c) => ({ c, l: await customers.getLedger(tx, c.id) }))));
     for (const { c, l } of ledgers) expect(D(c.cachedBalance)).toBe(D(l.balance));
     expect(custs.some((c) => c.cachedBalance.isNegative())).toBe(true);
+
+    // Void of the same 5000-row batch: one tx, well inside the 60s limit; ledger back to the original (0).
+    const vStarted = Date.now();
+    await voidBatch(p.batch.id);
+    const vMs = Date.now() - vStarted;
+    console.info(`[opening load] customer void 5000 rows: ${vMs} ms`);
+    expect(vMs).toBeLessThan(20_000);
+    const [openInv, livePay, reversals] = await run((tx) =>
+      Promise.all([
+        tx.invoice.count({ where: { openingBatchId: p.batch.id, status: { not: InvoiceStatus.CANCELLED } } }),
+        tx.payment.count({ where: { openingBatchId: p.batch.id, status: { not: 'REVERSED' } } }),
+        tx.paymentReversal.count({ where: { payment: { openingBatchId: p.batch.id } } }),
+      ]),
+    );
+    expect([openInv, livePay, reversals]).toEqual([0, 0, 1000]);
+    const afterVoid = await run((tx) => tx.customer.findMany({ where: { code: { in: codes } }, select: { id: true, cachedBalance: true } }));
+    const voidLedgers = await run((tx) => Promise.all(afterVoid.map(async (c) => ({ c, l: await customers.getLedger(tx, c.id) }))));
+    for (const { c, l } of voidLedgers) {
+      expect(D(c.cachedBalance)).toBe('0.00');
+      expect(D(l.balance)).toBe('0.00');
+    }
+    // Re-import of the same file after void passes preview and post.
+    const again = await previewCustomers(rows);
+    expect(again.invalidCount).toBe(0);
+    await post(again.batch.id, { debt: again.batch.debtTotal.toFixed(2), credit: again.batch.creditTotal.toFixed(2) });
   });
 
   it('load: 5000-row stock post (createMany movements + one StockLevel update) finishes well under the 60s tx; onHand == Σ movements', async () => {
@@ -356,17 +381,32 @@ describe('Opening balances invariants (integration)', () => {
     console.info(`[opening load] stock post 5000 rows: ${ms} ms`);
     expect(ms).toBeLessThan(20_000);
 
-    const drift = await run((tx) =>
-      tx.$queryRaw<{ n: bigint }[]>(Prisma.sql`
-        SELECT count(*) AS n FROM "StockLevel" sl
-        JOIN "Product" pr ON pr.id = sl."productId"
-        LEFT JOIN (SELECT "productId", "warehouseId", SUM(qty) AS q FROM "StockMovement" GROUP BY 1, 2) m
-          ON m."productId" = sl."productId" AND m."warehouseId" = sl."warehouseId"
-        WHERE pr.sku LIKE ${`LS${tag}-%`} AND (sl."onHand" IS DISTINCT FROM COALESCE(m.q, 0) OR sl.reserved <> 0)
-      `),
-    );
-    expect(Number(drift[0]!.n)).toBe(0);
+    const driftSql = Prisma.sql`
+      SELECT count(*) AS n FROM "StockLevel" sl
+      JOIN "Product" pr ON pr.id = sl."productId"
+      LEFT JOIN (SELECT "productId", "warehouseId", SUM(qty) AS q FROM "StockMovement" GROUP BY 1, 2) m
+        ON m."productId" = sl."productId" AND m."warehouseId" = sl."warehouseId"
+      WHERE pr.sku LIKE ${`LS${tag}-%`} AND (sl."onHand" IS DISTINCT FROM COALESCE(m.q, 0) OR sl.reserved <> 0)
+    `;
+    expect(Number((await run((tx) => tx.$queryRaw<{ n: bigint }[]>(driftSql)))[0]!.n)).toBe(0);
     expect(await run((tx) => tx.stockMovement.count({ where: { refType: OPENING_REF_TYPE, refId: p.batch.id, type: 'ADJUST' } }))).toBe(5000);
+
+    // Void of the same 5000-pair batch: reversal rows + StockLevel back to 0, drift 0, re-import works.
+    const vStarted = Date.now();
+    await voidBatch(p.batch.id);
+    const vMs = Date.now() - vStarted;
+    console.info(`[opening load] stock void 5000 rows: ${vMs} ms`);
+    expect(vMs).toBeLessThan(20_000);
+    expect(await run((tx) => tx.stockMovement.count({ where: { refType: OPENING_REF_TYPE, refId: p.batch.id, reversesMovementId: { not: null } } }))).toBe(5000);
+    const nonZero = await run((tx) =>
+      tx.stockLevel.count({ where: { product: { sku: { startsWith: `LS${tag}-` } }, OR: [{ onHand: { not: 0 } }, { reserved: { not: 0 } }] } }),
+    );
+    expect(nonZero).toBe(0);
+    expect(Number((await run((tx) => tx.$queryRaw<{ n: bigint }[]>(driftSql)))[0]!.n)).toBe(0);
+    const again = await previewStock(skus.map((s, i) => [s, `Main ${tag}`, (1 + (i % 13) + 0.125).toFixed(3)]));
+    expect(again.invalidCount).toBe(0);
+    await post(again.batch.id, { qty: again.batch.qtyTotal.toFixed(3) });
+    expect(Number((await run((tx) => tx.$queryRaw<{ n: bigint }[]>(driftSql)))[0]!.n)).toBe(0);
   });
 
   it('invariant: after all scenarios (FIFO allocations, voids, reconciliation) every customer touched by an opening batch has cachedBalance == getLedger().balance', async () => {
