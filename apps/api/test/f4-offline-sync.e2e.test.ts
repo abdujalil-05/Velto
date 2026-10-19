@@ -7,6 +7,7 @@ import request from 'supertest';
 import { prisma, systemPrisma } from '@velto/database';
 import { permissionKeysForRole } from '../../../packages/database/src/rbac-catalog';
 import { AppModule } from '../src/app.module';
+import { expectWithinBudget } from '../src/common/testing/perf';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
 import { SalesService } from '../src/modules/sales/sales.service';
@@ -371,8 +372,8 @@ describe('E2E F4 offline sync (TZ 8.5 / 16.2)', () => {
       expect(res.body.results.every((r: { status: string }) => r.status === 'ACCEPTED' || r.status === 'DUPLICATE')).toBe(true);
       // eslint-disable-next-line no-console
       console.log(`[F4 PERF] full pull 5k products + 2k customers: ${pullMs} ms over ${pages} pages; push 20 orders: ${pushMs} ms`);
-      expect(pullMs).toBeLessThan(8000);
-      expect(pushMs).toBeLessThan(3000);
+      expectWithinBudget("F4 full pull 5k+2k", pullMs, 8000);
+      expectWithinBudget("F4 push 20 orders", pushMs, 3000);
     }, 120_000);
   });
 });

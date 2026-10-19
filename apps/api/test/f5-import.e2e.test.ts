@@ -7,6 +7,7 @@ import request from 'supertest';
 import { prisma, systemPrisma } from '@velto/database';
 import { permissionKeysForRole } from '../../../packages/database/src/rbac-catalog';
 import { AppModule } from '../src/app.module';
+import { expectWithinBudget } from '../src/common/testing/perf';
 import { configureApp } from '../src/bootstrap';
 import { StorageService } from '../src/common/storage/storage.service';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
@@ -129,7 +130,7 @@ describe('E2E F5 import (create-only, preview/confirm, scale, RBAC, isolation)',
     const previewMs = Math.round(performance.now() - t0);
     expect(up.status, JSON.stringify(up.body).slice(0, 300)).toBe(201);
     console.log(`[F5 perf] customers preview 1000 rows: ${previewMs} ms`);
-    expect(previewMs).toBeLessThan(15_000);
+    expectWithinBudget("F5 preview", previewMs, 15_000);
     expect(up.body.createdBy).toBe(ownerA.id);
     expect(up.body.errorLog.validCount).toBe(1000);
     expect(await customerCount(companyA, `CU${tag}`)).toBe(0); // preview writes nothing
@@ -163,7 +164,7 @@ describe('E2E F5 import (create-only, preview/confirm, scale, RBAC, isolation)',
     const previewMs = Math.round(performance.now() - t0);
     expect(up.status, JSON.stringify(up.body).slice(0, 300)).toBe(201);
     console.log(`[F5 perf] products preview 2000 rows: ${previewMs} ms`);
-    expect(previewMs).toBeLessThan(20_000);
+    expectWithinBudget("F5 preview", previewMs, 20_000);
     expect(up.body.errorLog.validCount).toBe(2000);
 
     await http().post(`/import/${up.body.id}/confirm`).set(bearer(ownerA)).expect(201);

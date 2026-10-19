@@ -16,6 +16,10 @@
     "typecheck": {
       "dependsOn": ["^build", "build"]
     },
+    "test:perf": {
+      "dependsOn": ["^build"],
+      "cache": false
+    },
     "test": {
       "dependsOn": ["^build"]
     }

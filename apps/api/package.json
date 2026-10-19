@@ -8,7 +8,8 @@
     "start": "node dist/main.js",
     "lint": "eslint \"src/**/*.ts\"",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:perf": "PERF=1 vitest run test/f4-offline-sync.e2e.test.ts test/f5-import.e2e.test.ts test/opening-balances.e2e.test.ts src/modules/opening-balances/opening-balances.invariants.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.716.0",
