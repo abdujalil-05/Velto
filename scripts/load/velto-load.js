@@ -26,6 +26,7 @@ export const c429 = new Counter('r_429');
 export const c4xx = new Counter('r_4xx_other');
 export const cOk = new Counter('r_ok');
 export const tSync = new Trend('sync_push20_ms', true);
+export const tDash = new Trend('dash_dur', true);
 
 // Allocation: ~10-20% write chains, ~20% agents (sync), 1 cashier, rest reads.
 const nWrite = MODE === 'read' || MODE === 'sync' ? 0 : Math.max(1, Math.round(VUS * (VUS >= 100 ? 0.15 : 0.2)));
@@ -109,7 +110,7 @@ function readFlow(tokens, idx) {
   call('GET', path, t, 'read', name);
   sleep(0.4 + Math.random() * 0.4);
   const r = REPORTS ? Math.random() : 1; // REPORTS=0 isolates list/detail reads from heavy report queries
-  if (r < 0.10) call('GET', '/reports/dashboard', t, 'report', 'dashboard');
+  if (r < 0.10) { const d = call('GET', '/reports/dashboard', t, 'report', 'dashboard'); if (d.status === 200) tDash.add(d.timings.duration, { kind: 'report', name: d.json('cached') ? 'dashboard-hit' : 'dashboard-miss' }); }
   else if (r < 0.18) call('GET', '/reports/sales', t, 'report', 'sales');
   else if (r < 0.24) call('GET', '/reports/overview', t, 'report', 'overview');
   sleep(0.4 + Math.random() * 0.4);

@@ -11,6 +11,8 @@ rl.on('line', (l) => {
   if (metric === 'http_req_duration' && tg.kind && tg.kind !== 'setup') {
     add(dur, `${tg.kind}|${tg.name}`, data.value); add(dur, `${tg.kind}|*`, data.value); add(dur, '*|*', data.value);
     t0 = Math.min(t0, ts); t1 = Math.max(t1, ts);
+  } else if (metric === 'dash_dur' && tg.kind) {
+    add(dur, `${tg.kind}|${tg.name}`, data.value);
   } else if (metric.startsWith('r_') && tg.kind) {
     const k = `${tg.kind}|${tg.name}`; (cnt[k] ||= {})[metric] = (cnt[k][metric] || 0) + data.value;
     (cnt['*|*'] ||= {})[metric] = (cnt['*|*'][metric] || 0) + data.value;

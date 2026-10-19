@@ -12,7 +12,41 @@
 ## Stsenariy (`scripts/load/velto-load.js`, `run.sh`, `prepare-load-data.sh`, `start-api.sh`)
 Aralash profil: ~20% agent (sync push 20 hujjat + 2 pull), ~15-20% yozuv zanjiri (buyurtma yaratish -> tasdiqlash -> yetkazish), 1 kassir (handover accept), qolgani o'qish (mahsulot/mijoz/narx/qoldiq/buyurtma/balans, + dashboard/sales/overview hisobotlari). `REPORTS=0` hisobotlarsiz variant (sababni ajratish uchun). 90-120 s. 429 va 5xx va ulanish xatolari alohida sanaladi.
 
-## Qayta o'lchov (2026-10-20, kod: edcbd62, 5c5c1b1, 591c14a, 3b323d2, 8474a4f, 52655ab)
+## Yakuniy qayta o'lchov: (A) hisobotsiz vs (B) hisobotli (2026-10-20, kod: 4f145f5 — kesh, `@TenantTx(15s)`, invoiceDebtAsOfMany, SalesOrder(companyId,createdAt) indeksi, 40P01->503)
+**Lokal, SLA emas.** Muhit yuqoridagidek; pool default 30; API qayta qurildi (dist eskirgan edi) va har juftlikdan oldin restart (cold = yangi jarayon, warm = keyingi run). `velto_load` qayta yaratildi (migratsiya `20261020100000` qo'llangan), parol sessiya uchun tasodifiy, hech qayerga yozilmagan. Har run 120 s, har konfiguratsiya 2 marta (cold/warm, cold2/warm2). (A) `REPORTS=0`; (B) `REPORTS=1` — hisobotlar jami so'rovlarning ~12-13% i (maqsad 5-10% dan biroz ko'p). Dashboard hit/miss `cached` maydoni bo'yicha alohida (`dash_dur`). Hamma 16 run: verify-integrity 0 topilma, `pg_stat_database.deadlocks` 0.
+
+p95 ms (read / write / sync-push-20), 5xx (503 alohida):
+| Konfiguratsiya | run1 cold | run1 warm | run2 cold | run2 warm |
+|---|---|---|---|---|
+| (A) 50 VU p95 read/write/sync | 53/248/3662 | 47/186/2202 | 53/241/1999 | **247/1219/6897** (anomaliya, sync 500: 19) |
+| (A) 50 VU 5xx / 503 | 0/0 | 0/0 | 0/0 | 24/0 |
+| (A) 100 VU p95 read/write/sync | 652/1919/8373 | 1102/3667/10247 | 500/984/7137 | 106/893/5686 |
+| (A) 100 VU 5xx / 503 | 78/0 | 126/0 | 32/0 | 27/0 |
+| (B) 50 VU p95 read/write/sync | 1159/3887/8499 | 1624/5046/8462 | 1468/5035/8091 | 1719/4627/8134 |
+| (B) 50 VU 5xx / 503 | 83/0 | 95/6 | 94/2 | 108/11 |
+| (B) 100 VU p95 read/write/sync | 2338/5626/10736 | 2218/4505/8719 | 2176/4647/10394 | 2201/4814/10464 |
+| (B) 100 VU 5xx / 503 | 106/772 | 99/567 | 110/632 | 99/778 |
+
+Dashboard p95 (ms), (B): 50 VU hit 5780/8074/8097/9786, miss (n=4/run) 12-14 s; 100 VU hit 8422/8758/7519/12214, miss 9-15 s. RPS: (A) 50 VU 32-37, 100 VU 52-67; (B) 50 VU 14-22, 100 VU 22-25.
+
+| Mezon | Oldin (to'liq, avvalgi run) | Keyin (A, hisobotsiz) | Keyin (B, hisobotli) | Holat |
+|---|---|---|---|---|
+| 50 VU read p95 <= 300 | cold 1561 / warm 750 | 47-53 (1 ta outlier 247) | 1159-1719 | A **O'TDI**, B **O'TMADI** |
+| 50 VU write p95 <= 700 | cold 4662 / warm 3188 | 186-248 (1 ta outlier 1219) | 3887-5046 | A 3/4 run o'tdi, B **O'TMADI** |
+| 100 VU 5xx = 0 | 303 / 345 | 27-126 (hammasi tx timeout 500, 503 yo'q) | 99-110 (+503 567-778) | **O'TMADI** ikkalasi |
+| Dashboard p95 <= 2 s | 9.7 s (500 lar bilan) | - | hit 5.8-12.2 s; miss 9-15 s | **O'TMADI** |
+| verify-integrity = 0 | 0 | 0 | 0 | **O'TDI** |
+| deadlocks = 0 | 0 | 0 | 0 | **O'TDI** |
+
+**Sabablar (o'lchangan)**
+1. Hisobotlar (B) hamma narsani ~5-10x sekinlatadi (RPS 36 -> 14-22; read p50 18 -> 124-736 ms): hisobot tx lari pool (30) ni ushlab turadi, yagona Node jarayonida event loop bandligi. Dashboard KESH HIT ham sekin (p95 5.8-12 s), chunki `TenantContextInterceptor` kesh tekshirilishidan OLDIN tx/ulanish oladi va pool navbatida kutadi; miss 9-15 s (15 s timeout yaqinida), `GET /reports/sales` 10 ta 500 (B50 cold).
+2. Write p95 sababi hisobot emas, `Lock/transactionid` kutish (A da ham): pg_locks bo'yicha eng ko'p kutuvchi `INSERT INTO "DocumentCounter"` (`document-numbering.service.ts:44`) va `SELECT ... FROM "Customer" ... FOR UPDATE` — to'sqich: boshqa `/sync/push` tx lari (bitta tx da 20 hujjat, `sync.service.ts:296` mijoz FOR UPDATE + counter ushlab turadi, commitgacha ~5 s). `POST /orders` `sales.service.ts:365` (`docNumbering.next`) sync-push ushlagan counter qatorini kutadi. Diagnostika run (A, 100 VU, 90 s): order-create p50 818 / p95 4060, sync-push-20 p50 5490 ms. pool/CPU emas: Node CPU o'rtacha 16-35%, PG `idle in transaction ClientRead` ko'p (tx lar ilova tomonida kutmoqda).
+3. Barcha 5xx = `Transaction already closed ... 5000 ms` (446+25 ta diagnostikada): `SyncService.push` hali Prisma default 5 s timeout'da (`@TenantTx` faqat hisobot/opening/reconciliation da), 20 hujjat counter/mijoz lock kutishi bilan 5 s dan oshadi. Deadlock yo'q (40P01 tuzatilgan).
+4. 100 VU 503 (B) asosan read (pool kutishi 10 s), (A) da 503 yo'q.
+
+**Takliflar (prod kodiga tegilmadi)**: (a) `sync.service.ts:296` — tx ni hujjat-bo'yicha (yoki kichik partiyalar) qilish, counter blokini (`docNumbering`) tx oxiriga yoki alohida qisqa tx ga ajratish; `SyncController` push uchun `@TenantTx({timeout})` yoki timeout'ni RETRY/503 ga xaritalash. (b) Dashboard keshini `TenantContextInterceptor` dan oldin (guard darajasida) o'qish yoki hisobotlar uchun alohida kichik pool / semafor (bir vaqtda N hisobot); hisobotlar o'qish replikasiga. (c) `DocumentCounter` ni `INSERT ... ON CONFLICT` o'rniga hujjat tx i boshida emas, oxirida olish (lock ushlanish vaqtini qisqartirish). (d) outlier A50_warm2 (19 sync 500) tebranish — sabab shu 5 s timeout + lock navbati; qayta tekshirish kerak.
+
+## Oldingi qayta o'lchov (2026-10-20, kod: edcbd62, 5c5c1b1, 591c14a, 3b323d2, 8474a4f, 52655ab)
 **Lokal, SLA emas.** Muhit yuqoridagidek (M1, Docker VM 8 CPU/4 GB, PG 16.14 sozlanmagan). Pool: default `PRISMA_POOL_SIZE=30` (oldingi run 17 va 40 edi). `velto_load` `db:load:reset` + `db:load:seed` bilan qayta yaratildi (100 000 buyurtma, 82 031 invoice); parol sessiya uchun tasodifiy, hech qayerga yozilmagan (`seed-load.ts` endi `LOAD_PASSWORD` talab qiladi, default yo'q). Har run: to'liq aralashma (hisobotlar bilan), 120 s, yangi API jarayoni = sovuq (cold), keyingisi isitilgan (warm); har run'dan keyin `verify-integrity`. 503 SERVICE_BUSY endi 5xx dan ALOHIDA sanaladi (`r_503`, `summarize.js`).
 
 | Mezon | Oldin (to'liq aralashma) | Keyin | Holat |
