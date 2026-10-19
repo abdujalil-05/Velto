@@ -7,6 +7,7 @@ import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.servic
 import { buildCommerceMlXml, type CommerceMlCustomer, type CommerceMlDocument } from './commerce-ml';
 import { buildExport1cWorkbook, type PaymentDocumentRow, type SalesDocumentRow } from './export-1c-excel';
 import { EXPORT_1C_QUEUE, type Export1cJobData } from './export-1c.constants';
+import { paymentPostedAt, paymentPostedWithin } from '../../finance/ledger-filters';
 
 /**
  * Network/connection failures (e.g. S3 unreachable) surface from the AWS SDK
@@ -125,9 +126,11 @@ export class Export1cProcessor extends WorkerHost {
       }),
       tx.payment.findMany({
         // REVERSED payments are never exported as ordinary payments (no storno document in MVP).
-        where: { createdAt: { gte: periodFrom, lte: periodTo }, status: 'POSTED' },
+        // ADR-029: period/date = paymentPostedAt (accepted handover -> handoverAt);
+        // PENDING_HANDOVER/REJECTED never reach 1C.
+        where: { ...paymentPostedWithin({ gte: periodFrom, lte: periodTo }), status: 'POSTED' },
         include: { customer: true },
-        orderBy: { createdAt: 'asc' },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       }),
     ]);
 
@@ -172,7 +175,7 @@ export class Export1cProcessor extends WorkerHost {
       documents.push({
         id: payment.id,
         number: payment.number,
-        date: payment.createdAt,
+        date: paymentPostedAt(payment),
         operation: 'Оплата от покупателя',
         customerId: payment.customerId,
         total: payment.amount.toString(),
@@ -183,7 +186,7 @@ export class Export1cProcessor extends WorkerHost {
       customers: [...customersById.values()],
       documents,
       salesDocuments: invoices.map((i) => ({ number: i.number, date: i.createdAt, customerName: i.customer.name, total: i.total.toString() })),
-      payments: payments.map((p) => ({ number: p.number, date: p.createdAt, customerName: p.customer.name, amount: p.amount.toString(), method: p.method })),
+      payments: payments.map((p) => ({ number: p.number, date: paymentPostedAt(p), customerName: p.customer.name, amount: p.amount.toString(), method: p.method })),
       missingExternalCode: [...missingExternalCode],
     };
   }

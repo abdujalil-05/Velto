@@ -7,6 +7,7 @@ import {
   CustomerAlreadyBlockedException,
   CustomerHasCreditBalanceException,
   CustomerHasOutstandingBalanceException,
+  CustomerHasPendingHandoverException,
   CustomerNotBlockedException,
   CustomerNotFoundException,
   DuplicateCustomerCodeException,
@@ -166,6 +167,34 @@ describe('CustomersService (integration, real Postgres + RLS)', () => {
     expect(deleted.deletedAt).not.toBeNull();
   });
 
+  it('remove() refuses while a PENDING_HANDOVER payment exists; allowed once it is resolved', async () => {
+    const { customer } = await tenantPrisma.run(companyId, () => customers.create(dto('C-DEL-5'), user));
+    const id = (customer as { id: string }).id;
+    const pay = await tenantPrisma.run(companyId, (tx) =>
+      tx.payment.create({
+        data: { companyId, number: 'PAY-TEST-DEL-5', customerId: id, amount: '3000.00', method: 'CASH', status: 'PENDING_HANDOVER', collectedBy: user.id },
+      }),
+    );
+
+    const err = await tenantPrisma.run(companyId, () => customers.remove(id, user)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CustomerHasPendingHandoverException);
+    expect((err as CustomerHasPendingHandoverException).getResponse()).toMatchObject({
+      code: 'CUSTOMER_HAS_PENDING_HANDOVER',
+      details: { count: 1 },
+    });
+
+    // ADR-029 four-eyes (DB trigger): the collector may not resolve their own handover.
+    const resolver = await systemPrisma.user.create({ data: { companyId, firstName: 'Cash', lastName: 'Resolver', phone: '+998900000095' } });
+    await tenantPrisma.run(companyId, (tx) =>
+      tx.payment.update({
+        where: { id: pay.id },
+        data: { status: 'REJECTED', handoverActorId: resolver.id, handoverAt: new Date(), handoverRejectReason: 'test' },
+      }),
+    );
+    const deleted = await tenantPrisma.run(companyId, () => customers.remove(id, user));
+    expect(deleted.deletedAt).not.toBeNull();
+  });
+
   it('race: two parallel remove() on one customer — exactly one wins, the other gets CustomerNotFound, audited once', async () => {
     const { customer } = await tenantPrisma.run(companyId, () => customers.create(dto('C-DEL-RACE'), user));
     const id = (customer as { id: string }).id;
@@ -192,7 +221,11 @@ describe('CustomersService (integration, real Postgres + RLS)', () => {
       tx.payment.create({ data: { companyId, number: 'PAY-TEST-LP-1', customerId, amount: '1000.00', method: 'CASH', createdAt: new Date(Date.now() - 60_000) } }),
     );
     await tenantPrisma.run(companyId, (tx) =>
-      tx.payment.create({ data: { companyId, number: 'PAY-TEST-LP-2', customerId, amount: '2000.00', method: 'CASH', status: 'REVERSED' } }),
+      // Inserted POSTED, then reversed the only way the DB allows (PaymentReversal first).
+      tx.payment.create({ data: { companyId, number: 'PAY-TEST-LP-2', customerId, amount: '2000.00', method: 'CASH' } }).then(async (p) => {
+        await tx.paymentReversal.create({ data: { companyId, reversesPaymentId: p.id, reason: 'test', actorId: user.id } });
+        await tx.payment.update({ where: { id: p.id }, data: { status: 'REVERSED' } });
+      }),
     );
 
     const detail = await tenantPrisma.run(companyId, () => customers.getById(customerId, user));

@@ -1,4 +1,5 @@
-import { IsDateString, IsOptional, IsUUID } from 'class-validator';
+import { IsDateString, IsEnum, IsOptional, IsUUID } from 'class-validator';
+import { PaymentStatus } from '@velto/database';
 import { PaginationQueryDto } from '../../../common/pagination/pagination.dto';
 
 export class ListPaymentsQueryDto extends PaginationQueryDto {
@@ -12,8 +13,9 @@ export class ListPaymentsQueryDto extends PaginationQueryDto {
   @IsUUID()
   collectedBy?: string;
 
-  // Optional — scopes results to createdAt in [from, to] (inclusive,
-  // end-of-day). Omitted by every existing caller; the Telegram Mini App's
+  // Optional — scopes results to the posting date coalesce(handoverAt,
+  // createdAt) in [from, to] (inclusive, end-of-day; ADR-029, same rule as
+  // 1C export). Omitted by every existing caller; the Telegram Mini App's
   // agent home screen (9.4) uses this for today's collected total.
   @IsOptional()
   @IsDateString()
@@ -22,4 +24,9 @@ export class ListPaymentsQueryDto extends PaginationQueryDto {
   @IsOptional()
   @IsDateString()
   to?: string;
+
+  // ADR-029: e.g. PENDING_HANDOVER for the cashier's "to accept" queue.
+  @IsOptional()
+  @IsEnum(PaymentStatus)
+  status?: PaymentStatus;
 }

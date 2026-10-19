@@ -4,10 +4,11 @@ import { AuditLogService, toAuditJson } from '../../common/audit/audit-log.servi
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { paginate, resolveSort } from '../../common/pagination/pagination.dto';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
-import { POSTED_PAYMENT_WHERE, VALID_ALLOCATION_WHERE } from '../finance/ledger-filters';
+import { POSTED_PAYMENT_WHERE, VALID_ALLOCATION_WHERE, paymentPostedAt } from '../finance/ledger-filters';
 import {
   CustomerAlreadyBlockedException,
   CustomerHasCreditBalanceException,
+  CustomerHasPendingHandoverException,
   CustomerHasOutstandingBalanceException,
   CustomerNotBlockedException,
   CustomerNotFoundException,
@@ -149,7 +150,7 @@ export class CustomersService {
         take: 10,
         include: { lines: true },
       }),
-      tx.payment.findFirst({ where: { customerId: id, ...POSTED_PAYMENT_WHERE }, orderBy: { createdAt: 'desc' } }),
+      this.lastPostedPayment(tx, id),
       tx.visit.findMany({
         where: { outlet: { customerId: id } },
         orderBy: { startedAt: 'desc' },
@@ -348,6 +349,11 @@ export class CustomersService {
     // while we waited must make this one fail (CustomerNotFound), not delete
     // and audit a second time.
     const before = await this.lockActiveOrThrow(tx, id);
+    // ADR-029: PENDING_HANDOVER cash is outside the ledger; deleting now would make
+    // accept fail with CustomerNotFound. Plain read after the customer lock (no
+    // payment lock taken here, so Payment -> Customer order is never inverted).
+    const pending = await tx.payment.count({ where: { customerId: id, status: 'PENDING_HANDOVER' } });
+    if (pending > 0) throw new CustomerHasPendingHandoverException(pending);
     // Ledger (source of truth), not cachedBalance. Only exactly 0 may be deleted:
     // debt (> 0) and credit/advance owed back to the customer (< 0) both block.
     const balance = await this.getBalance(tx, id);
@@ -383,6 +389,20 @@ export class CustomersService {
     if (!customer) throw new CustomerNotFoundException();
     const { balance, advance } = await this.getLedger(tx, id);
     return { customerId: id, balance, advance: advance.toString() };
+  }
+
+  /**
+   * ADR-029: "oxirgi to'lov" = latest POSTED payment by its posting date
+   * coalesce(handoverAt, createdAt) (ledger-filters paymentPostedAt). Prisma
+   * cannot ORDER BY a coalesce, so take the newest of each branch and compare.
+   */
+  private async lastPostedPayment(tx: TenantClient, customerId: string) {
+    const [accepted, direct] = await Promise.all([
+      tx.payment.findFirst({ where: { customerId, ...POSTED_PAYMENT_WHERE, handoverAt: { not: null } }, orderBy: [{ handoverAt: 'desc' }, { id: 'desc' }] }),
+      tx.payment.findFirst({ where: { customerId, ...POSTED_PAYMENT_WHERE, handoverAt: null }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] }),
+    ]);
+    if (!accepted || !direct) return accepted ?? direct;
+    return paymentPostedAt(accepted) >= paymentPostedAt(direct) ? accepted : direct;
   }
 
   /** Customer balance only — see getLedger() for the formula. */

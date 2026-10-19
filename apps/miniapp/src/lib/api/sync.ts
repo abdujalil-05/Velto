@@ -1,5 +1,6 @@
 import type { GpsStatus } from '@/lib/gps-payload';
 import { apiFetch } from './client';
+import type { PaymentStatus } from './payments';
 import { toQueryString } from './query-string';
 
 // Mirrors apps/api/src/modules/sync/sync.service.ts's pull() response
@@ -162,6 +163,8 @@ export interface SyncPushResultItem {
   /** Visit entries only: server-computed GPS verdict. */
   gpsStatus?: GpsStatus;
   distanceM?: string | null;
+  /** Payment entries only (ADR-029): agent cash is PENDING_HANDOVER until the cashier accepts. */
+  paymentStatus?: PaymentStatus;
   error?: { code: string; message: string; messages?: { uz: string; ru: string; en: string }; details?: unknown };
 }
 

@@ -244,7 +244,9 @@
         "total": "Allocated",
         "exceedsAdvance": "exceeds the advance",
         "submit": "Allocate"
-      }
+      },
+      "inTransit": "In transit ({count} payments)",
+      "inTransitHint": "Debt is not reduced until a cashier accepts the payment"
     },
     "credit": "Credit",
     "advance": "Advance"
@@ -474,7 +476,9 @@
     "status": "Status",
     "actions": "Actions",
     "statuses": {
+      "PENDING_HANDOVER": "In transit (awaiting cashier)",
       "POSTED": "Posted",
+      "REJECTED": "Rejected",
       "REVERSED": "Reversed"
     },
     "reverse": {
@@ -482,6 +486,15 @@
       "title": "Reverse payment {number}",
       "description": "The payment will be reversed and invoices and the customer balance recalculated. This cannot be undone.",
       "success": "Payment reversed"
+    },
+    "handover": {
+      "accept": "Accept",
+      "reject": "Reject",
+      "acceptSuccess": "Payment accepted",
+      "rejectSuccess": "Payment rejected",
+      "rejectTitle": "Reject payment {number}",
+      "rejectDescription": "The payment will be rejected and the customer's debt will not decrease. A reason is required.",
+      "openSession": "Open a cash session"
     }
   },
   "Stock": {

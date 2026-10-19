@@ -5,7 +5,7 @@ import { useLocale, useTranslations } from 'next-intl';
 import { toast } from 'sonner';
 import type { QueueEntry } from '@/lib/offline/queue';
 import { queueRepository } from '@/lib/offline/queue';
-import { localizedError, parsePriceChanged } from '@/lib/offline/queue-view';
+import { isRejectedHandover, localizedError, parsePriceChanged } from '@/lib/offline/queue-view';
 import { formatDateTime, formatMoney } from '@/lib/format';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -57,10 +57,21 @@ export function QueueItemCard({ entry, name, productName, onChanged }: Props) {
               {t('createdAt')}: {formatDateTime(entry.createdAt, locale)}
             </p>
           </div>
-          <QueueStatusBadge status={entry.status} />
+          <QueueStatusBadge status={entry.status} paymentStatus={entry.paymentStatus} />
         </div>
 
         {unsent && <p className="text-xs text-muted-foreground">{t('deviceOnlyNote')}</p>}
+
+        {entry.status === 'SYNCED' && entry.paymentStatus === 'PENDING_HANDOVER' && (
+          <p className="rounded-md bg-warning/20 p-2 text-sm">{t('handoverPendingNote')}</p>
+        )}
+
+        {isRejectedHandover(entry) && (
+          <p className="rounded-md bg-destructive/10 p-2 text-sm text-destructive">
+            <span className="font-medium">{t('handoverRejectedNote')}</span>
+            {entry.handoverRejectReason ? ` ${t('reason')}: ${entry.handoverRejectReason}` : ''}
+          </p>
+        )}
 
         {entry.status === 'FAILED' && errorText && (
           <p className="rounded-md bg-destructive/10 p-2 text-sm text-destructive">

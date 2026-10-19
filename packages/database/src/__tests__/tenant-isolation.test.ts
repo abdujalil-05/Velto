@@ -1799,4 +1799,231 @@ describe('tenant isolation (RLS)', () => {
       expect(touched.count).toBe(0);
     });
   });
+  describe('F8.1 payment handover (ADR-029): PENDING_HANDOVER -> POSTED / REJECTED', () => {
+    const phone = () => `+99893${Math.floor(1_000_000 + Math.random() * 8_999_999)}`;
+    let agentId: string;
+    let cashierId: string;
+    let otherCashierId: string;
+    let cashierBId: string;
+    let customerId: string;
+    let invoiceId: string;
+    let openSessionId: string;
+    let closedSessionId: string;
+    let otherSessionId: string;
+    let sessionBId: string;
+    let seq = 0;
+
+    const newPending = (amount = '50.00') =>
+      withTenant(companyAId, (tx) =>
+        tx.payment.create({
+          data: {
+            companyId: companyAId,
+            number: `PAY-HO-${Date.now()}-${++seq}`,
+            customerId,
+            amount,
+            method: 'CASH',
+            status: 'PENDING_HANDOVER',
+            collectedBy: agentId,
+          },
+        }),
+      );
+    const accept = (id: string, extra: Record<string, unknown> = {}) =>
+      withTenant(companyAId, (tx) =>
+        tx.payment.update({
+          where: { id },
+          data: {
+            status: 'POSTED',
+            handoverActorId: cashierId,
+            handoverAt: new Date(),
+            handoverCashSessionId: openSessionId,
+            ...extra,
+          },
+        }),
+      );
+
+    beforeAll(async () => {
+      const mk = (companyId: string, firstName: string) =>
+        systemPrisma.user.create({ data: { companyId, firstName, lastName: 'HO', phone: phone() } });
+      agentId = (await mk(companyAId, 'Agent')).id;
+      cashierId = (await mk(companyAId, 'Kassir')).id;
+      otherCashierId = (await mk(companyAId, 'Kassir2')).id;
+      cashierBId = (await mk(companyBId, 'KassirB')).id;
+      await withTenant(companyAId, async (tx) => {
+        customerId = (await tx.customer.create({ data: { companyId: companyAId, code: 'A-HO', name: 'Handover A' } })).id;
+        invoiceId = (
+          await tx.invoice.create({ data: { companyId: companyAId, number: 'INV-HO-1', customerId, total: '500.00' } })
+        ).id;
+        closedSessionId = (
+          await tx.cashSession.create({
+            data: { companyId: companyAId, userId: cashierId, openAmount: '0.00', closedAt: new Date(), closeAmount: '0.00' },
+          })
+        ).id;
+        openSessionId = (await tx.cashSession.create({ data: { companyId: companyAId, userId: cashierId, openAmount: '0.00' } })).id;
+        otherSessionId = (
+          await tx.cashSession.create({ data: { companyId: companyAId, userId: otherCashierId, openAmount: '0.00' } })
+        ).id;
+      });
+      sessionBId = (
+        await withTenant(companyBId, (tx) =>
+          tx.cashSession.create({ data: { companyId: companyBId, userId: cashierBId, openAmount: '0.00' } }),
+        )
+      ).id;
+    });
+
+    it('insert: only PENDING_HANDOVER (agent-collected) or POSTED, never pre-resolved', async () => {
+      const base = { companyId: companyAId, customerId, amount: '1.00', method: 'CASH' as const, collectedBy: agentId };
+      for (const status of ['REJECTED', 'REVERSED'] as const) {
+        await expect(
+          withTenant(companyAId, (tx) => tx.payment.create({ data: { ...base, number: `PAY-HO-BAD-${status}`, status } })),
+        ).rejects.toThrow(/inserted as PENDING_HANDOVER or POSTED/);
+      }
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.payment.create({
+            data: { ...base, number: 'PAY-HO-BAD-PRE', handoverActorId: cashierId, handoverAt: new Date(), handoverCashSessionId: openSessionId },
+          }),
+        ),
+      ).rejects.toThrow(/handover columns/);
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.payment.create({ data: { ...base, number: 'PAY-HO-BAD-NOAGENT', collectedBy: null, status: 'PENDING_HANDOVER' } }),
+        ),
+      ).rejects.toThrow();
+    });
+
+    it('agent CARD/TRANSFER payments are PENDING_HANDOVER too, and can be accepted', async () => {
+      for (const method of ['CARD', 'TRANSFER'] as const) {
+        const p = await withTenant(companyAId, (tx) =>
+          tx.payment.create({
+            data: {
+              companyId: companyAId,
+              number: `PAY-HO-${method}-${Date.now()}-${++seq}`,
+              customerId,
+              amount: '10.00',
+              method,
+              status: 'PENDING_HANDOVER',
+              collectedBy: agentId,
+            },
+          }),
+        );
+        expect(p.status).toBe('PENDING_HANDOVER');
+        expect((await accept(p.id)).status).toBe('POSTED');
+      }
+    });
+
+    it('self-resolve is forbidden at DB level: collector cannot accept or reject own handover', async () => {
+      const agentSessionId = (
+        await withTenant(companyAId, (tx) => tx.cashSession.create({ data: { companyId: companyAId, userId: agentId, openAmount: '0.00' } }))
+      ).id;
+      const p = await newPending();
+      await expect(accept(p.id, { handoverActorId: agentId, handoverCashSessionId: agentSessionId })).rejects.toThrow(
+        /may not resolve their own handover/,
+      );
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.payment.update({
+            where: { id: p.id },
+            data: { status: 'REJECTED', handoverActorId: agentId, handoverAt: new Date(), handoverRejectReason: 'x' },
+          }),
+        ),
+      ).rejects.toThrow(/may not resolve their own handover/);
+      const still = await withTenant(companyAId, (tx) => tx.payment.findUniqueOrThrow({ where: { id: p.id } }));
+      expect(still.status).toBe('PENDING_HANDOVER');
+    });
+
+    it('PENDING_HANDOVER cannot be allocated (no FIFO in transit)', async () => {
+      const p = await newPending();
+      await expect(
+        withTenant(companyAId, (tx) => tx.paymentAllocation.create({ data: { paymentId: p.id, invoiceId, amount: '50.00' } })),
+      ).rejects.toThrow(/requires a POSTED payment/);
+    });
+
+    it('accept needs the actor\'s own OPEN, same-company session and full metadata', async () => {
+      const p = await newPending();
+      await expect(accept(p.id, { handoverCashSessionId: closedSessionId })).rejects.toThrow(/is closed/);
+      await expect(accept(p.id, { handoverCashSessionId: otherSessionId })).rejects.toThrow(/does not belong/);
+      await expect(accept(p.id, { handoverCashSessionId: sessionBId })).rejects.toThrow(/cross-tenant|not found/);
+      await expect(accept(p.id, { handoverActorId: cashierBId })).rejects.toThrow(/cross-tenant|does not belong/);
+      await expect(accept(p.id, { handoverAt: null })).rejects.toThrow();
+      await expect(accept(p.id, { handoverRejectReason: 'x' })).rejects.toThrow();
+      // Immutable columns cannot ride along with the transition.
+      await expect(accept(p.id, { amount: '49.00' })).rejects.toThrow(/append-only/);
+      await expect(accept(p.id, { customerId: customerBId })).rejects.toThrow();
+      const still = await withTenant(companyAId, (tx) => tx.payment.findUniqueOrThrow({ where: { id: p.id } }));
+      expect(still.status).toBe('PENDING_HANDOVER');
+    });
+
+    it('accept -> POSTED once; then allocatable, handover columns frozen, no way back', async () => {
+      const p = await newPending();
+      const posted = await accept(p.id);
+      expect(posted.status).toBe('POSTED');
+      expect(posted.handoverCashSessionId).toBe(openSessionId);
+      expect(posted.amount.toString()).toBe('50');
+
+      await withTenant(companyAId, (tx) => tx.paymentAllocation.create({ data: { paymentId: p.id, invoiceId, amount: '50.00' } }));
+
+      await expect(
+        withTenant(companyAId, (tx) => tx.payment.update({ where: { id: p.id }, data: { handoverAt: new Date(0) } })),
+      ).rejects.toThrow(/not allowed/);
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.payment.update({ where: { id: p.id }, data: { status: 'PENDING_HANDOVER', handoverActorId: null, handoverAt: null, handoverCashSessionId: null } }),
+        ),
+      ).rejects.toThrow(/not allowed/);
+
+      // An accepted handover is still reversible (F2.1), without touching handover columns.
+      await expect(
+        withTenant(companyAId, async (tx) => {
+          await tx.paymentReversal.create({ data: { companyId: companyAId, reversesPaymentId: p.id, reason: 'test', actorId: cashierId } });
+          await tx.payment.update({ where: { id: p.id }, data: { status: 'REVERSED', handoverActorId: otherCashierId } });
+        }),
+      ).rejects.toThrow(/reversal may not change handover columns/);
+      const reversed = await withTenant(companyAId, async (tx) => {
+        await tx.paymentReversal.create({ data: { companyId: companyAId, reversesPaymentId: p.id, reason: 'test', actorId: cashierId } });
+        return tx.payment.update({ where: { id: p.id }, data: { status: 'REVERSED' } });
+      });
+      expect(reversed.status).toBe('REVERSED');
+      expect(reversed.handoverActorId).toBe(cashierId);
+    });
+
+    it('reject -> REJECTED needs actor, time and a reason; it is terminal', async () => {
+      const p = await newPending();
+      const reject = (extra: Record<string, unknown>) =>
+        withTenant(companyAId, (tx) =>
+          tx.payment.update({
+            where: { id: p.id },
+            data: { status: 'REJECTED', handoverActorId: cashierId, handoverAt: new Date(), ...extra },
+          }),
+        );
+      await expect(reject({ handoverRejectReason: '   ' })).rejects.toThrow();
+      await expect(reject({ handoverRejectReason: null })).rejects.toThrow();
+      await expect(reject({ handoverRejectReason: 'kam keldi', handoverCashSessionId: openSessionId })).rejects.toThrow();
+      const rejected = await reject({ handoverRejectReason: 'kam keldi' });
+      expect(rejected.status).toBe('REJECTED');
+
+      await expect(accept(p.id, { handoverRejectReason: null })).rejects.toThrow(/not allowed/);
+      await expect(
+        withTenant(companyAId, (tx) => tx.paymentAllocation.create({ data: { paymentId: p.id, invoiceId, amount: '1.00' } })),
+      ).rejects.toThrow(/requires a POSTED payment/);
+    });
+
+    it('RLS: another tenant can neither see nor resolve a pending handover; no context = zero rows', async () => {
+      const p = await newPending();
+      expect(await withTenant(companyBId, (tx) => tx.payment.findMany({ where: { id: p.id } }))).toHaveLength(0);
+      const touched = await withTenant(companyBId, (tx) =>
+        tx.payment.updateMany({
+          where: { id: p.id },
+          data: { status: 'POSTED', handoverActorId: cashierBId, handoverAt: new Date(), handoverCashSessionId: sessionBId },
+        }),
+      );
+      expect(touched.count).toBe(0);
+      try {
+        expect(await prisma.payment.findMany({ where: { id: p.id } })).toHaveLength(0);
+      } catch (err) {
+        expect(String(err)).toMatch(/uuid/i);
+      }
+      const still = await withTenant(companyAId, (tx) => tx.payment.findUniqueOrThrow({ where: { id: p.id } }));
+      expect(still.status).toBe('PENDING_HANDOVER');
+    });
+  });
 });

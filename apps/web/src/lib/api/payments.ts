@@ -5,7 +5,7 @@ import type { PaginatedResult } from './types';
 
 export type PaymentMethod = 'CASH' | 'CARD' | 'TRANSFER';
 
-export type PaymentStatus = 'POSTED' | 'REVERSED';
+export type PaymentStatus = 'PENDING_HANDOVER' | 'POSTED' | 'REJECTED' | 'REVERSED';
 
 export interface PaymentAllocation {
   id: string;
@@ -26,12 +26,17 @@ export interface Payment {
   advance: string;
   createdAt: string;
   allocations: PaymentAllocation[];
+  handoverActorId?: string | null;
+  handoverAt?: string | null;
+  handoverCashSessionId?: string | null;
+  handoverRejectReason?: string | null;
 }
 
 export interface ListPaymentsParams {
   page?: number;
   pageSize?: number;
   customerId?: string;
+  status?: PaymentStatus;
   sortBy?: string;
   sortDir?: 'asc' | 'desc';
   [key: string]: string | number | undefined;
@@ -114,5 +119,53 @@ export function useAllocatePaymentMutation() {
       queryClient.invalidateQueries({ queryKey: ['customers'] });
       queryClient.invalidateQueries({ queryKey: ['receivables'] });
     },
+  });
+}
+
+export interface InTransitSummary {
+  customerId: string;
+  amount: string;
+  count: number;
+}
+
+/** GET /payments/in-transit — money handed to an agent/courier but not yet accepted by a cashier (balance not reduced). */
+export function useInTransitQuery(customerId: string, enabled = true) {
+  return useQuery({
+    queryKey: ['payments', 'in-transit', customerId],
+    queryFn: () => apiFetch<InTransitSummary>(`/payments/in-transit${toQueryString({ customerId })}`),
+    enabled: enabled && !!customerId,
+  });
+}
+
+function invalidateAfterHandover(queryClient: ReturnType<typeof useQueryClient>) {
+  for (const key of ['payments', 'invoices', 'customers', 'cash-sessions', 'receivables', 'reports']) {
+    queryClient.invalidateQueries({ queryKey: [key] });
+  }
+}
+
+/** POST /payments/:id/handover/accept (needs `payments.handover`; requires an open cash session). */
+export function useAcceptHandoverMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, idempotencyKey }: { id: string; idempotencyKey: string }) =>
+      apiFetch<Payment>(`/payments/${id}/handover/accept`, {
+        method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey },
+      }),
+    onSuccess: () => invalidateAfterHandover(queryClient),
+  });
+}
+
+/** POST /payments/:id/handover/reject (needs `payments.handover`; reason 3-500). */
+export function useRejectHandoverMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, reason, idempotencyKey }: { id: string; reason: string; idempotencyKey: string }) =>
+      apiFetch<Payment>(`/payments/${id}/handover/reject`, {
+        method: 'POST',
+        body: { reason },
+        headers: { 'Idempotency-Key': idempotencyKey },
+      }),
+    onSuccess: () => invalidateAfterHandover(queryClient),
   });
 }

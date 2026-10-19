@@ -96,3 +96,19 @@ export class CustomerHasCreditBalanceException extends AppException {
     );
   }
 }
+
+/** ADR-029: agent cash awaiting cashier handover is not in the ledger yet; deleting the customer would orphan it. */
+export class CustomerHasPendingHandoverException extends AppException {
+  constructor(count: number) {
+    super(
+      HttpStatus.CONFLICT,
+      'CUSTOMER_HAS_PENDING_HANDOVER',
+      {
+        uz: `Mijozda kassir qabul qilishini kutayotgan to'lov bor (${count} ta), uni o'chirib bo'lmaydi`,
+        ru: `У клиента есть платежи, ожидающие приёма кассиром (${count}) — удаление невозможно`,
+        en: `The customer has payments awaiting cashier handover (${count}) and cannot be deleted`,
+      },
+      { count },
+    );
+  }
+}

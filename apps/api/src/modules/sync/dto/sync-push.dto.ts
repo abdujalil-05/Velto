@@ -97,6 +97,8 @@ export interface SyncPushResultItem {
   gpsStatus?: string;
   /** Visit entries only: decimal string metres from the outlet, null when not computable. */
   distanceM?: string | null;
+  /** Payment entries only (ADR-029): PENDING_HANDOVER for any SALES_AGENT payment (CASH/CARD/TRANSFER), POSTED otherwise. */
+  paymentStatus?: string;
   error?: SyncPushError;
 }
 

@@ -12,6 +12,7 @@ import { CustomersService } from '../../customers/customers.service';
 import type { AllocatePaymentDto } from '../dto/allocate-payment.dto';
 import type { CreatePaymentDto } from '../dto/create-payment.dto';
 import type { ListPaymentsQueryDto } from '../dto/list-payments.query';
+import { PAYMENT_STATUSES_MAX, type PaymentStatusesDto } from '../dto/payment-statuses.dto';
 import {
   AllocationExceedsAdvanceException,
   AllocationExceedsInvoiceException,
@@ -22,10 +23,16 @@ import {
   PaymentExportedTo1cException,
   PaymentInClosedCashSessionException,
   PaymentNotFoundException,
+  PaymentHandoverNoOpenCashSessionException,
+  PaymentHandoverRejectReasonRequiredException,
+  PaymentHandoverSelfResolveException,
+  PaymentNotPendingHandoverException,
   PaymentNotPostedException,
+  PaymentPendingHandoverAllocationException,
   PaymentReversalReasonRequiredException,
+  PaymentStatusesLimitException,
 } from '../finance-exceptions';
-import { VALID_ALLOCATION_WHERE, paymentAdvanceOf } from '../ledger-filters';
+import { VALID_ALLOCATION_WHERE, paymentAdvanceOf, paymentPostedAt, paymentPostedWithin } from '../ledger-filters';
 
 // customer is included alongside allocations so the web UI (9.2 "/payments")
 // can render a full row without an extra round-trip per payment.
@@ -61,13 +68,16 @@ export class PaymentsService {
     const where: Prisma.PaymentWhereInput = {
       ...(query.customerId ? { customerId: query.customerId } : {}),
       ...(scopedCollectedBy ? { collectedBy: scopedCollectedBy } : {}),
+      ...(query.status ? { status: query.status } : {}),
+      // ADR-029: the period is the posting date coalesce(handoverAt, createdAt),
+      // same rule as 1C export/dashboards — an accepted handover counts on the
+      // day the cashier accepted it. PENDING_HANDOVER has handoverAt null, so
+      // it is still filtered by its collection time.
       ...(query.from || query.to
-        ? {
-            createdAt: {
-              ...(query.from ? { gte: startOfDay(new Date(query.from)) } : {}),
-              ...(query.to ? { lte: endOfDay(new Date(query.to)) } : {}),
-            },
-          }
+        ? paymentPostedWithin({
+            ...(query.from ? { gte: startOfDay(new Date(query.from)) } : {}),
+            ...(query.to ? { lte: endOfDay(new Date(query.to)) } : {}),
+          })
         : {}),
     };
 
@@ -136,6 +146,16 @@ export class PaymentsService {
       throw new InvalidPaymentAmountException("To'lov summasi musbat bo'lishi kerak");
     }
 
+    // ADR-029 / F-01: ANY payment a field agent enters (CASH/CARD/TRANSFER) is
+    // PENDING_HANDOVER until a cashier accepts it — otherwise an agent could
+    // hide cash by labelling it 'CARD' (security audit BLOCK). Office entries
+    // (no SALES_AGENT role) post at once. MVP fixed roles: a user holding
+    // SALES_AGENT + CASHIER/OWNER is treated as an agent here and, by the
+    // four-eyes rule (lockPendingHandover + DB trigger), can never accept
+    // their own collection — another cashier must.
+    const inTransit = user.roles.includes('SALES_AGENT');
+    if (inTransit && dto.allocations?.length) throw new PaymentPendingHandoverAllocationException();
+
     // Customer row lock FIRST, then the deletedAt check as a fresh read: a
     // concurrent CustomersService.remove() holds the same lock, so either it
     // commits first (we see deletedAt -> CustomerNotFound) or we commit first
@@ -158,6 +178,7 @@ export class PaymentsService {
             customerId: dto.customerId,
             amount,
             method: dto.method,
+            status: inTransit ? PaymentStatus.PENDING_HANDOVER : PaymentStatus.POSTED,
             collectedBy: user.id,
             clientId: dto.clientId,
           },
@@ -177,14 +198,11 @@ export class PaymentsService {
       throw err;
     }
 
-    const mode = dto.allocations?.length ? 'MANUAL' : 'FIFO';
-    const allocations = dto.allocations?.length
-      ? await this.allocateManual(tx, { id: payment.id, customerId: payment.customerId }, amount, dto.allocations, (cap, req) => new AllocationExceedsPaymentException(cap, req))
-      : await this.allocateFifo(tx, { id: payment.id, customerId: payment.customerId, amount });
-
-    // 6.7: "hech qachon to'g'ridan-to'g'ri UPDATE qilinmaydi" outside of a
-    // recompute from the ledger — done here, inside the same transaction.
-    await this.refreshCachedBalance(tx, dto.customerId);
+    // ADR-029: agent cash is in transit — no allocation, no ledger effect,
+    // cachedBalance untouched until a cashier accepts it (acceptHandover).
+    const allocations = inTransit
+      ? []
+      : await this.postToLedger(tx, { id: payment.id, customerId: payment.customerId, amount }, dto.allocations);
 
     const full = await tx.payment.findUniqueOrThrow({ where: { id: payment.id }, include: PAYMENT_INCLUDE });
 
@@ -196,21 +214,148 @@ export class PaymentsService {
       entityId: payment.id,
       newValue: toAuditJson(full),
     });
-
-    // TZ 11.4: allocation is its own mandatory audit event, separate from
-    // payment.create. Skipped when nothing was allocated (pure advance).
-    if (allocations.length) {
-      await this.auditLog.log(tx, {
-        companyId: user.companyId,
-        userId: user.id,
-        action: 'payment.allocate',
-        entity: 'Payment',
-        entityId: payment.id,
-        newValue: toAuditJson({ mode, allocations }),
-      });
-    }
+    await this.auditAllocations(tx, user, payment.id, dto.allocations?.length ? 'MANUAL' : 'FIFO', allocations);
 
     return withAdvance(full);
+  }
+
+  /**
+   * ADR-029 / TZ §6.5, F-01: a cashier (OWNER/SALES_DIRECTOR/CASHIER,
+   * `payments.handover`) accepts agent cash into their OWN open shift:
+   * PENDING_HANDOVER -> POSTED + FIFO + cachedBalance, one transaction.
+   * Lock order payment -> customer -> invoices (as create/allocate/reverse);
+   * the payment FOR UPDATE makes a second concurrent accept wait and then see
+   * POSTED (PAYMENT_NOT_PENDING_HANDOVER). The DB trigger re-validates the
+   * session (own, open) under FOR SHARE, so a racing close() cannot slip in.
+   */
+  async acceptHandover(paymentId: string, user: AuthenticatedUser) {
+    const tx = this.tenantPrisma.client;
+    const before = await this.lockPendingHandover(tx, paymentId, user);
+
+    const session = await tx.cashSession.findFirst({ where: { userId: user.id, closedAt: null }, select: { id: true } });
+    if (!session) throw new PaymentHandoverNoOpenCashSessionException();
+    // Active check: a soft-deleted customer must not silently receive credit;
+    // the payment stays PENDING_HANDOVER and can still be rejected.
+    await this.customers.lockActiveOrThrow(tx, before.customerId);
+
+    await tx.payment.update({
+      where: { id: paymentId },
+      data: { status: PaymentStatus.POSTED, handoverActorId: user.id, handoverAt: new Date(), handoverCashSessionId: session.id },
+    });
+    const allocations = await this.postToLedger(tx, { id: before.id, customerId: before.customerId, amount: before.amount });
+
+    const full = await tx.payment.findUniqueOrThrow({ where: { id: paymentId }, include: PAYMENT_INCLUDE });
+    await this.auditLog.log(tx, {
+      companyId: user.companyId,
+      userId: user.id,
+      action: 'payment.handover.accept',
+      entity: 'Payment',
+      entityId: paymentId,
+      oldValue: toAuditJson({ status: before.status }),
+      newValue: toAuditJson({ status: full.status, handoverAt: full.handoverAt, handoverCashSessionId: full.handoverCashSessionId }),
+    });
+    await this.auditAllocations(tx, user, paymentId, 'FIFO', allocations);
+    return withAdvance(full);
+  }
+
+  /** ADR-029: PENDING_HANDOVER -> REJECTED with a mandatory reason. No ledger effect, no shift needed. */
+  async rejectHandover(paymentId: string, reason: string, user: AuthenticatedUser) {
+    const tx = this.tenantPrisma.client;
+    const trimmedReason = reason?.trim() ?? '';
+    if (trimmedReason.length < 3) throw new PaymentHandoverRejectReasonRequiredException();
+    const before = await this.lockPendingHandover(tx, paymentId, user);
+
+    await tx.payment.update({
+      where: { id: paymentId },
+      data: { status: PaymentStatus.REJECTED, handoverActorId: user.id, handoverAt: new Date(), handoverRejectReason: trimmedReason },
+    });
+
+    const full = await tx.payment.findUniqueOrThrow({ where: { id: paymentId }, include: PAYMENT_INCLUDE });
+    await this.auditLog.log(tx, {
+      companyId: user.companyId,
+      userId: user.id,
+      action: 'payment.handover.reject',
+      entity: 'Payment',
+      entityId: paymentId,
+      oldValue: toAuditJson({ status: before.status }),
+      newValue: toAuditJson({ status: full.status, handoverAt: full.handoverAt, reason: trimmedReason }),
+    });
+    return withAdvance(full);
+  }
+
+  /** ADR-029 "yo'lda": Σ PENDING_HANDOVER for one customer (SALES_AGENT: own collection only, SEC-023). */
+  async inTransitSummary(customerId: string, user: AuthenticatedUser) {
+    const scopedCollectedBy = user.roles.includes('SALES_AGENT') ? user.id : undefined;
+    const agg = await this.tenantPrisma.client.payment.aggregate({
+      where: { customerId, status: PaymentStatus.PENDING_HANDOVER, ...(scopedCollectedBy ? { collectedBy: scopedCollectedBy } : {}) },
+      _sum: { amount: true },
+      _count: { _all: true },
+    });
+    return { customerId, amount: (agg._sum.amount ?? new Prisma.Decimal(0)).toString(), count: agg._count._all };
+  }
+
+  /**
+   * ADR-029: handover decision lookup for the Mini App queue — up to 100 ids
+   * and/or clientIds, never paginated, so no decision is lost past page 1.
+   * SEC-023: a SALES_AGENT only gets payments they collected; unknown,
+   * foreign-agent and other-tenant (RLS) ids are simply absent.
+   */
+  async statuses(dto: PaymentStatusesDto, user: AuthenticatedUser) {
+    const ids = dto.ids ?? [];
+    const clientIds = dto.clientIds ?? [];
+    if (ids.length + clientIds.length === 0 || ids.length + clientIds.length > PAYMENT_STATUSES_MAX) {
+      throw new PaymentStatusesLimitException(PAYMENT_STATUSES_MAX);
+    }
+    const scopedCollectedBy = user.roles.includes('SALES_AGENT') ? user.id : undefined;
+    return this.tenantPrisma.client.payment.findMany({
+      where: {
+        OR: [...(ids.length ? [{ id: { in: ids } }] : []), ...(clientIds.length ? [{ clientId: { in: clientIds } }] : [])],
+        ...(scopedCollectedBy ? { collectedBy: scopedCollectedBy } : {}),
+      },
+      select: { id: true, clientId: true, status: true, handoverAt: true, handoverRejectReason: true },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
+  /** Payment FOR UPDATE, then: exists, still PENDING_HANDOVER, and not resolved by its own collector. */
+  private async lockPendingHandover(tx: TenantClient, paymentId: string, user: AuthenticatedUser) {
+    await tx.$queryRaw(Prisma.sql`SELECT id FROM "Payment" WHERE id = ${paymentId}::uuid FOR UPDATE`);
+    const payment = await tx.payment.findUnique({ where: { id: paymentId } });
+    if (!payment) throw new PaymentNotFoundException();
+    if (payment.status !== PaymentStatus.PENDING_HANDOVER) throw new PaymentNotPendingHandoverException(payment.status);
+    if (payment.collectedBy === user.id) throw new PaymentHandoverSelfResolveException();
+    return payment;
+  }
+
+  /**
+   * Ledger posting shared by a direct POSTED create() and acceptHandover():
+   * FIFO (or manual override, capped by `amount`) then the cachedBalance
+   * recompute (6.7: never a direct UPDATE) — same transaction. The customer
+   * row lock is already held by the caller.
+   */
+  private async postToLedger(
+    tx: TenantClient,
+    payment: { id: string; customerId: string; amount: Prisma.Decimal },
+    manual?: { invoiceId: string; amount: Prisma.Decimal.Value }[],
+  ): Promise<AllocationResult[]> {
+    const allocations = manual?.length
+      ? await this.allocateManual(tx, payment, payment.amount, manual, (cap, req) => new AllocationExceedsPaymentException(cap, req))
+      : await this.allocateFifo(tx, payment);
+    await this.refreshCachedBalance(tx, payment.customerId);
+    return allocations;
+  }
+
+  /** TZ 11.4: allocation is its own mandatory audit event. Skipped when nothing was allocated (pure advance). */
+  private async auditAllocations(tx: TenantClient, user: AuthenticatedUser, paymentId: string, mode: 'MANUAL' | 'FIFO', allocations: AllocationResult[]) {
+    if (!allocations.length) return;
+    await this.auditLog.log(tx, {
+      companyId: user.companyId,
+      userId: user.id,
+      action: 'payment.allocate',
+      entity: 'Payment',
+      entityId: paymentId,
+      newValue: toAuditJson({ mode, allocations }),
+    });
   }
 
   /**
@@ -275,10 +420,13 @@ export class PaymentsService {
     const before = await tx.payment.findUnique({ where: { id: paymentId }, include: PAYMENT_INCLUDE });
     if (!before) throw new PaymentNotFoundException();
     if (before.status === PaymentStatus.REVERSED) throw new PaymentAlreadyReversedException();
+    // ADR-029: PENDING_HANDOVER/REJECTED never reached the ledger — reject/accept instead.
+    // Same PAYMENT_NOT_POSTED code as allocate() for the same state.
+    if (before.status !== PaymentStatus.POSTED) throw new PaymentNotPostedException(before.status);
     await this.customers.lockForUpdate(tx, before.customerId);
 
     await this.assertNotInClosedCashSession(tx, before);
-    await this.assertNotExportedTo1c(tx, before.createdAt);
+    await this.assertNotExportedTo1c(tx, paymentPostedAt(before));
 
     await tx.paymentReversal.create({
       data: { companyId: user.companyId, reversesPaymentId: paymentId, reason: trimmedReason, actorId: user.id },
@@ -313,35 +461,40 @@ export class PaymentsService {
 
   /**
    * "Yopilgan smenaga kirgan to'lov" uses the exact membership rule
-   * CashSessionsService.withSummary counts by: CASH, collectedBy = session
-   * user, createdAt within [openedAt, closedAt]. FOR SHARE makes a concurrent
-   * close() wait for this transaction (or, if it committed first, the
-   * re-checked row is seen as closed).
+   * CashSessionsService.withSummary counts by: an accepted handover belongs
+   * to its handoverCashSessionId (ADR-029); a direct payment to the shift of
+   * its collector (CASH, createdAt within [openedAt, closedAt]). FOR SHARE
+   * makes a concurrent close() wait for this transaction (or, if it committed
+   * first, the re-checked row is seen as closed).
    */
   private async assertNotInClosedCashSession(
     tx: TenantClient,
-    payment: { method: PaymentMethod; collectedBy: string | null; createdAt: Date },
+    payment: { method: PaymentMethod; collectedBy: string | null; createdAt: Date; handoverCashSessionId: string | null },
   ): Promise<void> {
     if (payment.method !== PaymentMethod.CASH || !payment.collectedBy) return;
-    const sessions = await tx.$queryRaw<{ id: string; closedAt: Date | null }[]>(Prisma.sql`
-      SELECT id, "closedAt" FROM "CashSession"
-      WHERE "userId" = ${payment.collectedBy}::uuid
-        AND "openedAt" <= ${payment.createdAt}
-        AND ("closedAt" IS NULL OR "closedAt" >= ${payment.createdAt})
-      FOR SHARE
-    `);
+    const sessions = payment.handoverCashSessionId
+      ? await tx.$queryRaw<{ id: string; closedAt: Date | null }[]>(Prisma.sql`
+          SELECT id, "closedAt" FROM "CashSession" WHERE id = ${payment.handoverCashSessionId}::uuid FOR SHARE
+        `)
+      : await tx.$queryRaw<{ id: string; closedAt: Date | null }[]>(Prisma.sql`
+          SELECT id, "closedAt" FROM "CashSession"
+          WHERE "userId" = ${payment.collectedBy}::uuid
+            AND "openedAt" <= ${payment.createdAt}
+            AND ("closedAt" IS NULL OR "closedAt" >= ${payment.createdAt})
+          FOR SHARE
+        `);
     const closed = sessions.find((s) => s.closedAt !== null);
     if (closed) throw new PaymentInClosedCashSessionException(closed.id);
   }
 
   /**
-   * Export1cProcessor exports every payment with createdAt within
-   * [periodFrom, periodTo] of the job. A PENDING/PROCESSING job will, and a
-   * DONE job did, include it — only FAILED jobs exported nothing.
+   * Export1cProcessor exports every POSTED payment whose paymentPostedAt is
+   * within [periodFrom, periodTo] of the job. A PENDING/PROCESSING job will,
+   * and a DONE job did, include it — only FAILED jobs exported nothing.
    */
-  private async assertNotExportedTo1c(tx: TenantClient, createdAt: Date): Promise<void> {
+  private async assertNotExportedTo1c(tx: TenantClient, postedAt: Date): Promise<void> {
     const job = await tx.exportJob.findFirst({
-      where: { type: '1c', status: { not: 'FAILED' }, periodFrom: { lte: createdAt }, periodTo: { gte: createdAt } },
+      where: { type: '1c', status: { not: 'FAILED' }, periodFrom: { lte: postedAt }, periodTo: { gte: postedAt } },
       select: { id: true },
     });
     if (job) throw new PaymentExportedTo1cException(job.id);

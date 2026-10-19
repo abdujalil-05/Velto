@@ -11,6 +11,7 @@ import {
   useBlockCustomerMutation,
   useUnblockCustomerMutation,
 } from '@/lib/api/customers';
+import { useInTransitQuery } from '@/lib/api/payments';
 import { errorMessage } from '@/lib/api/client';
 import { formatDate, formatDateTime, formatMoney } from '@/lib/format';
 import { Badge } from '@/components/ui/badge';
@@ -32,6 +33,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
   const { hasPermission } = useAuth();
 
   const { data: customer, isLoading, isError, error, refetch } = useCustomerQuery(id);
+  const inTransit = useInTransitQuery(id, hasPermission('payments.read'));
   const blockMutation = useBlockCustomerMutation(id);
   const unblockMutation = useUnblockCustomerMutation(id);
   const [blockDialogOpen, setBlockDialogOpen] = useState(false);
@@ -134,6 +136,12 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
             {Number(customer.advance) > 0 && (
               <p className="mt-1 text-sm text-muted-foreground">
                 {t('advance')}: {formatMoney(customer.advance)} {tCommon('somUnit')}
+              </p>
+            )}
+            {inTransit.data && inTransit.data.count > 0 && (
+              <p className="mt-1 text-sm text-warning-foreground">
+                {t('inTransit', { count: inTransit.data.count })}: {formatMoney(inTransit.data.amount)} {tCommon('somUnit')}
+                <span className="block text-xs text-muted-foreground">{t('inTransitHint')}</span>
               </p>
             )}
             {Number(customer.advance) > 0 && hasPermission('payments.allocate') && (

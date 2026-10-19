@@ -126,7 +126,7 @@ async function applyResult(entry: QueueEntry, result: SyncPushResultItem | undef
   switch (result?.status) {
     case 'ACCEPTED':
     case 'DUPLICATE':
-      await queueRepository.markSynced(entry.clientId, result.id);
+      await queueRepository.markSynced(entry.clientId, result.id, result.paymentStatus);
       outcome.accepted += 1;
       if (result.gpsStatus) outcome.visitGps.push({ clientId: entry.clientId, gpsStatus: result.gpsStatus, distanceM: result.distanceM ?? null });
       return;

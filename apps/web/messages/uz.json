@@ -244,7 +244,9 @@
         "total": "Taqsimlandi",
         "exceedsAdvance": "avansdan oshib ketdi",
         "submit": "Taqsimlash"
-      }
+      },
+      "inTransit": "Yo'lda ({count} ta to'lov)",
+      "inTransitHint": "Kassir qabul qilmaguncha qarz kamaymaydi"
     },
     "credit": "Kredit",
     "advance": "Avans"
@@ -474,7 +476,9 @@
     "status": "Holati",
     "actions": "Amallar",
     "statuses": {
+      "PENDING_HANDOVER": "Yo'lda (kassir qabul qilishi kutilmoqda)",
       "POSTED": "Qabul qilingan",
+      "REJECTED": "Rad etilgan",
       "REVERSED": "Bekor qilingan"
     },
     "reverse": {
@@ -482,6 +486,15 @@
       "title": "{number} to'lovini bekor qilish",
       "description": "To'lov bekor qilinadi, fakturalar va mijoz balansi qayta hisoblanadi. Bu amalni qaytarib bo'lmaydi.",
       "success": "To'lov bekor qilindi"
+    },
+    "handover": {
+      "accept": "Qabul qilish",
+      "reject": "Rad etish",
+      "acceptSuccess": "To'lov qabul qilindi",
+      "rejectSuccess": "To'lov rad etildi",
+      "rejectTitle": "{number} to'lovini rad etish",
+      "rejectDescription": "To'lov rad etiladi, mijoz qarzi kamaymaydi. Sabab majburiy.",
+      "openSession": "Kassa smenasini ochish"
     }
   },
   "Stock": {

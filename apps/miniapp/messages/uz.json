@@ -92,7 +92,10 @@
     "receiptTitle": "To'lov kvitansiyasi",
     "save": "SAQLASH",
     "saved": "To'lov qurilmada saqlandi (serverga hali yuborilmagan)",
-    "shareReceipt": "Kvitansiyani yuborish"
+    "shareReceipt": "Kvitansiyani yuborish",
+    "handoverNotice": "Kassirga topshirish kutilmoqda. Kassir qabul qilgandan keyingina mijoz qarzi kamayadi.",
+    "debtNotReducedNote": "Siz yig'gan to'lov kassir qabul qilguncha qarzni kamaytirmaydi.",
+    "inTransit": "Yo'lda (kassirga topshirilmagan)"
   },
   "Visit": {
     "collectPayment": "To'lov qabul qilish",
@@ -264,6 +267,11 @@
     "quarantineDiscardConfirmTitle": "Egasi noma'lum hujjat o'chiriladimi?",
     "quarantineDiscardConfirmDescription": "Hujjat serverga yetmagan va qurilmadan butunlay yo'qoladi.",
     "quarantineDiscardConfirm": "Ha, o'chirish",
-    "logoutQuarantineNote": "Egasi noma'lum hujjatlar chiqishda o'chirilmaydi — ular qurilmada qoladi."
+    "logoutQuarantineNote": "Egasi noma'lum hujjatlar chiqishda o'chirilmaydi — ular qurilmada qoladi.",
+    "handoverPending": "Kassirga topshirish kutilmoqda",
+    "handoverPosted": "Kassir qabul qildi",
+    "handoverRejected": "E'tibor kerak: kassir rad etdi",
+    "handoverPendingNote": "Server qabul qildi. Pulni kassirga topshiring — qarz kassir qabul qilgandan keyin kamayadi.",
+    "handoverRejectedNote": "Kassir to'lovni rad etdi, qarz kamaymadi."
   }
 }

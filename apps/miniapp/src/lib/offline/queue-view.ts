@@ -1,3 +1,4 @@
+import type { PaymentStatus } from '@/lib/api/payments';
 import type { QueueEntry, QueueError, QueueStatus } from './queue';
 
 /**
@@ -8,7 +9,15 @@ import type { QueueEntry, QueueError, QueueStatus } from './queue';
 export type StatusBadgeVariant = 'secondary' | 'success' | 'destructive' | 'warning';
 
 /** Device-saved (PENDING/SYNCING) vs server-accepted (SYNCED) are different, translated states. */
-export function statusView(status: QueueStatus): { labelKey: 'onDevice' | 'onServer' | 'failed' | 'conflict'; variant: StatusBadgeVariant } {
+export type StatusLabelKey = 'onDevice' | 'onServer' | 'failed' | 'conflict' | 'handoverPending' | 'handoverPosted' | 'handoverRejected';
+
+export function statusView(status: QueueStatus, paymentStatus?: PaymentStatus): { labelKey: StatusLabelKey; variant: StatusBadgeVariant } {
+  if (status === 'SYNCED' && paymentStatus) {
+    // ADR-029: server-accepted is not cashier-accepted; debt is reduced only at POSTED.
+    if (paymentStatus === 'PENDING_HANDOVER') return { labelKey: 'handoverPending', variant: 'warning' };
+    if (paymentStatus === 'REJECTED') return { labelKey: 'handoverRejected', variant: 'destructive' };
+    return { labelKey: 'handoverPosted', variant: 'success' };
+  }
   switch (status) {
     case 'SYNCED':
       return { labelKey: 'onServer', variant: 'success' };
@@ -54,10 +63,19 @@ export function entryDisplayName(entry: QueueEntry, customers: NamedRef[], outle
   return customers.find((c) => c.id === p.customerId)?.name ?? null;
 }
 
+/** A payment the cashier rejected: the server holds it, but it needs the agent's attention (with the reason). */
+export function isRejectedHandover(e: QueueEntry): boolean {
+  return e.type === 'payment' && e.status === 'SYNCED' && e.paymentStatus === 'REJECTED';
+}
+
+export function needsAttention(e: QueueEntry): boolean {
+  return e.status === 'FAILED' || e.status === 'CONFLICT' || isRejectedHandover(e);
+}
+
 /** Needs-attention first (oldest first), then pending/syncing, SYNCED excluded from the actionable list. */
 export function sortQueueForScreen(entries: QueueEntry[]): QueueEntry[] {
-  const rank = (s: QueueStatus) => (s === 'CONFLICT' ? 0 : s === 'FAILED' ? 1 : s === 'SYNCED' ? 3 : 2);
-  return [...entries].sort((a, b) => rank(a.status) - rank(b.status) || a.createdAt.localeCompare(b.createdAt));
+  const rank = (e: QueueEntry) => (e.status === 'CONFLICT' ? 0 : e.status === 'FAILED' ? 1 : isRejectedHandover(e) ? 1 : e.status === 'SYNCED' ? 3 : 2);
+  return [...entries].sort((a, b) => rank(a) - rank(b) || a.createdAt.localeCompare(b.createdAt));
 }
 
 export function attentionCount(counts: { failedCount: number; conflictCount: number }): number {

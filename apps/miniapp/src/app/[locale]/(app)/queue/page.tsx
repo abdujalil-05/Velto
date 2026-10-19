@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslations } from 'next-intl';
 import { toast } from 'sonner';
@@ -9,8 +9,9 @@ import { useRouter } from '@/i18n/navigation';
 import { useTelegramBackButton } from '@/lib/hooks/use-telegram-back-button';
 import { useSyncEngine } from '@/lib/offline/sync-engine';
 import { queueRepository } from '@/lib/offline/queue';
+import { isAwaitingHandover, refreshHandoverDecisions } from '@/lib/offline/handover-sync';
 import { useOfflineCustomers, useOfflineOutlets, useOfflineProducts } from '@/lib/offline/use-offline-data';
-import { downloadJson, entryDisplayName, exportFileName, sortQueueForScreen } from '@/lib/offline/queue-view';
+import { downloadJson, entryDisplayName, exportFileName, needsAttention, sortQueueForScreen } from '@/lib/offline/queue-view';
 import { ConfirmSheet } from '@/components/shared/confirm-sheet';
 import { QueueItemCard } from '@/components/queue/queue-item-card';
 import { LogoutButton } from '@/components/queue/logout-button';
@@ -40,10 +41,20 @@ export default function QueuePage() {
   const products = useOfflineProducts();
 
   const productName = useCallback((id: string) => products.data?.find((p) => p.id === id)?.name ?? '—', [products.data]);
+  // Learn the cashier's decision (POSTED/REJECTED) for payments still waiting on handover — online only.
+  const awaitingHandover = (entries.data ?? []).some(isAwaitingHandover);
+  const { refetch: refetchEntries } = entries;
+  useEffect(() => {
+    if (!engine.isOnline || !awaitingHandover) return;
+    void refreshHandoverDecisions()
+      .then((changed) => { if (changed) void refetchEntries(); })
+      .catch(() => undefined); // best effort; the next online visit retries
+  }, [engine.isOnline, awaitingHandover, refetchEntries]);
+
   const rows = sortQueueForScreen(entries.data ?? []);
-  const attention = rows.filter((e) => e.status === 'FAILED' || e.status === 'CONFLICT');
+  const attention = rows.filter(needsAttention);
   const waiting = rows.filter((e) => e.status === 'PENDING' || e.status === 'SYNCING');
-  const synced = rows.filter((e) => e.status === 'SYNCED');
+  const synced = rows.filter((e) => e.status === 'SYNCED' && !needsAttention(e));
 
   function refresh() {
     void entries.refetch();

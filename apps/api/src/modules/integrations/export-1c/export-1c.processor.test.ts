@@ -168,11 +168,13 @@ describe('Export1cProcessor (integration, real Postgres + RLS)', () => {
     const { customerId } = await seedFixtures(companyId, { withExternalCode: true });
     const postedNo = (await tenantPrisma.run(companyId, (tx) => tx.payment.findFirstOrThrow({ where: { status: 'POSTED' } }))).number;
     const reversedNo = `PAY-REV-${randomUUID().slice(0, 8)}`;
-    await tenantPrisma.run(companyId, (tx) =>
-      tx.payment.create({
-        data: { companyId, number: reversedNo, customerId, amount: '777', method: PaymentMethod.CASH, status: 'REVERSED' },
-      }),
-    );
+    await tenantPrisma.run(companyId, async (tx) => {
+      // DB triggers: insert POSTED only; REVERSED only after its PaymentReversal row.
+      const p = await tx.payment.create({ data: { companyId, number: reversedNo, customerId, amount: '777', method: PaymentMethod.CASH } });
+      const actor = await tx.user.create({ data: { companyId, firstName: 'Rev', lastName: 'Actor', phone: `+99896${Math.floor(1_000_000 + Math.random() * 8_999_999)}` } });
+      await tx.paymentReversal.create({ data: { companyId, reversesPaymentId: p.id, reason: 'test', actorId: actor.id } });
+      await tx.payment.update({ where: { id: p.id }, data: { status: 'REVERSED' } });
+    });
 
     const xmlUpload = vi.fn().mockResolvedValue('https://storage.test/f.xml');
     await new Export1cProcessor(tenantPrisma, { upload: xmlUpload } as unknown as StorageService).process(

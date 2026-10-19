@@ -6,14 +6,20 @@ import { toast } from 'sonner';
 import { CreditCard, Plus, RefreshCw, Wallet } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
-import { errorMessage } from '@/lib/api/client';
+import { ApiError, errorMessage } from '@/lib/api/client';
 import {
   useCashSessionsQuery,
   useCloseCashSessionMutation,
   useCurrentCashSessionQuery,
   useOpenCashSessionMutation,
 } from '@/lib/api/cash-sessions';
-import { usePaymentsQuery, useReversePaymentMutation, type Payment } from '@/lib/api/payments';
+import {
+  usePaymentsQuery,
+  useReversePaymentMutation,
+  useAcceptHandoverMutation,
+  useRejectHandoverMutation,
+  type Payment,
+} from '@/lib/api/payments';
 import { useCustomersQuery, type Customer } from '@/lib/api/customers';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
 import { useSort } from '@/lib/hooks/use-sort';
@@ -41,7 +47,7 @@ export default function CashPage() {
     <div className="space-y-8">
       <h1 className="text-xl font-semibold">{t('title')}</h1>
       {hasPermission('cash.read') && <CashSection />}
-      {hasPermission('payments.read') && <PaymentsSection canCreate={hasPermission('payments.create')} canReverse={hasPermission('payments.reverse')} />}
+      {hasPermission('payments.read') && <PaymentsSection canCreate={hasPermission('payments.create')} canReverse={hasPermission('payments.reverse')} canHandover={hasPermission('payments.handover')} />}
     </div>
   );
 }
@@ -72,7 +78,7 @@ function CashSection() {
   }
 
   return (
-    <section className="space-y-4">
+    <section id="cash-session" className="space-y-4">
       <Card className="mx-auto max-w-xl">
         <CardHeader>
           <CardTitle>{current.data ? t('closeForm.title') : t('openForm.title')}</CardTitle>
@@ -182,7 +188,7 @@ function CashSection() {
   );
 }
 
-function PaymentsSection({ canCreate, canReverse }: { canCreate: boolean; canReverse: boolean }) {
+function PaymentsSection({ canCreate, canReverse, canHandover }: { canCreate: boolean; canReverse: boolean; canHandover: boolean }) {
   const t = useTranslations('Payments');
   const locale = useLocale();
   const [reverseTarget, setReverseTarget] = useState<Payment | null>(null);
@@ -190,6 +196,18 @@ function PaymentsSection({ canCreate, canReverse }: { canCreate: boolean; canRev
   const reverseMutation = useReversePaymentMutation();
   // One key per reversal attempt, reused on retry until the server accepts it.
   const reverseKey = useRef<string | null>(null);
+  const acceptMutation = useAcceptHandoverMutation();
+  const rejectMutation = useRejectHandoverMutation();
+  const [rejectTarget, setRejectTarget] = useState<Payment | null>(null);
+  const [rejectError, setRejectError] = useState<string | null>(null);
+  const [handoverError, setHandoverError] = useState<{ code: string; message: string } | null>(null);
+  // One key per payment+action, reused on retry until the server accepts it.
+  const handoverKeys = useRef<Map<string, string>>(new Map());
+  const handoverKey = (action: string, id: string) => {
+    const k = `${action}:${id}`;
+    if (!handoverKeys.current.has(k)) handoverKeys.current.set(k, crypto.randomUUID());
+    return handoverKeys.current.get(k)!;
+  };
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [customerQuery, setCustomerQuery] = useState('');
   const [page, setPage] = useState(1);
@@ -282,6 +300,19 @@ function PaymentsSection({ canCreate, canReverse }: { canCreate: boolean; canRev
         </Alert>
       )}
 
+      {handoverError && (
+        <Alert variant="destructive">
+          <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+            <span>{handoverError.message}</span>
+            {handoverError.code === 'PAYMENT_HANDOVER_CASH_SESSION_NOT_OPEN' && (
+              <Link href="/cash#cash-session" className="font-medium underline">
+                {t('handover.openSession')}
+              </Link>
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
+
       {data && data.data.length === 0 && (
         <Card>
           <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
@@ -299,6 +330,26 @@ function PaymentsSection({ canCreate, canReverse }: { canCreate: boolean; canRev
               sort={sort}
               onSort={toggleSort}
               canReverse={canReverse}
+              canHandover={canHandover}
+              acceptingId={acceptMutation.isPending ? acceptMutation.variables?.id : null}
+              onAccept={(payment) => {
+                setHandoverError(null);
+                acceptMutation.mutate(
+                  { id: payment.id, idempotencyKey: handoverKey('accept', payment.id) },
+                  {
+                    onSuccess: () => {
+                      handoverKeys.current.delete(`accept:${payment.id}`);
+                      toast.success(t('handover.acceptSuccess'));
+                    },
+                    onError: (err) =>
+                      setHandoverError({ code: err instanceof ApiError ? err.code : '', message: errorMessage(err, locale) }),
+                  },
+                );
+              }}
+              onReject={(payment) => {
+                setRejectError(null);
+                setRejectTarget(payment);
+              }}
               onReverse={(payment) => {
                 reverseKey.current = null;
                 setReverseError(null);
@@ -308,6 +359,32 @@ function PaymentsSection({ canCreate, canReverse }: { canCreate: boolean; canRev
             <PaginationBar meta={data.meta} onPageChange={setPage} />
           </CardContent>
         </Card>
+      )}
+      {rejectTarget && (
+        <ReverseDialog
+          key={`reject-${rejectTarget.id}`}
+          open
+          onOpenChange={(open) => !open && setRejectTarget(null)}
+          title={t('handover.rejectTitle', { number: rejectTarget.number })}
+          description={t('handover.rejectDescription')}
+          confirmLabel={t('handover.reject')}
+          error={rejectError}
+          isPending={rejectMutation.isPending}
+          onConfirm={(reason) => {
+            setRejectError(null);
+            rejectMutation.mutate(
+              { id: rejectTarget.id, reason, idempotencyKey: handoverKey('reject', rejectTarget.id) },
+              {
+                onSuccess: () => {
+                  handoverKeys.current.delete(`reject:${rejectTarget.id}`);
+                  setRejectTarget(null);
+                  toast.success(t('handover.rejectSuccess'));
+                },
+                onError: (err) => setRejectError(errorMessage(err, locale)),
+              },
+            );
+          }}
+        />
       )}
       {reverseTarget && (
         <ReverseDialog

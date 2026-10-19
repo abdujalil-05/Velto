@@ -1,3 +1,4 @@
+import type { PaymentStatus } from '@/lib/api/payments';
 import type { SyncDocType } from '@/lib/api/sync';
 import { db, QUEUE_SEQ_KEY } from './db';
 import { EncryptedStore } from './encrypted-store';
@@ -55,6 +56,9 @@ export interface QueueEntry {
   lastError?: QueueError;
   /** Server id (order/visit/payment) once ACKed. */
   serverId?: string;
+  /** Payment entries: server status from the push ACK / later reconcile (ADR-029). */
+  paymentStatus?: PaymentStatus;
+  handoverRejectReason?: string;
   userId?: string;
   companyId?: string;
 }
@@ -263,8 +267,17 @@ export async function releaseStaleSyncing(): Promise<number> {
   return stale.length;
 }
 
-export async function markSynced(clientId: string, serverId?: string): Promise<void> {
-  await update(clientId, (e) => ({ ...e, status: 'SYNCED', serverId: serverId ?? e.serverId, lastError: undefined, nextAttemptAt: undefined }));
+export async function markSynced(clientId: string, serverId?: string, paymentStatus?: PaymentStatus): Promise<void> {
+  await update(clientId, (e) => ({ ...e, status: 'SYNCED', serverId: serverId ?? e.serverId, paymentStatus: paymentStatus ?? e.paymentStatus, lastError: undefined, nextAttemptAt: undefined }));
+}
+
+/** Cashier outcome learned online (GET /payments): updates only own SYNCED payment rows whose status changed. */
+export async function applyHandoverStatus(serverId: string, status: PaymentStatus, rejectReason?: string | null): Promise<boolean> {
+  const s = getOfflineSession();
+  const row = (await readAll()).find((e) => e.type === 'payment' && e.serverId === serverId && ownedBy(e, s));
+  if (!row || (row.paymentStatus === status && row.handoverRejectReason === (rejectReason ?? undefined))) return false;
+  await update(row.clientId, (e) => ({ ...e, paymentStatus: status, handoverRejectReason: rejectReason ?? undefined }));
+  return true;
 }
 
 export async function markFailed(clientId: string, error: QueueError): Promise<void> {
@@ -524,6 +537,7 @@ export const queueRepository = {
   releaseUnsent,
   releaseStaleSyncing,
   markSynced,
+  applyHandoverStatus,
   markFailed,
   markConflict,
   markRetry,
