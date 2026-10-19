@@ -1,4 +1,4 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, Optional } from '@nestjs/common';
 import {
   DEFAULT_REPORT_MAX_CONCURRENCY,
   DEFAULT_REPORT_QUEUE_MAX,
@@ -7,6 +7,7 @@ import {
 import { AppException } from '../errors/app-exception';
 
 export const REPORT_RETRY_AFTER_SECONDS = 2;
+export const REPORT_LIMITER_OPTIONS = Symbol('REPORT_LIMITER_OPTIONS');
 
 export class ReportBusyException extends AppException {
   constructor() {
@@ -53,7 +54,7 @@ export class ReportConcurrencyLimiter {
   private active = 0;
   private readonly queue: Waiter[] = [];
 
-  constructor(opts?: Partial<ReportLimiterOptions>) {
+  constructor(@Optional() @Inject(REPORT_LIMITER_OPTIONS) opts?: Partial<ReportLimiterOptions>) {
     this.opts = { ...reportLimiterOptionsFromEnv(), ...opts };
   }
 

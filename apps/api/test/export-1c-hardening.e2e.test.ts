@@ -273,7 +273,7 @@ describe('E2E F5.3: 1C export hardening', () => {
   });
 
   describe('period rule + throttle + recovery sweep (ADR-030)', () => {
-    const dayOffset = (n: number) => new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
+    const dayOffset = (n: number) => new Date(Date.now() + n * 86_400_000).toLocaleDateString('en-CA', { timeZone: 'Asia/Tashkent' });
 
     it('period ending today or in the future => 400 EXPORT_PERIOD_NOT_CLOSED; nothing created', async () => {
       for (const to of [dayOffset(0), dayOffset(1), dayOffset(30)]) {
