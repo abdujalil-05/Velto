@@ -11,7 +11,6 @@ import { toExportJobView } from './dto/export-job.view';
 import { ListExportsQueryDto } from './dto/list-exports.query';
 import { Export1cAckService } from './export-1c-ack.service';
 import { Export1cDownloadService } from './export-1c-download.service';
-import { Export1cLimitsService } from './export-1c-limits.service';
 import { Export1cService } from './export-1c.service';
 
 const PER_MINUTE = 60_000;
@@ -22,7 +21,6 @@ export class Export1cController {
     private readonly export1c: Export1cService,
     private readonly ack: Export1cAckService,
     private readonly downloads: Export1cDownloadService,
-    private readonly limits: Export1cLimitsService,
   ) {}
 
   @Post()
@@ -30,7 +28,6 @@ export class Export1cController {
   @Throttle({ default: { limit: 5, ttl: PER_MINUTE } })
   @Idempotent()
   async create(@Body() dto: CreateExportDto, @CurrentUser() user: AuthenticatedUser) {
-    await this.limits.assertCanCreate();
     return toExportJobView(await this.export1c.create(dto, user));
   }
 

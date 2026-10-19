@@ -3,6 +3,7 @@ import type { Readable } from 'node:stream';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { TenantContext } from '../tenant/tenant-context';
 
 export interface UploadFileInput {
   buffer: Buffer;
@@ -59,6 +60,10 @@ export class StorageService {
   }
 
   async getObject(key: string): Promise<{ stream: Readable; size?: number }> {
+    // Defence in depth: reads are confined to the current tenant's export prefix (also blocks '..' traversal).
+    if (!key.startsWith(`exports/1c/${TenantContext.companyId}/`) || key.split('/').includes('..')) {
+      throw new Error('Storage key is outside the current tenant prefix');
+    }
     const res = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
     return { stream: res.Body as Readable, size: res.ContentLength };
   }

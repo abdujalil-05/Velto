@@ -1668,6 +1668,7 @@
     "unread": "Unread"
   },
   "Export1c": {
+    "legacyNoChecksum": "This is a legacy export — re-export to confirm/download",
     "title": "1C export",
     "subtitle": "Generate accounting files for 1C by period, download them and confirm the result.",
     "refresh": "Refresh",

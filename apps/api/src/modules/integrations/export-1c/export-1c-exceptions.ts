@@ -65,3 +65,13 @@ export class ExportActiveLimitException extends AppException {
     );
   }
 }
+
+export class ExportLegacyNoChecksumException extends AppException {
+  constructor() {
+    super(HttpStatus.CONFLICT, 'EXPORT_LEGACY_NO_CHECKSUM', {
+      uz: "Bu eski eksport — tasdiqlash/yuklash uchun qayta eksport qiling",
+      ru: 'Это устаревший экспорт — для подтверждения/скачивания выполните экспорт заново',
+      en: 'This is a legacy export — re-export to confirm/download',
+    });
+  }
+}

@@ -8,6 +8,7 @@ import { CustomersService } from '../../modules/customers/customers.service';
 import { PaymentExportedTo1cException } from '../../modules/finance/finance-exceptions';
 import { PaymentsService } from '../../modules/finance/payments/payments.service';
 import { Export1cService } from '../../modules/integrations/export-1c/export-1c.service';
+import type { Export1cLimitsService } from '../../modules/integrations/export-1c/export-1c-limits.service';
 import { StockService } from '../../modules/stock/stock.service';
 import { lockExport1cExclusive } from './export1c-lock';
 
@@ -22,7 +23,7 @@ describe('export1c advisory lock (ADR-025, real Postgres + RLS)', () => {
   const customers = new CustomersService(tenantPrisma, auditLog);
   const payments = new PaymentsService(tenantPrisma, auditLog, customers, new DocumentNumberingService());
   const fakeQueue = { add: async () => ({}) } as never;
-  const export1c = new Export1cService(tenantPrisma, fakeQueue, auditLog);
+  const export1c = new Export1cService(tenantPrisma, fakeQueue, auditLog, { assertCanCreate: async () => undefined } as unknown as Export1cLimitsService);
   const stock = new StockService(tenantPrisma, auditLog);
   const DAY = 24 * 3600 * 1000;
   // 1C export periods must end yesterday (Asia/Tashkent): the payment is posted "yesterday", the period is that one day.

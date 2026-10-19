@@ -4,7 +4,7 @@ import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import { ExportJobNotFoundException } from '../integrations-exceptions';
 import type { AckExportDto } from './dto/ack-export.dto';
-import { ExportAckChecksumMismatchException, ExportAckNoteRequiredException, ExportAckNotAllowedException } from './export-1c-exceptions';
+import { ExportAckChecksumMismatchException, ExportLegacyNoChecksumException, ExportAckNoteRequiredException, ExportAckNotAllowedException } from './export-1c-exceptions';
 
 /** ADR-030: one-shot manual ACK GENERATED -> ACCOUNTING_ACCEPTED | FAILED_REVIEW (DB trigger + CHECKs back this up). */
 @Injectable()
@@ -22,7 +22,8 @@ export class Export1cAckService {
     const note = dto.note?.trim() ?? '';
     if (dto.result === 'REJECTED' && note.length < 3) throw new ExportAckNoteRequiredException();
     if (job.status !== 'GENERATED') throw new ExportAckNotAllowedException(job.status);
-    if (!job.fileHash || dto.checksum.toLowerCase() !== job.fileHash) throw new ExportAckChecksumMismatchException();
+    if (!job.fileHash) throw new ExportLegacyNoChecksumException();
+    if (dto.checksum.toLowerCase() !== job.fileHash) throw new ExportAckChecksumMismatchException();
 
     const status = dto.result === 'ACCEPTED' ? 'ACCOUNTING_ACCEPTED' : 'FAILED_REVIEW';
     const now = new Date();

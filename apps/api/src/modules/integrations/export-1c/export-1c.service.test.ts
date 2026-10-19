@@ -9,6 +9,8 @@ import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.servic
 import { ExportJobNotFoundException, ExportPeriodNotClosedException, InvalidExportPeriodException } from '../integrations-exceptions';
 import type { Export1cJobData } from './export-1c.constants';
 import { Export1cService } from './export-1c.service';
+import { ExportActiveLimitException } from './export-1c-exceptions';
+import { Export1cLimitsService } from './export-1c-limits.service';
 
 describe('Export1cService (integration, real Postgres + RLS)', () => {
   let companyId: string;
@@ -17,7 +19,8 @@ describe('Export1cService (integration, real Postgres + RLS)', () => {
   const tenantPrisma = new TenantPrismaService();
   const queueAdd = vi.fn().mockResolvedValue(undefined);
   const fakeQueue = { add: queueAdd } as unknown as Queue<Export1cJobData>;
-  const export1c = new Export1cService(tenantPrisma, fakeQueue, new AuditLogService());
+  const export1c = new Export1cService(tenantPrisma, fakeQueue, new AuditLogService(), { assertCanCreate: async () => undefined } as unknown as Export1cLimitsService); // limit covered by its own test below
+  const limited = new Export1cService(tenantPrisma, fakeQueue, new AuditLogService(), new Export1cLimitsService(tenantPrisma));
 
   beforeAll(async () => {
     const tenant = await systemPrisma.tenant.create({
@@ -112,5 +115,20 @@ describe('Export1cService (integration, real Postgres + RLS)', () => {
     await expect(tenantPrisma.run(companyId, () => export1c.getById(randomUUID()))).rejects.toBeInstanceOf(
       ExportJobNotFoundException,
     );
+  });
+
+  it('parallel creates (distinct periods) never exceed the active limit: <= 3 jobs, the rest 429', async () => {
+    const tenant = await systemPrisma.tenant.create({ data: { slug: `test-export1c-lim-${Date.now()}`, name: 'Export1c Limit Tenant' } });
+    const co = (await systemPrisma.company.create({ data: { tenantId: tenant.id, name: 'Export1c Limit Co' } })).id;
+    const u = await systemPrisma.user.create({ data: { companyId: co, firstName: 'L', lastName: 'Im', phone: `+99890${Math.floor(1_000_000 + Math.random() * 8_000_000)}` } });
+    const limUser: AuthenticatedUser = { ...user, id: u.id, companyId: co };
+    const results = await Promise.allSettled(
+      [1, 2, 3, 4, 5, 6].map((d) => tenantPrisma.run(co, () => limited.create({ from: `2026-05-0${d}`, to: `2026-05-0${d}` }, limUser))),
+    );
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(3);
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(rejected).toHaveLength(3);
+    expect(rejected.every((r) => r.reason instanceof ExportActiveLimitException)).toBe(true);
+    expect(await tenantPrisma.run(co, (tx) => tx.exportJob.count())).toBe(3);
   });
 });

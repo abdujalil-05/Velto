@@ -1668,6 +1668,7 @@
     "unread": "O'qilmagan"
   },
   "Export1c": {
+    "legacyNoChecksum": "Bu eski eksport — tasdiqlash/yuklash uchun qayta eksport qiling",
     "title": "1C eksport",
     "subtitle": "Davr bo'yicha 1C uchun fayl yarating, yuklab oling va natijani tasdiqlang.",
     "refresh": "Yangilash",

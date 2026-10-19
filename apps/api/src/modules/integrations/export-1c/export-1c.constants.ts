@@ -26,3 +26,9 @@ export const EXPORT_1C_SWEEP_INTERVAL_MS = 5 * 60_000;
 export function export1cStorageKey(companyId: string, jobId: string, extension: string): string {
   return `exports/1c/${companyId}/${jobId}.${extension}`;
 }
+
+/** QUEUED job untouched this long is considered orphaned (enqueue lost) and is re-enqueued by the sweep. */
+export const EXPORT_1C_STALE_QUEUED_MS = 15 * 60_000;
+
+/** An orphaned QUEUED job older than this is failed (frees the active-job limit). */
+export const EXPORT_1C_ABANDONED_QUEUED_MS = 60 * 60_000;

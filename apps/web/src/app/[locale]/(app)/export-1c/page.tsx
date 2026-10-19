@@ -333,13 +333,14 @@ export default function Export1cPage() {
                         </td>
                         <td className="py-2">
                           <div className="flex flex-wrap justify-end gap-2">
-                            {canDownload && (
+                            {canDownload && !job.fileHash && <p className="max-w-xs text-xs text-muted-foreground">{t('legacyNoChecksum')}</p>}
+                            {canDownload && job.fileHash && (
                               <Button variant="outline" size="sm" className="min-h-12" onClick={() => handleDownload(job)} disabled={downloadingId === job.id}>
                                 {downloadingId === job.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
                                 {t('download')}
                               </Button>
                             )}
-                            {canAck && job.status === 'GENERATED' && (
+                            {canAck && job.status === 'GENERATED' && job.fileHash && (
                               <>
                                 <Button size="sm" className="min-h-12" onClick={() => openAck(job, 'ACCEPTED')}>
                                   {t('ack.accept')}

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import type { Job } from 'bullmq';
@@ -299,7 +299,7 @@ describe('E2E F5.3: 1C export hardening', () => {
         });
       const stale = await make(16 * 60_000);
       const fresh = await make(14 * 60_000);
-      const sweeper = new Export1cRecoveryService(tenantPrisma);
+      const sweeper = new Export1cRecoveryService(tenantPrisma, { add: vi.fn().mockResolvedValue(undefined) } as never);
       expect(await sweeper.sweep()).toBeGreaterThanOrEqual(1);
       const s = await dbJob(companyP, stale);
       expect(s.status).toBe('FAILED');
@@ -307,6 +307,28 @@ describe('E2E F5.3: 1C export hardening', () => {
       expect((await dbJob(companyP, fresh)).status).toBe('PROCESSING');
       await sweeper.sweep();
       expect((await dbJob(companyP, stale)).status).toBe('FAILED');
+    });
+
+    it('sweep: orphaned QUEUED (>15 min) is re-enqueued with jobId export-{id}; a fresh QUEUED is not; >1h + enqueue failure => FAILED', async () => {
+      const make = async (ageMs: number) =>
+        tenantPrisma.run(companyP, async (tx) => {
+          const j = await tx.exportJob.create({ data: { companyId: companyP, type: '1c', format: 'CSV', ...nowPeriod() } });
+          await tx.exportJob.update({ where: { id: j.id }, data: { updatedAt: new Date(Date.now() - ageMs) } });
+          return j.id;
+        });
+      const orphan = await make(20 * 60_000);
+      const fresh = await make(5 * 60_000);
+      const add = vi.fn().mockResolvedValue(undefined);
+      await new Export1cRecoveryService(tenantPrisma, { add } as never).sweep();
+      const ids = add.mock.calls.map((c) => c[2]?.jobId);
+      expect(ids).toContain(`export-${orphan}`);
+      expect(ids).not.toContain(`export-${fresh}`);
+      expect((await dbJob(companyP, orphan)).status).toBe('QUEUED');
+
+      const dead = await make(2 * 3_600_000);
+      await new Export1cRecoveryService(tenantPrisma, { add: vi.fn().mockRejectedValue(new Error('redis down')) } as never).sweep();
+      expect((await dbJob(companyP, dead)).status).toBe('FAILED');
+      expect((await dbJob(companyP, orphan)).status).toBe('QUEUED'); // young enough: kept for the next sweep
     });
   });
 

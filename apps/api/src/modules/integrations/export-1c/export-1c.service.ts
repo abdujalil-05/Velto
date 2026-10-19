@@ -12,6 +12,7 @@ import { AuditLogService, toAuditJson } from '../../../common/audit/audit-log.se
 import { addTracedJob } from '../../../common/queue/trace-job';
 import { lockExport1cExclusive } from '../../../common/locks/export1c-lock';
 import { companyDay } from '../../field/company-day';
+import { Export1cLimitsService } from './export-1c-limits.service';
 import { EXPORT_1C_JOB_OPTS, EXPORT_1C_QUEUE, type Export1cJobData } from './export-1c.constants';
 
 /** 11.1: "Buxgalter /export/1c'da davrni tanlaydi -> fayl BullMQ orqali fon rejimida generatsiya qilinadi -> yuklab olinadi." */
@@ -21,6 +22,7 @@ export class Export1cService {
     private readonly tenantPrisma: TenantPrismaService,
     @InjectQueue(EXPORT_1C_QUEUE) private readonly queue: Queue<Export1cJobData>,
     private readonly auditLog: AuditLogService,
+    private readonly limits: Export1cLimitsService,
   ) {}
 
   async create(dto: CreateExportDto, user: AuthenticatedUser) {
@@ -36,6 +38,7 @@ export class Export1cService {
     if (periodFrom > periodTo) throw new InvalidExportPeriodException();
 
     await lockExport1cExclusive(); // ADR-025: serialize with payments.reverse() (shared)
+    await this.limits.assertCanCreate(); // after the lock: parallel creates cannot exceed the active limit
     const job = await tx.exportJob.create({
       data: {
         companyId: user.companyId,

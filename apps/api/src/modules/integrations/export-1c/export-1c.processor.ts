@@ -67,10 +67,10 @@ export class Export1cProcessor extends WorkerHost {
     // Idempotency: only a QUEUED job is picked up. Redelivery of a job that is
     // already PROCESSING/GENERATED/FAILED (or acknowledged) is a no-op.
     const exportJob = await this.tenantPrisma.run(companyId, async (tx) => {
-      const found = await tx.exportJob.findFirst({ where: { id: exportJobId } });
-      if (!found || found.status !== 'QUEUED') return null;
-      await tx.exportJob.update({ where: { id: exportJobId }, data: { status: 'PROCESSING', attemptCount: { increment: 1 } } });
-      return found;
+      // Atomic compare-and-set: of two workers / a redelivery only one wins and bumps attemptCount.
+      const { count } = await tx.exportJob.updateMany({ where: { id: exportJobId, status: 'QUEUED' }, data: { status: 'PROCESSING', attemptCount: { increment: 1 } } });
+      if (count !== 1) return null;
+      return tx.exportJob.findFirst({ where: { id: exportJobId } });
     });
     if (!exportJob) return;
 
@@ -91,9 +91,10 @@ export class Export1cProcessor extends WorkerHost {
       await this.storage.putObject({ key: storageKey, buffer, mimeType });
       const fileHash = createHash('sha256').update(buffer).digest('hex');
 
+      // Guarded: if the sweep already FAILED this job, write nothing (the deterministic key is overwritten by a later export of the same job id; none exists).
       await this.tenantPrisma.run(companyId, (tx) =>
-        tx.exportJob.update({
-          where: { id: exportJobId },
+        tx.exportJob.updateMany({
+          where: { id: exportJobId, status: 'PROCESSING' },
           data: {
             status: 'GENERATED',
             storageKey,

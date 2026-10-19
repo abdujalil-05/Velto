@@ -6,7 +6,7 @@ import { StorageService } from '../../../common/storage/storage.service';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import { CSV_MIME, XLSX_MIME } from '../../analytics/report-export';
 import { ExportJobNotFoundException } from '../integrations-exceptions';
-import { ExportNotDownloadableException } from './export-1c-exceptions';
+import { ExportLegacyNoChecksumException, ExportNotDownloadableException } from './export-1c-exceptions';
 
 const DOWNLOADABLE = ['GENERATED', 'ACCOUNTING_ACCEPTED', 'FAILED_REVIEW'];
 const MIME = { EXCEL: XLSX_MIME, CSV: CSV_MIME, XML: 'application/xml; charset=utf-8' } as const;
@@ -32,7 +32,8 @@ export class Export1cDownloadService {
     const tx = this.tenantPrisma.client;
     const job = await tx.exportJob.findFirst({ where: { id, type: '1c' } }); // RLS: other tenant => null
     if (!job) throw new ExportJobNotFoundException();
-    if (!DOWNLOADABLE.includes(job.status) || !job.storageKey || !job.fileHash) throw new ExportNotDownloadableException(job.status);
+    if (!DOWNLOADABLE.includes(job.status) || !job.storageKey) throw new ExportNotDownloadableException(job.status);
+    if (!job.fileHash) throw new ExportLegacyNoChecksumException();
 
     const { stream, size } = await this.storage.getObject(job.storageKey);
     await this.auditLog.log(tx, {
