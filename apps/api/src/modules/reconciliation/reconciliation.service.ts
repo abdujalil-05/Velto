@@ -105,6 +105,8 @@ export class ReconciliationService {
         companyId,
         (tx) => this.detect(tx, opts),
         RECONCILIATION_TX_OPTIONS,
+        // Manual run is called from inside the request tx (see ReconciliationAdminService.runManual); migrate to handler scope later.
+        { allowNested: true },
       );
     } catch (e) {
       if (

@@ -1,10 +1,31 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { TenantClient } from '@velto/database';
 
-interface TenantStore {
+export interface TenantStore {
   companyId: string;
-  tx: TenantClient;
+  /** Throws (fail-closed) for a handler-scope store, which has no open transaction. */
+  readonly tx: TenantClient;
   afterCommit: Array<() => unknown>;
+  /** True only while a tenant transaction is open on this async chain. */
+  readonly txActive?: boolean;
+}
+
+const NO_TX_MESSAGE =
+  "No open tenant transaction: this route is @TenantTx({ scope: 'handler' }); " +
+  'open one with TenantPrismaService.run(companyId, fn) (fail-closed, no bare Prisma).';
+
+/** Store for @TenantTx({ scope: 'handler' }) routes: companyId known, no tx, any tx access throws. */
+export function handlerScopeStore(companyId: string): TenantStore {
+  return {
+    companyId,
+    txActive: false,
+    get tx(): TenantClient {
+      throw new Error(NO_TX_MESSAGE);
+    },
+    get afterCommit(): Array<() => unknown> {
+      throw new Error(NO_TX_MESSAGE);
+    },
+  };
 }
 
 const als = new AsyncLocalStorage<TenantStore>();
@@ -20,6 +41,11 @@ const als = new AsyncLocalStorage<TenantStore>();
 export const TenantContext = {
   run<T>(store: TenantStore, fn: () => T): T {
     return als.run(store, fn);
+  },
+
+  /** The active store if any (no throw). */
+  peek(): TenantStore | undefined {
+    return als.getStore();
   },
 
   get current(): TenantStore {

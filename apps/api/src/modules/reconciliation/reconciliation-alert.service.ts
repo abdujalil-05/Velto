@@ -71,6 +71,6 @@ export class ReconciliationAlertService {
         sent++;
       }
       return sent;
-    });
+    }, undefined, { allowNested: true }); // called from the request tx in runManual; migrate to handler scope later
   }
 }

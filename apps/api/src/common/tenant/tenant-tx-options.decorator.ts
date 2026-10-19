@@ -9,4 +9,15 @@ export const TENANT_TX_OPTIONS_KEY = 'tenantTxOptions';
  * must write a large, all-or-nothing batch in ONE transaction (opening balance
  * post/void, ≤5000 rows) raise it.
  */
-export const TenantTx = (options: TenantTxOptions) => SetMetadata(TENANT_TX_OPTIONS_KEY, options);
+export type TenantTxScope = 'request' | 'handler';
+export type TenantTxRouteOptions = TenantTxOptions & {
+  /**
+   * 'request' (default): one tx spans the whole handler. 'handler': the
+   * interceptor authenticates/authorizes in a short tx, COMMITs, then runs the
+   * handler with NO open tx; the handler opens its own short
+   * `tenantPrisma.run()` txs (nested `run` is forbidden).
+   */
+  scope?: TenantTxScope;
+};
+
+export const TenantTx = (options: TenantTxRouteOptions) => SetMetadata(TENANT_TX_OPTIONS_KEY, options);
