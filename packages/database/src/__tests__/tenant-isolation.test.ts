@@ -111,7 +111,7 @@ describe('tenant isolation (RLS)', () => {
 
     const period = { periodFrom: new Date(), periodTo: new Date() };
     await withTenant(companyAId, (tx) =>
-      tx.exportJob.create({ data: { companyId: companyAId, type: '1c', format: 'XML', status: 'PENDING', ...period } }),
+      tx.exportJob.create({ data: { companyId: companyAId, type: '1c', format: 'XML', ...period } }),
     );
 
     await withTenant(companyAId, (tx) =>
@@ -272,7 +272,8 @@ describe('tenant isolation (RLS)', () => {
     // the constraint. CI runs against a throwaway database per run anyway.
     await systemPrisma.rolePermission.deleteMany({ where: { permissionId } });
     await systemPrisma.role.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
-    await systemPrisma.exportJob.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
+    // F5.3: ExportJob rows are undeletable (DB trigger, export evidence) and
+    // left behind like the AuditLog row.
     await systemPrisma.documentCounter.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
     await systemPrisma.notification.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
     await systemPrisma.idempotencyRecord.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
@@ -1681,18 +1682,17 @@ describe('tenant isolation (RLS)', () => {
     const CROSS = /cross-tenant reference/i;
     const UNIQUE = /Unique constraint|unique/i;
     const HASH = 'a'.repeat(64);
-    const exportData = (companyId: string, over: Record<string, unknown> = {}) => ({
+    type ExportOver = { format?: 'XML' | 'EXCEL' | 'CSV'; requestedBy?: string; periodFrom?: Date; periodTo?: Date };
+    const exportData = (companyId: string, over: ExportOver = {}) => ({
       companyId,
       type: '1c',
-      format: 'XML',
+      format: 'XML' as const,
       periodFrom: new Date('2031-01-01T00:00:00Z'),
       periodTo: new Date('2031-01-31T23:59:59Z'),
-      status: 'PENDING',
       ...over,
     });
 
     afterAll(async () => {
-      await systemPrisma.exportJob.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
       await systemPrisma.importJob.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
     });
 
@@ -1708,7 +1708,7 @@ describe('tenant isolation (RLS)', () => {
       const done = await withTenant(companyAId, (tx) =>
         tx.exportJob.update({
           where: { id: job.id },
-          data: { status: 'DONE', fileHash: HASH, recordCount: 0, mappingVersion: 1, attemptCount: 1 },
+          data: { status: 'PROCESSING', fileHash: HASH, recordCount: 0, mappingVersion: 1, attemptCount: 1 },
         }),
       );
       expect(done.fileHash).toBe(HASH);
@@ -1742,7 +1742,7 @@ describe('tenant isolation (RLS)', () => {
       ).rejects.toThrow(CROSS);
     });
 
-    it('at most one active (PENDING/PROCESSING) export per company+type+format+period; DONE/FAILED never block', async () => {
+    it('at most one active (QUEUED/PROCESSING) export per company+type+format+period; GENERATED/FAILED never block', async () => {
       const key = { periodFrom: new Date('2031-02-01T00:00:00Z'), periodTo: new Date('2031-02-28T23:59:59Z') };
       const first = await withTenant(companyAId, (tx) => tx.exportJob.create({ data: exportData(companyAId, key) }));
 
@@ -1751,16 +1751,22 @@ describe('tenant isolation (RLS)', () => {
       ).rejects.toThrow(UNIQUE);
       await withTenant(companyAId, (tx) => tx.exportJob.update({ where: { id: first.id }, data: { status: 'PROCESSING' } }));
       await expect(
-        withTenant(companyAId, (tx) => tx.exportJob.create({ data: exportData(companyAId, { ...key, status: 'PROCESSING' }) })),
+        withTenant(companyAId, (tx) => tx.exportJob.create({ data: exportData(companyAId, key) })),
       ).rejects.toThrow(UNIQUE);
 
       // Other format and other tenant are independent keys.
       await withTenant(companyAId, (tx) => tx.exportJob.create({ data: exportData(companyAId, { ...key, format: 'EXCEL' }) }));
       await withTenant(companyBId, (tx) => tx.exportJob.create({ data: exportData(companyBId, key) }));
 
-      // Re-export allowed once the active one finishes (DONE or FAILED).
-      await withTenant(companyAId, (tx) => tx.exportJob.update({ where: { id: first.id }, data: { status: 'DONE' } }));
+      // Re-export allowed once the active one finishes (GENERATED or FAILED).
+      await withTenant(companyAId, (tx) =>
+        tx.exportJob.update({
+          where: { id: first.id },
+          data: { status: 'GENERATED', fileHash: HASH, storageKey: 'exports/1c/a/f.xml', recordCount: 0 },
+        }),
+      );
       const second = await withTenant(companyAId, (tx) => tx.exportJob.create({ data: exportData(companyAId, key) }));
+      await withTenant(companyAId, (tx) => tx.exportJob.update({ where: { id: second.id }, data: { status: 'PROCESSING' } }));
       await withTenant(companyAId, (tx) => tx.exportJob.update({ where: { id: second.id }, data: { status: 'FAILED' } }));
       await withTenant(companyAId, (tx) => tx.exportJob.create({ data: exportData(companyAId, key) }));
     });
@@ -1797,6 +1803,156 @@ describe('tenant isolation (RLS)', () => {
         tx.importJob.updateMany({ where: { id: job.id }, data: { progress: 50 } }),
       );
       expect(touched.count).toBe(0);
+    });
+  });
+  describe('F5.3 ExportJob lifecycle + accountant ACK (ADR-030)', () => {
+    const CHECK = /check constraint|violates/i;
+    const CROSS = /cross-tenant reference/i;
+    const TRANSITION = /transition .* is not allowed/i;
+    const HASH = 'b'.repeat(64);
+    const phone = () => `+99894${Math.floor(1_000_000 + Math.random() * 8_999_999)}`;
+    let accountantAId: string;
+    let accountantBId: string;
+    let seq = 0;
+
+    // Each job gets its own period so the active-period unique index never interferes.
+    const newQueued = (companyId: string) => {
+      const day = new Date(Date.UTC(2032, 0, 1 + ++seq));
+      return withTenant(companyId, (tx) =>
+        tx.exportJob.create({ data: { companyId, type: '1c', format: 'EXCEL', periodFrom: day, periodTo: day } }),
+      );
+    };
+    const setStatus = (companyId: string, id: string, data: Record<string, unknown>) =>
+      withTenant(companyId, (tx) => tx.exportJob.update({ where: { id }, data }));
+    const artifact = { fileHash: HASH, storageKey: 'exports/1c/a/x.xlsx', recordCount: 3, fileName: 'x.xlsx', fileSize: 10, generatedAt: new Date() };
+    const newGenerated = async (companyId = companyAId) => {
+      const job = await newQueued(companyId);
+      await setStatus(companyId, job.id, { status: 'PROCESSING' });
+      return setStatus(companyId, job.id, { status: 'GENERATED', ...artifact });
+    };
+    const ack = (byId: string, over: Record<string, unknown> = {}) => ({
+      status: 'ACCOUNTING_ACCEPTED',
+      acknowledgedBy: byId,
+      acknowledgedAt: new Date(),
+      ackChecksum: HASH,
+      ...over,
+    });
+
+    beforeAll(async () => {
+      const mk = (companyId: string, firstName: string) =>
+        systemPrisma.user.create({ data: { companyId, firstName, lastName: 'ACK', phone: phone() } });
+      accountantAId = (await mk(companyAId, 'Buxgalter')).id;
+      accountantBId = (await mk(companyBId, 'BuxgalterB')).id;
+    });
+
+    it('legacy backfill maps PENDING->QUEUED, DONE->GENERATED (PROCESSING/FAILED kept); legacy literals are rejected', async () => {
+      const rows = await prisma.$queryRaw<{ v: string; s: string | null }[]>`
+        SELECT v, velto_export_job_status_from_legacy(v)::text AS s
+        FROM unnest(ARRAY['PENDING', 'PROCESSING', 'DONE', 'FAILED', 'BOGUS']) AS v`;
+      expect(Object.fromEntries(rows.map((r) => [r.v, r.s]))).toEqual({
+        PENDING: 'QUEUED',
+        PROCESSING: 'PROCESSING',
+        DONE: 'GENERATED',
+        FAILED: 'FAILED',
+        BOGUS: null,
+      });
+      const formats = await prisma.$queryRaw<{ v: string; f: string | null }[]>`
+        SELECT v, velto_export_format_from_legacy(v)::text AS f FROM unnest(ARRAY['XML', 'EXCEL', 'CSV', 'PDF']) AS v`;
+      expect(Object.fromEntries(formats.map((r) => [r.v, r.f]))).toEqual({ XML: 'XML', EXCEL: 'EXCEL', CSV: 'CSV', PDF: null });
+
+      const job = await newQueued(companyAId);
+      for (const legacy of ['PENDING', 'DONE']) {
+        await expect(
+          withTenant(companyAId, (tx) => tx.$executeRawUnsafe(`UPDATE "ExportJob" SET "status" = '${legacy}' WHERE "id" = '${job.id}'`)),
+        ).rejects.toThrow(/invalid input value for enum/i);
+      }
+    });
+
+    it('insert only as QUEUED and without an artifact', async () => {
+      const day = new Date(Date.UTC(2032, 6, 1));
+      const base = { companyId: companyAId, type: '1c', format: 'EXCEL' as const, periodFrom: day, periodTo: day };
+      for (const data of [{ status: 'GENERATED' as const, ...artifact }, { status: 'PROCESSING' as const }, { fileHash: HASH }]) {
+        await expect(withTenant(companyAId, (tx) => tx.exportJob.create({ data: { ...base, ...data } }))).rejects.toThrow(
+          /must be inserted/i,
+        );
+      }
+    });
+
+    it('rejects illegal transitions; FAILED / ACCOUNTING_ACCEPTED / FAILED_REVIEW are terminal', async () => {
+      const queued = await newQueued(companyAId);
+      for (const status of ['GENERATED', 'FAILED', 'ACCOUNTING_ACCEPTED'] as const) {
+        await expect(setStatus(companyAId, queued.id, { status })).rejects.toThrow(TRANSITION);
+      }
+      await setStatus(companyAId, queued.id, { status: 'PROCESSING' });
+      await setStatus(companyAId, queued.id, { status: 'QUEUED' }); // retry
+      await setStatus(companyAId, queued.id, { status: 'PROCESSING' });
+      // GENERATED without the artifact fails the row-shape CHECK.
+      await expect(setStatus(companyAId, queued.id, { status: 'GENERATED' })).rejects.toThrow(CHECK);
+      await setStatus(companyAId, queued.id, { status: 'FAILED' });
+      await expect(setStatus(companyAId, queued.id, { status: 'PROCESSING' })).rejects.toThrow(TRANSITION);
+
+      const generated = await newGenerated();
+      await expect(setStatus(companyAId, generated.id, { status: 'QUEUED' })).rejects.toThrow(TRANSITION);
+      await setStatus(companyAId, generated.id, ack(accountantAId));
+      await expect(
+        setStatus(companyAId, generated.id, { status: 'FAILED_REVIEW', ackNote: 'qayta' }),
+      ).rejects.toThrow(TRANSITION);
+    });
+
+    it('ACK: checksum must equal fileHash, actor+time required, FAILED_REVIEW needs a note of >= 3 chars', async () => {
+      const job = await newGenerated();
+      for (const data of [
+        ack(accountantAId, { ackChecksum: 'c'.repeat(64) }),
+        ack(accountantAId, { ackChecksum: null }),
+        ack(accountantAId, { acknowledgedBy: null }),
+        ack(accountantAId, { acknowledgedAt: null }),
+        ack(accountantAId, { status: 'FAILED_REVIEW' }),
+        ack(accountantAId, { status: 'FAILED_REVIEW', ackNote: '  ab  ' }),
+      ]) {
+        await expect(setStatus(companyAId, job.id, data)).rejects.toThrow(CHECK);
+      }
+      await expect(setStatus(companyAId, job.id, ack(accountantAId, { ackNote: 'x'.repeat(1001) }))).rejects.toThrow(
+        /too long|value too long/i,
+      );
+      // ACK columns outside an ACK status are rejected (write-once on the transition only).
+      await expect(setStatus(companyAId, job.id, { ackNote: 'early' })).rejects.toThrow(/write-once|check constraint/i);
+
+      const reviewed = await setStatus(companyAId, job.id, ack(accountantAId, { status: 'FAILED_REVIEW', ackNote: 'Summalar mos emas' }));
+      expect(reviewed.status).toBe('FAILED_REVIEW');
+      await expect(setStatus(companyAId, job.id, { ackNote: 'boshqa izoh' })).rejects.toThrow(/write-once/i);
+      await expect(setStatus(companyAId, job.id, { acknowledgedBy: null })).rejects.toThrow(/write-once/i);
+    });
+
+    it('from GENERATED on, artifact/period/format are immutable; DELETE/TRUNCATE rejected even for velto_system', async () => {
+      const job = await newGenerated();
+      for (const data of [
+        { storageKey: 'exports/1c/a/other.xlsx' },
+        { fileHash: 'd'.repeat(64) },
+        { recordCount: 4 },
+        { periodTo: new Date(Date.UTC(2033, 0, 1)) },
+        { format: 'CSV' },
+      ]) {
+        await expect(setStatus(companyAId, job.id, data)).rejects.toThrow(/immutable/i);
+      }
+      await expect(withTenant(companyAId, (tx) => tx.exportJob.delete({ where: { id: job.id } }))).rejects.toThrow(/append-only/i);
+      await expect(systemPrisma.exportJob.delete({ where: { id: job.id } })).rejects.toThrow(/append-only/i);
+      await expect(systemPrisma.$executeRawUnsafe('TRUNCATE "ExportJob"')).rejects.toThrow(TRUNCATE_REJECTED);
+    });
+
+    it('tenant B cannot see or ACK tenant A’s export; ACK by another tenant’s user is rejected', async () => {
+      const job = await newGenerated();
+      const touched = await withTenant(companyBId, (tx) =>
+        tx.exportJob.updateMany({ where: { id: job.id }, data: ack(accountantBId) as never }),
+      );
+      expect(touched.count).toBe(0);
+      expect(await withTenant(companyBId, (tx) => tx.exportJob.findMany({ where: { id: job.id } }))).toHaveLength(0);
+      await expect(setStatus(companyAId, job.id, ack(accountantBId))).rejects.toThrow(CROSS);
+
+      const still = await withTenant(companyAId, (tx) => tx.exportJob.findUniqueOrThrow({ where: { id: job.id } }));
+      expect(still.status).toBe('GENERATED');
+      expect(still.acknowledgedBy).toBeNull();
+      const accepted = await setStatus(companyAId, job.id, ack(accountantAId));
+      expect(accepted.status).toBe('ACCOUNTING_ACCEPTED');
     });
   });
   describe('F8.1 payment handover (ADR-029): PENDING_HANDOVER -> POSTED / REJECTED', () => {

@@ -131,8 +131,9 @@ model User {
   courierRoutes               Route[]                 @relation("CourierRoutes")
   agentVisits                 Visit[]                 @relation("AgentVisits")
   auditLogs                   AuditLog[]
-  exportJobs                  ExportJob[]
-  createdImportJobs           ImportJob[]             @relation("ImportJobCreator")
+  exportJobs                  ExportJob[]             @relation("ExportJobRequestedBy")
+  exportJobsAcknowledged      ExportJob[]             @relation("ExportJobAcknowledgedBy")
+  createdImportJobs          ImportJob[]             @relation("ImportJobCreator")
   notifications               Notification[]
   purchaseOrders              PurchaseOrder[]         @relation("PurchaseOrderCreatedBy")
   goodsReceipts               GoodsReceipt[]          @relation("GoodsReceiptReceivedBy")
@@ -1124,35 +1125,77 @@ model ImportJob {
 // finishes; `errorLog` also doubles as a non-fatal warnings slot (e.g.
 // products missing `externalCode`, still exported by falling back to `sku`)
 // even on a DONE job, not only on FAILED.
+// F5.3 / ADR-030 (20261019110000): 1C export lifecycle. Transitions are
+// DB-trigger-enforced (velto_export_job_guard_update), insert only as QUEUED:
+//   QUEUED -> PROCESSING; PROCESSING -> QUEUED (retry) | GENERATED | FAILED;
+//   GENERATED -> ACCOUNTING_ACCEPTED | FAILED_REVIEW (manual accountant ACK).
+//   FAILED, ACCOUNTING_ACCEPTED, FAILED_REVIEW are terminal.
+enum ExportJobStatus {
+  QUEUED
+  PROCESSING
+  GENERATED
+  FAILED
+  ACCOUNTING_ACCEPTED
+  FAILED_REVIEW
+}
+
+enum ExportFormat {
+  EXCEL
+  CSV
+  XML
+}
+
 model ExportJob {
-  id             String   @id @default(uuid()) @db.Uuid
-  companyId      String   @db.Uuid
+  id             String          @id @default(uuid()) @db.Uuid
+  companyId      String          @db.Uuid
   type           String // "1c"
-  format         String // "XML" | "EXCEL"
+  format         ExportFormat
   periodFrom     DateTime
   periodTo       DateTime
-  status         String // PENDING PROCESSING DONE FAILED
+  status         ExportJobStatus @default(QUEUED)
+  // DEPRECATED (F5.3): superseded by storageKey (backfilled from it). Kept
+  // nullable only until apps/api stops reading/writing it; dropped in a later,
+  // separate release.
   fileUrl        String?
   errorLog       Json?
-  requestedBy    String?  @db.Uuid
-  // F5 (20261014090000): sha256 lower-case hex of the produced file, null
-  // until DONE; CHECKs: fileHash ~ ^[0-9a-f]{64}$, recordCount >= 0,
-  // mappingVersion >= 1, attemptCount >= 0.
+  requestedBy    String?         @db.Uuid
+  // F5 (20261014090000): sha256 lower-case hex of the produced file; CHECKs:
+  // fileHash ~ ^[0-9a-f]{64}$, recordCount >= 0, mappingVersion >= 1,
+  // attemptCount >= 0.
   fileHash       String?
   recordCount    Int?
   mappingVersion Int?
-  attemptCount   Int      @default(0)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  attemptCount   Int             @default(0)
+  // F5.3: object-storage key of the generated file (never a public URL),
+  // display file name, size in bytes (CHECK >= 0), generation time.
+  // GENERATED/ACCOUNTING_ACCEPTED/FAILED_REVIEW require fileHash, storageKey,
+  // recordCount (CHECK); from GENERATED on, the artifact columns and the
+  // period/type/format are immutable (trigger).
+  storageKey     String?
+  fileName       String?
+  fileSize       Int?
+  generatedAt    DateTime?
+  // ADR-030 manual ACK, written exactly once on GENERATED -> ACCOUNTING_ACCEPTED
+  // | FAILED_REVIEW and NULL in every other status (CHECK): ackChecksum must
+  // equal fileHash; FAILED_REVIEW needs ackNote of >= 3 non-blank chars.
+  acknowledgedAt DateTime?
+  acknowledgedBy String?         @db.Uuid
+  ackChecksum    String?
+  ackNote        String?         @db.VarChar(1000)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
 
-  company Company @relation(fields: [companyId], references: [id])
-  user    User?   @relation(fields: [requestedBy], references: [id])
+  company      Company @relation(fields: [companyId], references: [id])
+  user         User?   @relation("ExportJobRequestedBy", fields: [requestedBy], references: [id])
+  acknowledger User?   @relation("ExportJobAcknowledgedBy", fields: [acknowledgedBy], references: [id], onDelete: Restrict)
   // Not expressible in Prisma — partial unique index in SQL only:
   // "ExportJob_active_period_key" UNIQUE (companyId, type, format, periodFrom,
-  // periodTo) WHERE status IN ('PENDING','PROCESSING'). A second active
-  // export for the same key fails with P2002; DONE/FAILED never block.
+  // periodTo) WHERE status IN ('QUEUED','PROCESSING'). A second active
+  // export for the same key fails with P2002; later statuses never block.
+  // DELETE/TRUNCATE are rejected by trigger (export history is evidence).
 
   @@index([companyId, status])
+  @@index([acknowledgedBy])
 }
 
 // M14 (5.3: "In-app + Telegram"). `title`/`message` are LocalizedMessage

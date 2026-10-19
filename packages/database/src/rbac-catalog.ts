@@ -82,7 +82,11 @@ export const PERMISSION_DEFS: { module: string; actions: string[] }[] = [
   { module: 'roles', actions: ['read'] },
   { module: 'audit', actions: ['read'] },
   { module: 'settings', actions: ['read', 'update'] },
-  { module: 'integrations', actions: ['export1c'] },
+  // `ack1c` (F5.3 / ADR-030): manual "accepted / failed review" confirmation
+  // of a GENERATED 1C export, checksum-matched. OWNER only for now: ADR-003c
+  // (accepted, binding) limits ACCOUNTANT to read/export actions, and an ACK
+  // is a write. Granting it to ACCOUNTANT needs a formal ADR-003c supersession.
+  { module: 'integrations', actions: ['export1c', 'ack1c'] },
   // F2.5 (§6.4/§6.5): drift reconciliation. `read` = view runs/findings
   // (OWNER, ACCOUNTANT — read-only, fits ADR-003c); `fix` = rebuild a
   // projection from the ledger / mark a finding FIXED — OWNER only.
