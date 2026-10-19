@@ -1,4 +1,4 @@
-import { HttpException, HttpStatus, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { assertClientIdReplayAllowed } from '../../common/idempotency/client-id-replay';
 import { ClientIdConflictException } from '../../common/errors/client-id-conflict.exception';
 import { ConfigService } from '@nestjs/config';
@@ -298,7 +298,7 @@ export class SyncService {
    * deactivation or role removal committed mid-batch applies to the next
    * document: no permission -> REJECTED PERMISSION_DENIED + audit (what the
    * request-level 403 gives); user or company deactivated (same rule as
-   * TenantContextInterceptor's 401) -> REJECTED HTTP_401. Audit rows written by the
+   * TenantContextInterceptor's 401) -> RETRY ACCOUNT_INACTIVE (nothing written). Audit rows written by the
    * services commit with the document. The result is captured inside the tx;
    * an afterCommit callback failing after COMMIT is only logged and never
    * turns a committed document into RETRY.
@@ -472,6 +472,12 @@ const RETRY_MESSAGE: SyncLocalizedMessage = {
   en: 'Temporary server error — the document will be retried later',
 };
 
+const ACCOUNT_INACTIVE_MESSAGE: SyncLocalizedMessage = {
+  uz: "Hisob faolsizlantirilgan — hujjat saqlanmadi",
+  ru: 'Учётная запись деактивирована — документ не сохранён',
+  en: 'Account is deactivated — the document was not saved',
+};
+
 /** Best-effort SQLSTATE of a Prisma/pg error (raw-query P2010 carries it in meta.code). */
 function sqlStateOf(error: unknown): string | undefined {
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
@@ -487,8 +493,9 @@ type Revocation = 'DENIED' | 'INACTIVE';
 
 function revocationResult(doc: SyncPushDocumentDto, revoked: Revocation): SyncPushResultItem {
   if (revoked === 'DENIED') return { clientId: doc.clientId, status: 'REJECTED', error: toErrorDetail(new PermissionDeniedException(SYNC_PUSH_PERMISSION)) };
-  // User or company deactivated: the interceptor's 401 contract, per document.
-  return { clientId: doc.clientId, status: 'REJECTED', error: toErrorDetail(new UnauthorizedException()) };
+  // User or company deactivated: a blocked account is not a document defect. RETRY keeps the document
+  // PENDING on the client; the next request gets 401, /auth/refresh 403 AUTH_ACCOUNT_BLOCKED -> queue quarantine.
+  return { clientId: doc.clientId, status: 'RETRY', error: { code: 'ACCOUNT_INACTIVE', message: ACCOUNT_INACTIVE_MESSAGE.uz, messages: ACCOUNT_INACTIVE_MESSAGE } };
 }
 
 function retryResult(doc: SyncPushDocumentDto, error: unknown): SyncPushResultItem {

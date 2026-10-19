@@ -587,7 +587,7 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
     it.each([
       ['user', (id: string) => systemPrisma.user.update({ where: { id }, data: { isActive: false } })],
       ['company', () => systemPrisma.company.update({ where: { id: companyId }, data: { isActive: false } })],
-    ] as const)('%s deactivated mid-batch: committed doc stays ACCEPTED, the rest REJECTED HTTP_401, nothing else written', async (_k, deactivate) => {
+    ] as const)('%s deactivated mid-batch: committed doc stays ACCEPTED, the rest RETRY ACCOUNT_INACTIVE, nothing else written', async (_k, deactivate) => {
       const agent = await mkAgent(`Deact-${_k}`);
       const docs = [payDoc(), payDoc(), payDoc()];
       const real = payments.create.bind(payments);
@@ -599,8 +599,8 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
       });
       try {
         const { results } = await sync.push(docs, agent);
-        expect(results.map((r) => r.status)).toEqual(['ACCEPTED', 'REJECTED', 'REJECTED']);
-        expect(results[1]?.error?.code).toBe('HTTP_401');
+        expect(results.map((r) => r.status)).toEqual(['ACCEPTED', 'RETRY', 'RETRY']);
+        expect(results[1]?.error?.code).toBe('ACCOUNT_INACTIVE');
       } finally {
         await systemPrisma.company.update({ where: { id: companyId }, data: { isActive: true } });
       }
