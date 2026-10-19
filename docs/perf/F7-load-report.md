@@ -12,6 +12,30 @@
 ## Stsenariy (`scripts/load/velto-load.js`, `run.sh`, `prepare-load-data.sh`, `start-api.sh`)
 Aralash profil: ~20% agent (sync push 20 hujjat + 2 pull), ~15-20% yozuv zanjiri (buyurtma yaratish -> tasdiqlash -> yetkazish), 1 kassir (handover accept), qolgani o'qish (mahsulot/mijoz/narx/qoldiq/buyurtma/balans, + dashboard/sales/overview hisobotlari). `REPORTS=0` hisobotlarsiz variant (sababni ajratish uchun). 90-120 s. 429 va 5xx va ulanish xatolari alohida sanaladi.
 
+## Qayta o'lchov (2026-10-20, kod: edcbd62, 5c5c1b1, 591c14a, 3b323d2, 8474a4f, 52655ab)
+**Lokal, SLA emas.** Muhit yuqoridagidek (M1, Docker VM 8 CPU/4 GB, PG 16.14 sozlanmagan). Pool: default `PRISMA_POOL_SIZE=30` (oldingi run 17 va 40 edi). `velto_load` `db:load:reset` + `db:load:seed` bilan qayta yaratildi (100 000 buyurtma, 82 031 invoice); parol sessiya uchun tasodifiy, hech qayerga yozilmagan (`seed-load.ts` endi `LOAD_PASSWORD` talab qiladi, default yo'q). Har run: to'liq aralashma (hisobotlar bilan), 120 s, yangi API jarayoni = sovuq (cold), keyingisi isitilgan (warm); har run'dan keyin `verify-integrity`. 503 SERVICE_BUSY endi 5xx dan ALOHIDA sanaladi (`r_503`, `summarize.js`).
+
+| Mezon | Oldin (to'liq aralashma) | Keyin | Holat |
+|---|---|---|---|
+| 50 VU read p95 <= 300 ms | 12-16 s | cold 1561 / warm 750 ms | **O'TMADI** (yaxshilandi ~10-20x) |
+| 50 VU write p95 <= 700 ms | o'tmadi (order-create 1-2.7 s, sync-push-20 5.7-6.3 s) | cold 4662 / warm 3188 ms; sync-push-20 p95 7954/8077 | **O'TMADI** |
+| 100 VU 5xx = 0 | 890 (to'liq) | cold 303 / warm 345 (503 alohida: 240 / 279) | **O'TMADI** |
+| verify-integrity = 0 | 0 | 0 (4 run'dan keyin ham) | **O'TDI** |
+| Deadlock 40P01 (pg_stat_database) | 2-11 (50 VU), 40 (100 VU) | **0** (4 run + diagnostika) | **O'TDI** |
+| 503 SERVICE_BUSY | yo'q edi | 50 VU: 0; 100 VU: 240 / 279 (asosan read, pool kutishi) | retryable; 100 VU da ko'p |
+| Dashboard <= 2 s (NFR) | 500 (bind limit) | p95 9.7 s, 50 VU da 115/126 so'rov 500 | **O'TMADI** |
+
+Raqamlar (p50/p95, ms; RPS): cold50 RPS 17.9, hammasi 673/5717, 5xx 236; warm50 RPS 21.7, 297/5286, 5xx 207; cold100 RPS 25.7, 1905/6961, 5xx 303, 503 240; warm100 RPS 25.2, 1893/7165, 5xx 345, 503 279, 429: 2. Dashboard 5xx: 115/126, 125/154, 176/198, 172/186. sync-push-20 5xx: 74/80, 64/85, 104/131, 111/141. Bitta run har konfiguratsiyaga — tebranish (~+-20%) bor.
+
+**Qolgan muammolar (sabablari; prod kodiga tegilmagan)**
+1. Deadlock 40P01 TUZALDI (0 ta). Hamma 5xx lar Prisma interaktiv tranzaksiya 5000 ms timeout'i (`Transaction already closed ... 5000 ms`, 212 ta, + `Transaction not found` 23) — deadlock emas.
+2. `GET /reports/dashboard` hanuz sekin: bitta tx ichidagi `Promise.all` bitta ulanishda ketma-ket bajariladi (`dashboard.service.ts:36-47`): `invoiceDebt` 2 marta (har biri EXPLAIN ANALYZE 864 ms: `report-sql.ts:76-102`, Payment seq scan + PaymentAllocation uchun 66k marta index scan (RLS pastki so'rovi), Sort disk 2.2 MB), `turnoverPerDay` 528 ms (SalesOrder seq scan + 8658x SalesOrderLine index scan, RLS 26k Payment/SalesOrder qidiruvi), + aging. Yig'indi ~4-5 s yagona so'rovda, yuk ostida 5 s dan oshadi. Taklif: `Invoice(status, createdAt)` va `SalesOrder(createdAt, status)` indekslari; `PaymentAllocation` ni `invoiceId` bo'yicha oldindan yig'ish (materialized/cached balance); dashboard tx timeout'ini `@TenantTxOptions` bilan oshirish yoki keshlash (30-60 s).
+3. `POST /sync/push` 20 hujjat bitta tx da (`sync.service.ts`) 5 s dan oshadi -> `RETRY` va 500 (50 VU: 64-74, 100 VU: 104-111). Taklif: hujjat-bo'yicha tx yoki tx timeout oshirish; 5s timeout'ni 503/RETRY ga xaritalash.
+4. Counter ketma-ketligi: write p95 100 VU da 4.5-4.9 s; dashboard/sync-push bilan pool va event loop birga band — counter (DocumentCounter ~16 ms/hujjat) alohida ajratilmadi (hisobotsiz 100 VU runi qilinmadi), shuning uchun uning ulushi tasdiqlanmagan.
+5. 100 VU da 503 (pool 30, kutish 10 s): 145-154 ta read 503 — pool tanqisligi, tx lar uzoq ushlanishi (2-3-bandlar) tufayli.
+6. Kompaniya eksporti: MinIO hanuz yo'q (docker-compose minio image pull ishlamagan, boshqa S3-mos image mavjud emas) — eksport davomiyligi qayta o'lchanmadi; faqat oldingi o'qish bosqichi (~161 s) qoladi.
+
+## Oldingi run (kod tuzatishlaridan oldin)
 ## Mezonlar va natija
 | Mezon | Natija |
 |---|---|

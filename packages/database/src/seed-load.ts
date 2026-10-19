@@ -136,6 +136,7 @@ function validate(o: SeedLoadOptions) {
 export async function seedLoad(opts: SeedLoadOptions): Promise<SeedLoadReport> {
   assertNotProduction();
   validate(opts);
+  if (!process.env.LOAD_PASSWORD) throw new Error('LOAD_PASSWORD env is required (no default password)');
   const log = opts.log ?? (() => {});
   const app = new PrismaClient({ datasources: { db: { url: assertLoadDatabaseUrl(opts.appUrl, 'app URL') } } });
   const sys = new PrismaClient({ datasources: { db: { url: assertLoadDatabaseUrl(opts.systemUrl, 'system URL') } } });
@@ -204,8 +205,7 @@ async function seedReference(app: PrismaClient, sys: PrismaClient, cid: string, 
     return;
   }
   const permissionIdByKey = await seedPermissions(sys);
-  const password = process.env.SEED_DEMO_PASSWORD;
-  const passwordHash = password ? await argon2.hash(password, { type: argon2.argon2id }) : null;
+  const passwordHash = await argon2.hash(process.env.LOAD_PASSWORD as string, { type: argon2.argon2id });
 
   await inTenant(app, cid, async (tx) => {
     const roleIdByCode: Record<string, string> = {};

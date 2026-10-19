@@ -11,6 +11,8 @@ import { PrismaClient } from '../../generated/client';
 import { assertLoadDatabaseUrl, seedLoad, toLoadDatabaseUrl, type SeedLoadOptions } from '../seed-load';
 import '../load-env';
 
+process.env.LOAD_PASSWORD ??= randomUUID(); // throwaway, test-only
+
 const appUrl = process.env.DATABASE_LOAD_URL ?? toLoadDatabaseUrl(process.env.DATABASE_URL) ?? '';
 const systemUrl = process.env.DATABASE_LOAD_SYSTEM_URL ?? toLoadDatabaseUrl(process.env.DATABASE_SYSTEM_URL) ?? '';
 
@@ -28,6 +30,16 @@ async function loadDbReachable(): Promise<boolean> {
 }
 
 describe('seed-load guards', () => {
+  it('refuses to seed without LOAD_PASSWORD (no default password)', async () => {
+    const prev = process.env.LOAD_PASSWORD;
+    delete process.env.LOAD_PASSWORD;
+    try {
+      await expect(seedLoad({ ...small(), slug: 'never' })).rejects.toThrow(/LOAD_PASSWORD/);
+    } finally {
+      if (prev !== undefined) process.env.LOAD_PASSWORD = prev;
+    }
+  });
+
   it('refuses any database other than velto_load', () => {
     expect(() => assertLoadDatabaseUrl('postgresql://velto_app:x@localhost:5433/velto_dev?schema=public', 't')).toThrow(/velto_dev/);
     expect(() => assertLoadDatabaseUrl('postgresql://velto_app:x@localhost:5433/velto_load_x', 't')).toThrow();

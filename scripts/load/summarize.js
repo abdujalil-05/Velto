@@ -20,9 +20,9 @@ rl.on('line', (l) => {
 const q = (a, p) => a[Math.min(a.length - 1, Math.floor((p / 100) * a.length))];
 rl.on('close', () => {
   const secs = Math.max(1, (t1 - t0) / 1000);
-  console.log(`window ${secs.toFixed(0)}s\n\n| kind|endpoint | n | rps | p50 ms | p95 ms | p99 ms | max ms | 5xx | conn_err | 429 | other 4xx |\n|---|---|---|---|---|---|---|---|---|---|---|`);
+  console.log(`window ${secs.toFixed(0)}s\n\n| kind|endpoint | n | rps | p50 ms | p95 ms | p99 ms | max ms | 5xx (excl 503) | 503 busy | conn_err | 429 | other 4xx |\n|---|---|---|---|---|---|---|---|---|---|---|---|`);
   for (const k of Object.keys(dur).sort()) {
     const a = dur[k].sort((x, y) => x - y); const c = cnt[k] || {};
-    console.log(`| ${k} | ${a.length} | ${(a.length / secs).toFixed(1)} | ${q(a, 50).toFixed(0)} | ${q(a, 95).toFixed(0)} | ${q(a, 99).toFixed(0)} | ${a[a.length - 1].toFixed(0)} | ${c.r_5xx || 0} | ${c.r_conn_err || 0} | ${c.r_429 || 0} | ${c.r_4xx_other || 0} |`);
+    console.log(`| ${k} | ${a.length} | ${(a.length / secs).toFixed(1)} | ${q(a, 50).toFixed(0)} | ${q(a, 95).toFixed(0)} | ${q(a, 99).toFixed(0)} | ${a[a.length - 1].toFixed(0)} | ${c.r_5xx || 0} | ${c.r_503 || 0} | ${c.r_conn_err || 0} | ${c.r_429 || 0} | ${c.r_4xx_other || 0} |`);
   }
 });

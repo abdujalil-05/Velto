@@ -20,6 +20,7 @@ const REPORTS = (__ENV.REPORTS || '1') === '1';
 const MODE = __ENV.MODE || 'mixed';
 
 export const c5xx = new Counter('r_5xx');
+export const c503 = new Counter('r_503'); // SERVICE_BUSY (retryable), NOT counted in r_5xx
 export const cConn = new Counter('r_conn_err');
 export const c429 = new Counter('r_429');
 export const c4xx = new Counter('r_4xx_other');
@@ -80,6 +81,7 @@ function call(method, path, token, kind, name, body, extra = {}) {
   const headers = { Authorization: `Bearer ${token}`, ...(body ? JSON_H : {}), ...(extra.idem ? { 'Idempotency-Key': uuidv4() } : {}) };
   const res = http.request(method, `${BASE}${path}`, body ? JSON.stringify(body) : null, { headers, tags: { kind, name }, timeout: '60s' });
   if (res.status === 0) { cConn.add(1, { kind, name }); if (__ENV.LOG_5XX) console.error(`conn ${method} ${path} ${res.error}`); }
+  else if (res.status === 503) { c503.add(1, { kind, name }); if (__ENV.LOG_5XX) console.error(`503 ${method} ${path} ${String(res.body).slice(0, 120)}`); }
   else if (res.status >= 500) { c5xx.add(1, { kind, name }); if (__ENV.LOG_5XX) console.error(`5xx ${res.status} ${method} ${path} ${String(res.body).slice(0, 200)}`); }
   else if (res.status === 429) c429.add(1, { kind, name });
   else if (res.status >= 400) { c4xx.add(1, { kind, name }); if (__ENV.LOG_4XX) console.error(`4xx ${res.status} ${method} ${path} ${String(res.body).slice(0, 200)}`); }
