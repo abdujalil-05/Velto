@@ -1,3 +1,4 @@
+import { DEFAULT_ABANDONED_QUEUED_MS } from '../../../common/config/env.schema';
 import type { TraceableJobData } from '../../../common/queue/trace-job';
 
 export const EXPORT_1C_QUEUE = '1c-export';
@@ -36,5 +37,5 @@ export const EXPORT_1C_STALE_QUEUED_MS = 15 * 60_000;
  */
 export function export1cAbandonedQueuedMs(): number {
   const n = Number(process.env.ABANDONED_QUEUED_MS);
-  return Number.isFinite(n) && n > 0 ? n : 24 * 60 * 60_000;
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_ABANDONED_QUEUED_MS;
 }

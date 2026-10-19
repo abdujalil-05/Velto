@@ -1,4 +1,5 @@
 import type { Job, JobsOptions, Queue } from 'bullmq';
+import { DEFAULT_QUEUE_ENQUEUE_TIMEOUT_MS } from '../config/env.schema';
 import { getTraceId, newTraceId, runWithTraceId } from '../trace/trace-context';
 
 /** Job payloads carry the originating request's trace id (12.3). Optional: jobs enqueued before this existed have none. */
@@ -17,7 +18,7 @@ export function addTracedJob<T extends TraceableJobData>(queue: Queue<T>, name: 
 /** NFR-REL-006: per-enqueue timeout (env QUEUE_ENQUEUE_TIMEOUT_MS, default 3000). */
 export function enqueueTimeoutMs(): number {
   const n = Number(process.env.QUEUE_ENQUEUE_TIMEOUT_MS);
-  return Number.isFinite(n) && n > 0 ? n : 3000;
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_QUEUE_ENQUEUE_TIMEOUT_MS;
 }
 
 /** BullMQ's connection uses maxRetriesPerRequest:null, so queue.add() hangs while Redis is down; bound it. */

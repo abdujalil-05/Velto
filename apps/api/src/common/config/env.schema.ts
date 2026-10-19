@@ -1,5 +1,9 @@
 import { z } from 'zod';
 
+/** Single source of the defaults; trace-job.ts / export-1c.constants.ts fall back to these. */
+export const DEFAULT_QUEUE_ENQUEUE_TIMEOUT_MS = 3000;
+export const DEFAULT_ABANDONED_QUEUED_MS = 24 * 60 * 60_000;
+
 /** Fails fast on boot if required env vars are missing/malformed, instead of failing on the first request that needs them. */
 export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -63,6 +67,10 @@ export const envSchema = z.object({
     .optional()
     .default('false')
     .transform((v) => v === 'true'),
+  // NFR-REL-006: per-enqueue timeout so a Redis outage cannot hang a request.
+  QUEUE_ENQUEUE_TIMEOUT_MS: z.coerce.number().int().min(100).max(60_000).default(DEFAULT_QUEUE_ENQUEUE_TIMEOUT_MS),
+  // ADR-047: an orphaned QUEUED export job older than this is failed. Min 15 minutes.
+  ABANDONED_QUEUED_MS: z.coerce.number().int().min(15 * 60_000).default(DEFAULT_ABANDONED_QUEUED_MS),
   S3_ENDPOINT: z.string().min(1),
   S3_REGION: z.string().default('us-east-1'),
   S3_ACCESS_KEY: z.string().min(1),
