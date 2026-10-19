@@ -15,6 +15,7 @@ import {
 } from '@/lib/api/cash-sessions';
 import {
   usePaymentsQuery,
+  type PaymentSource,
   useReversePaymentMutation,
   useAcceptHandoverMutation,
   useRejectHandoverMutation,
@@ -31,6 +32,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { PaginationBar } from '@/components/shared/pagination-bar';
 import { ExportCsvButton } from '@/components/shared/export-csv-button';
+import { Select } from '@/components/ui/select';
 import { SearchSelect } from '@/components/shared/search-select';
 import { OpenSessionForm } from '@/components/cash/open-session-form';
 import { CloseSessionForm } from '@/components/cash/close-session-form';
@@ -211,6 +213,8 @@ function PaymentsSection({ canCreate, canReverse, canHandover }: { canCreate: bo
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [customerQuery, setCustomerQuery] = useState('');
   const [page, setPage] = useState(1);
+  // COLLECTION by default: carried-over opening credit is not money collected.
+  const [source, setSource] = useState<PaymentSource | ''>('COLLECTION');
   const debouncedCustomerQuery = useDebouncedValue(customerQuery, 300);
   const { sort, toggle: toggleSort } = useSort();
 
@@ -224,6 +228,7 @@ function PaymentsSection({ canCreate, canReverse, canHandover }: { canCreate: bo
     page,
     pageSize: 25,
     customerId: customer?.id,
+    source: source || undefined,
     sortBy: sort.sortBy,
     sortDir: sort.sortDir,
   });
@@ -270,6 +275,20 @@ function PaymentsSection({ canCreate, canReverse, canHandover }: { canCreate: bo
             emptyText={t('form.noCustomers')}
           />
         </div>
+
+        <Select
+          aria-label={t('source.label')}
+          className="w-48"
+          value={source}
+          onChange={(e) => {
+            setSource(e.target.value as PaymentSource | '');
+            setPage(1);
+          }}
+        >
+          <option value="COLLECTION">{t('source.COLLECTION')}</option>
+          <option value="OPENING">{t('source.OPENING')}</option>
+          <option value="">{t('source.all')}</option>
+        </Select>
 
         <Button variant="ghost" size="sm" onClick={() => refetch()} disabled={isFetching}>
           <RefreshCw className={cn('mr-2 h-4 w-4', isFetching && 'animate-spin')} />

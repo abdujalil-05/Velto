@@ -96,6 +96,7 @@ model Company {
   reconciliationRuns     ReconciliationRun[]
   reconciliationFindings ReconciliationFinding[]
   syncTombstones         SyncTombstone[]
+  openingBalanceBatches  OpeningBalanceBatch[]
 
   @@index([tenantId])
 }
@@ -133,13 +134,17 @@ model User {
   auditLogs                   AuditLog[]
   exportJobs                  ExportJob[]             @relation("ExportJobRequestedBy")
   exportJobsAcknowledged      ExportJob[]             @relation("ExportJobAcknowledgedBy")
-  createdImportJobs          ImportJob[]             @relation("ImportJobCreator")
+  createdImportJobs           ImportJob[]             @relation("ImportJobCreator")
   notifications               Notification[]
   purchaseOrders              PurchaseOrder[]         @relation("PurchaseOrderCreatedBy")
   goodsReceipts               GoodsReceipt[]          @relation("GoodsReceiptReceivedBy")
   idempotencyRecords          IdempotencyRecord[]
   reconciliationRunsTriggered ReconciliationRun[]     @relation("ReconciliationRunTriggeredBy")
   reconciliationFindingsFixed ReconciliationFinding[] @relation("ReconciliationFindingFixedBy")
+  salesOrdersCancelled        SalesOrder[]            @relation("SalesOrderCancelledBy")
+  openingBatchesCreated       OpeningBalanceBatch[]   @relation("OpeningBatchCreatedBy")
+  openingBatchesPosted        OpeningBalanceBatch[]   @relation("OpeningBatchPostedBy")
+  openingBatchesVoided        OpeningBalanceBatch[]   @relation("OpeningBatchVoidedBy")
 
   @@unique([companyId, phone])
   // Scoped per-company like every other natural key here: a global unique on
@@ -484,7 +489,10 @@ model StockMovement {
   warehouseId        String            @db.Uuid
   type               StockMovementType
   qty                Decimal           @db.Decimal(18, 3) // > 0 for RECEIVE/RESERVE/RELEASE/ISSUE (sign = type); signed only for ADJUST and reversal rows
-  refType            String? // "SalesOrder", "PurchaseOrder"...
+  // F6: opening stock = type ADJUST, refType 'OpeningBalance', refId =
+  // OpeningBalanceBatch.id (STOCK, PREVIEWED at insert), qty > 0; at most one
+  // non-reversal opening row per (companyId, productId, warehouseId).
+  refType            String? // "SalesOrder", "PurchaseOrder", "OpeningBalance"...
   refId              String?           @db.Uuid
   note               String?
   // F2.1: a reversal is a new compensating row pointing at the original —
@@ -683,33 +691,42 @@ enum OrderStatus {
 }
 
 model SalesOrder {
-  id          String      @id @default(uuid()) @db.Uuid
-  companyId   String      @db.Uuid
-  number      String // SO-2026-000123
-  customerId  String      @db.Uuid
-  outletId    String?     @db.Uuid
-  agentId     String?     @db.Uuid
+  id           String      @id @default(uuid()) @db.Uuid
+  companyId    String      @db.Uuid
+  number       String // SO-2026-000123
+  customerId   String      @db.Uuid
+  outletId     String?     @db.Uuid
+  agentId      String?     @db.Uuid
   /// Kuryer: the company's own delivery person (a `User` holding the COURIER
   /// system role) who takes this order from the warehouse to the customer.
   /// Optional — an order is not assigned to anyone until it is dispatched, and
   /// agent-delivered orders never get a courier. `onDelete: SetNull` because an
   /// order's history must survive the courier's user record being removed; the
   /// order itself is never deleted as a side effect of user cleanup.
-  courierId   String?     @db.Uuid
+  courierId    String?     @db.Uuid
   // Not in the TZ's 6.6 schema, but stock reservation (8.3) is inherently
   // per-warehouse (StockLevel/StockMovement are keyed by warehouseId) —
   // required infrastructure the doc's schema section omitted.
-  warehouseId String      @db.Uuid
-  status      OrderStatus @default(DRAFT)
+  warehouseId  String      @db.Uuid
+  status       OrderStatus @default(DRAFT)
   // Offline idempotency key (10.4). Scoped per-company, not globally unique:
   // a client-generated id must never be able to collide across tenants.
-  clientId    String?
-  note        String?
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  clientId     String?
+  note         String?
+  // F6 (20261019120100): mandatory cancel reason. DB CHECK
+  // SalesOrder_cancel_reason_check: status = CANCELLED => non-blank
+  // cancelReason. Legacy CANCELLED rows backfilled from note
+  // ("[Bekor qilindi]: ...") or 'legacy'; cancelledAt from updatedAt;
+  // cancelledBy stays NULL for legacy rows (unknown actor).
+  cancelReason String?
+  cancelledAt  DateTime?
+  cancelledBy  String?     @db.Uuid
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
 
   company   Company   @relation(fields: [companyId], references: [id])
   customer  Customer  @relation(fields: [customerId], references: [id])
+  canceller User?     @relation("SalesOrderCancelledBy", fields: [cancelledBy], references: [id], onDelete: Restrict)
   outlet    Outlet?   @relation(fields: [outletId], references: [id])
   agent     User?     @relation("AgentOrders", fields: [agentId], references: [id])
   warehouse Warehouse @relation(fields: [warehouseId], references: [id])
@@ -726,6 +743,7 @@ model SalesOrder {
   @@index([companyId, outletId])
   @@index([companyId, warehouseId])
   @@index([companyId, courierId])
+  @@index([cancelledBy])
 }
 
 model SalesOrderLine {
@@ -760,26 +778,43 @@ enum InvoiceStatus {
   CANCELLED
 }
 
-model Invoice {
-  id         String        @id @default(uuid()) @db.Uuid
-  companyId  String        @db.Uuid
-  number     String // INV-2026-000142
-  customerId String        @db.Uuid
-  orderId    String?       @db.Uuid // N:M munosabat kelajakda — MVP'da 1 order = 1 invoice soddalashtirilgan
-  total      Decimal       @db.Decimal(18, 2)
-  status     InvoiceStatus @default(OPEN)
-  createdAt  DateTime      @default(now())
-  updatedAt  DateTime      @updatedAt
+// F6: SALE = regular delivery invoice (INV-...); OPENING = opening customer
+// debt from an OpeningBalanceBatch (OB-..., no lines, no order).
+enum InvoiceKind {
+  SALE
+  OPENING
+}
 
-  company  Company     @relation(fields: [companyId], references: [id])
-  customer Customer    @relation(fields: [customerId], references: [id])
-  order    SalesOrder? @relation(fields: [orderId], references: [id])
+model Invoice {
+  id             String        @id @default(uuid()) @db.Uuid
+  companyId      String        @db.Uuid
+  number         String // INV-2026-000142
+  customerId     String        @db.Uuid
+  orderId        String?       @db.Uuid // N:M munosabat kelajakda — MVP'da 1 order = 1 invoice soddalashtirilgan
+  total          Decimal       @db.Decimal(18, 2)
+  status         InvoiceStatus @default(OPEN)
+  // F6 (20261019120000). DB-enforced: kind = OPENING <=> openingBatchId set;
+  // OPENING => orderId NULL, total > 0, number 'OB-%', no InvoiceLine rows,
+  // batch is a same-company CUSTOMER_BALANCE batch still PREVIEWED at insert.
+  // kind/openingBatchId/externalDocRef immutable. Partial unique
+  // (companyId, customerId, externalDocRef) WHERE kind = OPENING.
+  kind           InvoiceKind   @default(SALE)
+  openingBatchId String?       @db.Uuid
+  externalDocRef String? // 1C / legacy document reference of the opening debt
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  company      Company              @relation(fields: [companyId], references: [id])
+  customer     Customer             @relation(fields: [customerId], references: [id])
+  order        SalesOrder?          @relation(fields: [orderId], references: [id])
+  openingBatch OpeningBalanceBatch? @relation(fields: [openingBatchId], references: [id], onDelete: Restrict)
 
   lines       InvoiceLine[]
   allocations PaymentAllocation[]
 
   @@unique([companyId, number])
   @@index([companyId, customerId])
+  @@index([openingBatchId])
 }
 
 model InvoiceLine {
@@ -825,18 +860,33 @@ enum PaymentStatus {
   REVERSED
 }
 
+// F6: COLLECTION = money actually received (agent/cashier/office, method set);
+// OPENING = opening customer credit (advance) from an OpeningBalanceBatch —
+// no method, no collector, POSTED directly, OB-... number.
+enum PaymentSource {
+  COLLECTION
+  OPENING
+}
+
 model Payment {
-  id          String        @id @default(uuid()) @db.Uuid
-  companyId   String        @db.Uuid
-  number      String // PAY-2026-000311
-  customerId  String        @db.Uuid
-  amount      Decimal       @db.Decimal(18, 2)
-  method      PaymentMethod
-  status      PaymentStatus @default(POSTED)
-  collectedBy String?       @db.Uuid // agent/kassir
-  clientId    String? // offline idempotentlik — per-company unique, see SalesOrder.clientId
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  id             String         @id @default(uuid()) @db.Uuid
+  companyId      String         @db.Uuid
+  number         String // PAY-2026-000311
+  customerId     String         @db.Uuid
+  amount         Decimal        @db.Decimal(18, 2)
+  // NULL only for source = OPENING (DB CHECK Payment_source_shape_check).
+  method         PaymentMethod?
+  status         PaymentStatus  @default(POSTED)
+  // F6 (20261019120000). OPENING => method NULL, collectedBy NULL,
+  // openingBatchId set, status POSTED/REVERSED, no handover, number 'OB-%';
+  // COLLECTION => method set, openingBatchId NULL. One live (non-REVERSED)
+  // OPENING payment per customer (partial unique).
+  source         PaymentSource  @default(COLLECTION)
+  openingBatchId String?        @db.Uuid
+  collectedBy    String?        @db.Uuid // agent/kassir
+  clientId       String? // offline idempotentlik — per-company unique, see SalesOrder.clientId
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
 
   // ADR-029 handover resolution (set once, on PENDING_HANDOVER -> POSTED or
   // -> REJECTED; NULL for payments inserted directly as POSTED). For an
@@ -846,11 +896,12 @@ model Payment {
   handoverCashSessionId String?   @db.Uuid // accepting cashier's open shift (accept only)
   handoverRejectReason  String? // reject only, non-empty
 
-  company             Company      @relation(fields: [companyId], references: [id])
-  customer            Customer     @relation(fields: [customerId], references: [id])
-  collector           User?        @relation("PaymentsCollected", fields: [collectedBy], references: [id])
-  handoverActor       User?        @relation("PaymentHandoversResolved", fields: [handoverActorId], references: [id], onDelete: Restrict)
-  handoverCashSession CashSession? @relation(fields: [handoverCashSessionId], references: [id], onDelete: Restrict)
+  company             Company              @relation(fields: [companyId], references: [id])
+  customer            Customer             @relation(fields: [customerId], references: [id])
+  collector           User?                @relation("PaymentsCollected", fields: [collectedBy], references: [id])
+  handoverActor       User?                @relation("PaymentHandoversResolved", fields: [handoverActorId], references: [id], onDelete: Restrict)
+  handoverCashSession CashSession?         @relation(fields: [handoverCashSessionId], references: [id], onDelete: Restrict)
+  openingBatch        OpeningBalanceBatch? @relation(fields: [openingBatchId], references: [id], onDelete: Restrict)
 
   allocations PaymentAllocation[]
   reversal    PaymentReversal?
@@ -862,6 +913,7 @@ model Payment {
   @@index([collectedBy])
   @@index([handoverActorId])
   @@index([handoverCashSessionId])
+  @@index([openingBatchId])
 }
 
 // F2.1: append-only record of a payment reversal (OWNER/SALES_DIRECTOR via
@@ -1112,6 +1164,8 @@ model ImportJob {
 
   company Company @relation(fields: [companyId], references: [id])
   creator User?   @relation("ImportJobCreator", fields: [createdBy], references: [id])
+
+  openingBalanceBatches OpeningBalanceBatch[]
 
   @@index([companyId, status])
   @@index([companyId, createdAt(sort: Desc)])
@@ -1386,4 +1440,68 @@ enum SyncEntity {
   Outlet
   StockLevel
   ProductCategory
+}
+
+// ---------------------------------------------------------------------------
+// F6: opening balances (TZ §6.7.1 openingQty; ADR-026 import rules)
+// ---------------------------------------------------------------------------
+
+enum OpeningBalanceKind {
+  CUSTOMER_BALANCE
+  STOCK
+}
+
+enum OpeningBalanceStatus {
+  PREVIEWED
+  POSTED
+  VOIDED
+}
+
+// One imported opening-balance file. Ledger rows it produces: Invoice
+// (kind OPENING) for debt, Payment (source OPENING) for credit, StockMovement
+// (ADJUST, refType 'OpeningBalance', refId = id) for stock. DB triggers
+// (20261019120000):
+//   insert only as PREVIEWED; PREVIEWED -> POSTED -> VOIDED only; no DELETE.
+//   companyId/kind/createdBy/createdAt never change; once POSTED the file,
+//   asOfDate and totals are frozen.
+//   -> POSTED: debtTotal/creditTotal/qtyTotal must equal the batch's ledger
+//      rows (written in the same transaction, before the flip).
+//   -> VOIDED: every ledger row already compensated (invoice CANCELLED,
+//      payment REVERSED, movement reversed) in the same transaction.
+model OpeningBalanceBatch {
+  id          String               @id @default(uuid()) @db.Uuid
+  companyId   String               @db.Uuid
+  kind        OpeningBalanceKind
+  asOfDate    DateTime             @db.Date
+  source      String // file name / "1C" / free-form origin
+  fileHash    String // sha256 of the uploaded file
+  importJobId String?              @db.Uuid
+  status      OpeningBalanceStatus @default(PREVIEWED)
+  rowCount    Int                  @default(0)
+  debtTotal   Decimal              @default(0) @db.Decimal(18, 2)
+  creditTotal Decimal              @default(0) @db.Decimal(18, 2)
+  qtyTotal    Decimal              @default(0) @db.Decimal(18, 3)
+  createdBy   String               @db.Uuid
+  postedBy    String?              @db.Uuid
+  postedAt    DateTime?
+  voidedBy    String?              @db.Uuid
+  voidedAt    DateTime?
+  voidReason  String?
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  company   Company    @relation(fields: [companyId], references: [id])
+  importJob ImportJob? @relation(fields: [importJobId], references: [id], onDelete: Restrict)
+  creator   User       @relation("OpeningBatchCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
+  poster    User?      @relation("OpeningBatchPostedBy", fields: [postedBy], references: [id], onDelete: Restrict)
+  voider    User?      @relation("OpeningBatchVoidedBy", fields: [voidedBy], references: [id], onDelete: Restrict)
+
+  invoices Invoice[]
+  payments Payment[]
+
+  @@index([companyId, kind, status])
+  @@index([importJobId])
+  @@index([createdBy])
+  @@index([postedBy])
+  @@index([voidedBy])
 }

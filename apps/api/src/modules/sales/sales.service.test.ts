@@ -330,7 +330,7 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     // Delivery issues the reservation away entirely — back to the baseline.
     expect((await getReserved()).toString()).toBe(before.toString());
 
-    await expect(tenantPrisma.run(companyId, () => sales.cancel(order.id, {}, user))).rejects.toBeInstanceOf(
+    await expect(tenantPrisma.run(companyId, () => sales.cancel(order.id, { reason: 'late cancel' }, user))).rejects.toBeInstanceOf(
       InvalidOrderTransitionException,
     );
   });
@@ -349,6 +349,12 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     );
     expect(cancelled.status).toBe('CANCELLED');
     expect((await getReserved()).toString()).toBe(before.toString());
+    const row = await tenantPrisma.run(companyId, (tx) => tx.salesOrder.findUniqueOrThrow({ where: { id: order.id } }));
+    expect(row.cancelReason).toBe('customer changed mind');
+    expect(row.cancelledBy).toBe(user.id);
+    expect(row.cancelledAt).toBeInstanceOf(Date);
+    const audit = await systemPrisma.auditLog.findFirst({ where: { companyId, action: 'order.cancel', entityId: order.id } });
+    expect(audit?.newValue).toMatchObject({ reason: 'customer changed mind' });
   });
 
   it('two parallel confirms of one order reserve exactly once (order row lock)', async () => {

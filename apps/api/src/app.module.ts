@@ -18,6 +18,8 @@ import { AuditModule } from './modules/audit/audit.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { CustomersModule } from './modules/customers/customers.module';
+import { OpeningBalancesModule } from './modules/opening-balances/opening-balances.module';
+import { CompanyExportModule } from './modules/company-export/company-export.module';
 import { IntegrationsModule } from './modules/integrations/integrations.module';
 import { ImportModule } from './modules/import/import.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
@@ -64,7 +66,9 @@ import { UsersModule } from './modules/users/users.module';
     AuditModule,
     SettingsModule,
     IntegrationsModule,
+    CompanyExportModule,
     ImportModule,
+    OpeningBalancesModule,
     HealthModule,
   ],
   providers: [

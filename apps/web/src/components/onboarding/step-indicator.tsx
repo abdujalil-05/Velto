@@ -4,7 +4,7 @@ import { useTranslations } from 'next-intl';
 import { Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-const STEP_KEYS = ['company', 'warehouse', 'product', 'customer', 'agent'] as const;
+const STEP_KEYS = ['company', 'warehouse', 'product', 'customer', 'agent', 'openingBalances'] as const;
 
 interface StepIndicatorProps {
   currentIndex: number;

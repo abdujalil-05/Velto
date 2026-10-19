@@ -94,6 +94,9 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
           agentId: opts.agentId === undefined ? fx.agentId : opts.agentId,
           warehouseId: fx.warehouseId,
           status: opts.status,
+          ...(opts.status === OrderStatus.CANCELLED
+            ? { cancelReason: 'test fixture', cancelledAt: new Date(), cancelledBy: fx.agentId }
+            : {}),
           createdAt: opts.createdAt,
           lines: {
             create: [

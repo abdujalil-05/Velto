@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { Loader2 } from 'lucide-react';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -128,7 +129,7 @@ export function AllocateAdvanceDialog({ customerId, open, onOpenChange }: Props)
               <Select id="allocPayment" value={payment.id} onChange={(e) => setPaymentId(e.target.value)} disabled={advancePayments.length === 1}>
                 {advancePayments.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.number} · {formatDate(p.createdAt, locale)} · {t('advanceOf')} {formatMoney(p.advance)} {tCommon('somUnit')}
+                    {p.number}{p.source === 'OPENING' ? ` (${tCommon('openingLabel')})` : ''} · {formatDate(p.createdAt, locale)} · {t('advanceOf')} {formatMoney(p.advance)} {tCommon('somUnit')}
                   </option>
                 ))}
               </Select>
@@ -138,7 +139,10 @@ export function AllocateAdvanceDialog({ customerId, open, onOpenChange }: Props)
               {rows.map(({ inv, raw, invalid }) => (
                 <li key={inv.id} className="flex flex-wrap items-center justify-between gap-3 py-2 text-sm">
                   <div>
-                    <p className="font-medium">{inv.number}</p>
+                    <p className="font-medium">
+                      {inv.number}
+                      {inv.kind === 'OPENING' && <Badge variant="secondary" className="ml-2">{tCommon('openingLabel')}</Badge>}
+                    </p>
                     <p className="text-xs text-muted-foreground">
                       {t('outstanding')}: {formatMoney(inv.outstanding)} {tCommon('somUnit')}
                     </p>

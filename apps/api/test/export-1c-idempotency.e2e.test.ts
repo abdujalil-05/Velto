@@ -9,6 +9,7 @@ import { permissionKeysForRole } from '../../../packages/database/src/rbac-catal
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
+import { uniquePhone } from './unique-phone';
 
 /** ADR-031/012: POST /export/1c is @Idempotent; CORS exposes the download headers (ADR-030). Real Postgres + RLS. */
 describe('E2E: 1C export create idempotency + CORS exposed headers', () => {
@@ -32,7 +33,7 @@ describe('E2E: 1C export create idempotency + CORS exposed headers', () => {
     await app.init();
     const tenant = await systemPrisma.tenant.create({ data: { slug: `test-1c-idem-${Date.now()}`, name: '1C Idem' } });
     companyId = (await systemPrisma.company.create({ data: { tenantId: tenant.id, name: '1C Idem Co' } })).id;
-    const phone = `+99890${Math.floor(1_000_000 + Math.random() * 8_000_000)}`;
+    const phone = uniquePhone();
     const user = await systemPrisma.user.create({
       data: { companyId, firstName: 'Acc', lastName: 'Idem', phone, passwordHash: await argon2.hash(password, { type: argon2.argon2id }) },
     });

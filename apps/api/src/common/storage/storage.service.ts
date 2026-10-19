@@ -12,6 +12,13 @@ export interface UploadFileInput {
   keyPrefix: string;
 }
 
+export interface PutObjectStreamInput {
+  key: string;
+  body: Readable;
+  contentLength: number;
+  mimeType: string;
+}
+
 export interface PutObjectInput {
   key: string;
   buffer: Buffer;
@@ -59,9 +66,16 @@ export class StorageService {
     return input.key;
   }
 
+  /** Streaming variant of putObject for large files (ADR-045): the body is never buffered in memory. */
+  async putObjectStream(input: PutObjectStreamInput): Promise<string> {
+    await this.client.send(new PutObjectCommand({ Bucket: this.bucket, Key: input.key, Body: input.body, ContentLength: input.contentLength, ContentType: input.mimeType }));
+    return input.key;
+  }
+
   async getObject(key: string): Promise<{ stream: Readable; size?: number }> {
     // Defence in depth: reads are confined to the current tenant's export prefix (also blocks '..' traversal).
-    if (!key.startsWith(`exports/1c/${TenantContext.companyId}/`) || key.split('/').includes('..')) {
+    const companyId = TenantContext.companyId;
+    if (!(key.startsWith(`exports/1c/${companyId}/`) || key.startsWith(`exports/company/${companyId}/`)) || key.split('/').includes('..')) {
       throw new Error('Storage key is outside the current tenant prefix');
     }
     const res = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));

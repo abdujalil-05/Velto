@@ -10,6 +10,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
 import { companyDay } from '../src/modules/field/company-day';
+import { uniquePhone } from './unique-phone';
 
 /** F3 / SEC-023: POST /routes/:id/finish needs `routes.finish`; an agent only on their own route; courier routes never. */
 describe('E2E F3: route finish RBAC + open stops', () => {
@@ -47,7 +48,7 @@ describe('E2E F3: route finish RBAC + open stops', () => {
       });
     }
     for (const [key, roleCode] of [['AGENT1', 'SALES_AGENT'], ['AGENT2', 'SALES_AGENT'], ['ACCOUNTANT', 'ACCOUNTANT'], ['COURIER', 'COURIER']] as const) {
-      const phone = `+99890${Math.floor(1_000_000 + Math.random() * 8_000_000)}`;
+      const phone = uniquePhone();
       const user = await systemPrisma.user.create({
         data: { companyId, firstName: key, lastName: 'Rfin', phone, passwordHash: await argon2.hash(password, { type: argon2.argon2id }) },
       });

@@ -1,8 +1,9 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, Optional, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import type { Queue } from 'bullmq';
 import { Prisma, systemPrisma } from '@velto/database';
 import { addTracedJob } from '../../../common/queue/trace-job';
+import { COMPANY_EXPORT_JOB_OPTS, COMPANY_EXPORT_QUEUE, COMPANY_EXPORT_TYPE, type CompanyExportJobData } from '../../company-export/company-export.constants';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import {
   EXPORT_1C_ABANDONED_QUEUED_MS,
@@ -26,6 +27,8 @@ export class Export1cRecoveryService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     @InjectQueue(EXPORT_1C_QUEUE) private readonly queue: Queue<Export1cJobData>,
+    // ADR-045: company exports share this sweep (same stale/abandoned thresholds, same job-id scheme).
+    @Optional() @InjectQueue(COMPANY_EXPORT_QUEUE) private readonly companyQueue?: Queue<CompanyExportJobData>,
   ) {}
 
   onModuleInit(): void {
@@ -51,17 +54,19 @@ export class Export1cRecoveryService implements OnModuleInit, OnModuleDestroy {
       );
       failed += res.count;
     }
-    return failed + (await this.recoverOrphanedQueued(now));
+    failed += await this.recoverOrphanedQueued(now, '1c', this.queue, EXPORT_1C_JOB_OPTS);
+    if (this.companyQueue) failed += await this.recoverOrphanedQueued(now, COMPANY_EXPORT_TYPE, this.companyQueue, COMPANY_EXPORT_JOB_OPTS);
+    return failed;
   }
 
   /**
    * QUEUED rows whose enqueue was lost (afterCommit failure / Redis data loss) would hold the active-job limit forever.
    * Re-enqueue with the same jobId (idempotent); if that also fails and the row is very old, fail it. Returns jobs failed.
    */
-  private async recoverOrphanedQueued(now: Date): Promise<number> {
+  private async recoverOrphanedQueued(now: Date, type: string, queue: Queue<Export1cJobData | CompanyExportJobData>, opts: typeof EXPORT_1C_JOB_OPTS): Promise<number> {
     const cutoff = new Date(now.getTime() - EXPORT_1C_STALE_QUEUED_MS);
     const abandonedCutoff = new Date(now.getTime() - EXPORT_1C_ABANDONED_QUEUED_MS);
-    const where = { type: '1c', status: 'QUEUED' as const, updatedAt: { lt: cutoff } };
+    const where = { type, status: 'QUEUED' as const, updatedAt: { lt: cutoff } };
     const orphans: Array<{ id: string; companyId: string; updatedAt: Date }> = [];
     for (let cursor: string | undefined; ; ) {
       const batch = await systemPrisma.exportJob.findMany({ where, select: { id: true, companyId: true, updatedAt: true }, orderBy: { id: 'asc' }, take: 100, ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}) });
@@ -72,7 +77,7 @@ export class Export1cRecoveryService implements OnModuleInit, OnModuleDestroy {
     let failed = 0;
     for (const j of orphans) {
       try {
-        await addTracedJob(this.queue, 'export', { exportJobId: j.id, companyId: j.companyId }, { ...EXPORT_1C_JOB_OPTS, jobId: `export-${j.id}` });
+        await addTracedJob(queue, 'export', { exportJobId: j.id, companyId: j.companyId }, { ...opts, jobId: `export-${j.id}` });
       } catch (e) {
         this.logger.error(`re-enqueue failed: ${e instanceof Error ? e.name : 'error'}`);
         if (j.updatedAt >= abandonedCutoff) continue;

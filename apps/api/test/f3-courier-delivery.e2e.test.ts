@@ -8,6 +8,7 @@ import { permissionKeysForRole } from '../../../packages/database/src/rbac-catal
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
+import { uniquePhone } from './unique-phone';
 
 /** F2.4 / SEC-023: a courier-only session delivers only its own orders, and only in full (partial `lines` => 403). */
 describe('E2E: courier delivery — own order, full only', () => {
@@ -46,7 +47,7 @@ describe('E2E: courier delivery — own order, full only', () => {
       });
     }
     for (const [key, roleCode] of [['OWNER', 'OWNER'], ['COURIER1', 'COURIER'], ['COURIER2', 'COURIER']] as const) {
-      const phone = `+99890${Math.floor(1_000_000 + Math.random() * 8_000_000)}`;
+      const phone = uniquePhone();
       const user = await systemPrisma.user.create({
         data: { companyId, firstName: key, lastName: 'Fcd', phone, passwordHash: await argon2.hash(password, { type: argon2.argon2id }) },
       });

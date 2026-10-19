@@ -33,7 +33,8 @@
       "reason": "Reason",
       "reasonHint": "{min}–{max} characters, required",
       "confirm": "Reverse"
-    }
+    },
+    "openingLabel": "Opening debt/advance"
   },
   "Nav": {
     "dashboard": "Dashboard",
@@ -236,7 +237,7 @@
         "success": "Advance allocated",
         "retry": "Retry",
         "noAdvance": "The customer has no unallocated advance",
-        "noInvoices": "The customer has no open invoices to allocate to",
+        "noInvoices": "The customer has no open internal invoices to allocate to",
         "payment": "Payment",
         "advanceOf": "advance",
         "outstanding": "Outstanding",
@@ -318,7 +319,7 @@
       "cancel": "Cancel order",
       "cancelSuccess": "Order cancelled",
       "cancelTitle": "Cancel order",
-      "cancelReasonLabel": "Reason (optional)",
+      "cancelReasonLabel": "Reason",
       "cancelConfirm": "Cancel order",
       "cancelKeep": "Keep order",
       "courier": "Courier",
@@ -462,14 +463,14 @@
         "fifo": "Automatic (FIFO)",
         "manual": "Manual"
       },
-      "fifoHint": "Allocated automatically, starting from the oldest open invoice.",
-      "manualHint": "Set how much goes to each invoice yourself.",
-      "noOpenInvoices": "No open invoices",
+      "fifoHint": "Allocated automatically, starting from the oldest open internal invoice.",
+      "manualHint": "Set how much goes to each internal invoice yourself.",
+      "noOpenInvoices": "No open internal invoices",
       "outstanding": "Outstanding",
       "allocatedTotal": "Allocated total",
       "selectCustomerFirst": "Select a customer first",
       "invalidAmount": "Enter a valid amount",
-      "allocateAtLeastOne": "Allocate an amount to at least one invoice",
+      "allocateAtLeastOne": "Allocate an amount to at least one internal invoice",
       "allocationExceedsAmount": "Allocated amount exceeds the payment amount",
       "submit": "Save payment",
       "created": "Payment added"
@@ -485,7 +486,7 @@
     "reverse": {
       "action": "Reverse",
       "title": "Reverse payment {number}",
-      "description": "The payment will be reversed and invoices and the customer balance recalculated. This cannot be undone.",
+      "description": "The payment will be reversed and internal invoices and the customer balance recalculated. This cannot be undone.",
       "success": "Payment reversed"
     },
     "handover": {
@@ -496,6 +497,12 @@
       "rejectTitle": "Reject payment {number}",
       "rejectDescription": "The payment will be rejected and the customer's debt will not decrease. A reason is required.",
       "openSession": "Open a cash session"
+    },
+    "source": {
+      "label": "Source",
+      "COLLECTION": "Collected payments",
+      "OPENING": "Opening advance",
+      "all": "All"
     }
   },
   "Stock": {
@@ -643,14 +650,16 @@
       "warehouse": "Warehouse",
       "product": "Product",
       "customer": "Customer",
-      "agent": "Sales agent"
+      "agent": "Sales agent",
+      "openingBalances": "Opening balances"
     },
     "warehouse": {
       "required": "Required field",
       "name": "Warehouse name",
       "address": "Address",
       "submit": "Save warehouse"
-    }
+    },
+    "continue": "Continue"
   },
   "Settings": {
     "title": "Settings",
@@ -843,12 +852,12 @@
       "currency": "Currency: UZS (so'm)",
       "statuses": "Counted orders: SUBMITTED, CONFIRMED, DELIVERED, CLOSED (DRAFT and CANCELLED are excluded)",
       "notes": {
-        "amount": "Amount: for DELIVERED/CLOSED orders the delivered quantity (invoice total), for the rest the order amount.",
+        "amount": "Amount: for DELIVERED/CLOSED orders the delivered quantity (internal invoice total), for the rest the order amount.",
         "avgCheck": "Average check = Turnover / Order count",
         "routeCompletion": "Route completion % = Completed visits / Planned visits × 100",
         "effectiveVisit": "Effective visit % = Visits that ended with an order / Completed visits × 100",
         "debtSnapshot": "Debt is the current state (not tied to the period); overdue share % = Overdue debt / Total debt × 100",
-        "aging": "Days overdue = as-of date − (invoice date + customer payment term days), counted in calendar days of the company time zone."
+        "aging": "Days overdue = as-of date − (internal invoice date +customer payment term days), counted in calendar days of the company time zone."
       }
     }
   },
@@ -1058,7 +1067,7 @@
               "Which customer owes how much, and since when — visible at a glance.",
               "Which shop the agent visited and how many orders they took — tracked through the day.",
               "How much stock you have and how much is reserved for orders — calculated automatically.",
-              "Every sum a cashier accepts is recorded against the invoice it pays off."
+              "Every sum a cashier accepts is recorded against the internal invoice it pays off."
             ]
           },
           {
@@ -1067,8 +1076,8 @@
               "Customer — the company or entrepreneur you sell to. One customer can have several outlets.",
               "Outlet — a customer's specific shop with its address. Routes are built from outlets.",
               "Order — the list of products a customer asked for, and its total.",
-              "Invoice — the document to be paid, created once the order is delivered. Debt is counted from it.",
-              "Payment — money received from a customer. It is allocated to invoices and reduces the debt.",
+              "Internal invoice — the document to be paid, created once the order is delivered. Debt is counted from it.",
+              "Payment — money received from a customer. It is allocated to internal invoices and reduces the debt.",
               "Route — the list of outlets an agent visits on a given weekday."
             ]
           }
@@ -1123,8 +1132,8 @@
             "items": [
               "Submitted — the agent or an operator entered the order; it is waiting for review.",
               "Confirmed — the order is accepted and the goods are reserved in the warehouse for that customer.",
-              "Delivered — the goods were handed over. At that moment stock goes down and an invoice is created.",
-              "Closed — the invoice is fully paid and the order is finished.",
+              "Delivered — the goods were handed over. At that moment stock goes down and an internal invoice is created.",
+              "Closed — the internal invoice is fully paid and the order is finished.",
               "Cancelled — the order fell through; the reserved goods are released."
             ]
           },
@@ -1173,7 +1182,7 @@
             "heading": "Buttons on the order card",
             "items": [
               "\"Confirm\" — reserves the goods for this customer.",
-              "\"Mark delivered\" — reduces stock and creates the invoice.",
+              "\"Mark delivered\" — reduces stock and creates the internal invoice.",
               "\"Close\" — finishes the order once it is fully paid.",
               "\"Cancel\" — you can record a reason; the reserved goods are released."
             ]
@@ -1188,7 +1197,7 @@
             "heading": "When adding a customer",
             "items": [
               "Code — the customer's internal number; it must be unique.",
-              "Payment term (days) — how many days the customer has to pay an invoice. Past that, the debt is marked overdue.",
+              "Payment term (days) — how many days the customer has to pay an internal invoice. Past that, the debt is marked overdue.",
               "Price list — which prices apply to this customer.",
               "Outlet — the customer's shop. If there are several, the rest can be added later."
             ]
@@ -1258,8 +1267,8 @@
           {
             "heading": "Allocating a payment",
             "items": [
-              "Automatic (FIFO) — the money is applied starting from the oldest open invoice. This is the usual choice.",
-              "Manual — you decide exactly which invoice the customer is paying for.",
+              "Automatic (FIFO) — the money is applied starting from the oldest open internal invoice. This is the usual choice.",
+              "Manual — you decide exactly which internal invoice the customer is paying for.",
               "Payment method: cash, card or bank transfer.",
               "A saved payment is never deleted — a mistake is fixed with a new correcting entry."
             ]
@@ -1394,7 +1403,7 @@
               "A product isn't in the list when creating an order — it hasn't been added yet, or it was made inactive.",
               "A product can't be sold, available stock is zero — it is reserved for other confirmed orders, or the stock was never received.",
               "A payment can't be added — the cash shift is probably not open. Open the shift first.",
-              "A customer's debt looks wrong — the invoice is only created once the order is delivered; an undelivered order is not counted as debt.",
+              "A customer's debt looks wrong — the internal invoice is only created once the order is delivered; an undelivered order is not counted as debt.",
               "I forgot my password — use \"Forgot password?\" on the login page and a code is sent to your phone. If that fails, an admin can issue a new password.",
               "Can data be exported to Excel — yes, list and report pages have an \"Export to Excel\" button.",
               "How do I change the language — use the language button in the top right corner: Uzbek, Russian or English."
@@ -1727,6 +1736,128 @@
       "rejectDescription": "Describe why the file {file} was rejected by 1C. This cannot be changed later.",
       "doneAccepted": "Marked as accepted.",
       "doneRejected": "Marked as rejected."
+    }
+  },
+  "Trial": {
+    "ending": "Your trial ends in {days, plural, =0 {0 days (today)} one {# day} other {# days}}. Activate a plan to keep working.",
+    "expired": "Your trial has expired. The system keeps working, but a plan must be activated."
+  },
+  "OpeningBalances": {
+    "title": "Opening balances",
+    "subtitle": "Upload customer debts/advances and warehouse stock from the old system (1C) as a file: preview first, then post against the 1C control totals.",
+    "noPermission": "You do not have access to opening balances.",
+    "retry": "Retry",
+    "uploadOwnerOnly": "Only the Owner (OWNER) can upload files. You can view the list of batches and their details.",
+    "upload": "Upload file",
+    "uploadRetry": "Upload another file",
+    "startOver": "Start over",
+    "newUpload": "Upload a new file",
+    "kinds": {
+      "CUSTOMER_BALANCE": "Customer debt/advance",
+      "STOCK": "Warehouse stock"
+    },
+    "statuses": {
+      "PREVIEWED": "Previewed",
+      "POSTED": "Posted",
+      "VOIDED": "Voided"
+    },
+    "guide": {
+      "title": "File columns",
+      "CUSTOMER_BALANCE": "customerCode or customerId; debt or credit (debt = customer owes, credit = advance, one per row); docRef (required for debt — the 1C document number); docDate (YYYY-MM-DD).",
+      "STOCK": "sku; warehouseName or warehouseId; qty (up to 3 decimals).",
+      "formats": "Format: .xlsx or .csv, first row is the header, at most 5000 rows. If any row is invalid nothing is posted partially."
+    },
+    "preview": {
+      "totalRows": "Total rows",
+      "validRows": "Valid rows",
+      "invalidRows": "Invalid rows",
+      "totalDebt": "Total debt",
+      "totalCredit": "Total advance",
+      "totalQty": "Total quantity",
+      "hasErrors": "The file has invalid rows. Fix and re-upload — opening balances are never posted partially.",
+      "ownerOnly": "Only the Owner (OWNER) can post this batch. You can review the preview result."
+    },
+    "post": {
+      "title": "Post and sign off",
+      "cutover": "Warning: after the chosen date, balances and debts in the old system must not be changed — otherwise the two systems will diverge.",
+      "asOfDate": "As-of date",
+      "source": "Source",
+      "sourcePlaceholder": "e.g. 1C, turnover sheet 30.09",
+      "controlTitle": "1C control totals",
+      "controlHint": "Enter the totals from 1C (0 is allowed). They must exactly equal the previewed file totals.",
+      "controlDebt": "1C total debt",
+      "controlCredit": "1C total advance",
+      "controlQty": "1C total stock",
+      "previewTotals": "File totals",
+      "mismatch": "The control totals differ from the file totals. The server will refuse to post — check the 1C data and the file.",
+      "mismatchExpected": "File totals: debt {debt}, advance {credit}, quantity {qty}.",
+      "signOff": "I have reconciled the totals with 1C and confirm posting.",
+      "submit": "Post",
+      "submitAnyway": "Try to post despite the difference",
+      "success": "Opening balances posted",
+      "result": "{kind}: {rows} rows posted. Total:",
+      "dateRequired": "Enter a date",
+      "dateFuture": "The date cannot be in the future",
+      "sourceInvalid": "Enter the source (1–200 characters)",
+      "amountInvalid": "Enter an amount: a number with up to 2 decimals (0 is allowed)",
+      "qtyInvalid": "Enter a quantity: a number with up to 3 decimals (0 is allowed)",
+      "signOffRequired": "Sign-off is required"
+    },
+    "history": {
+      "title": "Batches",
+      "empty": "No opening balance batches yet. Upload a file above.",
+      "kind": "Type",
+      "createdAt": "Date",
+      "source": "Source",
+      "rows": "Rows",
+      "totals": "Totals",
+      "status": "Status",
+      "actions": "Actions",
+      "asOf": "As-of date",
+      "debt": "Debt",
+      "credit": "Advance"
+    },
+    "void": {
+      "action": "Void",
+      "title": "Void batch",
+      "description": "The batch documents will be reversed. If later operations already used them, the batch cannot be voided.",
+      "confirm": "Void batch",
+      "success": "Batch voided",
+      "touchedHint": "Resolve the linked payment allocation or stock movement first."
+    },
+    "downloadTemplate": "Download CSV template"
+  },
+  "CompanyExport": {
+    "title": "Export company data",
+    "purpose": "For the customer's right to access their data and for offboarding: a full copy of your company's data as one Excel file.",
+    "includes": "Included: customers, outlets, products, prices, stock, orders, internal invoices, payments, cash sessions, users (name, phone, email, roles only).",
+    "excludes": "Never included: passwords, tokens, Telegram identifiers and other secrets.",
+    "create": "Create export",
+    "inProgress": "Export in progress",
+    "created": "Export started",
+    "throttled": "Too many requests. Try again in a minute.",
+    "retry": "Retry",
+    "empty": "No exports yet. Press \"Create export\" to get your first file.",
+    "failedUnknown": "Export failed",
+    "download": "Download",
+    "col": {
+      "status": "Status",
+      "file": "File",
+      "size": "Size",
+      "date": "Date"
+    },
+    "status": {
+      "QUEUED": "Queued",
+      "PROCESSING": "Processing",
+      "GENERATED": "Ready",
+      "FAILED": "Failed",
+      "ACCOUNTING_ACCEPTED": "Ready",
+      "FAILED_REVIEW": "Ready"
+    },
+    "hash": {
+      "match": "Checksum verified",
+      "mismatch": "Checksum mismatch - do not use this file",
+      "unavailable": "Checksum could not be verified"
     }
   }
 }

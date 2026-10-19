@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { prisma, systemPrisma } from '@velto/database';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
+import { uniquePhone } from './unique-phone';
 
 /**
  * F1.3 / TZ 16.3 "mutations idempotent under parallel calls": @Idempotent()
@@ -21,7 +22,7 @@ describe('E2E: Idempotency-Key on confirm / deliver / cash close (F1.3, 16.3)', 
   let productId: string;
   let packagingId: string;
   let warehouseId: string;
-  const phone = `+99890${Math.floor(1_000_000 + Math.random() * 8_000_000)}`;
+  const phone = uniquePhone();
   const password = 'CorrectHorseBattery9'; // nosemgrep: ajinabraham.njsscan.generic.hardcoded_secrets.node_password
 
   const http = () => request(app.getHttpServer());

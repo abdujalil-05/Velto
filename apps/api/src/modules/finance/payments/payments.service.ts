@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { assertClientIdReplayAllowed } from '../../../common/idempotency/client-id-replay';
-import { ExportJobStatus, InvoiceStatus, PaymentMethod, PaymentStatus, Prisma, withSavepoint, type TenantClient } from '@velto/database';
+import { ExportJobStatus, InvoiceStatus, PaymentMethod, PaymentSource, PaymentStatus, Prisma, withSavepoint, type TenantClient } from '@velto/database';
 import { lockExport1cShared } from '../../../common/locks/export1c-lock';
 import { AuditLogService, toAuditJson } from '../../../common/audit/audit-log.service';
 import type { AppException } from '../../../common/errors/app-exception';
@@ -29,6 +29,7 @@ import {
   PaymentHandoverSelfResolveException,
   PaymentNotPendingHandoverException,
   PaymentNotPostedException,
+  PaymentOpeningNotReversibleException,
   PaymentPendingHandoverAllocationException,
   PaymentReversalReasonRequiredException,
   PaymentStatusesLimitException,
@@ -70,6 +71,7 @@ export class PaymentsService {
       ...(query.customerId ? { customerId: query.customerId } : {}),
       ...(scopedCollectedBy ? { collectedBy: scopedCollectedBy } : {}),
       ...(query.status ? { status: query.status } : {}),
+      ...(query.source ? { source: query.source } : query.from || query.to ? { source: PaymentSource.COLLECTION } : {}),
       // ADR-029: the period is the posting date coalesce(handoverAt, createdAt),
       // same rule as 1C export/dashboards — an accepted handover counts on the
       // day the cashier accepted it. PENDING_HANDOVER has handoverAt null, so
@@ -376,6 +378,8 @@ export class PaymentsService {
     // allocating an advance moves no cash and adds append-only rows only.
     const before = await tx.payment.findUnique({ where: { id: paymentId }, include: PAYMENT_INCLUDE });
     if (!before) throw new PaymentNotFoundException();
+    // ADR-012/F6: opening credit is managed only through the opening batch void.
+    if (before.source === PaymentSource.OPENING) throw new PaymentOpeningNotReversibleException();
     if (before.status !== PaymentStatus.POSTED) throw new PaymentNotPostedException(before.status);
     await this.customers.lockForUpdate(tx, before.customerId);
 
@@ -424,6 +428,7 @@ export class PaymentsService {
     await tx.$queryRaw(Prisma.sql`SELECT id FROM "Payment" WHERE id = ${paymentId}::uuid FOR UPDATE`);
     const before = await tx.payment.findUnique({ where: { id: paymentId }, include: PAYMENT_INCLUDE });
     if (!before) throw new PaymentNotFoundException();
+    if (before.source === PaymentSource.OPENING) throw new PaymentOpeningNotReversibleException();
     if (before.status === PaymentStatus.REVERSED) throw new PaymentAlreadyReversedException();
     // ADR-029: PENDING_HANDOVER/REJECTED never reached the ledger — reject/accept instead.
     // Same PAYMENT_NOT_POSTED code as allocate() for the same state.
@@ -474,7 +479,7 @@ export class PaymentsService {
    */
   private async assertNotInClosedCashSession(
     tx: TenantClient,
-    payment: { method: PaymentMethod; collectedBy: string | null; createdAt: Date; handoverCashSessionId: string | null },
+    payment: { method: PaymentMethod | null; collectedBy: string | null; createdAt: Date; handoverCashSessionId: string | null },
   ): Promise<void> {
     if (payment.method !== PaymentMethod.CASH || !payment.collectedBy) return;
     const sessions = payment.handoverCashSessionId

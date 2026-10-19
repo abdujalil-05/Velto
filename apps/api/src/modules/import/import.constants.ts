@@ -4,6 +4,9 @@ export const IMPORT_QUEUE = 'import-commit';
 
 export type ImportType = 'customers' | 'products';
 
+/** ImportJob rows of these types belong to /import; opening-balance previews (opening-balances module) also use ImportJob and are kept out of /import. */
+export const IMPORT_TYPES: ImportType[] = ['customers', 'products'];
+
 export interface ImportJobData extends TraceableJobData {
   importJobId: string;
   companyId: string;

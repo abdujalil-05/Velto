@@ -17,6 +17,7 @@ import { buildReportCsv, buildReportXlsx, type ReportTable } from '../src/module
 import type { Export1cJobData } from '../src/modules/integrations/export-1c/export-1c.constants';
 import { Export1cProcessor } from '../src/modules/integrations/export-1c/export-1c.processor';
 import { Export1cRecoveryService } from '../src/modules/integrations/export-1c/export-1c-recovery.service';
+import { uniquePhone } from './unique-phone';
 
 /**
  * F5.3 hardening: TZ §5.4.2 I-01 (stable Ид across re-export), §16.5.1 negative tests, SEC-001/009,
@@ -54,7 +55,7 @@ describe('E2E F5.3: 1C export hardening', () => {
   }
 
   async function seedUser(companyId: string, key: string, roleCode: string) {
-    const phone = `+99890${Math.floor(1_000_000 + Math.random() * 8_000_000)}`;
+    const phone = uniquePhone();
     const user = await systemPrisma.user.create({
       data: { companyId, firstName: key, lastName: 'Hardening', phone, passwordHash: await argon2.hash(password, { type: argon2.argon2id }) },
     });

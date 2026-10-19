@@ -9,6 +9,7 @@ import { permissionKeysForRole } from '../../../packages/database/src/rbac-catal
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
+import { uniquePhone } from './unique-phone';
 
 /** TZ §11.4: every report export route writes exactly one `report.export` audit event; denied roles get 403 and none. */
 describe('E2E: report export audit', () => {
@@ -20,7 +21,7 @@ describe('E2E: report export audit', () => {
   const tenantPrisma = new TenantPrismaService();
 
   async function createUser(roleCode: string) {
-    const phone = `+99890${Math.floor(1_000_000 + Math.random() * 8_000_000)}`;
+    const phone = uniquePhone();
     const user = await systemPrisma.user.create({
       data: { companyId, firstName: roleCode, lastName: 'T', phone, passwordHash: await argon2.hash(password, { type: argon2.argon2id }) },
     });
@@ -55,6 +56,14 @@ describe('E2E: report export audit', () => {
     await app.close();
   });
 
+  /** Returns '' when the response is the expected 403, else a JSON dump of everything needed to root-cause it. */
+  async function diagnose(role: string, path: string, traceId: string, res: request.Response): Promise<string> {
+    if (res.status === 403) return '';
+    const user = await systemPrisma.user.findUnique({ where: { id: userIds[role] }, select: { isActive: true, companyId: true } });
+    const audits = await tenantPrisma.run(companyId, (tx) => tx.auditLog.findMany({ where: { traceId }, select: { action: true, userId: true } }));
+    return JSON.stringify({ role, path, status: res.status, body: res.body, headers: { 'x-request-id': res.headers['x-request-id'] }, traceId, user, audits, pid: process.pid });
+  }
+
   const exportEvents = (traceId: string) =>
     tenantPrisma.run(companyId, (tx) => tx.auditLog.findMany({ where: { action: 'report.export', traceId } }));
 
@@ -82,7 +91,10 @@ describe('E2E: report export audit', () => {
   it.each(['SALES_AGENT', 'CASHIER'])('%s => 403 and no report.export event', async (role) => {
     for (const [path] of routes) {
       const traceId = `trace-rexp-${randomUUID()}`;
-      await request(app.getHttpServer()).get(path).set('Authorization', `Bearer ${tokens[role]}`).set('x-request-id', traceId).expect(403);
+      const res = await request(app.getHttpServer()).get(path).set('Authorization', `Bearer ${tokens[role]}`).set('x-request-id', traceId);
+      // Diagnostic: a rare non-403 (seen 401 in full-suite runs) must carry full context, not just "expected 403, got 401".
+      const denied = await diagnose(role, path, traceId, res);
+      expect(denied, denied).toBe('');
       expect(await exportEvents(traceId)).toHaveLength(0);
     }
   });
