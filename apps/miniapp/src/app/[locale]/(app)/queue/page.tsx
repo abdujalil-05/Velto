@@ -7,9 +7,9 @@ import { toast } from 'sonner';
 import { Download } from 'lucide-react';
 import { useRouter } from '@/i18n/navigation';
 import { useTelegramBackButton } from '@/lib/hooks/use-telegram-back-button';
-import { usePaymentsQuery } from '@/lib/api/payments';
 import { useSyncEngine } from '@/lib/offline/sync-engine';
 import { queueRepository } from '@/lib/offline/queue';
+import { isAwaitingHandover, refreshHandoverDecisions } from '@/lib/offline/handover-sync';
 import { useOfflineCustomers, useOfflineOutlets, useOfflineProducts } from '@/lib/offline/use-offline-data';
 import { downloadJson, entryDisplayName, exportFileName, needsAttention, sortQueueForScreen } from '@/lib/offline/queue-view';
 import { ConfirmSheet } from '@/components/shared/confirm-sheet';
@@ -42,16 +42,14 @@ export default function QueuePage() {
 
   const productName = useCallback((id: string) => products.data?.find((p) => p.id === id)?.name ?? '—', [products.data]);
   // Learn the cashier's decision (POSTED/REJECTED) for payments still waiting on handover — online only.
-  const awaitingHandover = (entries.data ?? []).some((e) => e.type === 'payment' && e.paymentStatus === 'PENDING_HANDOVER');
-  const handover = usePaymentsQuery({ pageSize: 100 }, engine.isOnline && awaitingHandover);
+  const awaitingHandover = (entries.data ?? []).some(isAwaitingHandover);
+  const { refetch: refetchEntries } = entries;
   useEffect(() => {
-    const items = handover.data?.data;
-    if (!items) return;
-    void Promise.all(items.map((p) => queueRepository.applyHandoverStatus(p.id, p.status, p.handoverRejectReason))).then((r) => {
-      if (r.some(Boolean)) void entries.refetch();
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [handover.data]);
+    if (!engine.isOnline || !awaitingHandover) return;
+    void refreshHandoverDecisions()
+      .then((changed) => { if (changed) void refetchEntries(); })
+      .catch(() => undefined); // best effort; the next online visit retries
+  }, [engine.isOnline, awaitingHandover, refetchEntries]);
 
   const rows = sortQueueForScreen(entries.data ?? []);
   const attention = rows.filter(needsAttention);

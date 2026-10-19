@@ -94,7 +94,7 @@
     "saved": "Payment saved on this device (not yet sent to the server)",
     "shareReceipt": "Share receipt",
     "handoverNotice": "Waiting to be handed to the cashier. The customer's debt drops only after the cashier accepts.",
-    "debtNotReducedNote": "Cash you collected does not reduce the debt until the cashier accepts it.",
+    "debtNotReducedNote": "A payment you collected does not reduce the debt until the cashier accepts it.",
     "inTransit": "In transit (not handed to cashier)"
   },
   "Visit": {
@@ -271,7 +271,7 @@
     "handoverPending": "Waiting for cashier handover",
     "handoverPosted": "Cashier accepted",
     "handoverRejected": "Needs attention: cashier rejected",
-    "handoverPendingNote": "Server accepted. Hand the cash to the cashier — debt drops after the cashier accepts.",
+    "handoverPendingNote": "Server accepted. Hand the money to the cashier — debt drops after the cashier accepts.",
     "handoverRejectedNote": "The cashier rejected this payment; debt was not reduced."
   }
 }

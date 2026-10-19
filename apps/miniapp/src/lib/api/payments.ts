@@ -22,24 +22,6 @@ export interface Payment {
   allocations: { id: string; invoiceId: string; amount: string; invoice: { number: string } }[];
 }
 
-export interface ListPaymentsParams {
-  page?: number;
-  pageSize?: number;
-  collectedBy?: string;
-  from?: string;
-  to?: string;
-  [key: string]: string | number | undefined;
-}
-
-/** Home screen (9.4 Ekran 1, "Yig'ilgan: ...") — payments *I* collected today. */
-export function usePaymentsQuery(params: ListPaymentsParams, enabled = true) {
-  return useQuery({
-    queryKey: ['payments', params],
-    queryFn: () => apiFetch<PaginatedResult<Payment>>(`/payments${toQueryString(params)}`),
-    enabled,
-  });
-}
-
 export interface CreatePaymentInput {
   customerId: string;
   amount: number;
@@ -58,6 +40,22 @@ export function useCreatePaymentMutation() {
       queryClient.invalidateQueries({ queryKey: ['customers'] });
     },
   });
+}
+
+export interface PaymentStatusRow {
+  id: string;
+  clientId: string | null;
+  status: PaymentStatus;
+  handoverAt: string | null;
+  handoverRejectReason: string | null;
+}
+
+/** Server cap per POST /payments/statuses call (ids + clientIds combined, else 400 PAYMENT_STATUSES_LIMIT). */
+export const PAYMENT_STATUSES_LIMIT = 100;
+
+/** Cashier decisions for my own payments by server id and/or clientId (<= 100 in total per call). */
+export function fetchPaymentStatuses(body: { ids?: string[]; clientIds?: string[] }): Promise<PaymentStatusRow[]> {
+  return apiFetch<PaymentStatusRow[]>('/payments/statuses', { method: 'POST', body });
 }
 
 export interface InTransit {
