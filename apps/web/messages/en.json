@@ -237,7 +237,7 @@
         "success": "Advance allocated",
         "retry": "Retry",
         "noAdvance": "The customer has no unallocated advance",
-        "noInvoices": "The customer has no open invoices to allocate to",
+        "noInvoices": "The customer has no open internal invoices to allocate to",
         "payment": "Payment",
         "advanceOf": "advance",
         "outstanding": "Outstanding",
@@ -463,14 +463,14 @@
         "fifo": "Automatic (FIFO)",
         "manual": "Manual"
       },
-      "fifoHint": "Allocated automatically, starting from the oldest open invoice.",
-      "manualHint": "Set how much goes to each invoice yourself.",
-      "noOpenInvoices": "No open invoices",
+      "fifoHint": "Allocated automatically, starting from the oldest open internal invoice.",
+      "manualHint": "Set how much goes to each internal invoice yourself.",
+      "noOpenInvoices": "No open internal invoices",
       "outstanding": "Outstanding",
       "allocatedTotal": "Allocated total",
       "selectCustomerFirst": "Select a customer first",
       "invalidAmount": "Enter a valid amount",
-      "allocateAtLeastOne": "Allocate an amount to at least one invoice",
+      "allocateAtLeastOne": "Allocate an amount to at least one internal invoice",
       "allocationExceedsAmount": "Allocated amount exceeds the payment amount",
       "submit": "Save payment",
       "created": "Payment added"
@@ -486,7 +486,7 @@
     "reverse": {
       "action": "Reverse",
       "title": "Reverse payment {number}",
-      "description": "The payment will be reversed and invoices and the customer balance recalculated. This cannot be undone.",
+      "description": "The payment will be reversed and internal invoices and the customer balance recalculated. This cannot be undone.",
       "success": "Payment reversed"
     },
     "handover": {
@@ -852,12 +852,12 @@
       "currency": "Currency: UZS (so'm)",
       "statuses": "Counted orders: SUBMITTED, CONFIRMED, DELIVERED, CLOSED (DRAFT and CANCELLED are excluded)",
       "notes": {
-        "amount": "Amount: for DELIVERED/CLOSED orders the delivered quantity (invoice total), for the rest the order amount.",
+        "amount": "Amount: for DELIVERED/CLOSED orders the delivered quantity (internal invoice total), for the rest the order amount.",
         "avgCheck": "Average check = Turnover / Order count",
         "routeCompletion": "Route completion % = Completed visits / Planned visits × 100",
         "effectiveVisit": "Effective visit % = Visits that ended with an order / Completed visits × 100",
         "debtSnapshot": "Debt is the current state (not tied to the period); overdue share % = Overdue debt / Total debt × 100",
-        "aging": "Days overdue = as-of date − (invoice date + customer payment term days), counted in calendar days of the company time zone."
+        "aging": "Days overdue = as-of date − (internal invoice date +customer payment term days), counted in calendar days of the company time zone."
       }
     }
   },
@@ -1067,7 +1067,7 @@
               "Which customer owes how much, and since when — visible at a glance.",
               "Which shop the agent visited and how many orders they took — tracked through the day.",
               "How much stock you have and how much is reserved for orders — calculated automatically.",
-              "Every sum a cashier accepts is recorded against the invoice it pays off."
+              "Every sum a cashier accepts is recorded against the internal invoice it pays off."
             ]
           },
           {
@@ -1076,8 +1076,8 @@
               "Customer — the company or entrepreneur you sell to. One customer can have several outlets.",
               "Outlet — a customer's specific shop with its address. Routes are built from outlets.",
               "Order — the list of products a customer asked for, and its total.",
-              "Invoice — the document to be paid, created once the order is delivered. Debt is counted from it.",
-              "Payment — money received from a customer. It is allocated to invoices and reduces the debt.",
+              "Internal invoice — the document to be paid, created once the order is delivered. Debt is counted from it.",
+              "Payment — money received from a customer. It is allocated to internal invoices and reduces the debt.",
               "Route — the list of outlets an agent visits on a given weekday."
             ]
           }
@@ -1132,8 +1132,8 @@
             "items": [
               "Submitted — the agent or an operator entered the order; it is waiting for review.",
               "Confirmed — the order is accepted and the goods are reserved in the warehouse for that customer.",
-              "Delivered — the goods were handed over. At that moment stock goes down and an invoice is created.",
-              "Closed — the invoice is fully paid and the order is finished.",
+              "Delivered — the goods were handed over. At that moment stock goes down and an internal invoice is created.",
+              "Closed — the internal invoice is fully paid and the order is finished.",
               "Cancelled — the order fell through; the reserved goods are released."
             ]
           },
@@ -1182,7 +1182,7 @@
             "heading": "Buttons on the order card",
             "items": [
               "\"Confirm\" — reserves the goods for this customer.",
-              "\"Mark delivered\" — reduces stock and creates the invoice.",
+              "\"Mark delivered\" — reduces stock and creates the internal invoice.",
               "\"Close\" — finishes the order once it is fully paid.",
               "\"Cancel\" — you can record a reason; the reserved goods are released."
             ]
@@ -1197,7 +1197,7 @@
             "heading": "When adding a customer",
             "items": [
               "Code — the customer's internal number; it must be unique.",
-              "Payment term (days) — how many days the customer has to pay an invoice. Past that, the debt is marked overdue.",
+              "Payment term (days) — how many days the customer has to pay an internal invoice. Past that, the debt is marked overdue.",
               "Price list — which prices apply to this customer.",
               "Outlet — the customer's shop. If there are several, the rest can be added later."
             ]
@@ -1267,8 +1267,8 @@
           {
             "heading": "Allocating a payment",
             "items": [
-              "Automatic (FIFO) — the money is applied starting from the oldest open invoice. This is the usual choice.",
-              "Manual — you decide exactly which invoice the customer is paying for.",
+              "Automatic (FIFO) — the money is applied starting from the oldest open internal invoice. This is the usual choice.",
+              "Manual — you decide exactly which internal invoice the customer is paying for.",
               "Payment method: cash, card or bank transfer.",
               "A saved payment is never deleted — a mistake is fixed with a new correcting entry."
             ]
@@ -1403,7 +1403,7 @@
               "A product isn't in the list when creating an order — it hasn't been added yet, or it was made inactive.",
               "A product can't be sold, available stock is zero — it is reserved for other confirmed orders, or the stock was never received.",
               "A payment can't be added — the cash shift is probably not open. Open the shift first.",
-              "A customer's debt looks wrong — the invoice is only created once the order is delivered; an undelivered order is not counted as debt.",
+              "A customer's debt looks wrong — the internal invoice is only created once the order is delivered; an undelivered order is not counted as debt.",
               "I forgot my password — use \"Forgot password?\" on the login page and a code is sent to your phone. If that fails, an admin can issue a new password.",
               "Can data be exported to Excel — yes, list and report pages have an \"Export to Excel\" button.",
               "How do I change the language — use the language button in the top right corner: Uzbek, Russian or English."
@@ -1829,7 +1829,7 @@
   "CompanyExport": {
     "title": "Export company data",
     "purpose": "For the customer's right to access their data and for offboarding: a full copy of your company's data as one Excel file.",
-    "includes": "Included: customers, outlets, products, prices, stock, orders, invoices, payments, cash sessions, users (name, phone, email, roles only).",
+    "includes": "Included: customers, outlets, products, prices, stock, orders, internal invoices, payments, cash sessions, users (name, phone, email, roles only).",
     "excludes": "Never included: passwords, tokens, Telegram identifiers and other secrets.",
     "create": "Create export",
     "inProgress": "Export in progress",

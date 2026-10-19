@@ -237,12 +237,12 @@
         "success": "Avans taqsimlandi",
         "retry": "Qayta urinish",
         "noAdvance": "Mijozda taqsimlanmagan avans yo'q",
-        "noInvoices": "Mijozda taqsimlash uchun ochiq fakturalar yo'q",
+        "noInvoices": "Mijozda taqsimlash uchun ochiq ichki hisoblar yo'q",
         "payment": "To'lov",
         "advanceOf": "avans",
         "outstanding": "Qoldiq",
         "amount": "Summa",
-        "invalidAmount": "Faktura qoldig'idan oshmagan summa kiriting",
+        "invalidAmount": "Ichki hisob qoldig'idan oshmagan summa kiriting",
         "total": "Taqsimlandi",
         "exceedsAdvance": "avansdan oshib ketdi",
         "submit": "Taqsimlash"
@@ -463,14 +463,14 @@
         "fifo": "Avtomatik (FIFO)",
         "manual": "Qo'lda taqsimlash"
       },
-      "fifoHint": "Eng eski ochiq fakturadan boshlab avtomatik taqsimlanadi.",
-      "manualHint": "Har bir fakturaga qancha yo'naltirishni o'zingiz belgilang.",
-      "noOpenInvoices": "Ochiq faktura yo'q",
+      "fifoHint": "Eng eski ochiq ichki hisobdan boshlab avtomatik taqsimlanadi.",
+      "manualHint": "Har bir ichki hisobga qancha yo'naltirishni o'zingiz belgilang.",
+      "noOpenInvoices": "Ochiq ichki hisob yo'q",
       "outstanding": "Qoldiq",
       "allocatedTotal": "Taqsimlangan jami",
       "selectCustomerFirst": "Avval mijozni tanlang",
       "invalidAmount": "Summani to'g'ri kiriting",
-      "allocateAtLeastOne": "Kamida bitta fakturaga summa kiriting",
+      "allocateAtLeastOne": "Kamida bitta ichki hisobga summa kiriting",
       "allocationExceedsAmount": "Taqsimlangan summa to'lov summasidan oshib ketdi",
       "submit": "To'lovni saqlash",
       "created": "To'lov qo'shildi"
@@ -479,14 +479,14 @@
     "actions": "Amallar",
     "statuses": {
       "PENDING_HANDOVER": "Yo'lda (kassir qabul qilishi kutilmoqda)",
-      "POSTED": "Qabul qilingan",
+      "POSTED": "Hisobga olingan",
       "REJECTED": "Rad etilgan",
       "REVERSED": "Bekor qilingan"
     },
     "reverse": {
       "action": "Bekor qilish",
       "title": "{number} to'lovini bekor qilish",
-      "description": "To'lov bekor qilinadi, fakturalar va mijoz balansi qayta hisoblanadi. Bu amalni qaytarib bo'lmaydi.",
+      "description": "To'lov bekor qilinadi, ichki hisoblar va mijoz balansi qayta hisoblanadi. Bu amalni qaytarib bo'lmaydi.",
       "success": "To'lov bekor qilindi"
     },
     "handover": {
@@ -852,12 +852,12 @@
       "currency": "Valyuta: so'm (UZS)",
       "statuses": "Hisobga olinadigan buyurtmalar: SUBMITTED, CONFIRMED, DELIVERED, CLOSED (DRAFT va CANCELLED hisobga olinmaydi)",
       "notes": {
-        "amount": "Summa: DELIVERED/CLOSED buyurtmalar uchun yetkazilgan miqdor (hisob-faktura jami), qolganlari uchun buyurtma summasi.",
+        "amount": "Summa: DELIVERED/CLOSED buyurtmalar uchun yetkazilgan miqdor (ichki hisob jami), qolganlari uchun buyurtma summasi.",
         "avgCheck": "O'rtacha chek = Aylanma / Buyurtmalar soni",
         "routeCompletion": "Marshrut bajarilishi % = Bajarilgan tashriflar / Rejalashtirilgan tashriflar × 100",
         "effectiveVisit": "Samarali tashrif % = Buyurtma bilan tugagan tashriflar / Bajarilgan tashriflar × 100",
         "debtSnapshot": "Qarzdorlik joriy holat bo'yicha (davrga bog'liq emas); muddati o'tgan qarz % = Muddati o'tgan qarz / Jami qarzdorlik × 100",
-        "aging": "Kechikish kunlari = hisobot sanasi − (hisob-faktura sanasi + mijozning to'lov muddati kunlari), kompaniya vaqt zonasidagi kalendar kunlarida."
+        "aging": "Kechikish kunlari = hisobot sanasi − (ichki hisob sanasi + mijozning to'lov muddati kunlari), kompaniya vaqt zonasidagi kalendar kunlarida."
       }
     }
   },
@@ -1067,7 +1067,7 @@
               "Qaysi mijoz qancha qarzdor va qachondan beri — bir qarashda ko'rinadi.",
               "Agent qaysi do'konda bo'ldi, qancha buyurtma oldi — kun davomida kuzatib boriladi.",
               "Omborda qancha mahsulot bor, qanchasi buyurtmalarga band qilingan — avtomatik hisoblanadi.",
-              "Kassir qabul qilgan har bir so'm qaysi hisob-fakturaga tushgani yozib boriladi."
+              "Kassir qabul qilgan har bir so'm qaysi ichki hisobga tushgani yozib boriladi."
             ]
           },
           {
@@ -1076,8 +1076,8 @@
               "Mijoz — siz mahsulot sotadigan kompaniya yoki tadbirkor. Bitta mijozning bir nechta savdo nuqtasi (do'koni) bo'lishi mumkin.",
               "Savdo nuqtasi — mijozning aniq do'koni va manzili. Marshrutlar aynan nuqtalarga tuziladi.",
               "Buyurtma — mijoz so'ragan mahsulotlar ro'yxati va uning summasi.",
-              "Faktura — buyurtma yetkazilgandan keyin hosil bo'ladigan, to'lanishi kerak bo'lgan hujjat. Qarz shundan hisoblanadi.",
-              "To'lov — mijozdan olingan pul. U fakturalarga taqsimlanadi va qarzni kamaytiradi.",
+              "Ichki hisob — buyurtma yetkazilgandan keyin hosil bo'ladigan, to'lanishi kerak bo'lgan hujjat. Qarz shundan hisoblanadi.",
+              "To'lov — mijozdan olingan pul. U ichki hisoblarga taqsimlanadi va qarzni kamaytiradi.",
               "Marshrut — agent ma'lum hafta kunida aylanib chiqadigan savdo nuqtalari ro'yxati."
             ]
           }
@@ -1132,8 +1132,8 @@
             "items": [
               "Yuborilgan — agent yoki operator buyurtmani kiritdi, u ko'rib chiqishni kutmoqda.",
               "Tasdiqlangan — buyurtma qabul qilindi, mahsulot omborda shu mijoz uchun band qilinadi.",
-              "Yetkazilgan — mahsulot mijozga topshirildi. Shu payt ombor qoldig'i kamayadi va faktura hosil bo'ladi.",
-              "Yopilgan — faktura to'liq to'landi, buyurtma bo'yicha ish tugadi.",
+              "Yetkazilgan — mahsulot mijozga topshirildi. Shu payt ombor qoldig'i kamayadi va ichki hisob hosil bo'ladi.",
+              "Yopilgan — ichki hisob to'liq to'landi, buyurtma bo'yicha ish tugadi.",
               "Bekor qilingan — buyurtma amalga oshmadi, band qilingan mahsulot bo'shatiladi."
             ]
           },
@@ -1182,7 +1182,7 @@
             "heading": "Buyurtma kartochkasidagi tugmalar",
             "items": [
               "«Tasdiqlash» — mahsulotni shu mijoz uchun band qiladi.",
-              "«Yetkazildi deb belgilash» — ombor qoldig'ini kamaytiradi va fakturani hosil qiladi.",
+              "«Yetkazildi deb belgilash» — ombor qoldig'ini kamaytiradi va ichki hisobni hosil qiladi.",
               "«Yopish» — to'lov to'liq bo'lgach buyurtmani yakunlaydi.",
               "«Bekor qilish» — sababini yozib qoldirish mumkin; band qilingan mahsulot bo'shaydi."
             ]
@@ -1197,7 +1197,7 @@
             "heading": "Mijoz qo'shishda",
             "items": [
               "Kod — mijozning ichki raqami, takrorlanmasligi kerak.",
-              "To'lov muddati (kun) — mijoz fakturani necha kunda to'lashi kerak. Shu muddat o'tsa, qarz «muddati o'tgan» deb belgilanadi.",
+              "To'lov muddati (kun) — mijoz ichki hisobni necha kunda to'lashi kerak. Shu muddat o'tsa, qarz «muddati o'tgan» deb belgilanadi.",
               "Narx ro'yxati — mijozga qaysi narxlar qo'llanishi.",
               "Savdo nuqtasi — mijozning do'koni. Bittadan ortiq bo'lsa, keyinroq ham qo'shish mumkin."
             ]
@@ -1267,8 +1267,8 @@
           {
             "heading": "To'lovni taqsimlash",
             "items": [
-              "Avtomatik (FIFO) — pul eng eski ochiq fakturadan boshlab taqsimlanadi. Odatda shu variant tanlanadi.",
-              "Qo'lda — mijoz aynan qaysi faktura uchun to'layotganini o'zingiz belgilaysiz.",
+              "Avtomatik (FIFO) — pul eng eski ochiq ichki hisobdan boshlab taqsimlanadi. Odatda shu variant tanlanadi.",
+              "Qo'lda — mijoz aynan qaysi ichki hisob uchun to'layotganini o'zingiz belgilaysiz.",
               "To'lov usuli: naqd, karta yoki bank o'tkazmasi.",
               "Saqlangan to'lov o'chirilmaydi — xato bo'lsa, uni tuzatuvchi yangi yozuv qilinadi."
             ]
@@ -1403,7 +1403,7 @@
               "Buyurtma yaratayotganda mahsulot ro'yxatda yo'q — u hali qo'shilmagan yoki «nofaol» qilib qo'yilgan bo'lishi mumkin.",
               "Mahsulotni sotib bo'lmayapti, «erkin» qoldiq nol — u boshqa tasdiqlangan buyurtmalarga band qilingan yoki ombor qoldig'i kiritilmagan.",
               "To'lov qo'shib bo'lmayapti — kassa smenasi ochilmagan bo'lishi mumkin, avval smenani oching.",
-              "Mijozning qarzi noto'g'ri ko'rinmoqda — faktura buyurtma «Yetkazilgan» bo'lgandan keyin hosil bo'ladi, yetkazilmagan buyurtma qarzga kirmaydi.",
+              "Mijozning qarzi noto'g'ri ko'rinmoqda — ichki hisob buyurtma «Yetkazilgan» bo'lgandan keyin hosil bo'ladi, yetkazilmagan buyurtma qarzga kirmaydi.",
               "Parolni unutdim — kirish sahifasidagi «Parolni unutdingizmi?» orqali telefonga kod keladi. Ishlamasa, admin yangi parol beradi.",
               "Ma'lumotni Excelga yuklash mumkinmi — ha, ro'yxat va hisobot sahifalarida «Excelga eksport» tugmasi bor.",
               "Tilni qanday o'zgartiraman — yuqori o'ng burchakdagi til tugmasi orqali: o'zbek, rus yoki ingliz."
@@ -1757,7 +1757,7 @@
     },
     "statuses": {
       "PREVIEWED": "Ko'rib chiqilgan",
-      "POSTED": "O'tkazilgan",
+      "POSTED": "Hisobga olingan",
       "VOIDED": "Bekor qilingan"
     },
     "guide": {
@@ -1829,7 +1829,7 @@
   "CompanyExport": {
     "title": "Kompaniya ma'lumotlarini eksport qilish",
     "purpose": "Mijozning o'z ma'lumotlariga bo'lgan huquqi va offboarding uchun: kompaniya ma'lumotlarining to'liq nusxasi bitta Excel faylida.",
-    "includes": "Kiradi: mijozlar, savdo nuqtalari, mahsulotlar, narxlar, qoldiqlar, buyurtmalar, hisob-fakturalar, to'lovlar, kassa smenalari, foydalanuvchilar (faqat ism, telefon, email, rollar).",
+    "includes": "Kiradi: mijozlar, savdo nuqtalari, mahsulotlar, narxlar, qoldiqlar, buyurtmalar, ichki hisoblar, to'lovlar, kassa smenalari, foydalanuvchilar (faqat ism, telefon, email, rollar).",
     "excludes": "Kirmaydi: parollar, tokenlar, Telegram identifikatorlari va boshqa maxfiy kalitlar.",
     "create": "Eksport yaratish",
     "inProgress": "Eksport tayyorlanmoqda",

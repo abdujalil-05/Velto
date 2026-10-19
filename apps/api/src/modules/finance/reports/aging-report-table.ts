@@ -13,8 +13,8 @@ export function agingReportTable(
       ['Yaratilgan vaqt', formatGeneratedAt(generatedAt, data.timeZone)],
     ],
     notes: [
-      "Muddat = hisob-faktura sanasi (kompaniya vaqt zonasi) + mijoz to'lov muddati (kun); muddati kelmagan = 0 va undan kam kun kechikish",
-      "Qoldiq = hisob-faktura jami - asOf sanagacha qo'llangan to'lovlar",
+      "Muddat = ichki hisob sanasi (kompaniya vaqt zonasi) + mijoz to'lov muddati (kun); muddati kelmagan = 0 va undan kam kun kechikish",
+      "Qoldiq = ichki hisob jami - asOf sanagacha qo'llangan to'lovlar",
     ],
     sections: [
       {

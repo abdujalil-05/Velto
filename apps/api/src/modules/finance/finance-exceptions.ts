@@ -14,9 +14,9 @@ export class PaymentNotFoundException extends AppException {
 export class InvoiceNotFoundException extends AppException {
   constructor() {
     super(HttpStatus.NOT_FOUND, 'INVOICE_NOT_FOUND', {
-      uz: 'Hisob-faktura topilmadi',
-      ru: 'Счёт-фактура не найден',
-      en: 'Invoice not found',
+      uz: 'Ichki hisob topilmadi',
+      ru: 'Внутренний счёт не найден',
+      en: 'Internal invoice not found',
     });
   }
 }
@@ -37,9 +37,9 @@ export class AllocationExceedsInvoiceException extends AppException {
       HttpStatus.BAD_REQUEST,
       'PAYMENT_ALLOCATION_EXCEEDS_INVOICE',
       {
-        uz: `"${invoiceNumber}" fakturasining qoldig'i ${outstanding}, so'ralgan ${requested}`,
-        ru: `Остаток счёта "${invoiceNumber}" составляет ${outstanding}, запрошено ${requested}`,
-        en: `Invoice "${invoiceNumber}" has ${outstanding} outstanding, but ${requested} was requested`,
+        uz: `"${invoiceNumber}" ichki hisobining qoldig'i ${outstanding}, so'ralgan ${requested}`,
+        ru: `Остаток внутреннего счёта "${invoiceNumber}" составляет ${outstanding}, запрошено ${requested}`,
+        en: `Internal invoice "${invoiceNumber}" has ${outstanding} outstanding, but ${requested} was requested`,
       },
       { invoiceNumber, outstanding, requested },
     );

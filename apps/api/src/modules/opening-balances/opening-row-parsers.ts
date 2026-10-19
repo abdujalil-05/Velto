@@ -125,9 +125,9 @@ export function validateCustomerRows(raw: RawCustomerCells[], lookup: CustomerLo
         } else if (lookup.withLedger.has(customerId)) {
           err(
             m(
-              `mijoz "${lookup.codeById.get(customerId)}" da allaqachon hisob-faktura yoki to'lov bor (boshlang'ich qoldiq faqat yangi mijozga)`,
-              `у клиента "${lookup.codeById.get(customerId)}" уже есть счета или оплаты (начальный остаток — только для клиента без проводок)`,
-              `customer "${lookup.codeById.get(customerId)}" already has invoices or payments (opening balance is create-only)`,
+              `mijoz "${lookup.codeById.get(customerId)}" da allaqachon ichki hisob yoki to'lov bor (boshlang'ich qoldiq faqat yangi mijozga)`,
+              `у клиента "${lookup.codeById.get(customerId)}" уже есть внутренние счета или оплаты (начальный остаток — только для клиента без проводок)`,
+              `customer "${lookup.codeById.get(customerId)}" already has internal invoices or payments (opening balance is create-only)`,
             ),
           );
         }

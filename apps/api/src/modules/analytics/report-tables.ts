@@ -8,7 +8,7 @@ type SalesReport = Awaited<ReturnType<SalesReportService['getSalesReport']>>;
 type AgentPerformanceReport = Awaited<ReturnType<AgentPerformanceReportService['getAgentPerformance']>>;
 type OverviewReport = Awaited<ReturnType<OverviewReportService['getOverview']>>;
 
-const AMOUNT_NOTE = "Summa: DELIVERED/CLOSED buyurtmalar yetkazilgan miqdor (hisob-faktura jami), qolganlari buyurtma miqdori bo'yicha.";
+const AMOUNT_NOTE = "Summa: DELIVERED/CLOSED buyurtmalar yetkazilgan miqdor (ichki hisob jami), qolganlari buyurtma miqdori bo'yicha.";
 
 function baseMeta(report: { range: { from: Date; to: Date }; timeZone: string }, generatedAt: Date): [string, string][] {
   return [
