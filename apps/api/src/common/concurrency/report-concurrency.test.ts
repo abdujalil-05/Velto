@@ -10,7 +10,7 @@ import { AgingReportController } from '../../modules/finance/reports/aging-repor
 const opts = { maxConcurrency: 2, queueMax: 3, queueTimeoutMs: 200 };
 const tick = () => new Promise((r) => setTimeout(r, 5));
 
-function fakeCtx() {
+function fakeCtx(companyId = 'c1') {
   const res = Object.assign(new EventEmitter(), {
     destroyed: false,
     writableEnded: false,
@@ -20,7 +20,7 @@ function fakeCtx() {
     },
   });
   const ctx = {
-    switchToHttp: () => ({ getRequest: () => ({ tokenPayload: { companyId: 'c1' } }), getResponse: () => res }),
+    switchToHttp: () => ({ getRequest: () => ({ tokenPayload: { companyId } }), getResponse: () => res }),
   } as unknown as ExecutionContext;
   return { res, ctx };
 }
@@ -79,7 +79,7 @@ describe('ReportConcurrencyGuard', () => {
     const lim = new ReportConcurrencyLimiter(opts);
     const guard = new ReportConcurrencyGuard(lim);
     const a = fakeCtx();
-    const b = fakeCtx();
+    const b = fakeCtx('c2');
     await guard.canActivate(a.ctx);
     await guard.canActivate(b.ctx);
     expect(lim.stats.active).toBe(2);
@@ -124,6 +124,75 @@ describe('ReportConcurrencyGuard', () => {
     expect(err.getStatus()).toBe(503);
     expect(err.getResponse().code).toBe('SERVICE_BUSY');
     expect(c.res.headers['Retry-After']).toBe('2');
+  });
+});
+
+describe('ReportConcurrencyLimiter per-tenant quota', () => {
+  const q = { maxConcurrency: 2, queueMax: 10, queueTimeoutMs: 500, tenantMaxConcurrency: 1, tenantQueueMax: 2 };
+
+  it('tenant A 3 requests -> only 1 runs; tenant B gets a slot immediately', async () => {
+    const lim = new ReportConcurrencyLimiter(q);
+    const a1 = await lim.acquire(undefined, 'A');
+    let a2Granted = false;
+    const a2 = lim.acquire(undefined, 'A').then((r) => ((a2Granted = true), r));
+    const a3 = lim.acquire(undefined, 'A').catch((e) => e);
+    await tick();
+    expect(a2Granted).toBe(false);
+    expect(lim.stats).toEqual({ active: 1, queued: 2 });
+    const b1 = await lim.acquire(undefined, 'B'); // free global permit, B under cap
+    expect(lim.stats.active).toBe(2);
+    a1();
+    const r2 = await a2;
+    expect(a2Granted).toBe(true);
+    r2();
+    const r3 = await a3;
+    (r3 as () => void)();
+    b1();
+    expect(lim.stats).toEqual({ active: 0, queued: 0 });
+  });
+
+  it('tenant queue full -> only A gets 503, B still queues', async () => {
+    const lim = new ReportConcurrencyLimiter({ ...q, maxConcurrency: 1 });
+    const held = await lim.acquire(undefined, 'A');
+    const w = [lim.acquire(undefined, 'A'), lim.acquire(undefined, 'A')];
+    await expect(lim.acquire(undefined, 'A')).rejects.toBeInstanceOf(ReportBusyException);
+    const b = lim.acquire(undefined, 'B');
+    expect(lim.stats.queued).toBe(3);
+    held();
+    (await w[0])();
+    (await w[1])();
+    (await b)();
+    expect(lim.stats).toEqual({ active: 0, queued: 0 });
+  });
+
+  it('capped oldest waiter is skipped so another tenant takes the free permit', async () => {
+    const lim = new ReportConcurrencyLimiter(q);
+    const a1 = await lim.acquire(undefined, 'A');
+    const b1 = await lim.acquire(undefined, 'B');
+    const a2 = lim.acquire(undefined, 'A');
+    const c1 = lim.acquire(undefined, 'C');
+    b1(); // free permit: A is capped, C must get it
+    (await c1)();
+    a1();
+    (await a2)();
+    expect(lim.stats).toEqual({ active: 0, queued: 0 });
+  });
+
+  it('no leaks after timeout/abort; global cap still holds with quota', async () => {
+    const lim = new ReportConcurrencyLimiter({ ...q, queueTimeoutMs: 20 });
+    const a1 = await lim.acquire(undefined, 'A');
+    await expect(lim.acquire(undefined, 'A')).rejects.toBeInstanceOf(ReportBusyException); // timeout
+    const ac = new AbortController();
+    const p = lim.acquire(ac.signal, 'A').catch((e) => e);
+    ac.abort();
+    expect(await p).toBeInstanceOf(ReportBusyException);
+    const b1 = await lim.acquire(undefined, 'B');
+    await expect(lim.acquire(undefined, 'C')).rejects.toBeInstanceOf(ReportBusyException); // global 2 full -> timeout
+    a1();
+    b1();
+    expect(lim.stats).toEqual({ active: 0, queued: 0 });
+    const again = await lim.acquire(undefined, 'A'); // tenant counters were not leaked
+    again();
   });
 });
 

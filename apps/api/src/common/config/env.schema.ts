@@ -7,6 +7,9 @@ export const DEFAULT_DASHBOARD_CACHE_TTL_S = 30;
 export const DEFAULT_REPORT_MAX_CONCURRENCY = 2;
 export const DEFAULT_REPORT_QUEUE_MAX = 20;
 export const DEFAULT_REPORT_QUEUE_TIMEOUT_MS = 10_000;
+export const DEFAULT_REPORT_TENANT_MAX_CONCURRENCY = 1;
+export const DEFAULT_REPORT_TENANT_QUEUE_MAX = 5;
+export const DEFAULT_HEALTH_READY_CACHE_MS = 1000;
 
 /** Fails fast on boot if required env vars are missing/malformed, instead of failing on the first request that needs them. */
 export const envSchema = z.object({
@@ -84,6 +87,11 @@ export const envSchema = z.object({
   REPORT_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(DEFAULT_REPORT_MAX_CONCURRENCY),
   REPORT_QUEUE_MAX: z.coerce.number().int().min(0).max(1000).default(DEFAULT_REPORT_QUEUE_MAX),
   REPORT_QUEUE_TIMEOUT_MS: z.coerce.number().int().min(1).max(120_000).default(DEFAULT_REPORT_QUEUE_TIMEOUT_MS),
+  // Per-tenant share of the report semaphore (noisy-neighbour guard); must be <= REPORT_MAX_CONCURRENCY (checked below).
+  REPORT_TENANT_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(DEFAULT_REPORT_TENANT_MAX_CONCURRENCY),
+  REPORT_TENANT_QUEUE_MAX: z.coerce.number().int().min(0).max(1000).default(DEFAULT_REPORT_TENANT_QUEUE_MAX),
+  // /health/ready result cache (ms); concurrent probes share one in-flight check. 0 = no cache (still single-flight).
+  HEALTH_READY_CACHE_MS: z.coerce.number().int().min(0).max(30_000).default(DEFAULT_HEALTH_READY_CACHE_MS),
   S3_ENDPOINT: z.string().min(1),
   S3_REGION: z.string().default('us-east-1'),
   S3_ACCESS_KEY: z.string().min(1),
@@ -111,6 +119,9 @@ export const envSchema = z.object({
     .optional()
     .default('false')
     .transform((v) => v === 'true'),
+}).refine((e) => e.REPORT_TENANT_MAX_CONCURRENCY <= e.REPORT_MAX_CONCURRENCY, {
+  path: ['REPORT_TENANT_MAX_CONCURRENCY'],
+  message: 'must be <= REPORT_MAX_CONCURRENCY',
 });
 
 export type Env = z.infer<typeof envSchema>;

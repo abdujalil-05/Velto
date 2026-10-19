@@ -69,7 +69,10 @@ export class TenantContextInterceptor implements NestInterceptor {
     let denied: AuthenticatedUser | undefined;
 
     const result = await this.tenantPrisma.run(payload.companyId, async (tx) => {
-      const user = await tx.user.findUnique({ where: { id: payload.sub } });
+      // company.isActive is a relation filter (same SQL query, no extra round trip): a deactivated
+      // company's still-valid access token gets the same 401 as an inactive user. The client then
+      // tries /auth/refresh, which answers 403 AUTH_ACCOUNT_BLOCKED (the terminal, user-facing code).
+      const user = await tx.user.findFirst({ where: { id: payload.sub, company: { isActive: true } } });
       if (!user || !user.isActive) {
         throw new UnauthorizedException();
       }

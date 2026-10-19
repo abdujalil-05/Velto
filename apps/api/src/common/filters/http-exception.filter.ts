@@ -135,24 +135,32 @@ function isPoolBusy(exception: unknown): boolean {
   return code === 'P2028' && TX_START_TIMEOUT_PATTERN.test(exception.message);
 }
 
-const TX_CONFLICT_TEXT_PATTERNS = [/deadlock detected/i, /could not serialize access/i, /\b40P01\b/, /\b40001\b/];
+function isPrismaUnknownRequestError(exception: object): boolean {
+  return exception instanceof Prisma.PrismaClientUnknownRequestError;
+}
 
 /**
  * PostgreSQL deadlock_detected (40P01) / serialization_failure (40001) abort
  * the WHOLE transaction (full rollback, no partial write), so a retry is safe.
  * Prisma surfaces them as P2034, as a SQLSTATE on `code`/`meta.code`, or only
- * in the message (raw query / driver adapter). Returns the state for logging.
+ * in the message (raw query / driver adapter). The bare SQLSTATE digits in a
+ * message are trusted ONLY on Prisma errors (known/unknown request error): an
+ * arbitrary Error whose text merely contains "40001" must stay a 500 + Sentry.
+ * The long phrases are specific enough to match any Error. Returns the state for logging.
  */
 function txConflictState(exception: unknown): string | undefined {
   if (!(exception instanceof Error)) return undefined;
+  const prismaErr = isPrismaKnownRequestError(exception) || isPrismaUnknownRequestError(exception);
   if (isPrismaKnownRequestError(exception) && (exception as { code?: unknown }).code === 'P2034') return 'P2034';
   const state = sqlState(exception);
   if (state === '40P01' || state === '40001') return state;
   if (/deadlock detected/i.test(exception.message)) return '40P01';
   if (/could not serialize access/i.test(exception.message)) return '40001';
-  return TX_CONFLICT_TEXT_PATTERNS.some((p) => p.test(exception.message))
-    ? (/40P01/.test(exception.message) ? '40P01' : '40001')
-    : undefined;
+  if (prismaErr) {
+    if (/\b40P01\b/.test(exception.message)) return '40P01';
+    if (/\b40001\b/.test(exception.message)) return '40001';
+  }
+  return undefined;
 }
 
 /**

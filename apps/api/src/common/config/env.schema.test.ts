@@ -70,3 +70,12 @@ describe('env.schema prisma pool', () => {
     expect(() => validateEnv({ ...base, [key]: value })).toThrow(new RegExp(`Invalid environment configuration[\\s\\S]*${key}`));
   });
 });
+
+describe('report tenant quota env', () => {
+  it('defaults 1/5, health cache 1000; tenant cap must be <= REPORT_MAX_CONCURRENCY', () => {
+    const env = validateEnv(base);
+    expect([env.REPORT_TENANT_MAX_CONCURRENCY, env.REPORT_TENANT_QUEUE_MAX, env.HEALTH_READY_CACHE_MS]).toEqual([1, 5, 1000]);
+    expect(() => validateEnv({ ...base, REPORT_MAX_CONCURRENCY: '2', REPORT_TENANT_MAX_CONCURRENCY: '3' })).toThrow(/REPORT_TENANT_MAX_CONCURRENCY/);
+    expect(() => validateEnv({ ...base, REPORT_MAX_CONCURRENCY: '3', REPORT_TENANT_MAX_CONCURRENCY: '3' })).not.toThrow();
+  });
+});

@@ -5,6 +5,7 @@ import { paginate } from '../../common/pagination/pagination.dto';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import type { ListReconciliationFindingsQueryDto } from './dto/list-findings.query';
 import type { ListReconciliationRunsQueryDto } from './dto/list-runs.query';
+import { ReconciliationBusyException } from './reconciliation-exceptions';
 import { ReconciliationAlertService } from './reconciliation-alert.service';
 import { ReconciliationService } from './reconciliation.service';
 
@@ -12,6 +13,8 @@ import { ReconciliationService } from './reconciliation.service';
 @Injectable()
 export class ReconciliationAdminService {
   private readonly logger = new Logger(ReconciliationAdminService.name);
+  /** Companies with a manual run in flight in this process (API is a single PM2 instance, ADR-049). */
+  private readonly manualInFlight = new Set<string>();
 
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
@@ -64,8 +67,24 @@ export class ReconciliationAdminService {
    * in nor is weakened by the interceptor's READ COMMITTED request tx. The
    * request tx has only done permission SELECTs (no locks), so it cannot
    * deadlock with the run's advisory lock. Alert is a third, short tx.
+   *
+   * The request tx stays open while the run needs more connections, so parallel
+   * manual runs would self-block the pool (P2024). The route cannot use
+   * @TenantTx({scope:'handler'}) (@Idempotent needs the request tx), so at most
+   * one manual run per company is admitted at a time; a concurrent one gets the
+   * same 409 RECONCILIATION_BUSY the advisory try-lock already produces.
    */
   async runManual(user: AuthenticatedUser) {
+    if (this.manualInFlight.has(user.companyId)) throw new ReconciliationBusyException();
+    this.manualInFlight.add(user.companyId);
+    try {
+      return await this.runManualExclusive(user);
+    } finally {
+      this.manualInFlight.delete(user.companyId);
+    }
+  }
+
+  private async runManualExclusive(user: AuthenticatedUser) {
     const result = await this.reconciliation.runDetection(user.companyId, {
       trigger: 'MANUAL',
       triggeredById: user.id,

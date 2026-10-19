@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HttpException, HttpStatus, Logger, type ArgumentsHost } from '@nestjs/common';
 import * as Sentry from '@sentry/node';
 import { AllExceptionsFilter } from './http-exception.filter';
+import { Prisma } from '@velto/database';
 
 vi.mock('@sentry/node', () => ({ captureException: vi.fn() }));
 
@@ -277,6 +278,29 @@ describe('AllExceptionsFilter', () => {
 
       expect(status).toHaveBeenCalledWith(HttpStatus.SERVICE_UNAVAILABLE);
       expect(setHeader).toHaveBeenCalledWith('Retry-After', '1');
+    });
+
+    it('does not treat a plain Error merely containing "40001" / "40P01" as a tx conflict (500 + Sentry)', () => {
+      for (const msg of ['order 40001 not found in import', 'code 40P01 in a file name']) {
+        vi.clearAllMocks();
+        const filter = new AllExceptionsFilter();
+        const { host, status, setHeader } = mockHost();
+
+        filter.catch(new Error(msg), host);
+
+        expect(status).toHaveBeenCalledWith(HttpStatus.INTERNAL_SERVER_ERROR);
+        expect(setHeader).not.toHaveBeenCalled();
+        expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it('maps PrismaClientUnknownRequestError carrying 40001 in its text to 503', () => {
+      const filter = new AllExceptionsFilter();
+      const { host, status } = mockHost();
+
+      filter.catch(new Prisma.PrismaClientUnknownRequestError('db error: 40001 serialization', { clientVersion: 'x' }), host);
+
+      expect(status).toHaveBeenCalledWith(HttpStatus.SERVICE_UNAVAILABLE);
     });
 
     it('keeps other Prisma errors (P2002) as 500 + Sentry', () => {

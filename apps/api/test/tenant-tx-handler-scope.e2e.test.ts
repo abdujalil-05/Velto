@@ -64,6 +64,12 @@ class HandlerScopeTestController {
     return { log };
   }
 
+  @Get('req')
+  @RequirePermission('customers.read')
+  async req() {
+    return { ok: true };
+  }
+
   @Get('short')
   @RequirePermission('customers.read')
   @TenantTx({ scope: 'handler' })
@@ -84,6 +90,9 @@ describe('E2E F7: @TenantTx({ scope: "handler" })', () => {
   let tokNoPerm: string;
   let tokDeact: string;
   let deactUser: string;
+  let companyC: string;
+  let tokB: string;
+  let tokC: string;
 
   async function mkCompany(label: string) {
     const t = await systemPrisma.tenant.create({ data: { slug: `test-th-${label}-${Date.now()}`, name: `TH ${label}` } });
@@ -133,7 +142,9 @@ describe('E2E F7: @TenantTx({ scope: "handler" })', () => {
     const d = await mkUser(companyA, readA, 'Deact');
     deactUser = d.id;
     tokDeact = d.token;
-    await mkUser(companyB, readB, 'OwnerB');
+    tokB = (await mkUser(companyB, readB, 'OwnerB')).token;
+    companyC = await mkCompany('c');
+    tokC = (await mkUser(companyC, await mkRole(companyC, 'TH_READ', true), 'OwnerC')).token;
     await tp.run(companyA, (tx) => tx.customer.create({ data: { companyId: companyA, code: 'TH-A', name: names.A } }));
     await tp.run(companyB, (tx) => tx.customer.create({ data: { companyId: companyB, code: 'TH-B', name: names.B } }));
   });
@@ -183,5 +194,15 @@ describe('E2E F7: @TenantTx({ scope: "handler" })', () => {
     await get('/_th/short', tokDeact).expect(200);
     await systemPrisma.user.update({ where: { id: deactUser }, data: { isActive: false } });
     await get('/_th/short', tokDeact).expect(401);
+  });
+
+  it('deactivated company: existing access token -> 401 on request AND handler scope; other tenant unaffected', async () => {
+    await get('/_th/req', tokC).expect(200);
+    await get('/_th/short', tokC).expect(200);
+    await systemPrisma.company.update({ where: { id: companyC }, data: { isActive: false } });
+    await get('/_th/req', tokC).expect(401);
+    await get('/_th/short', tokC).expect(401);
+    await get('/_th/req', tokB).expect(200);
+    await get('/_th/short', tokB).expect(200);
   });
 });

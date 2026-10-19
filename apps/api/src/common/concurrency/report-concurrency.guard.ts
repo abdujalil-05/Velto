@@ -31,7 +31,9 @@ export class ReportConcurrencyGuard implements CanActivate {
 
     let release: () => void;
     try {
-      release = await this.limiter.acquire(abort.signal);
+      // Tenant key = companyId from the signed JWT (JwtAuthGuard ran first; no DB).
+      const tenantKey = (req as Request & { tokenPayload?: { companyId?: string } }).tokenPayload?.companyId;
+      release = await this.limiter.acquire(abort.signal, tenantKey);
     } catch (e) {
       res.off('close', onEarlyClose);
       if (e instanceof ReportBusyException) res.setHeader('Retry-After', String(REPORT_RETRY_AFTER_SECONDS));

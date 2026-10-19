@@ -84,11 +84,14 @@ describe('F7 D2: health', () => {
     expect(res.body.checks).toEqual({ db: 'up', redis: 'up', storage: 'up' });
   });
 
-  it('health is exempt from throttling', async () => {
+  it('health has its own per-IP limit: monitoring rate (130/min) passes, a flood gets 429', async () => {
     for (let i = 0; i < 130; i++) {
       const r = await request(app.getHttpServer()).get('/health/live');
       expect(r.status, `${i} ${JSON.stringify(r.body)}`).toBe(200);
     }
+    let last = 200;
+    for (let i = 0; i < 130 && last === 200; i++) last = (await request(app.getHttpServer()).get('/health/live')).status;
+    expect(last).toBe(429);
   });
 });
 
