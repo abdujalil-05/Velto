@@ -1,7 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { UserThrottlerGuard } from './common/throttle/user-throttler.guard';
 import './common/serialization/bigint-json';
 import { validateEnv } from './common/config/env.schema';
 import { AuditLogService } from './common/audit/audit-log.service';
@@ -67,8 +68,8 @@ import { UsersModule } from './modules/users/users.module';
     HealthModule,
   ],
   providers: [
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
+    { provide: APP_GUARD, useClass: UserThrottlerGuard }, // after JwtAuthGuard: buckets by userId
     { provide: APP_INTERCEPTOR, useClass: TenantContextInterceptor },
     AuditLogService,
   ],

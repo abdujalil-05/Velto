@@ -1,4 +1,5 @@
 import { Controller, Get, Header, Query, StreamableFile } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
@@ -38,6 +39,7 @@ export class ReportsController {
   // TZ §7.3/§16.1: exports reuse the screen's DTO + service call; only the renderer differs.
   @Get('sales/export')
   @RequirePermission('reports.export')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Header('Content-Type', XLSX_MIME)
   @Header('Content-Disposition', 'attachment; filename="sotuv-hisoboti.xlsx"')
   async exportSales(@Query() query: DateRangeQueryDto, @CurrentUser() user: AuthenticatedUser) {
@@ -47,6 +49,7 @@ export class ReportsController {
 
   @Get('sales/export.csv')
   @RequirePermission('reports.export')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Header('Content-Type', CSV_MIME)
   @Header('Content-Disposition', 'attachment; filename="sotuv-hisoboti.csv"')
   async exportSalesCsv(@Query() query: DateRangeQueryDto, @CurrentUser() user: AuthenticatedUser) {
@@ -62,6 +65,7 @@ export class ReportsController {
 
   @Get('agents/export')
   @RequirePermission('reports.export')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Header('Content-Type', XLSX_MIME)
   @Header('Content-Disposition', 'attachment; filename="agentlar-hisoboti.xlsx"')
   async exportAgents(@Query() query: DateRangeQueryDto, @CurrentUser() user: AuthenticatedUser) {
@@ -71,6 +75,7 @@ export class ReportsController {
 
   @Get('agents/export.csv')
   @RequirePermission('reports.export')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Header('Content-Type', CSV_MIME)
   @Header('Content-Disposition', 'attachment; filename="agentlar-hisoboti.csv"')
   async exportAgentsCsv(@Query() query: DateRangeQueryDto, @CurrentUser() user: AuthenticatedUser) {
@@ -86,6 +91,7 @@ export class ReportsController {
 
   @Get('overview/export')
   @RequirePermission('reports.export')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Header('Content-Type', XLSX_MIME)
   @Header('Content-Disposition', 'attachment; filename="umumiy-hisobot.xlsx"')
   async exportOverview(@Query() query: DateRangeQueryDto, @CurrentUser() user: AuthenticatedUser) {
@@ -95,6 +101,7 @@ export class ReportsController {
 
   @Get('overview/export.csv')
   @RequirePermission('reports.export')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Header('Content-Type', CSV_MIME)
   @Header('Content-Disposition', 'attachment; filename="umumiy-hisobot.csv"')
   async exportOverviewCsv(@Query() query: DateRangeQueryDto, @CurrentUser() user: AuthenticatedUser) {
