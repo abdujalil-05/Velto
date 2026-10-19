@@ -17,8 +17,8 @@
 | F5.3+ 1C eksport mustahkamlash (ADR-034..039) | **✅** — branch `feat/f5-3-1c-hardening`: sxema e724d6a, ack1c ACCOUNTANT 4cc0b0f, advisory lock f83f348, processor/CSV/retry d9fc766, download/ACK/throttle 6145969 a8f6139, davr qoidasi + audit hash e5a7461, web `/export-1c` 5dc01f7, CORS+idempotent 03064c3, QA c8bbcdd, Excel Ид+sanitize 3673d05, review tuzatishlari e634b08. Testlar: database 81, api 649, miniapp 88. G4 (buxgalter imzosi) ochiq |
 | F8.1 Agent to'lovi PENDING_HANDOVER (ADR-029) | **✅** — branch `feat/f8-1-payment-handover` (sxema 8289caa+1ec7f03, API 9fa62a3+b876aad, customers b9145dd, web aa7d384, miniapp 3832810+880502b, QA 471bfff, permission 2b2152c). Testlar: database 74, api 577 (61 fayl), miniapp 88. Opening balance importi va OWNER-alert (ADR-032) F8.1 dan keyin ochiq |
 | F4.5 Offline v5 / PWA (ADR-022 qo'shimchasi) | **✅ kod tomoni** — branch `feat/f4-5-offline-pwa`: PWA manifest + yorliqlar + staleness 33eab8f, revoke-wipe 722a542, tuzatishlar 1eb6d0b fe427b1 b14427c, flaky 64165fd. Testlar: database 81, api 653, miniapp 109 (jami 890). Qurilma matritsasi foydalanuvchi ma'lumotiga bog'liq |
-| F6 Platforma | Boshlanmagan |
-| F7 Chiniqtirish va reliz | Boshlanmagan |
+| F6 Platforma (ADR-040..046) | **✅** — branch `feat/f6-platform`: sxema 243bfea 51e346b ece284a, API c06aeef 3105da8 4c4aa54 c7cd730, eksport bc33772 689a0ad, web 3c9f815 ebc8b80 49af627, i18n 6910c68, QA d0879af c3b0803. Opening balance (OpeningBalanceBatch preview->post->void, Mode A, ADR-041..043: Invoice.kind=OPENING qatorsiz OB- raqam, Payment.source=OPENING method NULL POSTED, ombor ADJUST refType=OpeningBalance; bitta atomar tx, nazorat jamilari aniq teng (tolerance 0), signOff, OWNER post/void, OWNER preview `opening.preview`, ACCOUNTANT `opening.read`; void'dan keyin qayta import; 5000 qator: customers post ~4.5-5s, stock post ~2s, void customers 0.8s, stock 2.0s). OPENING 1C eksportdan, aylanma/dashboard/kassa smenasidan chiqarilgan, aging/balansga kiradi. Trial (ADR-040: hisoblangan ACTIVE/TRIAL/TRIAL_EXPIRED, avtomatik blok yo'q, banner, `set-trial.ts` velto_system). Buyurtma bekor qilish sababi majburiy (ADR-044, CHECK validated). Kompaniya eksporti DSR/offboarding (ADR-045: OWNER-only `company.export`, XLSX stream, ~24 varaq, API-proxy, `docs/runbooks/tenant-offboarding.md`). 'Ichki hisob' + uz POSTED='Hisobga olingan' (ADR-046, grep-guard). ADR-003c ikkinchi qo'shimcha: ACCOUNTANT yozish ruxsatlari faqat `integrations.ack1c`; opening.preview/post/void va company.export faqat OWNER (security-auditor BLOCK tuzatildi). Testlar: database 91, api 712, miniapp 112 (915) |
+| F7 Chiniqtirish va reliz | Boshlanmagan (keyingi) |
 
 ## Umumiy
 
@@ -133,6 +133,20 @@ MVP kodining katta qismi yozilgan: F0–F2 asosan, F3 ✅, F4 kod tomoni ✅, F5
   - Agentning "bugun yig'ilgan" summasi posting sanasiga o'tdi.
   - Reviewer LOW: ikki rolli (SALES_AGENT+CASHIER) foydalanuvchi o'z naqdini qabul qila olmaydi (MVP fixed rollar).
 
+- **F6 ochiq qarzlar (2026-10-19):**
+  - Xodim GPS (visits) va telefon kompaniya eksportida — data-inventory/legal memo (§11.5/§11.7) kutilmoqda.
+  - Kompaniya eksporti o'qish fazasi bitta REPEATABLE READ tx (30 daq): katta tenantda uzoq snapshot (vacuum/bloat) xavfi; F7 yuk testida o'lchanadi (varaq-bo'yicha snapshot yoki keyset-chunk).
+  - Eksport qamramagan: AuditLog, Notification, outbox, route runs, packagings, fayllar.
+  - PREVIEWED batch'lar uchun kvota/tozalash yo'q (preview OWNER-only, S3 10MB fayl + o'chmaydigan batch qatori).
+  - Opening 'xavfsiz qoidalar' tasdiq kutilmoqda: faylda bitta xato qator bo'lsa post rad etiladi (qisman o'tkazish yo'q); bir mijozga bitta avans qatori; pul/miqdorda vergul rad, nuqta qabul; OPENING payment createdAt=asOfDate kuni boshi; preview batch'ga vaqtincha asOfDate=bugun, source=fayl nomi.
+  - Pul uchun tuzatish yo'li (credit note MVP'da yo'q): tegilgan batch void bo'lmaydi, faqat ADJUST/reversal; foydalanuvchi qarori kutilmoqda.
+  - Trial tugagach xulq (avtomatik blok yo'q) — ADR-040 tasdiq kutilmoqda.
+  - Opening drift testi SQL bilan (`ReconciliationService.runDetection` kompaniya miqyosida 1C fixture bilan beqaror).
+  - Mijoz kartasida invoice/to'lovlar ro'yxati yo'q (OPENING yorlig'i faqat avans taqsimlash dialogida); shablon client-side CSV; `/auth/me` da `telegramId` yo'q (PWA eksport).
+  - Beqaror testlar: `reconciliation.e2e.test.ts:94` (403->400) va `report-export-audit.e2e.test.ts:85` (403->401) — asl sabab qa-engineer tomonidan tekshirilmoqda (yangilanadi); f4-offline-sync perf `pushMs<3000` yuk ostida flaky (F7 yuk testida NFR bilan).
+  - Mavjud tenantlarda `backfill-permissions.ts` (payments.handover, integrations.ack1c, opening.*, company.export), `revoke-director-handover.ts`, `set-trial.ts` ishga tushirilmagan.
+  - Git `index.lock` hodisasi: db-rls agenti bir marta `rm -f .git/index.lock` qilgan (repo butunligi `git fsck` bilan tekshirilgan, toza) — agentlarga taqiqlandi.
+
 ## Ochiq savollar (foydalanuvchi hal qilmagan; TZ §19.2)
 
 1. 1 user = 1 kompaniya (ko'p kompaniyali a'zolik).
@@ -148,11 +162,11 @@ MVP kodining katta qismi yozilgan: F0–F2 asosan, F3 ✅, F4 kod tomoni ✅, F5
 ## Keyingi qadamlar (ustuvorlik bilan)
 
 Batafsil: `docs/PLAN.md` (F8.x gap-tahlil tartibi).
-1. F6 — trial, onboarding, "Ichki hisob" yorlig'i → `web-dev`, `i18n-sync`
-2. F7 — outbox qarori, rate-limit, live/ready, runbook, restore drill, perf → `devops`, `qa-engineer`
+1. F7 — outbox qarori, rate-limit, live/ready, runbook, restore drill, perf → `devops`, `qa-engineer`
 
 ## Oxirgi sessiya
 
+- 2026-10-19: F6 Platforma tugadi (opening balance, trial, kompaniya eksporti, Ichki hisob; ADR-040..046; 915 test: database 91, api 712, miniapp 112); branch `feat/f6-platform`, push qilinmagan. Keyin: F7 (outbox qarori, live/ready health, runbook'lar §12.5, restore drill, yuk testi §12.5, maintenance read-only rejimi, rate-limit audit, GA sign-off matritsasi §16.5, qurilma matritsasi, PWA ikonkalari/TTL — foydalanuvchidan).
 - 2026-10-19: F4.5 Offline v5 + revoke wipe tugadi (890 test: database 81, api 653, miniapp 109); branch `feat/f4-5-offline-pwa`, push qilinmagan. Keyin: F6, F7.
 - 2026-10-19: F5.3+ 1C eksport mustahkamlash tugadi (ADR-034..039); branch `feat/f5-3-1c-hardening`, push qilinmagan. Keyin: F4.5, F6, F7, flaky testlar, outbox qarori.
 - 2026-10-19: F8.1 (PENDING_HANDOVER) tugadi, ADR-029 qo'shimchasi yozildi; branch `feat/f8-1-payment-handover`, push qilinmagan.
