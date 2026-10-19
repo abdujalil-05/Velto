@@ -413,6 +413,55 @@ describe('AuthService refresh tokens (§16.3: refresh reuse => family revoked)',
     await expect(auth.refresh({ refreshToken: 'f'.repeat(64) }, {})).rejects.toBeInstanceOf(SessionExpiredException);
   });
 
+  describe('blocked owner of a revoked token => 403, not a reuse signal', () => {
+    async function freshAccount() {
+      const tenant = await systemPrisma.tenant.create({ data: { slug: `test-blk-${Date.now()}-${Math.random()}`, name: 'Blk' } });
+      const co = await systemPrisma.company.create({ data: { tenantId: tenant.id, name: 'Blk Co' } });
+      const p = uniquePhone();
+      const user = await systemPrisma.user.create({
+        data: { companyId: co.id, firstName: 'B', lastName: 'U', phone: p, passwordHash: await argon2.hash(password, { type: argon2.argon2id }) },
+      });
+      const tokens = await auth.login({ phone: p, password }, { ip: '10.1.0.2' });
+      return { co, user, tokens };
+    }
+    const reuseAudits = (cid: string) =>
+      tenantPrisma.run(cid, (tx) => tx.auditLog.count({ where: { action: 'auth.refresh_reuse_detected' } }));
+
+    it('deactivated user (tokens revoked like users.deactivate) => 403, no reuse audit, no family chain', async () => {
+      const { co, user, tokens } = await freshAccount();
+      await systemPrisma.user.update({ where: { id: user.id }, data: { isActive: false } });
+      await systemPrisma.refreshToken.updateMany({ where: { userId: user.id }, data: { revokedAt: new Date() } });
+      await expect(auth.refresh({ refreshToken: tokens.refreshToken }, {})).rejects.toBeInstanceOf(AccountBlockedException);
+      expect(await reuseAudits(co.id)).toBe(0);
+    });
+
+    it('blocked company => 403, no reuse audit', async () => {
+      const { co, tokens } = await freshAccount();
+      await systemPrisma.company.update({ where: { id: co.id }, data: { isActive: false } });
+      await systemPrisma.refreshToken.updateMany({ where: { user: { companyId: co.id } }, data: { revokedAt: new Date() } });
+      await expect(auth.refresh({ refreshToken: tokens.refreshToken }, {})).rejects.toBeInstanceOf(AccountBlockedException);
+      expect(await reuseAudits(co.id)).toBe(0);
+    });
+
+    it('active user genuine reuse => 401 + audit + family revoked (unchanged)', async () => {
+      const { co, user, tokens } = await freshAccount();
+      const second = await auth.refresh({ refreshToken: tokens.refreshToken }, {});
+      await expect(auth.refresh({ refreshToken: tokens.refreshToken }, {})).rejects.toBeInstanceOf(SessionExpiredException);
+      expect(await reuseAudits(co.id)).toBe(1);
+      const live = await systemPrisma.refreshToken.count({ where: { userId: user.id, revokedAt: null } });
+      expect(live).toBe(0);
+      await expect(auth.refresh({ refreshToken: second.refreshToken }, {})).rejects.toBeInstanceOf(SessionExpiredException);
+    });
+
+    it('foreign/unknown token stays 401 and tenant B block does not affect tenant A user', async () => {
+      const a = await freshAccount();
+      const b = await freshAccount();
+      await systemPrisma.company.update({ where: { id: b.co.id }, data: { isActive: false } });
+      await expect(auth.refresh({ refreshToken: 'e'.repeat(64) }, {})).rejects.toBeInstanceOf(SessionExpiredException);
+      await expect(auth.refresh({ refreshToken: a.tokens.refreshToken }, {})).resolves.toBeTruthy();
+    });
+  });
+
   it('logout revokes the refresh token; later refresh fails; logout is idempotent', async () => {
     const t = await login();
     await auth.logout({ refreshToken: t.refreshToken });
