@@ -11,6 +11,16 @@ export class ExportJobNotFoundException extends AppException {
   }
 }
 
+export class ExportPeriodNotClosedException extends AppException {
+  constructor() {
+    super(HttpStatus.BAD_REQUEST, 'EXPORT_PERIOD_NOT_CLOSED', {
+      uz: 'Eksport davri kecha (kompaniya vaqt zonasi bo\'yicha) yoki undan oldin tugashi kerak',
+      ru: 'Период экспорта должен заканчиваться вчера (по часовому поясу компании) или раньше',
+      en: 'The export period must end yesterday (company timezone) or earlier',
+    });
+  }
+}
+
 export class InvalidExportPeriodException extends AppException {
   constructor() {
     super(HttpStatus.BAD_REQUEST, 'EXPORT_INVALID_PERIOD', {

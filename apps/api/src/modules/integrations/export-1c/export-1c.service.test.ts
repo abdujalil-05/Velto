@@ -6,7 +6,7 @@ import { prisma, systemPrisma } from '@velto/database';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { runWithTraceId } from '../../../common/trace/trace-context';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
-import { ExportJobNotFoundException, InvalidExportPeriodException } from '../integrations-exceptions';
+import { ExportJobNotFoundException, ExportPeriodNotClosedException, InvalidExportPeriodException } from '../integrations-exceptions';
 import type { Export1cJobData } from './export-1c.constants';
 import { Export1cService } from './export-1c.service';
 
@@ -58,6 +58,39 @@ describe('Export1cService (integration, real Postgres + RLS)', () => {
       export1c.create({ from: '2026-07-01', to: '2026-07-31', format: 'XML' }, user),
     );
     expect(job.format).toBe('XML');
+  });
+
+  describe('period must end yesterday or earlier (company timezone Asia/Tashkent, UTC+5)', () => {
+    let n = 0; // unique period per call (active-period unique index)
+    const at = async (iso: string, to: string) => {
+      const from = `2025-01-${String(++n).padStart(2, '0')}`;
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(iso));
+      try {
+        return await tenantPrisma.run(companyId, () => export1c.create({ from, to }, user));
+      } finally {
+        vi.useRealTimers();
+      }
+    };
+
+    it('rejects today', async () => {
+      await expect(at('2026-09-10T08:00:00Z', '2026-09-10')).rejects.toBeInstanceOf(ExportPeriodNotClosedException);
+    });
+    it('accepts yesterday', async () => {
+      await expect(at('2026-09-10T08:00:00Z', '2026-09-09')).resolves.toBeDefined();
+    });
+    it('rejects the future', async () => {
+      await expect(at('2026-09-10T08:00:00Z', '2026-09-20')).rejects.toBeInstanceOf(ExportPeriodNotClosedException);
+    });
+    it('Tashkent day boundary: 20:00Z Sep 9 is already Sep 10 locally, so Sep 9 is yesterday (ok) and Sep 10 is today (rejected)', async () => {
+      await expect(at('2026-09-09T20:00:00Z', '2026-09-09')).resolves.toBeDefined();
+      await expect(at('2026-09-09T20:00:00Z', '2026-09-10')).rejects.toBeInstanceOf(ExportPeriodNotClosedException);
+    });
+    it('Tashkent day boundary: 04:59Z is still the same local day, 05:00Z starts the next', async () => {
+      await expect(at('2026-09-10T04:59:00Z', '2026-09-09')).resolves.toBeDefined();
+      await expect(at('2026-09-10T04:59:00Z', '2026-09-10')).rejects.toBeInstanceOf(ExportPeriodNotClosedException);
+      await expect(at('2026-09-10T05:00:00Z', '2026-09-10')).rejects.toBeInstanceOf(ExportPeriodNotClosedException);
+    });
   });
 
   it('rejects a period where "from" is after "to"', async () => {

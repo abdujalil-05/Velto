@@ -5,7 +5,7 @@ import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { paginate } from '../../../common/pagination/pagination.dto';
 import { TenantContext } from '../../../common/tenant/tenant-context';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
-import { ExportJobNotFoundException, InvalidExportPeriodException } from '../integrations-exceptions';
+import { ExportJobNotFoundException, ExportPeriodNotClosedException, InvalidExportPeriodException } from '../integrations-exceptions';
 import type { CreateExportDto } from './dto/create-export.dto';
 import type { ListExportsQueryDto } from './dto/list-exports.query';
 import { AuditLogService, toAuditJson } from '../../../common/audit/audit-log.service';
@@ -28,6 +28,9 @@ export class Export1cService {
     // TZ §7.1: day boundaries follow Company.timezone, never the server clock.
     const company = await tx.company.findFirst({ select: { timezone: true } });
     const tz = company?.timezone ?? 'Asia/Tashkent';
+    // Closed days only: new POSTED payments always post at server 'today', so days before it never change after GENERATED.
+    const yesterday = companyDay(new Date(companyDay(new Date(), tz).start.getTime() - 1), tz).date;
+    if (companyDay(new Date(dto.to), tz).date > yesterday) throw new ExportPeriodNotClosedException();
     const periodFrom = companyDay(new Date(dto.from), tz).start;
     const periodTo = new Date(companyDay(new Date(dto.to), tz).end.getTime() - 1);
     if (periodFrom > periodTo) throw new InvalidExportPeriodException();

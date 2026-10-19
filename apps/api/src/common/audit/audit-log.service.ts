@@ -26,8 +26,8 @@ export function toAuditJson(value: unknown): Prisma.InputJsonValue {
 
 const REDACTED = '***';
 
-/** Exact (lowercased) keys exempt from the deny-list: truncated initData hash prefix is a non-secret audit marker. */
-const NON_SENSITIVE_KEYS = new Set(['initdatahashprefix']);
+/** Exact (lowercased) keys exempt from the deny-list: truncated initData hash prefix and export fileHash (public SHA-256 of a file) are non-secret audit markers. */
+const NON_SENSITIVE_KEYS = new Set(['initdatahashprefix', 'filehash']);
 
 /** §11.4 deny-list, case-insensitive: *password*, *token*, *otp*, *secret*, initData, *hash*, apikey, authorization, cookie, pin. */
 function isSensitiveKey(key: string): boolean {
