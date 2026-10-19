@@ -126,7 +126,8 @@ MVP kodining katta qismi yozilgan: F0–F2 asosan, F3 ✅, F4 kod tomoni ✅, F5
   - **ADR-033 Nomlash/atama:** TZ dagi ADR-011..020 = `V5-ADR-011..020`; repo ADR-011..027 shu faylda o'z nomida; yangilari ADR-028 dan. Invoice UI atamasi: uz "Ichki hisob", ru "Внутренний счёт", en "Internal invoice". Pilot (v0.9) sign-off: 3 imzo (Product, Accounting, Security); GA — to'liq §16.5 matritsa. RPO 15m faqat GA; pilotda kunlik backup + drill. Yagona yuk profili: TZ §12.5.
 
 - **F8.1 ochiq qarzlar (2026-10-19):**
-  - Beqaror testlar: `reconciliation.e2e.test.ts:94` parallel yuklamada bir marta 403 o'rniga 400 berdi (yolg'iz va qayta to'liq yurishda o'tdi); miniapp `handover-sync.test.ts` va `search-perf.test.ts` parallel yuklamada 5s timeout (yolg'iz o'tadi) — barqarorlashtirish kerak.
+  - **HAL QILINDI** — flaky `reconciliation.e2e.test.ts:94` (403->400), `report-export-audit.e2e.test.ts:85` (403->401), `order-flow.e2e:154` (POST /payments 404). ASL SABAB — test izolyatsiyasi: e2e testlar foydalanuvchini `+99890<8M tasodifiy>` telefon va bir xil parol bilan yaratadi va hech qachon o'chirmaydi; dev bazada 19 544 foydalanuvchi / 13 835 noyob telefon; `auth.service.ts:103-120` login shu telefondagi barcha faol foydalanuvchilardan parol mos kelgan BIRINCHISINI tanlaydi -> boshqa tenant/rol tokeni -> tasodifiy 401/403/404/400. Production nuqsoni EMAS (interceptor xatoni yutmaydi, P2028 -> 500). Tuzatish `da7ea81`: `apps/api/test/unique-phone.ts` (`crypto.randomInt`, 1e9 maydon), 22 e2e test; qoldiq to'qnashuv ~0.2% (20k foydalanuvchida) — to'liq yo'qotish uchun DB-tekshiruvli `uniquePhone` yoki test tozalash (LOW qarz). Tuzatishdan keyin API suite 75 fayl/712 test yashil; yuk ostida (6 yes, forks=8) 2 yurishda noto'g'ri status yo'q.
+  - **F7 yuk testiga** (yuk ostida ko'ringan, noto'g'ri-status EMAS): 20 hujjatli `/sync/push` 5000ms tx timeout (to'g'ri 500) CPU yetishmaganda; `f4-offline-sync.e2e.test.ts:374` perf chegarasi `pushMs<3000` (3001); `opening-balances.invariants.test.ts:344` 5000 qatorli test og'ir yuk ostida 60s tx dan oshgan — CI uchun yuk/vaqt byudjeti kerak.
   - uz `POSTED` tarjimasi "Qabul qilingan" — ma'no siljishi (F6 da "Ichki hisob" bilan birga ko'rish).
   - Mijozlar ro'yxatida "yo'lda" ustuni yo'q (faqat karta).
   - Smena naqd summasiga faqat CASH qo'shiladi (CARD/TRANSFER qabulida smena talab qilinadi, lekin summaga kirmaydi).
@@ -149,7 +150,7 @@ MVP kodining katta qismi yozilgan: F0–F2 asosan, F3 ✅, F4 kod tomoni ✅, F5
 
 ## Ochiq savollar (foydalanuvchi hal qilmagan; TZ §19.2)
 
-1. 1 user = 1 kompaniya (ko'p kompaniyali a'zolik).
+1. 1 user = 1 kompaniya (ko'p kompaniyali a'zolik). **Yangi aniqlik (login):** login telefon bo'yicha, companyId yo'q (TZ 15.2). DB'da telefon noyobligi faqat `@@unique([companyId, phone])` (`User_companyId_phone_key`, init migratsiya) — GLOBAL noyob EMAS. Bir xil telefon+parol bilan ikki tenantda faol foydalanuvchi bo'lsa tizim birinchisini tanlaydi, foydalanuvchi kompaniya tanlay olmaydi (ma'lumot sizishi emas — parol mos kelishi shart; lekin bir odam ikki distribyutor bilan ishlasa noto'g'ri tenantga tushadi). Variantlar: (a) telefon global noyob (1 user = 1 company, ADR bilan) — eng sodda; (b) ko'p moslikda login kompaniya tanlash qadamini ko'rsatadi. Standart: hozircha hech narsa qilinmaydi, foydalanuvchi tasdig'i kutilmoqda.
 2. MFA (rollar, bosqich).
 3. Outbox qarori (hozir in-process BullMQ; transactional outbox kerakmi).
 4. Qator darajasidagi `HALF_UP` yaxlitlash (1C bilan kopeyka farqi, buxgalter tasdig'i).
@@ -166,6 +167,7 @@ Batafsil: `docs/PLAN.md` (F8.x gap-tahlil tartibi).
 
 ## Oxirgi sessiya
 
+- 2026-10-19: Flaky RBAC testlar asl sababi topildi (e2e telefon to'qnashuvi, tuzatish da7ea81; production nuqsoni emas); login multi-tenant telefon savoli ochiq savollarga qo'shildi; yuk ostidagi qolgan yiqilishlar F7 ga. Faqat hujjat; branch `feat/f6-platform`, push qilinmagan.
 - 2026-10-19: F6 Platforma tugadi (opening balance, trial, kompaniya eksporti, Ichki hisob; ADR-040..046; 915 test: database 91, api 712, miniapp 112); branch `feat/f6-platform`, push qilinmagan. Keyin: F7 (outbox qarori, live/ready health, runbook'lar §12.5, restore drill, yuk testi §12.5, maintenance read-only rejimi, rate-limit audit, GA sign-off matritsasi §16.5, qurilma matritsasi, PWA ikonkalari/TTL — foydalanuvchidan).
 - 2026-10-19: F4.5 Offline v5 + revoke wipe tugadi (890 test: database 81, api 653, miniapp 109); branch `feat/f4-5-offline-pwa`, push qilinmagan. Keyin: F6, F7.
 - 2026-10-19: F5.3+ 1C eksport mustahkamlash tugadi (ADR-034..039); branch `feat/f5-3-1c-hardening`, push qilinmagan. Keyin: F4.5, F6, F7, flaky testlar, outbox qarori.
