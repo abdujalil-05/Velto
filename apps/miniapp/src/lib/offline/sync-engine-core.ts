@@ -114,7 +114,7 @@ export async function runPush(): Promise<PushOutcome> {
     }
   }
 
-  const waiting = (await queueRepository.listAll()).filter((e) => e.status === 'PENDING' && e.nextAttemptAt);
+  const waiting = (await queueRepository.listAll()).filter((e) => e.status === 'PENDING' && e.nextAttemptAt && !e.quarantinedAt);
   if (waiting.length > 0) {
     const earliest = waiting.map((e) => Date.parse(e.nextAttemptAt!)).sort((a, b) => a - b)[0]!;
     outcome.nextRetryInMs = Math.max(1_000, earliest - Date.now());

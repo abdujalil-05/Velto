@@ -4,14 +4,16 @@ import { createContext, useCallback, useContext, useEffect, useState } from 'rea
 import { useTranslations } from 'next-intl';
 import { toast } from 'sonner';
 import { apiFetch, onUnauthorized } from '@/lib/api/client';
-import type { AuthenticatedUser, TokenPair } from '@/lib/api/types';
+import type { AuthenticatedUser } from '@/lib/api/types';
 import { getTelegramWebApp } from '@/lib/telegram/webapp';
 import { clearOfflineDb } from '@/lib/offline/db';
 import { clearDeviceKey } from '@/lib/offline/crypto';
 import { queueRepository } from '@/lib/offline/queue';
-import { setOfflineSession } from '@/lib/offline/session';
+import { forgetLastKnownOwner, setOfflineSession } from '@/lib/offline/session';
+import { clearRevokedInfo, getRevokedInfo, handleSessionRevoked, type RevokedInfo } from '@/lib/offline/revoke-wipe';
 import { resetPreparedSession } from '@/lib/offline/session-bootstrap';
-import { clearTokens, getAccessToken, getRefreshToken, setTokens } from './tokens';
+import { clearTokens, getAccessToken, getRefreshToken } from './tokens';
+import { resumeSession, telegramLogin } from './auth-flow';
 
 // 'no-telegram-context': no stored session AND no Telegram initData —
 // i.e. this device has never logged in before and isn't inside Telegram
@@ -31,6 +33,10 @@ interface AuthContextValue {
   hasPermission: (code: string) => boolean;
   linkPhone: () => Promise<void>;
   linking: boolean;
+  /** Set after a server-confirmed revoke while quarantined documents remain on this device. */
+  revoked: RevokedInfo | null;
+  /** Called after export/discard (re-evaluates) or "continue" (hides the notice). */
+  resolveRevoked: (opts?: { hide?: boolean }) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -42,30 +48,26 @@ function sleep(ms: number): Promise<void> {
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const t = useTranslations('Common');
   const tAuth = useTranslations('Auth');
+  const tRevoked = useTranslations('Revoked');
   const [user, setUser] = useState<AuthenticatedUser | null>(null);
   const [status, setStatus] = useState<AuthStatus>('loading');
   const [linking, setLinking] = useState(false);
+  const [revoked, setRevoked] = useState<RevokedInfo | null>(null);
+  useEffect(() => setRevoked(getRevokedInfo()), []);
 
   // Shared by the initial bootstrap and the post-link retry: attempts a
   // Telegram login with the current initData, returns whether it succeeded.
-  const tryTelegramLogin = useCallback(async (initData: string): Promise<boolean> => {
-    try {
-      const tokens = await apiFetch<TokenPair>('/auth/telegram', {
-        method: 'POST',
-        body: { initData },
-        skipAuth: true,
-      });
-      setTokens(tokens.accessToken, tokens.refreshToken);
-      const me = await apiFetch<AuthenticatedUser>('/auth/me');
-      setOfflineSession({ userId: me.id, companyId: me.companyId });
-      setUser(me);
+  const tryTelegramLogin = useCallback(async (initData: string): Promise<'ok' | 'blocked' | 'failed'> => {
+    const res = await telegramLogin(initData, getTelegramWebApp()?.initDataUnsafe?.user?.id);
+    if (res.kind === 'ok') {
+      setUser(res.user);
       setStatus('authenticated');
-      return true;
-    } catch {
-      clearTokens();
-      return false;
+    } else if (res.kind === 'blocked') {
+      setRevoked(res.revoked);
+      if (!res.revoked) toast.error(tRevoked('wipedToast'));
     }
-  }, []);
+    return res.kind;
+  }, [tRevoked]);
 
   // Bootstrap can only leave 'loading' when a fetch settles, and a fetch to an
   // unreachable host does not settle quickly — a phone inside Telegram hitting
@@ -93,16 +95,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // ordinary refresh flow (apiFetch's 401 handler) without needing
       // initData again.
       if (getAccessToken() || getRefreshToken()) {
-        try {
-          const me = await apiFetch<AuthenticatedUser>('/auth/me');
-          if (!cancelled) {
-            setOfflineSession({ userId: me.id, companyId: me.companyId });
-            setUser(me);
+        const res = await resumeSession();
+        if (!cancelled) {
+          if (res.kind === 'ok') {
+            setUser(res.user);
             setStatus('authenticated');
+          } else {
+            setStatus('unauthenticated');
           }
-        } catch {
-          clearTokens();
-          if (!cancelled) setStatus('unauthenticated');
         }
         return;
       }
@@ -113,8 +113,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      const ok = await tryTelegramLogin(initData);
-      if (!cancelled && !ok) {
+      const outcome = await tryTelegramLogin(initData);
+      if (!cancelled && outcome === 'blocked') {
+        setStatus('unauthenticated');
+      } else if (!cancelled && outcome === 'failed') {
         // Valid Telegram context but no User.telegramId matched yet — the
         // expected state for an agent's very first open, not a real error.
         setStatus('needs-phone-link');
@@ -145,7 +147,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       for (let attempt = 0; attempt < 9; attempt++) {
         await sleep(1000);
-        if (await tryTelegramLogin(initData)) return;
+        const outcome = await tryTelegramLogin(initData);
+        if (outcome === 'ok' || outcome === 'blocked') return;
       }
       // Webhook never linked the phone within the polling window (not
       // found, ambiguous across companies, or already linked elsewhere —
@@ -160,15 +163,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(
     () =>
-      onUnauthorized(() => {
-        // Session ended (refresh expired/revoked): queue rows keep their owner
-        // tag; nothing is wiped, adopted or re-tagged.
+      onUnauthorized(({ revoked: serverRejected }) => {
+        // Wipe ONLY when the server confirmed the account/company is BLOCKED
+        // (api client sets `revoked` solely on 403 AUTH_ACCOUNT_BLOCKED). An
+        // ordinary expired/invalid refresh token or a network failure only ends
+        // the in-memory session — nothing is wiped, adopted or re-tagged.
+        if (serverRejected) {
+          void handleSessionRevoked()
+            .then((info) => {
+              setRevoked(info);
+              if (!info) toast.error(tRevoked('wipedToast'));
+            })
+            .catch(() => {});
+        }
         setOfflineSession(null);
         resetPreparedSession();
         setUser(null);
         setStatus('unauthenticated');
       }),
-    [],
+    [tRevoked],
   );
 
   const logout = useCallback(async (opts?: { force?: boolean }) => {
@@ -200,6 +213,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // they only ever see rows tagged with their own owner (queue.ts listAll).
     if (foreignRows === 0) clearDeviceKey();
     setOfflineSession(null);
+    forgetLastKnownOwner();
     resetPreparedSession();
     setUser(null);
     setStatus('unauthenticated');
@@ -208,10 +222,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [t]);
 
+  const resolveRevoked = useCallback(async (opts?: { hide?: boolean }) => {
+    const info = getRevokedInfo();
+    if (info && !opts?.hide && (await queueRepository.listRevokedFor(info)).length === 0) {
+      clearRevokedInfo();
+      if ((await queueRepository.queueRowCount()) === 0) clearDeviceKey();
+      setRevoked(null);
+    } else if (opts?.hide) {
+      setRevoked(null);
+    }
+  }, []);
+
   const hasPermission = useCallback((code: string) => user?.permissions.includes(code) ?? false, [user]);
 
   return (
-    <AuthContext.Provider value={{ user, status, logout, hasPermission, linkPhone, linking }}>
+    <AuthContext.Provider value={{ user, status, logout, hasPermission, linkPhone, linking, revoked, resolveRevoked }}>
       {children}
     </AuthContext.Provider>
   );

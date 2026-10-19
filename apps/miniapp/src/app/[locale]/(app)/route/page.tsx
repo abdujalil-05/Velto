@@ -185,7 +185,8 @@ export default function RoutePage() {
         </Card>
       )}
 
-      <FreshnessLabel kind="balance" />
+      <FreshnessLabel dataset="route" />
+      <FreshnessLabel dataset="balances" />
       <div className="space-y-2">
         {stops.map((stop) => (
           <Card key={stop.stopId} className="transition-colors">

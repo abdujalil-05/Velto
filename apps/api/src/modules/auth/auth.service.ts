@@ -332,6 +332,17 @@ export class AuthService {
       throw new SessionExpiredException();
     }
 
+    // Owner state first: a deactivated/blocked account's tokens are revoked by
+    // design (users.deactivate), so that is NOT a reuse signal. 403 is only
+    // reachable by presenting a valid token hash, so it leaks nothing to others.
+    if (!existing.user.isActive) {
+      throw new AccountBlockedException();
+    }
+    const company = await systemPrisma.company.findUnique({ where: { id: existing.user.companyId } });
+    if (!company?.isActive) {
+      throw new AccountBlockedException();
+    }
+
     if (existing.revokedAt) {
       // Reuse of an already-rotated token is a theft signal (15.2: "qayta
       // ishlatilsa butun oila bekor bo'ladi") — kill every token in the family.
@@ -357,14 +368,6 @@ export class AuthService {
 
     if (existing.expiresAt < new Date()) {
       throw new SessionExpiredException();
-    }
-    if (!existing.user.isActive) {
-      throw new AccountBlockedException();
-    }
-
-    const company = await systemPrisma.company.findUnique({ where: { id: existing.user.companyId } });
-    if (!company?.isActive) {
-      throw new AccountBlockedException();
     }
 
     return this.tenantPrisma.run(existing.user.companyId, async (tx) => {

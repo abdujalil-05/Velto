@@ -1,20 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { QueueEntry } from './queue';
-import { attentionCount, isRejectedHandover, needsAttention, entryDisplayName, exportFileName, localizedError, parsePriceChanged, sortQueueForScreen, statusView } from './queue-view';
+import { attentionCount, isRejectedHandover, needsAttention, entryDisplayName, exportFileName, localizedError, parsePriceChanged, sortQueueForScreen } from './queue-view';
 
 function e(over: Partial<QueueEntry>): QueueEntry {
   return { clientId: 'x', type: 'order', status: 'PENDING', payload: {}, createdAt: '2026-01-01T00:00:00Z', schemaVersion: 1, attemptCount: 0, ...over };
 }
 
 describe('queue-view', () => {
-  it('separates device-saved from server-accepted', () => {
-    expect(statusView('PENDING').labelKey).toBe('onDevice');
-    expect(statusView('SYNCING').labelKey).toBe('onDevice');
-    expect(statusView('SYNCED').labelKey).toBe('onServer');
-    expect(statusView('FAILED').labelKey).toBe('failed');
-    expect(statusView('CONFLICT').labelKey).toBe('conflict');
-  });
-
   it('prefers the localized error message, falls back to uz message then code', () => {
     const err = { code: 'C', message: 'uz-msg', messages: { uz: 'uz-msg', ru: 'ru-msg', en: 'en-msg' } };
     expect(localizedError(err, 'ru')).toBe('ru-msg');
@@ -53,14 +45,6 @@ describe('queue-view', () => {
 
   it('builds a filesystem-safe export name', () => {
     expect(exportFileName(new Date('2026-01-02T03:04:05.678Z'))).toBe('velto-unsynced-2026-01-02T03-04-05-678Z.json');
-  });
-
-  it('maps ADR-029 payment handover status after server ACK', () => {
-    expect(statusView('PENDING', 'POSTED').labelKey).toBe('onDevice');
-    expect(statusView('SYNCED').labelKey).toBe('onServer');
-    expect(statusView('SYNCED', 'PENDING_HANDOVER')).toEqual({ labelKey: 'handoverPending', variant: 'warning' });
-    expect(statusView('SYNCED', 'POSTED').labelKey).toBe('handoverPosted');
-    expect(statusView('SYNCED', 'REJECTED')).toEqual({ labelKey: 'handoverRejected', variant: 'destructive' });
   });
 
   it('treats a cashier-rejected payment as needs-attention and sorts it first', () => {

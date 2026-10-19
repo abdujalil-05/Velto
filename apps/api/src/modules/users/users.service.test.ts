@@ -18,6 +18,10 @@ import {
 } from './users-exceptions';
 import { UsersService } from './users.service';
 
+// Prod keeps Prisma's 5s tx default; remove() runs ~20 reference-count queries which under full-suite
+// DB contention measured >6s (P2028). The tests assert behaviour, not latency, so give the tx room.
+const LOAD_TX = { timeout: 30_000 };
+
 describe('UsersService (integration, real Postgres + RLS)', () => {
   let companyId: string;
   let actor: AuthenticatedUser;
@@ -206,7 +210,7 @@ describe('UsersService (integration, real Postgres + RLS)', () => {
     it('hard-deletes a user that owns no business records', async () => {
       const created = await tenantPrisma.run(companyId, () => users.create(dto(), actor));
 
-      const result = await tenantPrisma.run(companyId, () => users.remove(created.id, {}, actor));
+      const result = await tenantPrisma.run(companyId, () => users.remove(created.id, {}, actor), LOAD_TX);
       expect(result.mode).toBe('hard');
 
       const [row, roleLinks] = await tenantPrisma.run(companyId, async (tx) => [
@@ -227,7 +231,7 @@ describe('UsersService (integration, real Postgres + RLS)', () => {
         }),
       );
 
-      const result = await tenantPrisma.run(companyId, () => users.remove(created.id, {}, actor));
+      const result = await tenantPrisma.run(companyId, () => users.remove(created.id, {}, actor), LOAD_TX);
       expect(result.mode).toBe('soft');
       expect(result.references.notifications).toBe(1);
       expect(result.user?.isActive).toBe(false);
@@ -252,7 +256,7 @@ describe('UsersService (integration, real Postgres + RLS)', () => {
       await addReference(companyId, created.id);
 
       await expect(
-        tenantPrisma.run(companyId, () => users.remove(created.id, { hard: true }, actor)),
+        tenantPrisma.run(companyId, () => users.remove(created.id, { hard: true }, actor), LOAD_TX),
       ).rejects.toBeInstanceOf(UserHasReferencesException);
 
       const row = await tenantPrisma.run(companyId, (tx) => tx.user.findUnique({ where: { id: created.id } }));
@@ -261,7 +265,7 @@ describe('UsersService (integration, real Postgres + RLS)', () => {
 
     it('writes an audit entry that outlives the hard-deleted row', async () => {
       const created = await tenantPrisma.run(companyId, () => users.create(dto(), actor));
-      await tenantPrisma.run(companyId, () => users.remove(created.id, {}, actor));
+      await tenantPrisma.run(companyId, () => users.remove(created.id, {}, actor), LOAD_TX);
 
       const entries = await tenantPrisma.run(companyId, (tx) =>
         tx.auditLog.findMany({ where: { entity: 'User', entityId: created.id, action: 'user.delete' } }),
@@ -271,7 +275,7 @@ describe('UsersService (integration, real Postgres + RLS)', () => {
     });
 
     it('refuses to let a user delete their own account', async () => {
-      await expect(tenantPrisma.run(companyId, () => users.remove(actor.id, {}, actor))).rejects.toBeInstanceOf(
+      await expect(tenantPrisma.run(companyId, () => users.remove(actor.id, {}, actor), LOAD_TX)).rejects.toBeInstanceOf(
         CannotDeleteSelfException,
       );
     });
@@ -283,7 +287,7 @@ describe('UsersService (integration, real Postgres + RLS)', () => {
       );
 
       await expect(
-        tenantPrisma.run(isolatedCompanyId, () => users.remove(soleOwner.id, {}, freshActor)),
+        tenantPrisma.run(isolatedCompanyId, () => users.remove(soleOwner.id, {}, freshActor), LOAD_TX),
       ).rejects.toBeInstanceOf(LastOwnerException);
     });
 
@@ -296,7 +300,7 @@ describe('UsersService (integration, real Postgres + RLS)', () => {
       const director: AuthenticatedUser = { ...freshActor, roles: ['SALES_DIRECTOR'], permissions: ['users.delete'] };
 
       await expect(
-        tenantPrisma.run(isolatedCompanyId, () => users.remove(otherOwner.id, {}, director)),
+        tenantPrisma.run(isolatedCompanyId, () => users.remove(otherOwner.id, {}, director), LOAD_TX),
       ).rejects.toBeInstanceOf(CannotDeleteOwnerException);
     });
   });

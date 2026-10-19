@@ -7,11 +7,12 @@ import { isCourierOnly } from '@/lib/auth/roles';
 import { SyncStatusBadge } from '@/components/shared/sync-status-badge';
 import { QueueNavLink } from '@/components/queue/queue-nav-link';
 import { SyncBanners } from '@/components/queue/sync-banners';
+import { RevokedNotice } from '@/components/revoked-notice';
 import { TelegramFallback } from '@/components/telegram-fallback';
 import { Button } from '@/components/ui/button';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
-  const { user, status, linkPhone, linking } = useAuth();
+  const { user, status, linkPhone, linking, revoked } = useAuth();
   const t = useTranslations('Auth');
   // No sync engine is mounted for a courier-only session (see OfflineLayer in
   // components/providers.tsx), and there is nothing queued to report either.
@@ -32,6 +33,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   // the fallback's job is to hand the agent that link rather than to explain
   // a login they cannot perform here. This used to be a single line of muted
   // text on an otherwise empty page, which on a phone reads as a blank screen.
+  if (status === 'unauthenticated' && revoked) return <RevokedNotice />;
   if (status === 'no-telegram-context' || status === 'unauthenticated') {
     return <TelegramFallback reason={status} />;
   }

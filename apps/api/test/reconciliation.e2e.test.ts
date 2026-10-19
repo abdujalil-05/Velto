@@ -90,8 +90,11 @@ describe('E2E F2.5: reconciliation', () => {
   it('ACCOUNTANT can read but not run/fix', async () => {
     await request(app.getHttpServer()).get('/reconciliation/runs').set('Authorization', auth('ACCOUNTANT')).expect(200);
     await request(app.getHttpServer()).get('/reconciliation/findings?status=OPEN&kind=STOCK').set('Authorization', auth('ACCOUNTANT')).expect(200);
-    await request(app.getHttpServer()).post('/reconciliation/run').set('Authorization', auth('ACCOUNTANT')).expect(403);
-    await request(app.getHttpServer()).post(`/reconciliation/findings/${randomUUID()}/fix`).set('Authorization', auth('ACCOUNTANT')).expect(403);
+    // Assert status via the body so a rare non-403 is diagnosable (code/message) instead of "expected 403, got 400".
+    const run = await request(app.getHttpServer()).post('/reconciliation/run').set('Authorization', auth('ACCOUNTANT'));
+    expect({ status: run.status, body: run.body }).toMatchObject({ status: 403 });
+    const fix = await request(app.getHttpServer()).post(`/reconciliation/findings/${randomUUID()}/fix`).set('Authorization', auth('ACCOUNTANT'));
+    expect({ status: fix.status, body: fix.body }).toMatchObject({ status: 403 });
   });
 
   it('rejects invalid filter values', async () => {

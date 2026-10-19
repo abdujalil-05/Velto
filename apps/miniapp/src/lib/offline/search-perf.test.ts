@@ -47,5 +47,6 @@ describe('offline search perf (NFR-PERF-004)', () => {
     console.log(`[NFR-PERF-004] products p95=${p95(pTimes).toFixed(2)}ms customers p95=${p95(cTimes).toFixed(2)}ms`);
     expect(p95(pTimes)).toBeLessThanOrEqual(150);
     expect(p95(cTimes)).toBeLessThanOrEqual(150);
-  });
+    // 30s covers only the seeding (7k AES-GCM encrypted rows); the NFR bound above is unchanged.
+  }, 30_000);
 });

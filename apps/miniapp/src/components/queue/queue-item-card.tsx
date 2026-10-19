@@ -57,7 +57,7 @@ export function QueueItemCard({ entry, name, productName, onChanged }: Props) {
               {t('createdAt')}: {formatDateTime(entry.createdAt, locale)}
             </p>
           </div>
-          <QueueStatusBadge status={entry.status} paymentStatus={entry.paymentStatus} />
+          <QueueStatusBadge status={entry.status} paymentStatus={entry.paymentStatus} attemptCount={entry.attemptCount} />
         </div>
 
         {unsent && <p className="text-xs text-muted-foreground">{t('deviceOnlyNote')}</p>}
