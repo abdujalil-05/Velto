@@ -2437,7 +2437,7 @@ describe('tenant isolation (RLS)', () => {
       expect(Number(row!.n)).toBe(1);
     });
 
-    it('SalesOrder: CANCELLED needs a reason; legacy note marker is read; backfill left no CANCELLED row without reason', async () => {
+    it('SalesOrder: CANCELLED needs an explicit reason; note-marker shim is gone; backfill left no CANCELLED row without reason', async () => {
       const mk = () =>
         withTenant(companyAId, (tx) =>
           tx.salesOrder.create({ data: { companyId: companyAId, number: `SO-OB-${++seq}`, customerId: custId, warehouseId: whId } }),
@@ -2459,17 +2459,25 @@ describe('tenant isolation (RLS)', () => {
       );
       expect(ok.cancelReason).toBe('mijoz rad etdi');
 
+      // Shim removed (20261019140000): a legacy note marker no longer
+      // satisfies the CHECK — the reason must be written explicitly.
       const o2 = await mk();
-      const legacy = await withTenant(companyAId, (tx) =>
-        tx.salesOrder.update({ where: { id: o2.id }, data: { status: 'CANCELLED', note: 'eski\n[Bekor qilindi]: narx xato' } }),
-      );
-      expect(legacy.cancelReason).toBe('narx xato');
-      expect(legacy.cancelledAt).not.toBeNull();
-
-      const [fn] = await prisma.$queryRaw<{ a: string | null; b: string | null }[]>`
-        SELECT velto_sales_order_cancel_reason_from_note(${'x\n[Bekor qilindi]: a\n[Bekor qilindi]: oxirgi'}) AS a,
-               velto_sales_order_cancel_reason_from_note(${'izohsiz'}) AS b`;
-      expect(fn).toEqual({ a: 'oxirgi', b: null });
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.salesOrder.update({ where: { id: o2.id }, data: { status: 'CANCELLED', note: 'eski\n[Bekor qilindi]: narx xato' } }),
+        ),
+      ).rejects.toThrow(/SalesOrder_cancel_reason_check/);
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.salesOrder.create({
+            data: { companyId: companyAId, number: `SO-OB-${++seq}`, customerId: custId, warehouseId: whId, status: 'CANCELLED', note: '[Bekor qilindi]: x' },
+          }),
+        ),
+      ).rejects.toThrow(/SalesOrder_cancel_reason_check/);
+      const [shim] = await systemPrisma.$queryRaw<{ t: bigint; f: bigint }[]>`
+        SELECT (SELECT count(*) FROM pg_trigger WHERE tgname = 'salesorder_cancel_reason_from_note') AS t,
+               (SELECT count(*) FROM pg_proc WHERE proname IN ('velto_sales_order_cancel_reason_from_note', 'velto_sales_order_cancel_reason_from_note_trg')) AS f`;
+      expect({ t: Number(shim!.t), f: Number(shim!.f) }).toEqual({ t: 0, f: 0 });
       const [missing] = await systemPrisma.$queryRaw<{ n: bigint }[]>`
         SELECT count(*) AS n FROM "SalesOrder" WHERE "status" = 'CANCELLED' AND "cancelReason" IS NULL`;
       expect(Number(missing!.n)).toBe(0);
