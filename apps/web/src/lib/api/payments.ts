@@ -5,6 +5,8 @@ import type { PaginatedResult } from './types';
 
 export type PaymentMethod = 'CASH' | 'CARD' | 'TRANSFER';
 
+export type PaymentSource = 'COLLECTION' | 'OPENING';
+
 export type PaymentStatus = 'PENDING_HANDOVER' | 'POSTED' | 'REJECTED' | 'REVERSED';
 
 export interface PaymentAllocation {
@@ -22,6 +24,8 @@ export interface Payment {
   amount: string;
   method: PaymentMethod;
   status: PaymentStatus;
+  /** OPENING = carried-over opening credit (ADR-041), not money collected. */
+  source: PaymentSource;
   /** Unallocated POSTED amount (Decimal string). */
   advance: string;
   createdAt: string;
@@ -37,6 +41,8 @@ export interface ListPaymentsParams {
   pageSize?: number;
   customerId?: string;
   status?: PaymentStatus;
+  /** Omitted => both sources when no period is given. */
+  source?: PaymentSource;
   sortBy?: string;
   sortDir?: 'asc' | 'desc';
   [key: string]: string | number | undefined;

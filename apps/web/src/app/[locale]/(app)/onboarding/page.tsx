@@ -22,10 +22,11 @@ import { WarehouseStepForm } from '@/components/onboarding/warehouse-step-form';
 import { ProductForm } from '@/components/products/product-form';
 import { CustomerForm } from '@/components/customers/customer-form';
 import { UserForm } from '@/components/users/user-form';
+import { OpeningBalancesPanel } from '@/components/opening-balances/opening-balances-panel';
 import { StepIndicator } from '@/components/onboarding/step-indicator';
 
-const LAST_STEP = 4;
-const DONE_STEP = 5;
+const LAST_STEP = 5;
+const DONE_STEP = 6;
 
 export default function OnboardingPage() {
   const t = useTranslations('Onboarding');
@@ -62,6 +63,7 @@ export default function OnboardingPage() {
       {stepIndex === 2 && <ProductStep onDone={() => markDoneAndAdvance(2)} onSkip={skip} submitError={submitError} setSubmitError={setSubmitError} locale={locale} />}
       {stepIndex === 3 && <CustomerStep onDone={() => markDoneAndAdvance(3)} onSkip={skip} locale={locale} />}
       {stepIndex === 4 && <AgentStep onDone={() => markDoneAndAdvance(4)} onSkip={skip} submitError={submitError} setSubmitError={setSubmitError} locale={locale} />}
+      {stepIndex === 5 && <OpeningStep onDone={() => markDoneAndAdvance(5)} onSkip={skip} />}
       {stepIndex === DONE_STEP && <DoneStep />}
     </div>
   );
@@ -247,6 +249,23 @@ function AgentStep({ onDone, onSkip, submitError, setSubmitError, locale }: Step
         }}
       />
       <SkipButton onSkip={onSkip} />
+    </StepCard>
+  );
+}
+
+function OpeningStep({ onDone, onSkip }: { onDone: () => void; onSkip: () => void }) {
+  const t = useTranslations('Onboarding');
+  return (
+    <StepCard titleKey="openingBalances">
+      <OpeningBalancesPanel />
+      <div className="mt-2 flex gap-2">
+        <Button variant="outline" size="sm" onClick={onDone}>
+          {t('continue')}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onSkip}>
+          {t('skip')}
+        </Button>
+      </div>
     </StepCard>
   );
 }

@@ -159,7 +159,7 @@ export function useAssignCourierMutation(id: string) {
 export function useCancelOrderMutation(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (reason?: string) => apiFetch<SalesOrder>(`/orders/${id}/cancel`, { method: 'POST', body: { reason } }),
+    mutationFn: (reason: string) => apiFetch<SalesOrder>(`/orders/${id}/cancel`, { method: 'POST', body: { reason } }),
     onSuccess: () => invalidateOrder(queryClient, id),
   });
 }

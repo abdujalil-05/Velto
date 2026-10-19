@@ -61,7 +61,14 @@ export function PaymentsTable({ payments, sort, onSort, canReverse = false, onRe
         <tbody className="divide-y divide-border">
           {payments.map((payment) => (
             <tr key={payment.id}>
-              <td className="py-2 pr-3 font-medium">{payment.number}</td>
+              <td className="py-2 pr-3 font-medium">
+                {payment.number}
+                {payment.source === 'OPENING' && (
+                  <Badge variant="secondary" className="ml-2">
+                    {tCommon('openingLabel')}
+                  </Badge>
+                )}
+              </td>
               <td className="py-2 pr-3">
                 <Link href={`/customers/${payment.customerId}`} className="text-primary hover:underline">
                   {payment.customer.name}
@@ -94,7 +101,7 @@ export function PaymentsTable({ payments, sort, onSort, canReverse = false, onRe
                       </Button>
                     </>
                   )}
-                  {canReverse && payment.status === 'POSTED' && (
+                  {canReverse && payment.status === 'POSTED' && payment.source !== 'OPENING' && (
                     <Button variant="ghost" size="sm" onClick={() => onReverse?.(payment)}>
                       <Undo2 className="mr-1 h-4 w-4" />
                       {t('reverse.action')}

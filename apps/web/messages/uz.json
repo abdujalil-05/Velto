@@ -33,7 +33,8 @@
       "reason": "Sabab",
       "reasonHint": "{min}–{max} belgi, majburiy",
       "confirm": "Bekor qilish"
-    }
+    },
+    "openingLabel": "Boshlang'ich qarz/avans"
   },
   "Nav": {
     "dashboard": "Bosh sahifa",
@@ -318,7 +319,7 @@
       "cancel": "Bekor qilish",
       "cancelSuccess": "Buyurtma bekor qilindi",
       "cancelTitle": "Buyurtmani bekor qilish",
-      "cancelReasonLabel": "Sabab (ixtiyoriy)",
+      "cancelReasonLabel": "Sabab",
       "cancelConfirm": "Bekor qilish",
       "cancelKeep": "Bekor qilmaslik",
       "courier": "Kuryer",
@@ -496,6 +497,12 @@
       "rejectTitle": "{number} to'lovini rad etish",
       "rejectDescription": "To'lov rad etiladi, mijoz qarzi kamaymaydi. Sabab majburiy.",
       "openSession": "Kassa smenasini ochish"
+    },
+    "source": {
+      "label": "Manba",
+      "COLLECTION": "Yig'ilgan to'lovlar",
+      "OPENING": "Boshlang'ich avans",
+      "all": "Barchasi"
     }
   },
   "Stock": {
@@ -643,14 +650,16 @@
       "warehouse": "Ombor",
       "product": "Mahsulot",
       "customer": "Mijoz",
-      "agent": "Savdo agenti"
+      "agent": "Savdo agenti",
+      "openingBalances": "Boshlang'ich qoldiqlar"
     },
     "warehouse": {
       "required": "Majburiy maydon",
       "name": "Ombor nomi",
       "address": "Manzil",
       "submit": "Omborni saqlash"
-    }
+    },
+    "continue": "Davom etish"
   },
   "Settings": {
     "title": "Sozlamalar",
@@ -1727,6 +1736,93 @@
       "rejectDescription": "{file} fayli 1C tomonidan nega rad etilganini yozing. Keyin o'zgartirib bo'lmaydi.",
       "doneAccepted": "Qabul qilingan deb belgilandi.",
       "doneRejected": "Rad etilgan deb belgilandi."
+    }
+  },
+  "Trial": {
+    "ending": "Sinov muddati {days, plural, =0 {bugun} one {# kun} other {# kun}} ichida tugaydi. Ishni davom ettirish uchun tarifni faollashtiring.",
+    "expired": "Sinov muddati tugagan. Tizim ishlashda davom etadi, lekin tarifni faollashtirish kerak."
+  },
+  "OpeningBalances": {
+    "title": "Boshlang'ich qoldiqlar",
+    "subtitle": "Eski tizimdagi (1C) mijoz qarz/avanslari va ombor qoldig'ini fayldan yuklang: avval ko'rib chiqing, so'ng 1C nazorat jamilari bilan tasdiqlab o'tkazing.",
+    "noPermission": "Boshlang'ich qoldiqlarni ko'rish uchun ruxsatingiz yo'q.",
+    "retry": "Qayta urinish",
+    "upload": "Fayl yuklash",
+    "uploadRetry": "Boshqa fayl yuklash",
+    "startOver": "Boshidan boshlash",
+    "newUpload": "Yangi fayl yuklash",
+    "kinds": {
+      "CUSTOMER_BALANCE": "Mijoz qarz/avans",
+      "STOCK": "Ombor qoldig'i"
+    },
+    "statuses": {
+      "PREVIEWED": "Ko'rib chiqilgan",
+      "POSTED": "O'tkazilgan",
+      "VOIDED": "Bekor qilingan"
+    },
+    "guide": {
+      "title": "Fayl ustunlari",
+      "CUSTOMER_BALANCE": "customerCode yoki customerId; debt yoki credit (debt — mijoz qarzi, credit — avans, qator uchun bittasi); docRef (debt uchun majburiy — 1C hujjat raqami); docDate (YYYY-MM-DD).",
+      "STOCK": "sku; warehouseName yoki warehouseId; qty (3 xonagacha kasr).",
+      "formats": "Format: .xlsx yoki .csv, birinchi qator — sarlavha, ko'pi bilan 5000 qator. Xato bo'lsa, hech narsa qisman o'tkazilmaydi."
+    },
+    "preview": {
+      "totalRows": "Jami qator",
+      "validRows": "To'g'ri qator",
+      "invalidRows": "Xato qator",
+      "totalDebt": "Jami qarz",
+      "totalCredit": "Jami avans",
+      "totalQty": "Jami miqdor",
+      "hasErrors": "Faylda xato qatorlar bor. Tuzatib, qayta yuklang — boshlang'ich qoldiq qisman o'tkazilmaydi.",
+      "ownerOnly": "Bu paketni faqat Egasi (OWNER) o'tkaza oladi. Siz natijani ko'rishingiz mumkin."
+    },
+    "post": {
+      "title": "O'tkazish va tasdiqlash",
+      "cutover": "Diqqat: tanlangan sanadan keyin eski tizimda qoldiq va qarzlarni o'zgartirib bo'lmaydi — aks holda ikki tizim farq qiladi.",
+      "asOfDate": "Qoldiq sanasi",
+      "source": "Manba",
+      "sourcePlaceholder": "Masalan: 1C, oborotno-saldovaya 30.09",
+      "controlTitle": "1C nazorat jamilari",
+      "controlHint": "1C dagi jami qiymatni kiriting (0 ham bo'ladi). U ko'rib chiqilgan jamilarga aniq teng bo'lishi kerak.",
+      "controlDebt": "1C jami qarz",
+      "controlCredit": "1C jami avans",
+      "controlQty": "1C jami qoldiq",
+      "previewTotals": "Fayl jamilari",
+      "mismatch": "Kiritilgan nazorat jamilari fayl jamilaridan farq qiladi. Server o'tkazishni rad etadi — 1C ma'lumotini va faylni tekshiring.",
+      "mismatchExpected": "Fayl jamilari: qarz {debt}, avans {credit}, miqdor {qty}.",
+      "signOff": "Jamilarni 1C bilan solishtirdim va o'tkazishni tasdiqlayman.",
+      "submit": "O'tkazish",
+      "submitAnyway": "Farq bilan o'tkazishga urinish",
+      "success": "Boshlang'ich qoldiq o'tkazildi",
+      "result": "{kind}: {rows} qator o'tkazildi. Jami:",
+      "dateRequired": "Sanani kiriting",
+      "dateFuture": "Sana kelajakda bo'lishi mumkin emas",
+      "sourceInvalid": "Manbani kiriting (1–200 belgi)",
+      "amountInvalid": "Summani kiriting: raqam, 2 xonagacha kasr (0 ham mumkin)",
+      "qtyInvalid": "Miqdorni kiriting: raqam, 3 xonagacha kasr (0 ham mumkin)",
+      "signOffRequired": "Tasdiqlash majburiy"
+    },
+    "history": {
+      "title": "Paketlar",
+      "empty": "Hali boshlang'ich qoldiq paketi yo'q. Yuqoridan fayl yuklang.",
+      "kind": "Tur",
+      "createdAt": "Sana",
+      "source": "Manba",
+      "rows": "Qatorlar",
+      "totals": "Jamilar",
+      "status": "Holat",
+      "actions": "Amallar",
+      "asOf": "Qoldiq sanasi",
+      "debt": "Qarz",
+      "credit": "Avans"
+    },
+    "void": {
+      "action": "Bekor qilish",
+      "title": "Paketni bekor qilish",
+      "description": "Paket hujjatlari teskari yoziladi. Agar ular keyingi operatsiyalarda ishlatilgan bo'lsa, bekor qilib bo'lmaydi.",
+      "confirm": "Paketni bekor qilish",
+      "success": "Paket bekor qilindi",
+      "touchedHint": "Avval bog'liq to'lov taqsimoti yoki ombor harakatini hal qiling."
     }
   }
 }

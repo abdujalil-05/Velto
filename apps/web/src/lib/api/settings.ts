@@ -1,6 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from './client';
 
+export type SubscriptionStatus = 'ACTIVE' | 'TRIAL' | 'TRIAL_EXPIRED';
+
+export interface Subscription {
+  plan: string;
+  trialEndsAt: string | null;
+  status: SubscriptionStatus;
+  /** Calendar days (company timezone) until the trial ends; 0 once expired. */
+  daysLeft: number;
+}
+
 // Mirrors apps/api/src/modules/settings/settings.service.ts (Company model, 6.2).
 export interface CompanySettings {
   id: string;
@@ -16,6 +26,7 @@ export interface CompanySettings {
   visitGpsRadiusM: number;
   gpsMaxAccuracyM: number;
   isActive: boolean;
+  subscription: Subscription;
 }
 
 export function useSettingsQuery(enabled = true) {
