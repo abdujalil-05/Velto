@@ -63,6 +63,19 @@ export class DashboardService {
     }
   }
 
+  /**
+   * Guard probe (no DB): true when this company has a live cache entry (done or
+   * in flight), so the request does no new report computation and needs no
+   * semaphore permit. The response is still served only after the permission
+   * check in TenantContextInterceptor.
+   */
+  hasLiveEntry(companyId: string): boolean {
+    const now = Date.now();
+    const prefix = `${companyId}|`;
+    for (const [k, e] of this.cache) if (e.expiresAt > now && k.startsWith(prefix)) return true;
+    return false;
+  }
+
   /** Test hook. */
   clearCache() {
     this.cache.clear();

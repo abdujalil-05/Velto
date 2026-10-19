@@ -1,9 +1,11 @@
-import { Controller, Get, Header, Query, StreamableFile } from '@nestjs/common';
+import { Controller, Get, Header, Query, StreamableFile, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { TenantTx } from '../../common/tenant/tenant-tx-options.decorator';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { ReportConcurrencyGuard } from '../../common/concurrency/report-concurrency.guard';
+import { DashboardReportGuard } from './dashboard-report.guard';
 import { AgentPerformanceReportService } from './agent-performance.service';
 import { DashboardService } from './dashboard.service';
 import { DateRangeQueryDto } from './dto/date-range.query';
@@ -28,6 +30,7 @@ export class ReportsController {
   // 9.3: the home dashboard, not one of the 4 "/reports" tabs — kept on this
   // controller anyway (7.2 lists it as GET /reports/dashboard).
   @Get('dashboard')
+  @UseGuards(DashboardReportGuard)
   @TenantTx(REPORT_TX_OPTIONS)
   @RequirePermission('reports.read')
   getDashboard() {
@@ -35,6 +38,7 @@ export class ReportsController {
   }
 
   @Get('sales')
+  @UseGuards(ReportConcurrencyGuard)
   @TenantTx(REPORT_TX_OPTIONS)
   @RequirePermission('reports.read')
   getSales(@Query() query: DateRangeQueryDto) {
@@ -43,6 +47,7 @@ export class ReportsController {
 
   // TZ §7.3/§16.1: exports reuse the screen's DTO + service call; only the renderer differs.
   @Get('sales/export')
+  @UseGuards(ReportConcurrencyGuard)
   @RequirePermission('reports.export')
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Header('Content-Type', XLSX_MIME)
@@ -53,6 +58,7 @@ export class ReportsController {
   }
 
   @Get('sales/export.csv')
+  @UseGuards(ReportConcurrencyGuard)
   @RequirePermission('reports.export')
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Header('Content-Type', CSV_MIME)
@@ -63,12 +69,14 @@ export class ReportsController {
   }
 
   @Get('agents')
+  @UseGuards(ReportConcurrencyGuard)
   @RequirePermission('reports.read')
   getAgents(@Query() query: DateRangeQueryDto) {
     return this.agentPerformance.getAgentPerformance(query);
   }
 
   @Get('agents/export')
+  @UseGuards(ReportConcurrencyGuard)
   @RequirePermission('reports.export')
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Header('Content-Type', XLSX_MIME)
@@ -79,6 +87,7 @@ export class ReportsController {
   }
 
   @Get('agents/export.csv')
+  @UseGuards(ReportConcurrencyGuard)
   @RequirePermission('reports.export')
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Header('Content-Type', CSV_MIME)
@@ -89,6 +98,7 @@ export class ReportsController {
   }
 
   @Get('overview')
+  @UseGuards(ReportConcurrencyGuard)
   @TenantTx(REPORT_TX_OPTIONS)
   @RequirePermission('reports.read')
   getOverview(@Query() query: DateRangeQueryDto) {
@@ -96,6 +106,7 @@ export class ReportsController {
   }
 
   @Get('overview/export')
+  @UseGuards(ReportConcurrencyGuard)
   @RequirePermission('reports.export')
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Header('Content-Type', XLSX_MIME)
@@ -106,6 +117,7 @@ export class ReportsController {
   }
 
   @Get('overview/export.csv')
+  @UseGuards(ReportConcurrencyGuard)
   @RequirePermission('reports.export')
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Header('Content-Type', CSV_MIME)
