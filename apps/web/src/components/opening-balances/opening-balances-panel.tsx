@@ -26,6 +26,7 @@ export function OpeningBalancesPanel({ showHistory = true }: { showHistory?: boo
   const locale = useLocale();
   const { hasPermission } = useAuth();
   const canRead = hasPermission('opening.read');
+  const canPreview = hasPermission('opening.preview');
   const canPost = hasPermission('opening.post');
   const canVoid = hasPermission('opening.void');
 
@@ -64,7 +65,14 @@ export function OpeningBalancesPanel({ showHistory = true }: { showHistory?: boo
 
   return (
     <div className="space-y-4">
-      {!report && !posted && (
+      {!canPreview && !posted && (
+        <Alert>
+          <Info className="h-4 w-4" aria-hidden="true" />
+          <AlertDescription>{t('uploadOwnerOnly')}</AlertDescription>
+        </Alert>
+      )}
+
+      {canPreview && !report && !posted && (
         <Card>
           <CardContent className="space-y-4 pt-6">
             <p className="text-sm text-muted-foreground">{t('subtitle')}</p>
@@ -119,7 +127,7 @@ export function OpeningBalancesPanel({ showHistory = true }: { showHistory?: boo
         </Card>
       )}
 
-      {report && !posted && (
+      {canPreview && report && !posted && (
         <Card>
           <CardContent className="space-y-4 pt-6">
             <div className="flex items-center justify-between gap-3">

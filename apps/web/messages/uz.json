@@ -1747,6 +1747,7 @@
     "subtitle": "Eski tizimdagi (1C) mijoz qarz/avanslari va ombor qoldig'ini fayldan yuklang: avval ko'rib chiqing, so'ng 1C nazorat jamilari bilan tasdiqlab o'tkazing.",
     "noPermission": "Boshlang'ich qoldiqlarni ko'rish uchun ruxsatingiz yo'q.",
     "retry": "Qayta urinish",
+    "uploadOwnerOnly": "Faqat egasi (OWNER) yuklay oladi. Siz yuklangan paketlar ro'yxati va tafsilotini ko'rishingiz mumkin.",
     "upload": "Fayl yuklash",
     "uploadRetry": "Boshqa fayl yuklash",
     "startOver": "Boshidan boshlash",

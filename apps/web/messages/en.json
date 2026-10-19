@@ -1747,6 +1747,7 @@
     "subtitle": "Upload customer debts/advances and warehouse stock from the old system (1C) as a file: preview first, then post against the 1C control totals.",
     "noPermission": "You do not have access to opening balances.",
     "retry": "Retry",
+    "uploadOwnerOnly": "Only the Owner (OWNER) can upload files. You can view the list of batches and their details.",
     "upload": "Upload file",
     "uploadRetry": "Upload another file",
     "startOver": "Start over",
