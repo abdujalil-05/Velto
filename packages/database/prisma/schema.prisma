@@ -124,6 +124,7 @@ model User {
   // both sides; in practice the two roles are held by different people.
   courierOrders               SalesOrder[]            @relation("CourierOrders")
   paymentsCollected           Payment[]               @relation("PaymentsCollected")
+  paymentHandoversResolved    Payment[]               @relation("PaymentHandoversResolved")
   paymentReversals            PaymentReversal[]       @relation("PaymentReversalsActed")
   cashSessions                CashSession[]
   agentRoutes                 Route[]                 @relation("AgentRoutes")
@@ -807,10 +808,19 @@ enum PaymentMethod {
   TRANSFER
 }
 
-// F2.1: POSTED -> REVERSED is the only permitted in-place change on a
-// Payment (DB trigger); the reversal itself is a PaymentReversal row.
+// Lifecycle (TZ §6.5, §6.7.2, ADR-029). LOCAL_PENDING lives on the agent's
+// device only and never reaches this enum. Permitted in-place changes are
+// enforced by a DB trigger (velto_payment_guard_update):
+//   PENDING_HANDOVER -> POSTED   cashier accepts into own open CashSession
+//   PENDING_HANDOVER -> REJECTED cashier rejects, reason required
+//   POSTED           -> REVERSED only after its PaymentReversal row (F2.1)
+// Agent-collected cash is inserted as PENDING_HANDOVER (no allocations, does
+// not reduce debt); cashier/office payments are inserted directly as POSTED.
+// Only POSTED counts in the ledger; allocations require POSTED (DB trigger).
 enum PaymentStatus {
+  PENDING_HANDOVER
   POSTED
+  REJECTED
   REVERSED
 }
 
@@ -827,9 +837,19 @@ model Payment {
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
-  company   Company  @relation(fields: [companyId], references: [id])
-  customer  Customer @relation(fields: [customerId], references: [id])
-  collector User?    @relation("PaymentsCollected", fields: [collectedBy], references: [id])
+  // ADR-029 handover resolution (set once, on PENDING_HANDOVER -> POSTED or
+  // -> REJECTED; NULL for payments inserted directly as POSTED). For an
+  // accepted handover, handoverAt is the posting time (ledger/1C date).
+  handoverActorId       String?   @db.Uuid // kassir/OWNER/SALES_DIRECTOR who accepted or rejected
+  handoverAt            DateTime?
+  handoverCashSessionId String?   @db.Uuid // accepting cashier's open shift (accept only)
+  handoverRejectReason  String? // reject only, non-empty
+
+  company             Company      @relation(fields: [companyId], references: [id])
+  customer            Customer     @relation(fields: [customerId], references: [id])
+  collector           User?        @relation("PaymentsCollected", fields: [collectedBy], references: [id])
+  handoverActor       User?        @relation("PaymentHandoversResolved", fields: [handoverActorId], references: [id], onDelete: Restrict)
+  handoverCashSession CashSession? @relation(fields: [handoverCashSessionId], references: [id], onDelete: Restrict)
 
   allocations PaymentAllocation[]
   reversal    PaymentReversal?
@@ -837,7 +857,10 @@ model Payment {
   @@unique([companyId, number])
   @@unique([companyId, clientId])
   @@index([companyId, customerId])
+  @@index([companyId, status])
   @@index([collectedBy])
+  @@index([handoverActorId])
+  @@index([handoverCashSessionId])
 }
 
 // F2.1: append-only record of a payment reversal (OWNER/SALES_DIRECTOR via
@@ -896,6 +919,8 @@ model CashSession {
 
   company Company @relation(fields: [companyId], references: [id])
   user    User    @relation(fields: [userId], references: [id])
+
+  handoverPayments Payment[]
 
   // "One open shift per user" is enforced by a partial unique index in
   // prisma/migrations/*_cash_session_one_open_per_user (WHERE "closedAt" IS

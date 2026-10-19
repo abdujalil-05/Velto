@@ -63,7 +63,11 @@ export const PERMISSION_DEFS: { module: string; actions: string[] }[] = [
   // invoices (POST /payments/:id/allocate). Separate from `create` so a sales
   // agent can take a payment but not redistribute advances — OWNER,
   // SALES_DIRECTOR and CASHIER only, never ACCOUNTANT (ADR-003c).
-  { module: 'payments', actions: ['read', 'create', 'reverse', 'allocate'] },
+  // `handover` (F8.1, ADR-029 / TZ §6.5, §6.7.2): accept an agent's
+  // PENDING_HANDOVER cash into an open cash session (-> POSTED + FIFO) or
+  // reject it with a reason. OWNER, SALES_DIRECTOR and CASHIER only — never
+  // the collecting agent, never ACCOUNTANT (ADR-003c).
+  { module: 'payments', actions: ['read', 'create', 'reverse', 'allocate', 'handover'] },
   { module: 'cash', actions: ['read', 'open', 'close'] },
   // `finish` (F3): finish a route / skip a stop. Split from `update` so a
   // SALES_AGENT can close their own route without edit rights; the agent-only-
@@ -93,7 +97,7 @@ export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
     'customers.read', 'customers.update', 'catalog.read', 'stock.read',
     'purchases.read', 'purchases.create',
     'orders.read', 'orders.update', 'orders.deliver', 'invoices.read', 'payments.read',
-    'payments.reverse', 'stock.reverse', 'payments.allocate',
+    'payments.reverse', 'stock.reverse', 'payments.allocate', 'payments.handover',
     'routes.read', 'routes.create', 'routes.update', 'routes.finish', 'field.read',
     'reports.read', 'reports.export', 'users.read', 'users.create',
     'users.update', 'users.delete', 'roles.read',
@@ -118,7 +122,7 @@ export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
   ],
   CASHIER: [
     'customers.read', 'invoices.read', 'payments.read', 'payments.create', 'payments.allocate',
-    'cash.read', 'cash.open', 'cash.close',
+    'payments.handover', 'cash.read', 'cash.open', 'cash.close',
   ],
   ACCOUNTANT: [
     'customers.read', 'invoices.read', 'payments.read', 'cash.read', 'reports.read',
