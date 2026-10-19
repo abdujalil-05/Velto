@@ -43,9 +43,9 @@ describe('rbac-catalog: F1.4 role grants', () => {
     expect(holders.sort()).toEqual(['CASHIER', 'OWNER', 'SALES_DIRECTOR']);
   });
 
-  it('F8.1: payments.handover granted only to OWNER, SALES_DIRECTOR and CASHIER (ADR-029)', () => {
+  it('F8.1: payments.handover granted only to OWNER and CASHIER, not SALES_DIRECTOR (ADR-029)', () => {
     const holders = SYSTEM_ROLES.filter((r) => permissionKeysForRole(r.code).includes('payments.handover')).map((r) => r.code);
-    expect(holders.sort()).toEqual(['CASHIER', 'OWNER', 'SALES_DIRECTOR']);
+    expect(holders.sort()).toEqual(['CASHIER', 'OWNER']);
   });
 
   it('F2.5: reconciliation.read → OWNER + ACCOUNTANT; reconciliation.fix → OWNER only', () => {

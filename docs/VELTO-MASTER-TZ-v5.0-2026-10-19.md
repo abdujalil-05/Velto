@@ -620,8 +620,11 @@ Asosiy formula:
 | Closed | DELIVERED | CLOSED | internal closed ≠ invoice fully paid | order ledger |
 | Payment intent (agent naqd) | LOCAL_PENDING | PENDING_HANDOVER (server ACK; qarzni kamaytirmaydi, “yo‘lda” ko‘rinadi) | offline intent ≠ settlement; PENDING_HANDOVER da allocation yo‘q | collector device→server queue |
 | Posted payment (agent naqd) | PENDING_HANDOVER | POSTED + FIFO — kassir smenada qabul qilganda | cannot offline POSTED; cannot silently edit | cashier / finance authority |
+| Rejected payment (agent) | PENDING_HANDOVER | REJECTED — kassir rad etadi, sabab majburiy; balans/qarzga ta’sir yo‘q, allocation yo‘q | terminal: REJECTED dan qaytish yo‘q; kolleksiyachi o‘z to‘lovini qabul/rad eta olmaydi | cashier / finance authority |
 | Posted payment (kassir/ofis) | — | POSTED darhol (+FIFO) | draft/pending bosqichi yo‘q; hard delete yo‘q | cashier / finance authority |
 | 1C export | QUEUED | GENERATED → ACCOUNTING_ACCEPTED / FAILED_REVIEW | file generated ≠ document imported | buxgalter UI’da qo‘lda tasdig‘i (checksum + izoh, auditli); 1C callback yo‘q |
+
+**Rule (to‘lov):** agent qabul qilgan to‘lov usuldan qat’i nazar (naqd, karta, o‘tkazma) `PENDING_HANDOVER` bo‘ladi; qabul/rad etish ruxsati (`payments.handover`) faqat OWNER va CASHIER’da.
 
 **Rule:** statuslarda foydalanuvchiga ko‘rsatiladigan `operational order accepted` bilan `accounting accepted` yoki `tax accepted` bir-biridan ajralgan bo‘lishi kerak. Har bir transition bilan `actor`, `reason`, `timestamp`, `idempotencyKey`, `tenantScope` yoziladi.
 
