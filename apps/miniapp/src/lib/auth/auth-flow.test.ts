@@ -31,6 +31,17 @@ describe('auth flow revoke handling', () => {
     expect(getLastKnownOwner()).toEqual(A);
   });
 
+  it('F7: login 503 SERVICE_UNAVAILABLE / AUTH_TELEGRAM_UNAVAILABLE keeps tokens and session, never wipes', async () => {
+    setOfflineSession(A);
+    setTokens('a', 'r');
+    for (const code of ['SERVICE_UNAVAILABLE', 'AUTH_TELEGRAM_UNAVAILABLE']) {
+      vi.stubGlobal('fetch', async () => json(503, { code, message: { uz: '', ru: '', en: 'x' } }));
+      expect((await telegramLogin('init')).kind).toBe('failed');
+      expect(getRefreshToken()).toBe('r');
+      expect(getLastKnownOwner()).toEqual(A);
+    }
+  });
+
   it('bootstrap network error keeps tokens', async () => {
     setTokens('a', 'r');
     vi.stubGlobal('fetch', async () => {

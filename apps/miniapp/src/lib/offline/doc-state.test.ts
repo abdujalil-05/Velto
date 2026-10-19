@@ -26,4 +26,12 @@ describe('doc-state (TZ 8.6 labels)', () => {
     for (const m of [uz, ru, en]) for (const k of keys) expect((m.Queue as unknown as Record<string, string>)[k]).toBeTruthy();
     expect([uz.Queue.deviceOnly, uz.Queue.sendPending, uz.Queue.serverAccepted, uz.Queue.needsAttention]).toEqual(["Faqat shu qurilmada", 'Yuborish kutilmoqda', 'Server qabul qildi', "E'tibor kerak"]);
   });
+
+  it('F7: PENDING held back by maintenance / rate limit is calm send-pending with a reason, never needs-attention', () => {
+    expect(docStateView('PENDING', undefined, 0, 'MAINTENANCE_READ_ONLY')).toEqual({ state: 'sendPending', variant: 'secondary', detailKey: 'maintenance' });
+    expect(docStateView('PENDING', undefined, 0, 'RATE_LIMITED')).toEqual({ state: 'sendPending', variant: 'secondary', detailKey: 'rateLimited' });
+    expect(uz.Queue.maintenance).toBe('Tizimda texnik ishlar, yozuvlar saqlandi');
+    expect(uz.Queue.rateLimited).toBe("So'rovlar ko'p, birozdan keyin yuboriladi");
+    for (const m of [uz, ru, en]) for (const k of ['maintenance', 'rateLimited', 'maintenanceBody', 'rateLimitedBody']) expect((m.Queue as unknown as Record<string, string>)[k]).toBeTruthy();
+  });
 });

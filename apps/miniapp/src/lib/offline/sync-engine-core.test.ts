@@ -196,4 +196,66 @@ describe('runPush status machine (TZ 8.3/8.4)', () => {
     expect(states.slice(1)).toEqual(['PENDING', 'PENDING']);
     expect((await entry(ids[1]!)).attemptCount).toBe(0);
   });
+
+  describe('F7 degraded mode (TZ 12.5): 503 maintenance / 429', () => {
+    const body = (code: string) => ({ code, message: { uz: 'u', ru: 'r', en: 'e' } });
+
+    it('503 MAINTENANCE_READ_ONLY: stays PENDING, attempt not counted, next try after Retry-After, no quarantine', async () => {
+      const id = await queueRepository.enqueue('order', {});
+      pushSync.mockRejectedValueOnce(new ApiError(503, body('MAINTENANCE_READ_ONLY'), 60_000));
+      const before = Date.now();
+      const out = await runPush();
+      expect(out).toMatchObject({ paused: 'DEGRADED', degraded: 'maintenance', rejected: 0, retried: 0 });
+      const e = await entry(id);
+      expect(e).toMatchObject({ status: 'PENDING', attemptCount: 0, lastError: { code: 'MAINTENANCE_READ_ONLY' } });
+      expect(e.quarantinedAt).toBeUndefined();
+      const at = Date.parse(e.nextAttemptAt!);
+      expect(at).toBeGreaterThanOrEqual(before + 60_000);
+      expect(at).toBeLessThanOrEqual(Date.now() + 75_000 + 50);
+      expect(out.nextRetryInMs).toBeGreaterThan(55_000);
+      pushSync.mockClear();
+      await runPush(); // not due yet -> nothing sent
+      expect(pushSync).not.toHaveBeenCalled();
+    });
+
+    it('never reaches SYNC_MAX_ATTEMPTS however many times the server answers 503/429', async () => {
+      const id = await queueRepository.enqueue('order', {});
+      for (let i = 0; i < MAX_SYNC_ATTEMPTS + 3; i++) {
+        pushSync.mockRejectedValueOnce(new ApiError(i % 2 ? 429 : 503, body(i % 2 ? 'RATE_LIMITED' : 'MAINTENANCE_READ_ONLY'), 1_000));
+        await runPush();
+        await makeDue(id);
+      }
+      expect(await entry(id)).toMatchObject({ status: 'PENDING', attemptCount: 0 });
+    });
+
+    it('429 RATE_LIMITED without Retry-After: default wait, PENDING, attempt not counted', async () => {
+      const id = await queueRepository.enqueue('order', {});
+      pushSync.mockRejectedValueOnce(new ApiError(429, body('RATE_LIMITED')));
+      const out = await runPush();
+      expect(out).toMatchObject({ paused: 'DEGRADED', degraded: 'rateLimited' });
+      const e = await entry(id);
+      expect(e).toMatchObject({ status: 'PENDING', attemptCount: 0 });
+      expect(Date.parse(e.nextAttemptAt!)).toBeGreaterThanOrEqual(Date.now() + 59_000);
+    });
+
+    it('20 documents pushed into a 429: none lost, failed or counted; all delivered later with the same clientIds', async () => {
+      const ids: string[] = [];
+      for (let i = 0; i < 20; i++) ids.push(await queueRepository.enqueue('order', { n: i }));
+      pushSync.mockRejectedValueOnce(new ApiError(429, body('RATE_LIMITED'), 30_000));
+      expect((await runPush()).paused).toBe('DEGRADED');
+      const all = await Promise.all(ids.map(entry));
+      expect(all.every((e) => e.status === 'PENDING' && e.attemptCount === 0 && !e.quarantinedAt)).toBe(true);
+      for (const id of ids) await makeDue(id);
+      pushSync.mockImplementationOnce(async (items: { clientId: string }[]) => ({ results: items.map((i) => ({ clientId: i.clientId, status: 'ACCEPTED', id: `s-${i.clientId}` })) }));
+      await runPush();
+      expect((await Promise.all(ids.map(entry))).every((e) => e.status === 'SYNCED')).toBe(true);
+    });
+
+    it('other 5xx is unchanged: counted attempt, NETWORK pause, backoff', async () => {
+      const id = await queueRepository.enqueue('order', {});
+      pushSync.mockRejectedValueOnce(new ApiError(503, body('AUTH_TELEGRAM_UNAVAILABLE')));
+      expect((await runPush()).paused).toBe('NETWORK');
+      expect(await entry(id)).toMatchObject({ status: 'PENDING', attemptCount: 1 });
+    });
+  });
 });

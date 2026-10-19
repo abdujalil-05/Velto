@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { AlertTriangle, LogIn } from 'lucide-react';
+import { AlertTriangle, Info, LogIn } from 'lucide-react';
 import { useAuth } from '@/lib/auth/auth-context';
 import { useSyncEngine } from '@/lib/offline/sync-engine';
 import { queueRepository } from '@/lib/offline/queue';
@@ -14,7 +14,7 @@ import { ConfirmSheet } from '@/components/shared/confirm-sheet';
 /** TZ 8.4: early quota warning (80%), storage-full and auth-paused states — shown app-wide. */
 export function SyncBanners() {
   const t = useTranslations('Queue');
-  const { storage, authPaused } = useSyncEngine();
+  const { storage, authPaused, degraded } = useSyncEngine();
   const { resolveRevoked } = useAuth();
   const [quarantined, setQuarantined] = useState(0);
   const [releaseOpen, setReleaseOpen] = useState(false);
@@ -29,6 +29,15 @@ export function SyncBanners() {
           <AlertDescription>
             <strong className="block">{t('authPausedTitle')}</strong>
             {t('authPausedBody')}
+          </AlertDescription>
+        </Alert>
+      )}
+      {degraded && (
+        <Alert role="status">
+          <Info className="h-4 w-4" aria-hidden="true" />
+          <AlertDescription>
+            <strong className="block">{t(degraded === 'maintenance' ? 'maintenanceTitle' : 'rateLimitedTitle')}</strong>
+            {t(degraded === 'maintenance' ? 'maintenanceBody' : 'rateLimitedBody')}
           </AlertDescription>
         </Alert>
       )}

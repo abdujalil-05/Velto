@@ -14,11 +14,13 @@ import { cn } from '@/lib/utils';
  */
 export function SyncStatusBadge() {
   const t = useTranslations('Common');
-  const { isOnline, isSyncing, pendingCount, failedCount, forceSyncNow } = useSyncEngine();
+  const { isOnline, isSyncing, pendingCount, failedCount, degraded, forceSyncNow } = useSyncEngine();
 
   const label = !isOnline
     ? t('offline')
-    : failedCount > 0
+    : degraded
+      ? t(degraded === 'maintenance' ? 'syncMaintenance' : 'syncRateLimited')
+      : failedCount > 0
       ? t('syncFailed', { count: failedCount })
       : pendingCount > 0
         ? t('syncPending', { count: pendingCount })

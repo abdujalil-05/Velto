@@ -28,7 +28,8 @@ export async function telegramLogin(initData: string, telegramUserId?: number | 
     if (telegramUserId != null) setOwnerTelegramId(telegramUserId);
     return { kind: 'ok', user: me };
   } catch (e) {
-    clearTokens();
+    // 503 (Telegram/Redis/maintenance) or a network error is not a credential verdict: keep any stored tokens.
+    if (isServerAuthRejection(e)) clearTokens();
     if (isAccountBlocked(e)) {
       const revoked = await handleSessionRevoked().catch(() => null);
       return { kind: 'blocked', revoked };

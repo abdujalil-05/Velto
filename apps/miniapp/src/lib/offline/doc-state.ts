@@ -14,7 +14,7 @@ import type { QueueStatus } from './queue';
 export type DocState = 'deviceOnly' | 'sendPending' | 'serverAccepted' | 'needsAttention';
 
 /** Secondary reason shown next to the state label (Queue.* message keys). */
-export type DocDetailKey = 'failed' | 'conflict' | 'handoverPending' | 'handoverPosted' | 'handoverRejected';
+export type DocDetailKey = 'failed' | 'conflict' | 'handoverPending' | 'handoverPosted' | 'handoverRejected' | 'maintenance' | 'rateLimited';
 
 export type DocBadgeVariant = 'secondary' | 'success' | 'destructive' | 'warning';
 
@@ -26,7 +26,14 @@ export interface DocStateView {
 
 export const DOC_STATES: readonly DocState[] = ['deviceOnly', 'sendPending', 'serverAccepted', 'needsAttention'];
 
-export function docStateView(status: QueueStatus, paymentStatus?: PaymentStatus, attemptCount = 0): DocStateView {
+/** F7: a PENDING doc held back by 503 maintenance / 429 — calm "waiting" state with the reason, never needs-attention. */
+export function degradedDetail(lastErrorCode?: string): DocDetailKey | undefined {
+  if (lastErrorCode === 'MAINTENANCE_READ_ONLY' || lastErrorCode === 'SERVICE_UNAVAILABLE') return 'maintenance';
+  if (lastErrorCode === 'RATE_LIMITED') return 'rateLimited';
+  return undefined;
+}
+
+export function docStateView(status: QueueStatus, paymentStatus?: PaymentStatus, attemptCount = 0, lastErrorCode?: string): DocStateView {
   switch (status) {
     case 'SYNCED':
       // ADR-029: server-accepted is not cashier-accepted; debt is reduced only at POSTED.
@@ -40,7 +47,10 @@ export function docStateView(status: QueueStatus, paymentStatus?: PaymentStatus,
       return { state: 'needsAttention', variant: 'warning', detailKey: 'conflict' };
     case 'SYNCING':
       return { state: 'sendPending', variant: 'secondary' };
-    default:
+    default: {
+      const detailKey = degradedDetail(lastErrorCode);
+      if (detailKey) return { state: 'sendPending', variant: 'secondary', detailKey };
       return attemptCount > 0 ? { state: 'sendPending', variant: 'secondary' } : { state: 'deviceOnly', variant: 'secondary' };
+    }
   }
 }
