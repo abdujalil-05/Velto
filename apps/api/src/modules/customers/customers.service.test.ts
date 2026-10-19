@@ -192,7 +192,11 @@ describe('CustomersService (integration, real Postgres + RLS)', () => {
       tx.payment.create({ data: { companyId, number: 'PAY-TEST-LP-1', customerId, amount: '1000.00', method: 'CASH', createdAt: new Date(Date.now() - 60_000) } }),
     );
     await tenantPrisma.run(companyId, (tx) =>
-      tx.payment.create({ data: { companyId, number: 'PAY-TEST-LP-2', customerId, amount: '2000.00', method: 'CASH', status: 'REVERSED' } }),
+      // Inserted POSTED, then reversed the only way the DB allows (PaymentReversal first).
+      tx.payment.create({ data: { companyId, number: 'PAY-TEST-LP-2', customerId, amount: '2000.00', method: 'CASH' } }).then(async (p) => {
+        await tx.paymentReversal.create({ data: { companyId, reversesPaymentId: p.id, reason: 'test', actorId: user.id } });
+        await tx.payment.update({ where: { id: p.id }, data: { status: 'REVERSED' } });
+      }),
     );
 
     const detail = await tenantPrisma.run(companyId, () => customers.getById(customerId, user));

@@ -7,6 +7,8 @@ import { Idempotent } from '../../../common/idempotency/idempotent.decorator';
 import { AllocatePaymentDto } from '../dto/allocate-payment.dto';
 import { CreatePaymentDto } from '../dto/create-payment.dto';
 import { ListPaymentsQueryDto } from '../dto/list-payments.query';
+import { PaymentInTransitQueryDto } from '../dto/payment-in-transit.query';
+import { RejectPaymentHandoverDto } from '../dto/reject-payment-handover.dto';
 import { PaymentsService } from './payments.service';
 
 @Controller('payments')
@@ -17,6 +19,13 @@ export class PaymentsController {
   @RequirePermission('payments.read')
   list(@Query() query: ListPaymentsQueryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.payments.list(query, user);
+  }
+
+  // ADR-029 "yo'lda": declared before ':id' so the literal path wins.
+  @Get('in-transit')
+  @RequirePermission('payments.read')
+  inTransit(@Query() query: PaymentInTransitQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.payments.inTransitSummary(query.customerId, user);
   }
 
   @Get(':id')
@@ -38,6 +47,21 @@ export class PaymentsController {
   @RequirePermission('payments.allocate')
   allocate(@Param('id', ParseUUIDPipe) id: string, @Body() dto: AllocatePaymentDto, @CurrentUser() user: AuthenticatedUser) {
     return this.payments.allocate(id, dto, user);
+  }
+
+  // ADR-029: cashier handover of agent cash (OWNER, SALES_DIRECTOR, CASHIER).
+  @Post(':id/handover/accept')
+  @Idempotent()
+  @RequirePermission('payments.handover')
+  acceptHandover(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.payments.acceptHandover(id, user);
+  }
+
+  @Post(':id/handover/reject')
+  @Idempotent()
+  @RequirePermission('payments.handover')
+  rejectHandover(@Param('id', ParseUUIDPipe) id: string, @Body() dto: RejectPaymentHandoverDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.payments.rejectHandover(id, dto.reason, user);
   }
 
   @Post(':id/reverse')

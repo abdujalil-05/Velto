@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InvoiceStatus, PaymentStatus, Prisma, type TenantClient } from '@velto/database';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
-import { VALID_ALLOCATION_WHERE } from '../finance/ledger-filters';
+import { VALID_ALLOCATION_WHERE, paymentPostedAt, paymentPostedWithin } from '../finance/ledger-filters';
 import { companyDay } from '../field/company-day';
 import { AgingReportService } from '../finance/reports/aging-report.service';
 import {
@@ -84,7 +84,7 @@ export class DashboardService {
   }
 
   private async paymentsTotal(tx: TenantClient, start: Date, end: Date) {
-    const agg = await tx.payment.aggregate({ where: { createdAt: { gte: start, lte: end }, status: PaymentStatus.POSTED }, _sum: { amount: true } });
+    const agg = await tx.payment.aggregate({ where: { ...paymentPostedWithin({ gte: start, lte: end }), status: PaymentStatus.POSTED }, _sum: { amount: true } });
     return agg._sum.amount ?? new Prisma.Decimal(0);
   }
 
@@ -102,7 +102,7 @@ export class DashboardService {
     const invoices = await tx.invoice.findMany({
       where: { createdAt: { lte: asOf }, status: { not: InvoiceStatus.CANCELLED } },
       include: {
-        allocations: { where: VALID_ALLOCATION_WHERE, include: { payment: { select: { createdAt: true } } } },
+        allocations: { where: VALID_ALLOCATION_WHERE, include: { payment: { select: { createdAt: true, handoverAt: true } } } },
         customer: { select: { paymentTermDays: true } },
       },
     });
@@ -110,7 +110,7 @@ export class DashboardService {
     let total = new Prisma.Decimal(0);
     for (const invoice of invoices) {
       const allocatedByAsOf = invoice.allocations
-        .filter((a) => a.payment.createdAt <= asOf)
+        .filter((a) => paymentPostedAt(a.payment) <= asOf)
         .reduce((sum, a) => sum.plus(a.amount), new Prisma.Decimal(0));
       const outstanding = invoice.total.minus(allocatedByAsOf);
       if (!outstanding.greaterThan(0)) continue;

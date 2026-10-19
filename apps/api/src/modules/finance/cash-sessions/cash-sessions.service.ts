@@ -125,16 +125,28 @@ export class CashSessionsService {
     return this.withSummary(tx, updated);
   }
 
-  /** "kunlik summalar" (9.2) — cash collected by this user during the shift's window. */
+  /**
+   * "kunlik summalar" (9.2) — cash in this shift's drawer: direct CASH entered
+   * by the shift owner during its window, plus agent cash accepted into this
+   * shift (ADR-029, handoverCashSessionId). Agent cash still PENDING_HANDOVER
+   * belongs to no shift until someone accepts it — closing a shift leaves it
+   * pending for a later shift.
+   */
   private async withSummary(tx: TenantClient, session: CashSession) {
     const agg = await tx.payment.aggregate({
       where: {
-        collectedBy: session.userId,
         method: PaymentMethod.CASH,
         // F2.1: a reversed payment is not cash in the drawer. Reversal is
         // blocked once the session is closed, so closed totals never move.
         status: PaymentStatus.POSTED,
-        createdAt: { gte: session.openedAt, ...(session.closedAt ? { lte: session.closedAt } : {}) },
+        OR: [
+          { handoverCashSessionId: session.id },
+          {
+            handoverCashSessionId: null,
+            collectedBy: session.userId,
+            createdAt: { gte: session.openedAt, ...(session.closedAt ? { lte: session.closedAt } : {}) },
+          },
+        ],
       },
       _sum: { amount: true },
     });

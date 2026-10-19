@@ -1,4 +1,5 @@
-import { IsDateString, IsOptional, IsUUID } from 'class-validator';
+import { IsDateString, IsEnum, IsOptional, IsUUID } from 'class-validator';
+import { PaymentStatus } from '@velto/database';
 import { PaginationQueryDto } from '../../../common/pagination/pagination.dto';
 
 export class ListPaymentsQueryDto extends PaginationQueryDto {
@@ -22,4 +23,9 @@ export class ListPaymentsQueryDto extends PaginationQueryDto {
   @IsOptional()
   @IsDateString()
   to?: string;
+
+  // ADR-029: e.g. PENDING_HANDOVER for the cashier's "to accept" queue.
+  @IsOptional()
+  @IsEnum(PaymentStatus)
+  status?: PaymentStatus;
 }

@@ -283,6 +283,32 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
       expect(results[1]?.status).toBe('ACCEPTED');
     });
 
+    it('ADR-029: agent cash pushed 3x in parallel with one clientId -> one PENDING_HANDOVER row, no allocation, balance untouched', async () => {
+      const cust = await tenantPrisma.run(companyId, (tx) =>
+        tx.customer.create({ data: { companyId, code: `SYNC-HO-${Date.now()}`, name: 'Handover Sync' } }),
+      );
+      await tenantPrisma.run(companyId, (tx) =>
+        tx.invoice.create({ data: { companyId, number: `SYNC-HO-INV-${Date.now()}`, customerId: cust.id, total: '5000', status: 'OPEN' } }),
+      );
+      const clientId = randomUUID();
+      const doc = { type: SyncDocType.PAYMENT, clientId, payload: { customerId: cust.id, clientId, amount: 3000, method: 'CASH' } };
+      const all = await Promise.all([1, 2, 3].map(() => tenantPrisma.run(companyId, () => sync.push([doc], user))));
+      const items = all.map((r) => r.results[0]!);
+
+      expect(new Set(items.map((i) => i.id)).size).toBe(1);
+      expect(items.every((i) => i.status === 'ACCEPTED' || i.status === 'DUPLICATE')).toBe(true);
+      expect(items.every((i) => i.paymentStatus === 'PENDING_HANDOVER')).toBe(true);
+      const rows = await tenantPrisma.run(companyId, (tx) =>
+        tx.payment.findMany({ where: { clientId }, include: { allocations: true } }),
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.status).toBe('PENDING_HANDOVER');
+      expect(rows[0]!.allocations).toHaveLength(0);
+      const after = await tenantPrisma.run(companyId, (tx) => tx.customer.findUniqueOrThrow({ where: { id: cust.id } }));
+      expect(after.cachedBalance.toString()).toBe('0'); // invoice inserted directly; pending cash never recomputes it
+      expect((await tenantPrisma.run(companyId, (tx) => customers.getBalance(tx, cust.id))).toString()).toBe('5000');
+    });
+
     it('race: two parallel batches paying the same customers in opposite order (A→B vs B→A) never deadlock, both apply fully, clientId stays idempotent', async () => {
       const [custA, custB] = await tenantPrisma.run(companyId, (tx) =>
         Promise.all(

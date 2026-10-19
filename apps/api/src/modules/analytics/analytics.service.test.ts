@@ -227,10 +227,14 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
             customerId: fx.customerId,
             amount: '100000',
             method: PaymentMethod.CASH,
-            status,
           },
         });
         await tx.paymentAllocation.create({ data: { paymentId: payment.id, invoiceId: invoice.id, amount: '100000' } });
+        // DB triggers: insert POSTED only; REVERSED only after its PaymentReversal row.
+        if (status === PaymentStatus.REVERSED) {
+          await tx.paymentReversal.create({ data: { companyId, reversesPaymentId: payment.id, reason: 'test', actorId: fx.agentId } });
+          await tx.payment.update({ where: { id: payment.id }, data: { status } });
+        }
       }
     });
   }

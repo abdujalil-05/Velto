@@ -165,3 +165,79 @@ export class AllocationExceedsAdvanceException extends AppException {
     );
   }
 }
+
+/** ADR-029: only a PENDING_HANDOVER payment can be accepted or rejected (second accept/reject included). */
+export class PaymentNotPendingHandoverException extends AppException {
+  constructor(status: string) {
+    super(
+      HttpStatus.CONFLICT,
+      'PAYMENT_NOT_PENDING_HANDOVER',
+      {
+        uz: "To'lov topshirishni kutmayapti — uni qabul qilish yoki rad etish mumkin emas",
+        ru: 'Платёж не ожидает сдачи в кассу — принять или отклонить его нельзя',
+        en: 'Payment is not pending handover and cannot be accepted or rejected',
+      },
+      { status },
+    );
+  }
+}
+
+/** ADR-029: the collector of the cash may never accept/reject their own handover (four-eyes). */
+export class PaymentHandoverSelfResolveException extends AppException {
+  constructor() {
+    super(HttpStatus.FORBIDDEN, 'PAYMENT_HANDOVER_SELF_RESOLVE', {
+      uz: "O'zingiz yig'gan to'lovni o'zingiz qabul qila yoki rad eta olmaysiz",
+      ru: 'Нельзя принять или отклонить платёж, который вы собрали сами',
+      en: 'You cannot accept or reject a payment you collected yourself',
+    });
+  }
+}
+
+/** ADR-029: accepting cash requires the acceptor's own open cash session. */
+export class PaymentHandoverNoOpenCashSessionException extends AppException {
+  constructor() {
+    super(HttpStatus.CONFLICT, 'PAYMENT_HANDOVER_CASH_SESSION_NOT_OPEN', {
+      uz: "Naqd pulni qabul qilish uchun avval kassa smenasini oching",
+      ru: 'Чтобы принять наличные, сначала откройте кассовую смену',
+      en: 'Open a cash session before accepting a cash handover',
+    });
+  }
+}
+
+/** ADR-029: a rejected handover must carry a reason (audited). */
+export class PaymentHandoverRejectReasonRequiredException extends AppException {
+  constructor() {
+    super(HttpStatus.BAD_REQUEST, 'PAYMENT_HANDOVER_REJECT_REASON_REQUIRED', {
+      uz: "Rad etish sababi kamida 3 belgidan iborat bo'lishi kerak",
+      ru: 'Причина отклонения должна содержать не менее 3 символов',
+      en: 'Rejection reason must be at least 3 characters',
+    });
+  }
+}
+
+/** ADR-029: agent cash is in transit (PENDING_HANDOVER) — it cannot be allocated until a cashier accepts it. */
+export class PaymentPendingHandoverAllocationException extends AppException {
+  constructor() {
+    super(HttpStatus.BAD_REQUEST, 'PAYMENT_PENDING_HANDOVER_NO_ALLOCATION', {
+      uz: "Agent yig'gan naqd pul kassaga topshirilguncha taqsimlanmaydi",
+      ru: 'Наличные, собранные агентом, не распределяются до сдачи в кассу',
+      en: 'Agent-collected cash cannot be allocated until it is handed over',
+    });
+  }
+}
+
+/** ADR-029: only a POSTED payment can be reversed; PENDING_HANDOVER/REJECTED never touched the ledger. */
+export class PaymentNotReversibleException extends AppException {
+  constructor(status: string) {
+    super(
+      HttpStatus.CONFLICT,
+      'PAYMENT_NOT_REVERSIBLE',
+      {
+        uz: "Faqat o'tkazilgan (POSTED) to'lovni qaytarish mumkin",
+        ru: 'Сторнировать можно только проведённый (POSTED) платёж',
+        en: 'Only a POSTED payment can be reversed',
+      },
+      { status },
+    );
+  }
+}
