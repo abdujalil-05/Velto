@@ -3,6 +3,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import argon2 from 'argon2';
 import type Redis from 'ioredis';
 import { systemPrisma } from '@velto/database';
+import { failClosedOnRedis } from '../../common/redis/redis-unavailable';
 import { REDIS_CLIENT } from '../../common/redis/redis.module';
 import { AuditLogService } from '../../common/audit/audit-log.service';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
@@ -57,6 +58,16 @@ export class PasswordResetService {
     return `pwreset:hourly:${phone}`;
   }
 
+  /** Every Redis call fails closed with 503 SERVICE_UNAVAILABLE when Redis is down (ADR-050): no OTP issued/verified without the limiter. */
+  private readonly store = {
+    ttl: (k: string) => failClosedOnRedis(() => this.redis.ttl(k)),
+    incr: (k: string) => failClosedOnRedis(() => this.redis.incr(k)),
+    expire: (k: string, s: number) => failClosedOnRedis(() => this.redis.expire(k, s)),
+    get: (k: string) => failClosedOnRedis(() => this.redis.get(k)),
+    del: (k: string) => failClosedOnRedis(() => this.redis.del(k)),
+    set: (k: string, v: string, mode: 'EX', ttl: number) => failClosedOnRedis(() => this.redis.set(k, v, mode, ttl)),
+  };
+
   private async passwordCandidates(phone: string) {
     // Only users that actually have a password (agents authenticating via
     // Telegram initData alone, per CreateUserDto, have none — nothing to
@@ -70,17 +81,17 @@ export class PasswordResetService {
    * endpoint can't be used to SMS-bomb an arbitrary number.
    */
   async request(phone: string): Promise<void> {
-    const cooldownTtl = await this.redis.ttl(this.cooldownKey(phone));
+    const cooldownTtl = await this.store.ttl(this.cooldownKey(phone));
     if (cooldownTtl > 0) {
       throw new PasswordResetCooldownException(cooldownTtl);
     }
 
-    const hourlyCount = await this.redis.incr(this.hourlyKey(phone));
+    const hourlyCount = await this.store.incr(this.hourlyKey(phone));
     if (hourlyCount === 1) {
-      await this.redis.expire(this.hourlyKey(phone), 3600);
+      await this.store.expire(this.hourlyKey(phone), 3600);
     }
     if (hourlyCount > MAX_REQUESTS_PER_HOUR) {
-      const ttl = await this.redis.ttl(this.hourlyKey(phone));
+      const ttl = await this.store.ttl(this.hourlyKey(phone));
       throw new PasswordResetCooldownException(Math.max(ttl, 1));
     }
 
@@ -88,14 +99,14 @@ export class PasswordResetService {
     // no-match path takes the same amount of "SMS budget" as a real one —
     // otherwise a no-match response coming back instantly would itself leak
     // which phones are registered.
-    await this.redis.set(this.cooldownKey(phone), '1', 'EX', RESEND_COOLDOWN_SECONDS);
+    await this.store.set(this.cooldownKey(phone), '1', 'EX', RESEND_COOLDOWN_SECONDS);
 
     const candidates = await this.passwordCandidates(phone);
     if (candidates.length === 0) return;
 
     const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
     const stored: StoredCode = { codeHash: hashCode(phone, code), attempts: 0 };
-    await this.redis.set(this.codeKey(phone), JSON.stringify(stored), 'EX', CODE_TTL_SECONDS);
+    await this.store.set(this.codeKey(phone), JSON.stringify(stored), 'EX', CODE_TTL_SECONDS);
 
     try {
       await this.sms.send(phone, `Velto: parolni tiklash kodi — ${code}. Kodni hech kimga aytmang.`);
@@ -123,25 +134,25 @@ export class PasswordResetService {
   }
 
   async confirm(phone: string, code: string, newPassword: string): Promise<void> {
-    const raw = await this.redis.get(this.codeKey(phone));
+    const raw = await this.store.get(this.codeKey(phone));
     if (!raw) {
       throw new PasswordResetCodeExpiredException();
     }
 
     const stored = JSON.parse(raw) as StoredCode;
     if (stored.attempts >= MAX_VERIFY_ATTEMPTS) {
-      await this.redis.del(this.codeKey(phone));
+      await this.store.del(this.codeKey(phone));
       throw new PasswordResetCodeExpiredException();
     }
 
     if (stored.codeHash !== hashCode(phone, code)) {
       stored.attempts += 1;
-      const ttl = await this.redis.ttl(this.codeKey(phone));
-      await this.redis.set(this.codeKey(phone), JSON.stringify(stored), 'EX', Math.max(ttl, 1));
+      const ttl = await this.store.ttl(this.codeKey(phone));
+      await this.store.set(this.codeKey(phone), JSON.stringify(stored), 'EX', Math.max(ttl, 1));
       throw new PasswordResetCodeInvalidException(MAX_VERIFY_ATTEMPTS - stored.attempts);
     }
 
-    await this.redis.del(this.codeKey(phone));
+    await this.store.del(this.codeKey(phone));
 
     const candidates = await this.passwordCandidates(phone);
     const passwordHash = await argon2.hash(newPassword, { type: argon2.argon2id });

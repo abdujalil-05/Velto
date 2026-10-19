@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type Redis from 'ioredis';
 import { REDIS_CLIENT } from '../../common/redis/redis.module';
+import { failClosedOnRedis } from '../../common/redis/redis-unavailable';
 import { TooManyLoginAttemptsException } from '../../common/auth/auth-exceptions';
 
 const WINDOW_SECONDS = 15 * 60;
@@ -17,7 +18,12 @@ export class LoginRateLimiterService {
     return `login:fail:${phone}`;
   }
 
-  async assertNotBlocked(phone: string): Promise<void> {
+  /** Redis down => 503 SERVICE_UNAVAILABLE (fail-closed, ADR-050). */
+  assertNotBlocked(phone: string): Promise<void> {
+    return failClosedOnRedis(() => this.assertNotBlockedUnsafe(phone));
+  }
+
+  private async assertNotBlockedUnsafe(phone: string): Promise<void> {
     const count = Number((await this.redis.get(this.key(phone))) ?? 0);
     if (count >= BLOCK_AFTER) {
       const ttl = await this.redis.ttl(this.key(phone));
@@ -28,7 +34,11 @@ export class LoginRateLimiterService {
     }
   }
 
-  async recordFailure(phone: string): Promise<void> {
+  recordFailure(phone: string): Promise<void> {
+    return failClosedOnRedis(() => this.recordFailureUnsafe(phone));
+  }
+
+  private async recordFailureUnsafe(phone: string): Promise<void> {
     const key = this.key(phone);
     const count = await this.redis.incr(key);
     if (count === 1) {
@@ -56,7 +66,9 @@ export class LoginRateLimiterService {
     return Number(count);
   }
 
-  async recordSuccess(phone: string): Promise<void> {
-    await this.redis.del(this.key(phone));
+  recordSuccess(phone: string): Promise<void> {
+    return failClosedOnRedis(async () => {
+      await this.redis.del(this.key(phone));
+    });
   }
 }

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Readable } from 'node:stream';
-import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { GetObjectCommand, HeadBucketCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TenantContext } from '../tenant/tenant-context';
@@ -45,6 +45,11 @@ export class StorageService {
         secretAccessKey: config.getOrThrow<string>('S3_SECRET_KEY'),
       },
     });
+  }
+
+  /** Readiness probe (D2): rejects if the bucket is unreachable/forbidden. */
+  async headBucket(signal?: AbortSignal): Promise<void> {
+    await this.client.send(new HeadBucketCommand({ Bucket: this.bucket }), { abortSignal: signal });
   }
 
   async upload(input: UploadFileInput): Promise<string> {

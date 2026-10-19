@@ -52,6 +52,17 @@ export const envSchema = z.object({
   // instead of sending it, so the reset flow works in dev without an account.
   SMS_API_TOKEN: z.string().default(''),
   SMS_SENDER: z.string().default('4546'),
+  // Build info surfaced by GET /health/ready (set by the deploy script; 'dev' locally).
+  APP_VERSION: z.string().default('dev'),
+  GIT_SHA: z.string().default('dev'),
+  // Maintenance mode (ADR-051): when 'true', every POST/PUT/PATCH/DELETE answers 503
+  // MAINTENANCE_READ_ONLY except routes marked @AllowDuringMaintenance (login/refresh/logout/telegram login).
+  // Same literal-enum pattern as S3_FORCE_PATH_STYLE (z.coerce.boolean would turn "false" into true).
+  READ_ONLY_MODE: z
+    .enum(['true', 'false'])
+    .optional()
+    .default('false')
+    .transform((v) => v === 'true'),
   S3_ENDPOINT: z.string().min(1),
   S3_REGION: z.string().default('us-east-1'),
   S3_ACCESS_KEY: z.string().min(1),
