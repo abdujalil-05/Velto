@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import {
   InvoiceKind,
+  StockMovementType,
   InvoiceStatus,
   OpeningBalanceKind,
   OpeningBalanceStatus,
@@ -20,7 +21,6 @@ import { paginate } from '../../common/pagination/pagination.dto';
 import { StorageService } from '../../common/storage/storage.service';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { companyDayOf, companyTimeZone, localDateString } from '../analytics/report-utils';
-import { CustomersService } from '../customers/customers.service';
 import { InvalidImportFileException } from '../import/import-exceptions';
 import { readWorkbookRows, type SpreadsheetFormat, type WorkbookRow } from '../import/parsers/read-workbook';
 import { StockService } from '../stock/stock.service';
@@ -79,11 +79,12 @@ const zero = () => new Prisma.Decimal(0);
  */
 @Injectable()
 export class OpeningBalancesService {
+  private readonly logger = new Logger(OpeningBalancesService.name);
+
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     private readonly storage: StorageService,
     private readonly auditLog: AuditLogService,
-    private readonly customers: CustomersService,
     private readonly stock: StockService,
     private readonly numbering: DocumentNumberingService,
   ) {}
@@ -100,6 +101,12 @@ export class OpeningBalancesService {
       rows = await readWorkbookRows(upload.buffer, { format: upload.format, maxDataRows: OPENING_MAX_ROWS });
     } catch (err) {
       if (err instanceof AppException) throw err;
+      // Unexpected parser failure: keep the stack server-side (request traceId is
+      // attached by the logger context), the user only sees the generic message.
+      this.logger.error(
+        `opening ${kind} preview: unexpected parse failure (file ${JSON.stringify(upload.fileName)}, ${upload.format}, ${upload.buffer.length} bytes)`,
+        err instanceof Error ? err.stack : String(err),
+      );
       throw new InvalidImportFileException('could not parse file');
     }
     if (rows.length === 0) throw new OpeningEmptyFileException();
@@ -334,8 +341,10 @@ export class OpeningBalancesService {
 
     const invoices: Prisma.InvoiceCreateManyInput[] = [];
     const payments: Prisma.PaymentCreateManyInput[] = [];
-    for (const r of rows) {
-      const number = await this.numbering.next(tx, user.companyId, 'OB');
+    // One counter increment for the whole batch (same DocumentCounter row lock as next()).
+    const numbers = await this.numbering.nextBlock(tx, user.companyId, 'OB', rows.length);
+    for (const [i, r] of rows.entries()) {
+      const number = numbers[i]!;
       if (r.side === 'DEBT') {
         invoices.push({
           companyId: user.companyId,
@@ -393,17 +402,34 @@ export class OpeningBalancesService {
       .map((r) => r.rowNumber);
     if (conflicts.length > 0) throw new OpeningConflictException(conflicts.sort((a, b) => a - b));
 
-    for (const r of sorted) {
-      await this.stock.adjustForRef(tx, {
+    // Bulk write under the locks taken above (same effect as adjustForRef per row:
+    // one ADJUST movement + onHand increment per pair). Every pair is empty
+    // (checked above), qty > 0 and pairs are unique (preview validation) — assert
+    // both, a duplicate pair would be applied once by UPDATE ... FROM.
+    if (sorted.some((r) => !new Prisma.Decimal(r.qty).isPositive()) || new Set(sorted.map((r) => pairKey(r.productId, r.warehouseId))).size !== sorted.length) {
+      throw new OpeningConflictException(sorted.map((r) => r.rowNumber));
+    }
+    if (sorted.length === 0) return;
+    // Movements first: the per-row opening guard trigger (advisory lock, pair order) is the race backstop.
+    await tx.stockMovement.createMany({
+      data: sorted.map((r) => ({
         companyId: user.companyId,
         productId: r.productId,
         warehouseId: r.warehouseId,
-        qty: r.qty,
+        type: StockMovementType.ADJUST,
+        qty: new Prisma.Decimal(r.qty),
         refType: OPENING_REF_TYPE,
         refId: batch.id,
         note: `Opening balance ${asOfDate}`,
-      });
-    }
+      })),
+    });
+    const updated = await tx.$executeRaw(Prisma.sql`
+      UPDATE "StockLevel" sl
+      SET "onHand" = sl."onHand" + t.q, "updatedAt" = CURRENT_TIMESTAMP
+      FROM unnest(${sorted.map((r) => r.productId)}::uuid[], ${sorted.map((r) => r.warehouseId)}::uuid[], ${sorted.map((r) => r.qty)}::numeric[]) AS t(p, w, q)
+      WHERE sl."productId" = t.p AND sl."warehouseId" = t.w
+    `);
+    if (updated !== sorted.length) throw new OpeningConflictException(sorted.map((r) => r.rowNumber));
   }
 
   // -------------------------------------------------------------------------
@@ -486,12 +512,56 @@ export class OpeningBalancesService {
   // helpers
   // -------------------------------------------------------------------------
 
-  /** §6.5: cachedBalance from the one ledger formula, same tx, customers already locked (id asc). */
+  /**
+   * §6.5: cachedBalance in ONE statement, same tx, customers already locked (id asc).
+   * MUST stay identical to CustomersService.getLedger():
+   *   balance = Σ live invoices − Σ valid allocations to them − advance,
+   *   advance = Σ POSTED payments − their allocations to live invoices;
+   *   live invoice = status <> CANCELLED, valid allocation = payment POSTED.
+   * Guarded by the invariant test (cachedBalance == getLedger().balance).
+   */
   private async refreshCachedBalances(tx: TenantClient, customerIds: string[]) {
-    for (const id of customerIds) {
-      const balance = await this.customers.getBalance(tx, id);
-      await tx.customer.update({ where: { id }, data: { cachedBalance: balance } });
-    }
+    if (customerIds.length === 0) return;
+    await tx.$executeRaw(Prisma.sql`
+      WITH ids AS (SELECT unnest(${customerIds}::uuid[]) AS id),
+      inv AS (
+        SELECT i."customerId" AS id, SUM(i.total) AS s FROM "Invoice" i
+        WHERE i."customerId" = ANY(${customerIds}::uuid[]) AND i.status <> 'CANCELLED'
+        GROUP BY 1
+      ),
+      alloc AS (
+        SELECT i."customerId" AS id, SUM(pa.amount) AS s FROM "PaymentAllocation" pa
+        JOIN "Invoice" i ON i.id = pa."invoiceId"
+        JOIN "Payment" p ON p.id = pa."paymentId"
+        WHERE i."customerId" = ANY(${customerIds}::uuid[]) AND i.status <> 'CANCELLED' AND p.status = 'POSTED'
+        GROUP BY 1
+      ),
+      paid AS (
+        SELECT p."customerId" AS id, SUM(p.amount) AS s FROM "Payment" p
+        WHERE p."customerId" = ANY(${customerIds}::uuid[]) AND p.status = 'POSTED'
+        GROUP BY 1
+      ),
+      applied AS (
+        SELECT p."customerId" AS id, SUM(pa.amount) AS s FROM "PaymentAllocation" pa
+        JOIN "Payment" p ON p.id = pa."paymentId"
+        JOIN "Invoice" i ON i.id = pa."invoiceId"
+        WHERE p."customerId" = ANY(${customerIds}::uuid[]) AND p.status = 'POSTED' AND i.status <> 'CANCELLED'
+        GROUP BY 1
+      ),
+      agg AS (
+        SELECT ids.id,
+          COALESCE(inv.s, 0) - COALESCE(alloc.s, 0) - (COALESCE(paid.s, 0) - COALESCE(applied.s, 0)) AS balance
+        FROM ids
+        LEFT JOIN inv ON inv.id = ids.id
+        LEFT JOIN alloc ON alloc.id = ids.id
+        LEFT JOIN paid ON paid.id = ids.id
+        LEFT JOIN applied ON applied.id = ids.id
+      )
+      UPDATE "Customer" c
+      SET "cachedBalance" = agg.balance, "updatedAt" = CURRENT_TIMESTAMP
+      FROM agg
+      WHERE c.id = agg.id
+    `);
   }
 
   private async loadReport(tx: TenantClient, batch: OpeningBalanceBatch): Promise<OpeningReport<AnyRow> | null> {

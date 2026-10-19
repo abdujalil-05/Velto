@@ -105,9 +105,21 @@ describe('E2E opening balances (ADR-041..043)', () => {
     await app.close();
   });
 
-  it('RBAC: ACCOUNTANT previews/reads; ACCOUNTANT, SALES_DIRECTOR, CASHIER post/void -> 403 + audit', async () => {
+  it('RBAC: preview is OWNER-only (opening.preview) -> ACCOUNTANT/SALES_DIRECTOR/CASHIER 403 + audit, no batch; ACCOUNTANT list/detail 200; post/void 403 + audit', async () => {
     const [c] = await makeCustomers(`RB${tag}`, 1);
-    const prev = await upload(accountant, 'customers', await buildTestWorkbook(CUST_HEADERS, [[c, 10, undefined, 'R1', undefined]]));
+    const file = await buildTestWorkbook(CUST_HEADERS, [[c, 10, undefined, 'R1', undefined]]);
+    const batchesBefore = await tenantPrisma.run(companyA, (tx) => tx.openingBalanceBatch.count());
+    for (const who of [accountant, director, cashier]) {
+      const before = await deniedCount(who.id);
+      const denied = await upload(who, 'customers', file);
+      expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+      const deniedStock = await upload(who, 'stock', await buildTestWorkbook(['sku', 'warehouseName', 'qty'], [['X', 'Y', 1]]));
+      expect(deniedStock.status, JSON.stringify(deniedStock.body)).toBe(403);
+      expect(await deniedCount(who.id)).toBe(before + 2);
+    }
+    expect(await tenantPrisma.run(companyA, (tx) => tx.openingBalanceBatch.count())).toBe(batchesBefore);
+
+    const prev = await upload(ownerA, 'customers', file);
     expect(prev.status, JSON.stringify(prev.body)).toBe(201);
     const id = prev.body.batch.id as string;
     await http().get('/opening-balances').set(bearer(accountant)).expect(200);
@@ -147,7 +159,7 @@ describe('E2E opening balances (ADR-041..043)', () => {
 
   it('CSV (semicolon, UTF-8) preview works', async () => {
     const [c] = await makeCustomers(`CS${tag}`, 1);
-    const csv = Buffer.from(`﻿customerCode;debt;credit;docRef;docDate\n${c};1234.56;;CSV-1;01.09.2026\n`, 'utf-8');
+    const csv = Buffer.from(`\uFEFFcustomerCode;debt;credit;docRef;docDate\n${c};1234.56;;CSV-1;01.09.2026\n`, 'utf-8');
     const res = await upload(ownerA, 'customers', csv, 'opening.csv', 'text/csv');
     expect(res.status, JSON.stringify(res.body).slice(0, 300)).toBe(201);
     expect(res.body.invalidCount).toBe(0);

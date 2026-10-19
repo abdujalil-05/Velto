@@ -18,8 +18,8 @@ import { OpeningBalancesService } from './opening-balances.service';
 const FILE_UPLOAD = FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 /**
- * F6 opening balances (ADR-041..043). preview/read: `opening.read` (OWNER,
- * ACCOUNTANT — preview writes no ledger row); post/void: OWNER only.
+ * F6 opening balances (ADR-041..043). list/detail: `opening.read` (OWNER,
+ * ACCOUNTANT); preview (`opening.preview`), post, void: OWNER only.
  */
 @Controller('opening-balances')
 export class OpeningBalancesController {
@@ -27,7 +27,7 @@ export class OpeningBalancesController {
 
   @Post('customers/preview')
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  @RequirePermission('opening.read')
+  @RequirePermission('opening.preview')
   @TenantTx(OPENING_TX_OPTIONS)
   @UseInterceptors(FILE_UPLOAD)
   previewCustomers(@UploadedFile() file: Express.Multer.File | undefined, @CurrentUser() user: AuthenticatedUser) {
@@ -37,7 +37,7 @@ export class OpeningBalancesController {
 
   @Post('stock/preview')
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  @RequirePermission('opening.read')
+  @RequirePermission('opening.preview')
   @TenantTx(OPENING_TX_OPTIONS)
   @UseInterceptors(FILE_UPLOAD)
   previewStock(@UploadedFile() file: Express.Multer.File | undefined, @CurrentUser() user: AuthenticatedUser) {

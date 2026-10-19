@@ -36,7 +36,7 @@ describe('Opening balances invariants (integration)', () => {
   const stock = new StockService(tenantPrisma, auditLog);
   const numbering = new DocumentNumberingService();
   const storage = { upload: async () => `memory://opening/${randomUUID()}` } as unknown as StorageService;
-  const service = new OpeningBalancesService(tenantPrisma, storage, auditLog, customers, stock, numbering);
+  const service = new OpeningBalancesService(tenantPrisma, storage, auditLog, stock, numbering);
   const payments = new PaymentsService(tenantPrisma, auditLog, customers, numbering);
   const recon = new ReconciliationService(tenantPrisma, auditLog, customers);
   const tag = randomUUID().slice(0, 6);
@@ -308,5 +308,78 @@ describe('Opening balances invariants (integration)', () => {
     expect(await codeOf(voidBatch(p.batch.id, companyB, ownerB))).toBe('OPENING_BATCH_NOT_FOUND');
     expect((await run(() => service.getById(p.batch.id))).batch.status).toBe('POSTED');
     expect(await run((tx) => tx.invoice.count({ where: { openingBatchId: p.batch.id, status: 'CANCELLED' } }))).toBe(0);
+  });
+
+  // Reviewer MED: 5000-row post must stay well inside the 60s tx (bulk numbering/createMany/set-based balance).
+  it('load: 5000-row customer post (block OB numbers, set-based cachedBalance) finishes well under the 60s tx; every cachedBalance == getLedger().balance', async () => {
+    // 2000 debtors x 2 invoices + 1000 advance-only customers (one side per customer) = 5000 rows.
+    const codes = await makeCustomers(`LD${tag}`, 3000);
+    const rows: (string | number | undefined)[][] = [];
+    codes.forEach((c, i) => {
+      if (i < 2000) {
+        rows.push([c, (100.1 + (i % 7)).toFixed(2), undefined, `LD-${i}-A`, daysAgo(i % 90)]);
+        rows.push([c, '50.05', undefined, `LD-${i}-B`, undefined]);
+      } else rows.push([c, undefined, (400 + (i % 5)).toFixed(2), undefined, undefined]);
+    });
+    expect(rows).toHaveLength(5000);
+    const p = await previewCustomers(rows);
+    expect(p.invalidCount).toBe(0);
+    const started = Date.now();
+    await post(p.batch.id, { debt: p.batch.debtTotal.toFixed(2), credit: p.batch.creditTotal.toFixed(2) });
+    const ms = Date.now() - started;
+    console.info(`[opening load] customer post 5000 rows: ${ms} ms`);
+    expect(ms).toBeLessThan(20_000);
+
+    const [invoices, pays] = await run((tx) =>
+      Promise.all([
+        tx.invoice.findMany({ where: { openingBatchId: p.batch.id }, select: { number: true } }),
+        tx.payment.findMany({ where: { openingBatchId: p.batch.id }, select: { number: true } }),
+      ]),
+    );
+    const seq = [...invoices, ...pays].map((x) => Number(x.number.split('-')[2])).sort((a, b) => a - b);
+    expect(seq).toHaveLength(5000);
+    expect(seq[seq.length - 1]! - seq[0]! + 1).toBe(5000); // one contiguous block, no duplicates
+
+    const custs = await run((tx) => tx.customer.findMany({ where: { code: { in: codes } }, select: { id: true, cachedBalance: true } }));
+    const ledgers = await run((tx) => Promise.all(custs.map(async (c) => ({ c, l: await customers.getLedger(tx, c.id) }))));
+    for (const { c, l } of ledgers) expect(D(c.cachedBalance)).toBe(D(l.balance));
+    expect(custs.some((c) => c.cachedBalance.isNegative())).toBe(true);
+  });
+
+  it('load: 5000-row stock post (createMany movements + one StockLevel update) finishes well under the 60s tx; onHand == Σ movements', async () => {
+    const skus = await makeProducts(`LS${tag}`, 5000);
+    const p = await previewStock(skus.map((s, i) => [s, `Main ${tag}`, (1 + (i % 13) + 0.125).toFixed(3)]));
+    expect(p.invalidCount).toBe(0);
+    const started = Date.now();
+    await post(p.batch.id, { qty: p.batch.qtyTotal.toFixed(3) });
+    const ms = Date.now() - started;
+    console.info(`[opening load] stock post 5000 rows: ${ms} ms`);
+    expect(ms).toBeLessThan(20_000);
+
+    const drift = await run((tx) =>
+      tx.$queryRaw<{ n: bigint }[]>(Prisma.sql`
+        SELECT count(*) AS n FROM "StockLevel" sl
+        JOIN "Product" pr ON pr.id = sl."productId"
+        LEFT JOIN (SELECT "productId", "warehouseId", SUM(qty) AS q FROM "StockMovement" GROUP BY 1, 2) m
+          ON m."productId" = sl."productId" AND m."warehouseId" = sl."warehouseId"
+        WHERE pr.sku LIKE ${`LS${tag}-%`} AND (sl."onHand" IS DISTINCT FROM COALESCE(m.q, 0) OR sl.reserved <> 0)
+      `),
+    );
+    expect(Number(drift[0]!.n)).toBe(0);
+    expect(await run((tx) => tx.stockMovement.count({ where: { refType: OPENING_REF_TYPE, refId: p.batch.id, type: 'ADJUST' } }))).toBe(5000);
+  });
+
+  it('invariant: after all scenarios (FIFO allocations, voids, reconciliation) every customer touched by an opening batch has cachedBalance == getLedger().balance', async () => {
+    // Fixture-only direct inserts (e.g. the 1C-export SALE invoice) bypass cachedBalance on purpose — scope to opening customers.
+    const custs = await run((tx) =>
+      tx.customer.findMany({
+        where: { OR: [{ invoices: { some: { openingBatchId: { not: null } } } }, { payments: { some: { openingBatchId: { not: null } } } }] },
+        select: { id: true, code: true, cachedBalance: true },
+      }),
+    );
+    expect(custs.length).toBeGreaterThan(3000);
+    const ledgers = await run((tx) => Promise.all(custs.map(async (c) => ({ c, l: await customers.getLedger(tx, c.id) }))));
+    const mismatched = ledgers.filter(({ c, l }) => !c.cachedBalance.equals(l.balance)).map(({ c }) => c.code);
+    expect(mismatched).toEqual([]);
   });
 });

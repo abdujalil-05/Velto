@@ -37,7 +37,7 @@ describe('OpeningBalancesService (integration)', () => {
   const stock = new StockService(tenantPrisma, auditLog);
   const numbering = new DocumentNumberingService();
   const storage = { upload: async () => `memory://opening/${randomUUID()}` } as unknown as StorageService;
-  const service = new OpeningBalancesService(tenantPrisma, storage, auditLog, customers, stock, numbering);
+  const service = new OpeningBalancesService(tenantPrisma, storage, auditLog, stock, numbering);
   const payments = new PaymentsService(tenantPrisma, auditLog, customers, numbering);
   const recon = new ReconciliationService(tenantPrisma, auditLog, customers);
   const tag = randomUUID().slice(0, 6);
