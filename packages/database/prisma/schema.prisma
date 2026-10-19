@@ -740,6 +740,7 @@ model SalesOrder {
   @@unique([companyId, clientId])
   @@index([companyId, customerId])
   @@index([companyId, agentId, createdAt])
+  @@index([companyId, createdAt])
   @@index([companyId, outletId])
   @@index([companyId, warehouseId])
   @@index([companyId, courierId])
