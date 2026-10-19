@@ -61,6 +61,8 @@ export interface QueueEntry {
   handoverRejectReason?: string;
   userId?: string;
   companyId?: string;
+  /** ISO — set when the session was revoked/blocked by the server: the row keeps its owner but is NEVER pushed; only export / confirmed discard (ADR-022 quarantine). */
+  quarantinedAt?: string;
 }
 
 /** Thrown by `enqueue` when the device has no room — nothing was written, existing items are untouched. */
@@ -189,7 +191,7 @@ export async function listAllOwners(): Promise<QueueEntry[]> {
 
 export async function listPending(limit = 20): Promise<QueueEntry[]> {
   return (await listAll())
-    .filter((e) => e.status === 'PENDING')
+    .filter((e) => e.status === 'PENDING' && !e.quarantinedAt)
     .sort(bySeq)
     .slice(0, limit);
 }
@@ -201,7 +203,7 @@ export async function listPending(limit = 20): Promise<QueueEntry[]> {
  * unsynced but not yet due (backoff).
  */
 export async function listPushable(limit: number, now: Date = new Date()): Promise<QueueEntry[]> {
-  const mine = (await listAll()).filter((e) => e.status === 'PENDING');
+  const mine = (await listAll()).filter((e) => e.status === 'PENDING' && !e.quarantinedAt);
   const nowIso = now.toISOString();
   const due = mine.filter((e) => !e.nextAttemptAt || e.nextAttemptAt <= nowIso);
   const outletOf = (e: QueueEntry) => (typeof e.payload.outletId === 'string' ? e.payload.outletId : null);
@@ -501,6 +503,50 @@ export async function queueRowCount(): Promise<number> {
   return db.queue.count();
 }
 
+// ---- revoked-session quarantine (ADR-022, TZ 8.4 "agent revoked") ---------
+
+/**
+ * Session revoked by the server: the owner's unsynced rows are quarantined in
+ * place (owner tag kept, so no other user ever sees them; never pushed) and the
+ * owner's already-ACKed SYNCED history is dropped. Idempotent. Runs BEFORE the
+ * cache wipe so a crash in between never leaves pushable rows without a wipe.
+ */
+export async function quarantineOwnerEntries(owner: OfflineSession): Promise<number> {
+  const mine = (await readAll()).filter((e) => ownedBy(e, owner));
+  const now = new Date().toISOString();
+  let quarantined = 0;
+  for (const e of mine) {
+    if (e.status === 'SYNCED') {
+      await db.queue.delete(e.clientId);
+    } else if (!e.quarantinedAt) {
+      await store.put({ ...e, quarantinedAt: now });
+      quarantined += 1;
+    }
+  }
+  return quarantined;
+}
+
+/** Revoked owner's quarantined rows (no session exists at this point, so the owner is passed explicitly). */
+export async function listRevokedFor(owner: OfflineSession): Promise<QueueEntry[]> {
+  return (await readAll()).filter((e) => ownedBy(e, owner) && !!e.quarantinedAt).sort(bySeq);
+}
+
+export async function exportRevokedToJson(owner: OfflineSession): Promise<string> {
+  const out: PendingExport = {
+    exportedAt: new Date().toISOString(),
+    userId: owner.userId,
+    companyId: owner.companyId,
+    items: toExportItems(await listRevokedFor(owner)),
+  };
+  return JSON.stringify(out, null, 2);
+}
+
+/** Explicit, UI-confirmed discard of the revoked owner's quarantined rows only. */
+export async function discardRevokedFor(owner: OfflineSession): Promise<void> {
+  const rows = await listRevokedFor(owner);
+  await Promise.all(rows.map((e) => db.queue.delete(e.clientId)));
+}
+
 function creatorIdOf(e: QueueEntry): string | null {
   for (const k of ['agentId', 'userId', 'createdBy'] as const) {
     const v = e.payload[k];
@@ -556,4 +602,8 @@ export const queueRepository = {
   unsyncedCountForLogout,
   deleteOwnEntries,
   queueRowCount,
+  quarantineOwnerEntries,
+  listRevokedFor,
+  exportRevokedToJson,
+  discardRevokedFor,
 };

@@ -279,5 +279,17 @@
     "handoverRejected": "Cashier rejected",
     "handoverPendingNote": "Server accepted. Hand the money to the cashier — debt drops after the cashier accepts.",
     "handoverRejectedNote": "The cashier rejected this payment; debt was not reduced."
+  },
+  "Revoked": {
+    "title": "Access revoked",
+    "body": "The server ended your access (account blocked or session revoked). Cached customers, products, prices, stock and routes were removed from this phone.",
+    "quarantined": "Documents not sent to the server, kept on this phone: {count}",
+    "notSent": "They will NOT be sent. Export them to a file, or delete them after confirming.",
+    "export": "Export to file",
+    "discard": "Delete these documents",
+    "continue": "Continue",
+    "discardConfirmTitle": "Delete unsent documents?",
+    "discardConfirmDescription": "{count} document(s) that never reached the server will be deleted from this phone permanently.",
+    "discardConfirm": "Delete"
   }
 }

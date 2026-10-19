@@ -279,5 +279,17 @@
     "handoverRejected": "Kassir rad etdi",
     "handoverPendingNote": "Server qabul qildi. Pulni kassirga topshiring — qarz kassir qabul qilgandan keyin kamayadi.",
     "handoverRejectedNote": "Kassir to'lovni rad etdi, qarz kamaymadi."
+  },
+  "Revoked": {
+    "title": "Kirish huquqi bekor qilindi",
+    "body": "Server kirishingizni tugatdi (hisob bloklangan yoki sessiya bekor qilingan). Mijozlar, mahsulotlar, narxlar, qoldiq va marshrutlar keshi bu telefondan o'chirildi.",
+    "quarantined": "Serverga yuborilmagan, telefonda saqlangan hujjatlar: {count}",
+    "notSent": "Ular YUBORILMAYDI. Faylga eksport qiling yoki tasdiqlab o'chiring.",
+    "export": "Faylga eksport",
+    "discard": "Bu hujjatlarni o'chirish",
+    "continue": "Davom etish",
+    "discardConfirmTitle": "Yuborilmagan hujjatlar o'chirilsinmi?",
+    "discardConfirmDescription": "Serverga yetib bormagan {count} ta hujjat telefondan butunlay o'chiriladi.",
+    "discardConfirm": "O'chirish"
   }
 }

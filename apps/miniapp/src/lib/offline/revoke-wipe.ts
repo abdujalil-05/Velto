@@ -1,0 +1,71 @@
+import { clearDeviceKey } from './crypto';
+import { db } from './db';
+import { queueRepository } from './queue';
+import { wipeReferenceCache } from './repository';
+import { forgetLastKnownOwner, getLastKnownOwner, setOfflineSession, type OfflineSession } from './session';
+import { resetPreparedSession } from './session-bootstrap';
+
+/**
+ * Server-confirmed revoke / block (refresh answered 401|403; never a network
+ * error): TZ 8.6 says the real protection is the wipe. Order matters and every
+ * step is idempotent, so a kill in the middle is finished by the next call:
+ *   1. unsynced queue rows -> quarantine (ADR-022: kept, owner-tagged, never pushed)
+ *   2. reference cache + dataset sync times + pull cursors -> cleared
+ *   3. device key dropped ONLY if no queue row survives (else the quarantined
+ *      documents would become undecryptable = lost; they are the agent's own
+ *      work and stay exportable). The key sits beside the data anyway (crypto.ts),
+ *      so keeping it for those rows adds no protection loss the cache wipe didn't cover.
+ */
+const REVOKED_KEY = 'velto.revoked';
+
+export interface RevokedInfo extends OfflineSession {
+  at: string;
+}
+
+let inFlight: Promise<RevokedInfo | null> | null = null;
+
+export function getRevokedInfo(): RevokedInfo | null {
+  try {
+    const raw = window.localStorage.getItem(REVOKED_KEY);
+    const v = raw ? (JSON.parse(raw) as Partial<RevokedInfo>) : null;
+    return v?.userId && v.companyId ? { userId: v.userId, companyId: v.companyId, at: v.at ?? '' } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function clearRevokedInfo(): void {
+  try {
+    window.localStorage.removeItem(REVOKED_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function handleSessionRevoked(): Promise<RevokedInfo | null> {
+  if (!inFlight) {
+    inFlight = run().finally(() => {
+      inFlight = null;
+    });
+  }
+  return inFlight;
+}
+
+async function run(): Promise<RevokedInfo | null> {
+  const owner = getLastKnownOwner() ?? getRevokedInfo();
+  if (owner) await queueRepository.quarantineOwnerEntries(owner);
+  await wipeReferenceCache();
+  await db.meta.delete('cacheOwner');
+  setOfflineSession(null);
+  resetPreparedSession();
+  forgetLastKnownOwner();
+  if ((await queueRepository.queueRowCount()) === 0) clearDeviceKey();
+
+  const info = owner ? { userId: owner.userId, companyId: owner.companyId, at: getRevokedInfo()?.at || new Date().toISOString() } : null;
+  if (info && (await queueRepository.listRevokedFor(info)).length > 0) {
+    window.localStorage.setItem(REVOKED_KEY, JSON.stringify(info));
+    return info;
+  }
+  clearRevokedInfo();
+  return null;
+}

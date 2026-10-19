@@ -30,7 +30,11 @@ export function errorMessage(error: unknown, locale: string): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-type UnauthorizedHandler = () => void;
+/** `revoked`: the server itself rejected the refresh token (401/403). A network error / 5xx is NOT a revoke (offline must never wipe). */
+export interface UnauthorizedInfo {
+  revoked: boolean;
+}
+type UnauthorizedHandler = (info: UnauthorizedInfo) => void;
 const unauthorizedHandlers = new Set<UnauthorizedHandler>();
 
 /** AuthProvider registers itself here to force a logout when a request can't be recovered by a token refresh. */
@@ -39,11 +43,13 @@ export function onUnauthorized(handler: UnauthorizedHandler): () => void {
   return () => unauthorizedHandlers.delete(handler);
 }
 
-let refreshInFlight: Promise<string | null> | null = null;
+let refreshInFlight: Promise<RefreshResult> | null = null;
 
-async function refreshAccessToken(): Promise<string | null> {
+type RefreshResult = { token: string } | { rejected: boolean };
+
+async function refreshAccessToken(): Promise<RefreshResult> {
   const refreshToken = getRefreshToken();
-  if (!refreshToken) return null;
+  if (!refreshToken) return { rejected: false };
 
   if (!refreshInFlight) {
     refreshInFlight = (async () => {
@@ -53,12 +59,13 @@ async function refreshAccessToken(): Promise<string | null> {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ refreshToken }),
         });
-        if (!res.ok) return null;
+        if (res.status === 401 || res.status === 403) return { rejected: true };
+        if (!res.ok) return { rejected: false };
         const data = (await res.json()) as TokenPair;
         setTokens(data.accessToken, data.refreshToken);
-        return data.accessToken;
+        return { token: data.accessToken };
       } catch {
-        return null;
+        return { rejected: false };
       } finally {
         refreshInFlight = null;
       }
@@ -92,11 +99,13 @@ export async function apiFetch<T = void>(path: string, options: ApiFetchOptions 
 
   if (res.status === 401 && !skipAuth) {
     const refreshed = await refreshAccessToken();
-    if (refreshed) {
-      res = await send(refreshed);
+    if ('token' in refreshed) {
+      res = await send(refreshed.token);
     } else {
-      clearTokens();
-      unauthorizedHandlers.forEach((handler) => handler());
+      // Tokens are dropped only when the server refused them; on a network/5xx
+      // failure they stay so the next online attempt can still refresh.
+      if (refreshed.rejected) clearTokens();
+      unauthorizedHandlers.forEach((handler) => handler({ revoked: refreshed.rejected }));
     }
   }
 

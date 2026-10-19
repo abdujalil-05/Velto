@@ -12,8 +12,40 @@ export interface OfflineSession {
 
 let current: OfflineSession | null = null;
 
+const OWNER_STORAGE_KEY = 'velto.sessionOwner';
+
 export function setOfflineSession(session: OfflineSession | null): void {
   current = session;
+  // Survives an app restart so a revoke detected at bootstrap (no in-memory
+  // session yet) still knows whose documents to quarantine. Ids only, no data.
+  if (session) {
+    try {
+      window.localStorage.setItem(OWNER_STORAGE_KEY, JSON.stringify(session));
+    } catch {
+      /* storage unavailable: revoke falls back to the in-memory session */
+    }
+  }
+}
+
+/** In-memory session, else the owner persisted by the last successful sign-in on this device. */
+export function getLastKnownOwner(): OfflineSession | null {
+  if (current) return current;
+  try {
+    const raw = window.localStorage.getItem(OWNER_STORAGE_KEY);
+    const v = raw ? (JSON.parse(raw) as Partial<OfflineSession>) : null;
+    return v?.userId && v.companyId ? { userId: v.userId, companyId: v.companyId } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Explicit logout / completed revoke handling only. */
+export function forgetLastKnownOwner(): void {
+  try {
+    window.localStorage.removeItem(OWNER_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
 }
 
 export function getOfflineSession(): OfflineSession | null {

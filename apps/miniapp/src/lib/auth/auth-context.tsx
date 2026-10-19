@@ -9,7 +9,8 @@ import { getTelegramWebApp } from '@/lib/telegram/webapp';
 import { clearOfflineDb } from '@/lib/offline/db';
 import { clearDeviceKey } from '@/lib/offline/crypto';
 import { queueRepository } from '@/lib/offline/queue';
-import { setOfflineSession } from '@/lib/offline/session';
+import { forgetLastKnownOwner, setOfflineSession } from '@/lib/offline/session';
+import { clearRevokedInfo, getRevokedInfo, handleSessionRevoked, type RevokedInfo } from '@/lib/offline/revoke-wipe';
 import { resetPreparedSession } from '@/lib/offline/session-bootstrap';
 import { clearTokens, getAccessToken, getRefreshToken, setTokens } from './tokens';
 
@@ -31,6 +32,10 @@ interface AuthContextValue {
   hasPermission: (code: string) => boolean;
   linkPhone: () => Promise<void>;
   linking: boolean;
+  /** Set after a server-confirmed revoke while quarantined documents remain on this device. */
+  revoked: RevokedInfo | null;
+  /** Called after export/discard (re-evaluates) or "continue" (hides the notice). */
+  resolveRevoked: (opts?: { hide?: boolean }) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -45,6 +50,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthenticatedUser | null>(null);
   const [status, setStatus] = useState<AuthStatus>('loading');
   const [linking, setLinking] = useState(false);
+  const [revoked, setRevoked] = useState<RevokedInfo | null>(null);
+  useEffect(() => setRevoked(getRevokedInfo()), []);
 
   // Shared by the initial bootstrap and the post-link retry: attempts a
   // Telegram login with the current initData, returns whether it succeeded.
@@ -160,9 +167,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(
     () =>
-      onUnauthorized(() => {
-        // Session ended (refresh expired/revoked): queue rows keep their owner
-        // tag; nothing is wiped, adopted or re-tagged.
+      onUnauthorized(({ revoked: serverRejected }) => {
+        // Server refused the refresh token (revoked/blocked/expired): wipe the
+        // cache and quarantine unsynced work. A network failure only ends the
+        // in-memory session — nothing is wiped, adopted or re-tagged.
+        if (serverRejected) void handleSessionRevoked().then(setRevoked).catch(() => {});
         setOfflineSession(null);
         resetPreparedSession();
         setUser(null);
@@ -200,6 +209,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // they only ever see rows tagged with their own owner (queue.ts listAll).
     if (foreignRows === 0) clearDeviceKey();
     setOfflineSession(null);
+    forgetLastKnownOwner();
     resetPreparedSession();
     setUser(null);
     setStatus('unauthenticated');
@@ -208,10 +218,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [t]);
 
+  const resolveRevoked = useCallback(async (opts?: { hide?: boolean }) => {
+    const info = getRevokedInfo();
+    if (info && !opts?.hide && (await queueRepository.listRevokedFor(info)).length === 0) {
+      clearRevokedInfo();
+      if ((await queueRepository.queueRowCount()) === 0) clearDeviceKey();
+      setRevoked(null);
+    } else if (opts?.hide) {
+      setRevoked(null);
+    }
+  }, []);
+
   const hasPermission = useCallback((code: string) => user?.permissions.includes(code) ?? false, [user]);
 
   return (
-    <AuthContext.Provider value={{ user, status, logout, hasPermission, linkPhone, linking }}>
+    <AuthContext.Provider value={{ user, status, logout, hasPermission, linkPhone, linking, revoked, resolveRevoked }}>
       {children}
     </AuthContext.Provider>
   );
