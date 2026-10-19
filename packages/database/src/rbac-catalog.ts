@@ -91,6 +91,14 @@ export const PERMISSION_DEFS: { module: string; actions: string[] }[] = [
   // (OWNER, ACCOUNTANT — read-only, fits ADR-003c); `fix` = rebuild a
   // projection from the ledger / mark a finding FIXED — OWNER only.
   { module: 'reconciliation', actions: ['read', 'fix'] },
+  // F6 opening balances (TZ §6.7.1 openingQty, OpeningBalanceBatch): `read` =
+  // view batches/preview (OWNER + ACCOUNTANT, read-only per ADR-003c);
+  // `post` / `void` move a batch PREVIEWED -> POSTED -> VOIDED and write the
+  // ledger rows — OWNER only (ACCOUNTANT gets no new write grant).
+  { module: 'opening', actions: ['read', 'post', 'void'] },
+  // F6 full company data export (personal data of customers/users) — OWNER
+  // only. Deliberately not ACCOUNTANT even though the action is "export".
+  { module: 'company', actions: ['export'] },
 ];
 
 // Roles are fixed system roles with no custom-role authoring in MVP
@@ -133,7 +141,7 @@ export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
   ACCOUNTANT: [
     'customers.read', 'invoices.read', 'payments.read', 'cash.read', 'reports.read',
     'reports.export', 'integrations.export1c', 'purchases.read',
-    'reconciliation.read',
+    'reconciliation.read', 'opening.read',
     // ADR-003c exception (only write ACCOUNTANT holds): manual 1C import ACK.
     'integrations.ack1c',
   ],

@@ -2182,4 +2182,235 @@ describe('tenant isolation (RLS)', () => {
       expect(still.status).toBe('PENDING_HANDOVER');
     });
   });
+
+  describe('F6 opening balances (OpeningBalanceBatch, OPENING invoice/payment/stock) + SalesOrder cancel reason', () => {
+    const phone = () => `+99894${Math.floor(1_000_000 + Math.random() * 8_999_999)}`;
+    let ownerAId: string;
+    let ownerBId: string;
+    let custId: string;
+    let cust2Id: string;
+    let custBId: string;
+    let whId: string;
+    let prodId: string;
+    let seq = 0;
+    const ob = () => `OB-2026-${String(Date.now()).slice(-6)}${++seq}`;
+
+    const newBatch = (kind: 'CUSTOMER_BALANCE' | 'STOCK', extra: Record<string, unknown> = {}) =>
+      withTenant(companyAId, (tx) =>
+        tx.openingBalanceBatch.create({
+          data: { companyId: companyAId, kind, asOfDate: new Date('2026-10-01'), source: 'ob.xlsx', fileHash: `h-${++seq}`, createdBy: ownerAId, ...extra },
+        }),
+      );
+    const openingInvoice = (batchId: string, extra: Record<string, unknown> = {}) =>
+      withTenant(companyAId, (tx) =>
+        tx.invoice.create({
+          data: { companyId: companyAId, number: ob(), customerId: custId, total: '100.00', kind: 'OPENING', openingBatchId: batchId, ...extra },
+        }),
+      );
+    const openingPayment = (batchId: string, extra: Record<string, unknown> = {}) =>
+      withTenant(companyAId, (tx) =>
+        tx.payment.create({
+          data: { companyId: companyAId, number: ob(), customerId: cust2Id, amount: '30.00', source: 'OPENING', method: null, openingBatchId: batchId, ...extra },
+        }),
+      );
+    const setBatch = (id: string, data: Record<string, unknown>) =>
+      withTenant(companyAId, (tx) => tx.openingBalanceBatch.update({ where: { id }, data }));
+    const post = (id: string, extra: Record<string, unknown> = {}) =>
+      setBatch(id, { status: 'POSTED', postedBy: ownerAId, postedAt: new Date(), ...extra });
+    const voidIt = (id: string) =>
+      setBatch(id, { status: 'VOIDED', voidedBy: ownerAId, voidedAt: new Date(), voidReason: 'xato fayl' });
+
+    beforeAll(async () => {
+      ownerAId = (await systemPrisma.user.create({ data: { companyId: companyAId, firstName: 'Owner', lastName: 'OB', phone: phone() } })).id;
+      ownerBId = (await systemPrisma.user.create({ data: { companyId: companyBId, firstName: 'OwnerB', lastName: 'OB', phone: phone() } })).id;
+      await withTenant(companyAId, async (tx) => {
+        custId = (await tx.customer.create({ data: { companyId: companyAId, code: 'A-OB-1', name: 'Opening A1' } })).id;
+        cust2Id = (await tx.customer.create({ data: { companyId: companyAId, code: 'A-OB-2', name: 'Opening A2' } })).id;
+        whId = (await tx.warehouse.create({ data: { companyId: companyAId, name: 'OB Warehouse' } })).id;
+        prodId = (await tx.product.create({ data: { companyId: companyAId, sku: 'ISO-OB', name: 'OB Product', baseUnit: 'dona' } })).id;
+      });
+      custBId = (await withTenant(companyBId, (tx) => tx.customer.create({ data: { companyId: companyBId, code: 'B-OB', name: 'Opening B' } }))).id;
+    });
+
+    it('batch RLS: other tenant cannot see/update/insert-into; no context = zero rows; cross-tenant actor rejected', async () => {
+      const b = await newBatch('CUSTOMER_BALANCE');
+      expect(await withTenant(companyBId, (tx) => tx.openingBalanceBatch.findMany({ where: { id: b.id } }))).toHaveLength(0);
+      const touched = await withTenant(companyBId, (tx) => tx.openingBalanceBatch.updateMany({ where: { id: b.id }, data: { fileHash: 'x' } }));
+      expect(touched.count).toBe(0);
+      try {
+        expect(await prisma.openingBalanceBatch.findMany({ where: { id: b.id } })).toHaveLength(0);
+      } catch (err) {
+        expect(String(err)).toMatch(/uuid/i);
+      }
+      await expect(
+        withTenant(companyBId, (tx) =>
+          tx.openingBalanceBatch.create({
+            data: { companyId: companyAId, kind: 'STOCK', asOfDate: new Date(), source: 's', fileHash: 'h', createdBy: ownerAId },
+          }),
+        ),
+      ).rejects.toThrow();
+      await expect(newBatch('STOCK', { createdBy: ownerBId })).rejects.toThrow(/cross-tenant/);
+      // Tenant B cannot hang its ledger rows on A's batch.
+      await expect(
+        withTenant(companyBId, (tx) =>
+          tx.invoice.create({ data: { companyId: companyBId, number: ob(), customerId: custBId, total: '1.00', kind: 'OPENING', openingBatchId: b.id } }),
+        ),
+      ).rejects.toThrow(/cross-tenant/);
+    });
+
+    it('batch: insert only PREVIEWED, never deleted, kind-specific totals', async () => {
+      await expect(newBatch('CUSTOMER_BALANCE', { status: 'POSTED', postedBy: ownerAId, postedAt: new Date() })).rejects.toThrow(/inserted as PREVIEWED/);
+      await expect(newBatch('STOCK', { debtTotal: '1.00' })).rejects.toThrow();
+      const b = await newBatch('STOCK');
+      await expect(withTenant(companyAId, (tx) => tx.openingBalanceBatch.delete({ where: { id: b.id } }))).rejects.toThrow(/append-only/);
+    });
+
+    it('OPENING invoice/payment shape CHECKs, no lines, partial uniques', async () => {
+      const b = await newBatch('CUSTOMER_BALANCE');
+      const inv = await openingInvoice(b.id, { externalDocRef: 'DOC-1' });
+      expect(inv.kind).toBe('OPENING');
+      await expect(openingInvoice(b.id, { externalDocRef: 'DOC-1' })).rejects.toThrow(/Unique constraint|unique/i);
+      await expect(openingInvoice(b.id, { total: '0.00' })).rejects.toThrow();
+      await expect(openingInvoice(b.id, { number: `INV-OB-${++seq}` })).rejects.toThrow();
+      await expect(openingInvoice(b.id, { openingBatchId: null })).rejects.toThrow();
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.invoice.create({ data: { companyId: companyAId, number: `INV-OB-${++seq}`, customerId: custId, total: '1.00', openingBatchId: b.id } }),
+        ),
+      ).rejects.toThrow();
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.invoiceLine.create({ data: { invoiceId: inv.id, productId: prodId, qty: 1, unitPrice: 1, vatRate: 0, lineTotal: 1 } }),
+        ),
+      ).rejects.toThrow(/has no lines/);
+      await expect(
+        withTenant(companyAId, (tx) => tx.invoice.update({ where: { id: inv.id }, data: { total: '99.00' } })),
+      ).rejects.toThrow(/may only change status/);
+      await expect(
+        withTenant(companyAId, (tx) => tx.invoice.update({ where: { id: inv.id }, data: { externalDocRef: 'DOC-2' } })),
+      ).rejects.toThrow(/immutable/);
+
+      await expect(openingPayment(b.id, { method: 'CASH' })).rejects.toThrow();
+      await expect(openingPayment(b.id, { collectedBy: ownerAId })).rejects.toThrow();
+      await expect(openingPayment(b.id, { status: 'PENDING_HANDOVER' })).rejects.toThrow();
+      await expect(openingPayment(b.id, { number: `PAY-OB-${++seq}` })).rejects.toThrow();
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.payment.create({ data: { companyId: companyAId, number: `PAY-OB-${++seq}`, customerId: custId, amount: '1.00', method: null } }),
+        ),
+      ).rejects.toThrow();
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.payment.create({ data: { companyId: companyAId, number: `PAY-OB-${++seq}`, customerId: custId, amount: '1.00', method: 'CASH', openingBatchId: b.id } }),
+        ),
+      ).rejects.toThrow();
+      const pay = await openingPayment(b.id);
+      expect(pay.method).toBeNull();
+      expect(pay.status).toBe('POSTED');
+      await expect(openingPayment(b.id)).rejects.toThrow(/Unique constraint|unique/i);
+
+      const stockBatch = await newBatch('STOCK');
+      await expect(openingInvoice(stockBatch.id, { customerId: cust2Id })).rejects.toThrow(/expected CUSTOMER_BALANCE/);
+    });
+
+    it('post: totals must match ledger; POSTED is frozen; no rows added after; void needs compensation first', async () => {
+      const b = await newBatch('CUSTOMER_BALANCE', { rowCount: 2 });
+      const inv = await openingInvoice(b.id, { customerId: cust2Id, externalDocRef: 'DOC-P' });
+      await expect(post(b.id, { debtTotal: '99.00' })).rejects.toThrow(/do not match/);
+      const posted = await post(b.id, { debtTotal: '100.00' });
+      expect(posted.status).toBe('POSTED');
+
+      await expect(setBatch(b.id, { fileHash: 'other' })).rejects.toThrow(/not allowed/);
+      await expect(setBatch(b.id, { asOfDate: new Date('2025-01-01') })).rejects.toThrow(/not allowed/);
+      await expect(setBatch(b.id, { status: 'PREVIEWED', postedBy: null, postedAt: null })).rejects.toThrow(/not allowed/);
+      await expect(openingInvoice(b.id, { externalDocRef: 'DOC-LATE' })).rejects.toThrow(/only be added while PREVIEWED/);
+      await expect(
+        setBatch(b.id, { status: 'VOIDED', voidedBy: ownerAId, voidedAt: new Date(), voidReason: 'x', debtTotal: '0.00' }),
+      ).rejects.toThrow(/frozen/);
+      await expect(voidIt(b.id)).rejects.toThrow(/compensated first/);
+      await expect(setBatch(b.id, { status: 'VOIDED', voidedBy: ownerAId, voidedAt: new Date(), voidReason: ' ' })).rejects.toThrow();
+
+      await withTenant(companyAId, (tx) => tx.invoice.update({ where: { id: inv.id }, data: { status: 'CANCELLED' } }));
+      const voided = await voidIt(b.id);
+      expect(voided.status).toBe('VOIDED');
+      await expect(setBatch(b.id, { voidReason: 'boshqa' })).rejects.toThrow(/not allowed/);
+      await expect(post(b.id)).rejects.toThrow();
+    });
+
+    it('voided opening payment (REVERSED) frees the per-customer unique for a re-import', async () => {
+      const b = await newBatch('CUSTOMER_BALANCE');
+      const customer3 = (await withTenant(companyAId, (tx) => tx.customer.create({ data: { companyId: companyAId, code: 'A-OB-3', name: 'Opening A3' } }))).id;
+      const pay = await openingPayment(b.id, { customerId: customer3 });
+      await post(b.id, { creditTotal: '30.00' });
+      await expect(voidIt(b.id)).rejects.toThrow(/compensated first/);
+      await withTenant(companyAId, async (tx) => {
+        await tx.paymentReversal.create({ data: { companyId: companyAId, reversesPaymentId: pay.id, reason: 'void', actorId: ownerAId } });
+        await tx.payment.update({ where: { id: pay.id }, data: { status: 'REVERSED' } });
+      });
+      expect((await voidIt(b.id)).status).toBe('VOIDED');
+      const b2 = await newBatch('CUSTOMER_BALANCE');
+      expect((await openingPayment(b2.id, { customerId: customer3 })).status).toBe('POSTED');
+    });
+
+    it('opening stock: ADJUST only, qty > 0, one per product/warehouse, totals + reversal before void', async () => {
+      const b = await newBatch('STOCK');
+      const mv = (extra: Record<string, unknown> = {}) =>
+        withTenant(companyAId, (tx) =>
+          tx.stockMovement.create({
+            data: { companyId: companyAId, productId: prodId, warehouseId: whId, type: 'ADJUST', qty: '5.000', refType: 'OpeningBalance', refId: b.id, ...extra },
+          }),
+        );
+      await expect(mv({ type: 'RECEIVE' })).rejects.toThrow();
+      await expect(mv({ qty: '-1.000' })).rejects.toThrow();
+      await expect(mv({ refId: null })).rejects.toThrow();
+      const custBatch = await newBatch('CUSTOMER_BALANCE');
+      await expect(mv({ refId: custBatch.id })).rejects.toThrow(/expected STOCK/);
+      const original = await mv();
+      await expect(mv()).rejects.toThrow(/Unique constraint|unique/i);
+      await expect(post(b.id, { qtyTotal: '4.000' })).rejects.toThrow(/do not match/);
+      await post(b.id, { qtyTotal: '5.000' });
+      await expect(withTenant(companyAId, (tx) => tx.stockMovement.update({ where: { id: original.id }, data: { qty: '6.000' } }))).rejects.toThrow(/append-only/);
+      await expect(voidIt(b.id)).rejects.toThrow(/compensated first/);
+      await mv({ qty: '-5.000', reversesMovementId: original.id, reason: 'void' });
+      expect((await voidIt(b.id)).status).toBe('VOIDED');
+    });
+
+    it('SalesOrder: CANCELLED needs a reason; legacy note marker is read; backfill left no CANCELLED row without reason', async () => {
+      const mk = () =>
+        withTenant(companyAId, (tx) =>
+          tx.salesOrder.create({ data: { companyId: companyAId, number: `SO-OB-${++seq}`, customerId: custId, warehouseId: whId } }),
+        );
+      const o1 = await mk();
+      await expect(
+        withTenant(companyAId, (tx) => tx.salesOrder.update({ where: { id: o1.id }, data: { status: 'CANCELLED' } })),
+      ).rejects.toThrow();
+      await expect(
+        withTenant(companyAId, (tx) => tx.salesOrder.update({ where: { id: o1.id }, data: { status: 'CANCELLED', cancelReason: '  ' } })),
+      ).rejects.toThrow();
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.salesOrder.update({ where: { id: o1.id }, data: { status: 'CANCELLED', cancelReason: 'x', cancelledBy: userBId } }),
+        ),
+      ).rejects.toThrow(/cross-tenant/);
+      const ok = await withTenant(companyAId, (tx) =>
+        tx.salesOrder.update({ where: { id: o1.id }, data: { status: 'CANCELLED', cancelReason: 'mijoz rad etdi', cancelledAt: new Date(), cancelledBy: ownerAId } }),
+      );
+      expect(ok.cancelReason).toBe('mijoz rad etdi');
+
+      const o2 = await mk();
+      const legacy = await withTenant(companyAId, (tx) =>
+        tx.salesOrder.update({ where: { id: o2.id }, data: { status: 'CANCELLED', note: 'eski\n[Bekor qilindi]: narx xato' } }),
+      );
+      expect(legacy.cancelReason).toBe('narx xato');
+      expect(legacy.cancelledAt).not.toBeNull();
+
+      const [fn] = await prisma.$queryRaw<{ a: string | null; b: string | null }[]>`
+        SELECT velto_sales_order_cancel_reason_from_note(${'x\n[Bekor qilindi]: a\n[Bekor qilindi]: oxirgi'}) AS a,
+               velto_sales_order_cancel_reason_from_note(${'izohsiz'}) AS b`;
+      expect(fn).toEqual({ a: 'oxirgi', b: null });
+      const [missing] = await systemPrisma.$queryRaw<{ n: bigint }[]>`
+        SELECT count(*) AS n FROM "SalesOrder" WHERE "status" = 'CANCELLED' AND "cancelReason" IS NULL`;
+      expect(Number(missing!.n)).toBe(0);
+    });
+  });
 });

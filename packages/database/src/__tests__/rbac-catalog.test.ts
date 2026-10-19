@@ -6,8 +6,8 @@ describe('rbac-catalog: F1.4 role grants', () => {
   it('ACCOUNTANT grant snapshot is exact', () => {
     expect([...permissionKeysForRole('ACCOUNTANT')].sort()).toEqual(
       [
-        'cash.read', 'customers.read', 'integrations.ack1c', 'integrations.export1c', 'invoices.read', 'payments.read',
-        'purchases.read', 'reconciliation.read', 'reports.export', 'reports.read',
+        'cash.read', 'customers.read', 'integrations.ack1c', 'integrations.export1c', 'invoices.read', 'opening.read',
+        'payments.read', 'purchases.read', 'reconciliation.read', 'reports.export', 'reports.read',
       ],
     );
   });
@@ -17,7 +17,7 @@ describe('rbac-catalog: F1.4 role grants', () => {
     const forbidden = [
       'payments.create', 'cash.open', 'cash.close', 'orders.create', 'orders.update', 'orders.cancel',
       'orders.deliver', 'stock.receive', 'stock.adjust', 'stock.reverse', 'payments.reverse', 'payments.allocate', 'payments.handover', 'purchases.create', 'purchases.receive',
-      'reconciliation.fix',
+      'reconciliation.fix', 'opening.post', 'opening.void', 'company.export',
       'users.create', 'users.update', 'users.delete', 'settings.update',
       'catalog.create', 'catalog.update', 'catalog.delete',
       'customers.create', 'customers.update', 'customers.delete',
@@ -61,6 +61,18 @@ describe('rbac-catalog: F1.4 role grants', () => {
       SYSTEM_ROLES.filter((r) => permissionKeysForRole(r.code).includes(key)).map((r) => r.code).sort();
     expect(holders('reconciliation.read')).toEqual(['ACCOUNTANT', 'OWNER']);
     expect(holders('reconciliation.fix')).toEqual(['OWNER']);
+  });
+
+  it('F6: opening.read → OWNER + ACCOUNTANT; opening.post/void and company.export → OWNER only', () => {
+    const holders = (key: string) =>
+      SYSTEM_ROLES.filter((r) => permissionKeysForRole(r.code).includes(key)).map((r) => r.code).sort();
+    expect(holders('opening.read')).toEqual(['ACCOUNTANT', 'OWNER']);
+    expect(holders('opening.post')).toEqual(['OWNER']);
+    expect(holders('opening.void')).toEqual(['OWNER']);
+    expect(holders('company.export')).toEqual(['OWNER']);
+    for (const key of ['opening.read', 'opening.post', 'opening.void', 'company.export']) {
+      expect(key.split('.'), key).toHaveLength(2);
+    }
   });
 
   it('F3: routes.finish → OWNER, SALES_DIRECTOR, SALES_AGENT only', () => {
