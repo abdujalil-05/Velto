@@ -206,7 +206,8 @@
       "offlineQueueWarning": "Bu amal darhol qurilmada saqlanadi va keyingi sinxronizatsiyada serverga yuboriladi — oflayn bo'lsangiz ham. Keyin uni bekor qilib bo'lmaydi."
     },
     "syncMaintenance": "Texnik ishlar — yozuvlar saqlandi",
-    "syncRateLimited": "Birozdan keyin yuboriladi"
+    "syncRateLimited": "Birozdan keyin yuboriladi",
+    "syncBusy": "Server band, birozdan keyin yuboriladi"
   },
   "Queue": {
     "title": "Navbat / Konfliktlar",
@@ -291,7 +292,10 @@
     "maintenanceTitle": "Tizimda texnik ishlar",
     "maintenanceBody": "Yozuvlaringiz qurilmada saqlangan va yo'qolmaydi. Texnik ishlar tugagach avtomatik yuboriladi.",
     "rateLimitedTitle": "So'rovlar ko'p",
-    "rateLimitedBody": "Yozuvlaringiz qurilmada saqlangan. Birozdan keyin avtomatik yuboriladi."
+    "rateLimitedBody": "Yozuvlaringiz qurilmada saqlangan. Birozdan keyin avtomatik yuboriladi.",
+    "busy": "Server band, birozdan keyin yuboriladi",
+    "busyTitle": "Server band",
+    "busyBody": "Yozuvlaringiz qurilmada saqlangan. Server band, birozdan keyin avtomatik yuboriladi."
   },
   "Revoked": {
     "title": "Kirish huquqi bekor qilindi",

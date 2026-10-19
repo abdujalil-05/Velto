@@ -251,6 +251,22 @@ describe('runPush status machine (TZ 8.3/8.4)', () => {
       expect((await Promise.all(ids.map(entry))).every((e) => e.status === 'SYNCED')).toBe(true);
     });
 
+    it('503 SERVICE_BUSY: stays PENDING, attempt not counted, Retry-After 5s applied, no quarantine', async () => {
+      const id = await queueRepository.enqueue('order', {});
+      for (let i = 0; i < MAX_SYNC_ATTEMPTS + 2; i++) {
+        pushSync.mockRejectedValueOnce(new ApiError(503, body('SERVICE_BUSY'), 5_000));
+        const before = Date.now();
+        const out = await runPush();
+        expect(out).toMatchObject({ paused: 'DEGRADED', degraded: 'busy' });
+        const e = await entry(id);
+        expect(e).toMatchObject({ status: 'PENDING', attemptCount: 0 });
+        expect(e.quarantinedAt).toBeFalsy();
+        expect(Date.parse(e.nextAttemptAt!)).toBeGreaterThanOrEqual(before + 4_900);
+        expect(Date.parse(e.nextAttemptAt!)).toBeLessThan(before + 20_000);
+        await makeDue(id);
+      }
+    });
+
     it('other 5xx is unchanged: counted attempt, NETWORK pause, backoff', async () => {
       const id = await queueRepository.enqueue('order', {});
       pushSync.mockRejectedValueOnce(new ApiError(503, body('AUTH_TELEGRAM_UNAVAILABLE')));

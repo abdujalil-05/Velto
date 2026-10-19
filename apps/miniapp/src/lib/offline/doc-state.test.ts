@@ -32,6 +32,6 @@ describe('doc-state (TZ 8.6 labels)', () => {
     expect(docStateView('PENDING', undefined, 0, 'RATE_LIMITED')).toEqual({ state: 'sendPending', variant: 'secondary', detailKey: 'rateLimited' });
     expect(uz.Queue.maintenance).toBe('Tizimda texnik ishlar, yozuvlar saqlandi');
     expect(uz.Queue.rateLimited).toBe("So'rovlar ko'p, birozdan keyin yuboriladi");
-    for (const m of [uz, ru, en]) for (const k of ['maintenance', 'rateLimited', 'maintenanceBody', 'rateLimitedBody']) expect((m.Queue as unknown as Record<string, string>)[k]).toBeTruthy();
+    for (const m of [uz, ru, en]) for (const k of ['maintenance', 'rateLimited', 'maintenanceBody', 'rateLimitedBody', 'busy', 'busyBody', 'busyTitle']) expect((m.Queue as unknown as Record<string, string>)[k]).toBeTruthy();
   });
 });

@@ -26,10 +26,10 @@ export class ApiError extends Error {
 }
 
 /** F7 degraded mode (TZ 12.5): the server is up but temporarily refuses work. Documents must wait, never fail. */
-export type DegradedKind = 'maintenance' | 'rateLimited';
-export const DEGRADED_ERROR_CODES = { MAINTENANCE_READ_ONLY: 'maintenance', SERVICE_UNAVAILABLE: 'maintenance', RATE_LIMITED: 'rateLimited' } as const;
+export type DegradedKind = 'maintenance' | 'rateLimited' | 'busy';
+export const DEGRADED_ERROR_CODES = { MAINTENANCE_READ_ONLY: 'maintenance', SERVICE_UNAVAILABLE: 'maintenance', RATE_LIMITED: 'rateLimited', SERVICE_BUSY: 'busy' } as const;
 
-/** 503 MAINTENANCE_READ_ONLY / 503 SERVICE_UNAVAILABLE / 429 RATE_LIMITED. Any other 5xx stays an ordinary retry. */
+/** 503 MAINTENANCE_READ_ONLY / 503 SERVICE_UNAVAILABLE / 503 SERVICE_BUSY (pool exhausted, Retry-After 5) / 429 RATE_LIMITED. Any other 5xx stays an ordinary retry. */
 export function degradedKind(error: unknown): DegradedKind | null {
   if (!(error instanceof ApiError)) return null;
   if (error.status === 429) return 'rateLimited';

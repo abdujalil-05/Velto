@@ -19,7 +19,7 @@ export function SyncStatusBadge() {
   const label = !isOnline
     ? t('offline')
     : degraded
-      ? t(degraded === 'maintenance' ? 'syncMaintenance' : 'syncRateLimited')
+      ? t(degraded === 'maintenance' ? 'syncMaintenance' : degraded === 'busy' ? 'syncBusy' : 'syncRateLimited')
       : failedCount > 0
       ? t('syncFailed', { count: failedCount })
       : pendingCount > 0

@@ -14,7 +14,7 @@ import type { QueueStatus } from './queue';
 export type DocState = 'deviceOnly' | 'sendPending' | 'serverAccepted' | 'needsAttention';
 
 /** Secondary reason shown next to the state label (Queue.* message keys). */
-export type DocDetailKey = 'failed' | 'conflict' | 'handoverPending' | 'handoverPosted' | 'handoverRejected' | 'maintenance' | 'rateLimited';
+export type DocDetailKey = 'failed' | 'conflict' | 'handoverPending' | 'handoverPosted' | 'handoverRejected' | 'maintenance' | 'rateLimited' | 'busy';
 
 export type DocBadgeVariant = 'secondary' | 'success' | 'destructive' | 'warning';
 
@@ -30,6 +30,7 @@ export const DOC_STATES: readonly DocState[] = ['deviceOnly', 'sendPending', 'se
 export function degradedDetail(lastErrorCode?: string): DocDetailKey | undefined {
   if (lastErrorCode === 'MAINTENANCE_READ_ONLY' || lastErrorCode === 'SERVICE_UNAVAILABLE') return 'maintenance';
   if (lastErrorCode === 'RATE_LIMITED') return 'rateLimited';
+  if (lastErrorCode === 'SERVICE_BUSY') return 'busy';
   return undefined;
 }
 

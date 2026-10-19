@@ -36,8 +36,8 @@ export function SyncBanners() {
         <Alert role="status">
           <Info className="h-4 w-4" aria-hidden="true" />
           <AlertDescription>
-            <strong className="block">{t(degraded === 'maintenance' ? 'maintenanceTitle' : 'rateLimitedTitle')}</strong>
-            {t(degraded === 'maintenance' ? 'maintenanceBody' : 'rateLimitedBody')}
+            <strong className="block">{t(degraded === 'maintenance' ? 'maintenanceTitle' : degraded === 'busy' ? 'busyTitle' : 'rateLimitedTitle')}</strong>
+            {t(degraded === 'maintenance' ? 'maintenanceBody' : degraded === 'busy' ? 'busyBody' : 'rateLimitedBody')}
           </AlertDescription>
         </Alert>
       )}
