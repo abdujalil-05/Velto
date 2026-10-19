@@ -13,7 +13,8 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { StorageService } from '../src/common/storage/storage.service';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
-import { CompanyExportProcessor } from '../src/modules/company-export/company-export.processor';
+import { Export1cRecoveryService } from '../src/modules/integrations/export-1c/export-1c-recovery.service';
+import { CompanyExportProcessor, companyExportHeartbeat } from '../src/modules/company-export/company-export.processor';
 import type { CompanyExportJobData } from '../src/modules/company-export/company-export.constants';
 
 /** ADR-045: company data export (DSR/offboarding). Real Postgres + RLS + Redis worker, StorageService test double. */
@@ -87,11 +88,16 @@ describe('E2E ADR-045: company export', () => {
     return (await systemPrisma.company.create({ data: { tenantId: tenant.id, name: `CX ${label}` } })).id;
   }
 
-  async function seedBusiness(companyId: string, customerName: string) {
+  async function seedBusiness(companyId: string, customerName: string, ownerKey: string) {
     return tenantPrisma.run(companyId, async (tx) => {
       const customer = await tx.customer.create({ data: { companyId, code: `C-${rid()}`, name: customerName, phone: '+998901112233' } });
       await tx.invoice.create({ data: { companyId, number: `INV-${rid()}`, customerId: customer.id, total: '100', status: 'OPEN' } });
-      await tx.payment.create({ data: { companyId, number: `PAY-${rid()}`, customerId: customer.id, amount: '100', method: 'CASH' } });
+      const payment = await tx.payment.create({ data: { companyId, number: `PAY-${rid()}`, customerId: customer.id, amount: '100', method: 'CASH' } });
+      const wh = await tx.warehouse.create({ data: { companyId, name: `${customerName}-WH` } });
+      const product = await tx.product.create({ data: { companyId, sku: `SKU-${rid()}`, name: `${customerName}-P`, baseUnit: 'pcs' } });
+      await tx.stockMovement.create({ data: { companyId, productId: product.id, warehouseId: wh.id, type: 'RECEIVE', qty: '5', note: `${customerName}-MV` } });
+      await tx.paymentReversal.create({ data: { companyId, reversesPaymentId: payment.id, reason: `${customerName}-REV`, actorId: ownerKey } });
+      await tx.cashSession.create({ data: { companyId, userId: ownerKey, openAmount: '10' } });
       return customer.id;
     });
   }
@@ -140,8 +146,8 @@ describe('E2E ADR-045: company export', () => {
     await seedUser(companyA, 'CASHIER', ['CASHIER']);
     await seedUser(companyB, 'OWNER_B', ['OWNER']);
     await seedUser(companyC, 'OWNER_C', ['OWNER']);
-    customerA = await seedBusiness(companyA, FORMULA_NAME);
-    await seedBusiness(companyB, SECRET_B);
+    customerA = await seedBusiness(companyA, FORMULA_NAME, tokens.OWNER_A!.userId);
+    await seedBusiness(companyB, SECRET_B, tokens.OWNER_B!.userId);
   });
 
   afterAll(async () => {
@@ -182,6 +188,12 @@ describe('E2E ADR-045: company export', () => {
     expect(sheets.customers!.some((r) => r.includes(customerA))).toBe(true);
     expect(sheets.invoices!.length).toBe(2); // header + A's invoice only
     expect(sheets.payments!.length).toBe(2);
+    // new DSR sheets: A's row only, none of B's
+    for (const name of ['warehouses', 'stock_movements', 'payment_reversals', 'cash_sessions']) expect(sheets[name]!.length, name).toBe(2);
+    expect(JSON.stringify(sheets.stock_movements)).toContain('-MV');
+    expect(JSON.stringify([sheets.warehouses, sheets.stock_movements, sheets.payment_reversals])).not.toContain('B-SECRET');
+    for (const name of ['suppliers', 'purchase_orders', 'purchase_order_lines', 'goods_receipts', 'goods_receipt_lines', 'routes', 'route_stops', 'visits']) expect(sheets[name], name).toBeDefined();
+    for (const [name, rows] of Object.entries(sheets)) expect(rows[0]!.join(' '), name).not.toMatch(/password|hash|token|initData|telegram|secret/i);
     // no credentials / tokens
     expect(all).not.toMatch(/\$argon2|passwordHash|refreshToken|tokenHash|initData|telegram/i);
     expect(sheets.users![0]).toEqual(['id', 'firstName', 'lastName', 'phone', 'email', 'roles', 'isActive', 'createdAt']);
@@ -252,6 +264,20 @@ describe('E2E ADR-045: company export', () => {
 
       await processor().process(fakeJob(data, 2)); // duplicate delivery
       expect((await dbJob(company, job.id)).attemptCount).toBe(2);
+    });
+
+    it('sweep spares a PROCESSING job whose heartbeat is fresh, fails one that went stale', async () => {
+      const company = await seedCompany('sweep');
+      const job = await queuedJob(company);
+      const stale = new Date(Date.now() - 20 * 60_000);
+      await tenantPrisma.run(company, (tx) => tx.exportJob.update({ where: { id: job.id }, data: { status: 'PROCESSING', updatedAt: stale } }));
+      await companyExportHeartbeat(tenantPrisma, company, job.id);
+      const recovery = new Export1cRecoveryService(tenantPrisma, { add: async () => ({}) } as never);
+      await recovery.sweep();
+      expect((await dbJob(company, job.id)).status).toBe('PROCESSING');
+      await tenantPrisma.run(company, (tx) => tx.exportJob.updateMany({ where: { id: job.id }, data: { updatedAt: stale } }));
+      await recovery.sweep();
+      expect((await dbJob(company, job.id)).status).toBe('FAILED');
     });
 
     it('last attempt failing => FAILED with visible error (frees the active slot)', async () => {

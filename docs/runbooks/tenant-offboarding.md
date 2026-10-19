@@ -4,9 +4,12 @@ Short runbook. Not legal advice. Values marked PENDING are decided by the legal 
 
 ## 1. Export (customer self-service)
 1. The company OWNER (only role with `company.export`) opens the export page and starts `POST /company-export` (max 1 per minute, 1 active per company).
-2. Worker builds one multi-sheet XLSX (customers, outlets, products, price lists, stock, orders, invoices incl. OPENING, payments + allocations, users without credentials, opening batches). Poll `GET /company-export/:id` until `GENERATED`.
+2. Worker builds one multi-sheet XLSX (customers, outlets, products, price lists, stock, orders, invoices incl. OPENING, payments + allocations, users without credentials, opening batches, warehouses, stock movements, payment reversals, cash sessions, suppliers, purchase orders + lines, goods receipts + lines, routes + stops, visits). A sheet over 1 048 576 rows continues in `<name>_2`, `<name>_3`.... Poll `GET /company-export/:id` until `GENERATED`.
 3. Download only through `GET /company-export/:id/download` (API proxy, audited as `company.export.download`). Verify `X-Content-SHA256` against `fileHash`.
 4. Failures are visible in `errorLog`; retry is automatic (3 attempts, backoff); stuck jobs are failed by the sweep, then the OWNER can start a new export.
+
+### Not covered by the export (list for the offboarding ticket)
+AuditLog, OutboxEvent, ImportJob/ExportJob history, Notification, sessions/refresh tokens/Telegram bindings (credentials, intentionally excluded), stock reconciliation findings, order/invoice/payment auxiliary tables not listed above (e.g. route runs, packagings, document counters), uploaded files. Provide on request via a reviewed one-off query; do not claim the XLSX is a full DB dump.
 
 ## 2. Customer confirmation
 Record the OWNER's written confirmation that the export is complete and received (ticket id + `fileHash`). No deletion starts without it.

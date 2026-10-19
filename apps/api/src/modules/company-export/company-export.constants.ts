@@ -15,10 +15,16 @@ export const COMPANY_EXPORT_JOB_OPTS = { attempts: 3, backoff: { type: 'exponent
 export const MAX_ACTIVE_COMPANY_EXPORTS = 1;
 
 /** Bumped whenever the sheet/column layout changes. */
-export const COMPANY_EXPORT_MAPPING_VERSION = 1;
+export const COMPANY_EXPORT_MAPPING_VERSION = 2;
 
 /** Rows fetched per cursor page: bounded memory regardless of table size. */
 export const COMPANY_EXPORT_PAGE_SIZE = 2000;
+
+/** Excel hard limit (header included); a bigger sheet is split into name, name_2, name_3... */
+export const XLSX_MAX_SHEET_ROWS = 1_048_576;
+
+/** Liveness bump every N cursor pages inside a sheet (sweep fails PROCESSING after 15 min without updatedAt change). */
+export const COMPANY_EXPORT_HEARTBEAT_EVERY_PAGES = 5;
 
 /** One REPEATABLE READ snapshot spans the whole read phase; generous bound for very large tenants. */
 export const COMPANY_EXPORT_READ_TIMEOUT_MS = 30 * 60_000;

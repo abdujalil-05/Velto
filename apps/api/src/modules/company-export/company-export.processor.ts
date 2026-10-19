@@ -17,6 +17,11 @@ import {
 } from './company-export.constants';
 import { writeCompanyWorkbook, type WrittenWorkbook } from './company-export-writer';
 
+/** Own transaction/connection (the read tx is long); CAS on PROCESSING so a swept job is never resurrected. */
+export async function companyExportHeartbeat(tenantPrisma: TenantPrismaService, companyId: string, exportJobId: string): Promise<void> {
+  await tenantPrisma.run(companyId, (tx) => tx.exportJob.updateMany({ where: { id: exportJobId, status: 'PROCESSING' }, data: { updatedAt: new Date() } }));
+}
+
 /**
  * ADR-045: consumes `company-export` jobs. Same lifecycle as Export1cProcessor (atomic QUEUED->PROCESSING claim,
  * last-attempt FAILED / earlier attempts back to QUEUED, deterministic storage key). The read phase is ONE
@@ -49,7 +54,7 @@ export class CompanyExportProcessor extends WorkerHost {
     let written: WrittenWorkbook | undefined;
     try {
       // Liveness: bumps updatedAt on another connection so the stale-PROCESSING sweep spares a long, healthy export.
-      const heartbeat = () => this.tenantPrisma.run(companyId, (tx) => tx.exportJob.updateMany({ where: { id: exportJobId, status: 'PROCESSING' }, data: { updatedAt: new Date() } })).then(() => undefined);
+      const heartbeat = () => companyExportHeartbeat(this.tenantPrisma, companyId, exportJobId);
       written = await this.tenantPrisma.run(companyId, (tx) => writeCompanyWorkbook(tx, heartbeat), {
         isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
         timeout: COMPANY_EXPORT_READ_TIMEOUT_MS,
