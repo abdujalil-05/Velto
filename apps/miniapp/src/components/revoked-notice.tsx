@@ -5,6 +5,8 @@ import { useTranslations } from 'next-intl';
 import { toast } from 'sonner';
 import { ShieldAlert } from 'lucide-react';
 import { useAuth } from '@/lib/auth/auth-context';
+import { getTelegramWebApp } from '@/lib/telegram/webapp';
+import { canExportRevoked } from '@/lib/offline/revoke-wipe';
 import { queueRepository } from '@/lib/offline/queue';
 import { downloadJson, exportFileName } from '@/lib/offline/queue-view';
 import { Button } from '@/components/ui/button';
@@ -24,9 +26,10 @@ export function RevokedNotice() {
   }, [revoked]);
 
   if (!revoked) return null;
+  const exportAllowed = canExportRevoked(revoked, getTelegramWebApp()?.initDataUnsafe?.user?.id);
 
   async function onExport() {
-    if (!revoked) return;
+    if (!revoked || !exportAllowed) return;
     try {
       downloadJson(await queueRepository.exportRevokedToJson(revoked), exportFileName());
     } catch {
@@ -46,9 +49,10 @@ export function RevokedNotice() {
         <p className="max-w-xs text-xs text-muted-foreground">{t('notSent')}</p>
       </div>
       <div className="flex w-full max-w-xs flex-col gap-3">
-        <Button size="lg" onClick={() => void onExport()} disabled={!count}>
+        <Button size="lg" onClick={() => void onExport()} disabled={!count || !exportAllowed}>
           {t('export')}
         </Button>
+        {!exportAllowed && <p className="text-xs text-muted-foreground">{t('exportDisabled')}</p>}
         <Button variant="destructive" size="lg" onClick={() => setDiscardOpen(true)} disabled={!count}>
           {t('discard')}
         </Button>

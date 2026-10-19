@@ -39,10 +39,31 @@ export function getLastKnownOwner(): OfflineSession | null {
   }
 }
 
+const OWNER_TG_KEY = 'velto.sessionOwnerTelegramId';
+
+/** Telegram user id the server verified (initData) at the last /auth/telegram sign-in on this device. Only a client-side hint for gating the revoked-export button, not a security guarantee. */
+export function setOwnerTelegramId(id: number | string | null): void {
+  try {
+    if (id === null) window.localStorage.removeItem(OWNER_TG_KEY);
+    else window.localStorage.setItem(OWNER_TG_KEY, String(id));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function getOwnerTelegramId(): string | null {
+  try {
+    return window.localStorage.getItem(OWNER_TG_KEY);
+  } catch {
+    return null;
+  }
+}
+
 /** Explicit logout / completed revoke handling only. */
 export function forgetLastKnownOwner(): void {
   try {
     window.localStorage.removeItem(OWNER_STORAGE_KEY);
+    window.localStorage.removeItem(OWNER_TG_KEY);
   } catch {
     /* ignore */
   }

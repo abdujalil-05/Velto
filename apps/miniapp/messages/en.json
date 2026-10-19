@@ -287,7 +287,7 @@
   },
   "Revoked": {
     "title": "Access revoked",
-    "body": "The server ended your access (account blocked or session revoked). Cached customers, products, prices, stock and routes were removed from this phone.",
+    "body": "Your account or company was blocked on the server. Cached customers, products, prices, stock and routes were removed from this phone.",
     "quarantined": "Documents not sent to the server, kept on this phone: {count}",
     "notSent": "They will NOT be sent. Export them to a file, or delete them after confirming.",
     "export": "Export to file",
@@ -295,6 +295,8 @@
     "continue": "Continue",
     "discardConfirmTitle": "Delete unsent documents?",
     "discardConfirmDescription": "{count} document(s) that never reached the server will be deleted from this phone permanently.",
+    "wipedToast": "Device cache cleared, account blocked.",
+    "exportDisabled": "Export is available only when the app is opened from the documents' owner's Telegram account (an on-device check, not a security guarantee).",
     "discardConfirm": "Delete"
   }
 }

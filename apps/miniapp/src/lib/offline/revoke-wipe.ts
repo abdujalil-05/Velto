@@ -2,7 +2,7 @@ import { clearDeviceKey } from './crypto';
 import { db } from './db';
 import { queueRepository } from './queue';
 import { wipeReferenceCache } from './repository';
-import { forgetLastKnownOwner, getLastKnownOwner, setOfflineSession, type OfflineSession } from './session';
+import { forgetLastKnownOwner, getLastKnownOwner, getOwnerTelegramId, setOfflineSession, type OfflineSession } from './session';
 import { resetPreparedSession } from './session-bootstrap';
 
 /**
@@ -20,6 +20,13 @@ const REVOKED_KEY = 'velto.revoked';
 
 export interface RevokedInfo extends OfflineSession {
   at: string;
+  /** Telegram id of the quarantine owner, when this device ever saw it (client-side export gate only). */
+  telegramId?: string;
+}
+
+/** Export of quarantined documents is offered only inside a Telegram session whose user id equals the owner's. Client-side check, not a security guarantee. */
+export function canExportRevoked(info: Pick<RevokedInfo, 'telegramId'>, currentTelegramId: number | string | null | undefined): boolean {
+  return !!info.telegramId && currentTelegramId != null && String(currentTelegramId) === info.telegramId;
 }
 
 let inFlight: Promise<RevokedInfo | null> | null = null;
@@ -28,7 +35,7 @@ export function getRevokedInfo(): RevokedInfo | null {
   try {
     const raw = window.localStorage.getItem(REVOKED_KEY);
     const v = raw ? (JSON.parse(raw) as Partial<RevokedInfo>) : null;
-    return v?.userId && v.companyId ? { userId: v.userId, companyId: v.companyId, at: v.at ?? '' } : null;
+    return v?.userId && v.companyId ? { userId: v.userId, companyId: v.companyId, at: v.at ?? '', telegramId: v.telegramId } : null;
   } catch {
     return null;
   }
@@ -53,6 +60,7 @@ export function handleSessionRevoked(): Promise<RevokedInfo | null> {
 
 async function run(): Promise<RevokedInfo | null> {
   const owner = getLastKnownOwner() ?? getRevokedInfo();
+  const telegramId = getOwnerTelegramId() ?? getRevokedInfo()?.telegramId;
   if (owner) await queueRepository.quarantineOwnerEntries(owner);
   await wipeReferenceCache();
   await db.meta.delete('cacheOwner');
@@ -61,7 +69,7 @@ async function run(): Promise<RevokedInfo | null> {
   forgetLastKnownOwner();
   if ((await queueRepository.queueRowCount()) === 0) clearDeviceKey();
 
-  const info = owner ? { userId: owner.userId, companyId: owner.companyId, at: getRevokedInfo()?.at || new Date().toISOString() } : null;
+  const info = owner ? { userId: owner.userId, companyId: owner.companyId, at: getRevokedInfo()?.at || new Date().toISOString(), telegramId } : null;
   if (info && (await queueRepository.listRevokedFor(info)).length > 0) {
     window.localStorage.setItem(REVOKED_KEY, JSON.stringify(info));
     return info;

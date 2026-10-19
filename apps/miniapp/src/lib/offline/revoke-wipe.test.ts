@@ -5,7 +5,7 @@ import { db } from './db';
 import { EncryptedStore } from './encrypted-store';
 import { queueRepository } from './queue';
 import { clearRevokedInfo, getRevokedInfo, handleSessionRevoked } from './revoke-wipe';
-import { setOfflineSession } from './session';
+import { setOfflineSession, setOwnerTelegramId } from './session';
 import { resetPreparedSession } from './session-bootstrap';
 import { resetPushBatchLimit, runPush } from './sync-engine-core';
 
@@ -104,6 +104,14 @@ describe('revoke wipe (TZ 8.6, ADR-022)', () => {
     asUser(A);
     expect(await queueRepository.releaseOwnQuarantine()).toBe(1);
     expect((await queueRepository.listPushable(20)).map((e) => e.clientId)).toEqual([id]);
+  });
+
+  it('keeps the owner telegramId in the revoked info for the export gate', async () => {
+    setOwnerTelegramId(777);
+    await queueRepository.enqueue('order', order);
+    const info = await handleSessionRevoked();
+    expect(info?.telegramId).toBe('777');
+    expect(getRevokedInfo()?.telegramId).toBe('777');
   });
 
   it('network error / 5xx on refresh: nothing wiped, tokens kept, doc still pushable', async () => {

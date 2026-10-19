@@ -74,6 +74,15 @@ describe('runPush status machine (TZ 8.3/8.4)', () => {
     expect(pushSync).not.toHaveBeenCalled();
   });
 
+  it('quarantined PENDING retry rows do not schedule a retry', async () => {
+    const id = await queueRepository.enqueue('order', {});
+    pushSync.mockResolvedValue({ results: [{ clientId: id, status: 'RETRY', error: { code: 'SYNC_RETRY', message: 'x' } }] });
+    expect((await runPush()).nextRetryInMs).toBeGreaterThan(0);
+    await queueRepository.quarantineOwnerEntries(A);
+    pushSync.mockClear();
+    expect((await runPush()).nextRetryInMs).toBeUndefined();
+  });
+
   it('collects server GPS verdicts only for entries that carry one', async () => {
     const v = await queueRepository.enqueue('visit', { outletId: 'o1' });
     const o = await queueRepository.enqueue('order', { outletId: 'o1' });

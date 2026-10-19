@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { AlertTriangle, LogIn } from 'lucide-react';
+import { useAuth } from '@/lib/auth/auth-context';
 import { useSyncEngine } from '@/lib/offline/sync-engine';
 import { queueRepository } from '@/lib/offline/queue';
 import { downloadJson, exportFileName } from '@/lib/offline/queue-view';
@@ -14,6 +15,7 @@ import { ConfirmSheet } from '@/components/shared/confirm-sheet';
 export function SyncBanners() {
   const t = useTranslations('Queue');
   const { storage, authPaused } = useSyncEngine();
+  const { resolveRevoked } = useAuth();
   const [quarantined, setQuarantined] = useState(0);
   const [releaseOpen, setReleaseOpen] = useState(false);
   useEffect(() => {
@@ -57,6 +59,7 @@ export function SyncBanners() {
         onConfirm={async () => {
           setReleaseOpen(false);
           await queueRepository.releaseOwnQuarantine();
+          await resolveRevoked();
           setQuarantined(0);
         }}
       />
