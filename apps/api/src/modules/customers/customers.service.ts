@@ -8,6 +8,7 @@ import { POSTED_PAYMENT_WHERE, VALID_ALLOCATION_WHERE } from '../finance/ledger-
 import {
   CustomerAlreadyBlockedException,
   CustomerHasCreditBalanceException,
+  CustomerHasPendingHandoverException,
   CustomerHasOutstandingBalanceException,
   CustomerNotBlockedException,
   CustomerNotFoundException,
@@ -348,6 +349,11 @@ export class CustomersService {
     // while we waited must make this one fail (CustomerNotFound), not delete
     // and audit a second time.
     const before = await this.lockActiveOrThrow(tx, id);
+    // ADR-029: PENDING_HANDOVER cash is outside the ledger; deleting now would make
+    // accept fail with CustomerNotFound. Plain read after the customer lock (no
+    // payment lock taken here, so Payment -> Customer order is never inverted).
+    const pending = await tx.payment.count({ where: { customerId: id, status: 'PENDING_HANDOVER' } });
+    if (pending > 0) throw new CustomerHasPendingHandoverException(pending);
     // Ledger (source of truth), not cachedBalance. Only exactly 0 may be deleted:
     // debt (> 0) and credit/advance owed back to the customer (< 0) both block.
     const balance = await this.getBalance(tx, id);

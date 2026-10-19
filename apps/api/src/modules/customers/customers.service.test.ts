@@ -7,6 +7,7 @@ import {
   CustomerAlreadyBlockedException,
   CustomerHasCreditBalanceException,
   CustomerHasOutstandingBalanceException,
+  CustomerHasPendingHandoverException,
   CustomerNotBlockedException,
   CustomerNotFoundException,
   DuplicateCustomerCodeException,
@@ -162,6 +163,32 @@ describe('CustomersService (integration, real Postgres + RLS)', () => {
       await tx.paymentAllocation.create({ data: { paymentId: pay.id, invoiceId: inv.id, amount: '5000.00' } });
     });
 
+    const deleted = await tenantPrisma.run(companyId, () => customers.remove(id, user));
+    expect(deleted.deletedAt).not.toBeNull();
+  });
+
+  it('remove() refuses while a PENDING_HANDOVER payment exists; allowed once it is resolved', async () => {
+    const { customer } = await tenantPrisma.run(companyId, () => customers.create(dto('C-DEL-5'), user));
+    const id = (customer as { id: string }).id;
+    const pay = await tenantPrisma.run(companyId, (tx) =>
+      tx.payment.create({
+        data: { companyId, number: 'PAY-TEST-DEL-5', customerId: id, amount: '3000.00', method: 'CASH', status: 'PENDING_HANDOVER', collectedBy: user.id },
+      }),
+    );
+
+    const err = await tenantPrisma.run(companyId, () => customers.remove(id, user)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CustomerHasPendingHandoverException);
+    expect((err as CustomerHasPendingHandoverException).getResponse()).toMatchObject({
+      code: 'CUSTOMER_HAS_PENDING_HANDOVER',
+      details: { count: 1 },
+    });
+
+    await tenantPrisma.run(companyId, (tx) =>
+      tx.payment.update({
+        where: { id: pay.id },
+        data: { status: 'REJECTED', handoverActorId: user.id, handoverAt: new Date(), handoverRejectReason: 'test' },
+      }),
+    );
     const deleted = await tenantPrisma.run(companyId, () => customers.remove(id, user));
     expect(deleted.deletedAt).not.toBeNull();
   });
