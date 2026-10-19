@@ -2366,13 +2366,75 @@ describe('tenant isolation (RLS)', () => {
       const custBatch = await newBatch('CUSTOMER_BALANCE');
       await expect(mv({ refId: custBatch.id })).rejects.toThrow(/expected STOCK/);
       const original = await mv();
-      await expect(mv()).rejects.toThrow(/Unique constraint|unique/i);
+      await expect(mv()).rejects.toThrow(/opening stock already exists/);
       await expect(post(b.id, { qtyTotal: '4.000' })).rejects.toThrow(/do not match/);
       await post(b.id, { qtyTotal: '5.000' });
       await expect(withTenant(companyAId, (tx) => tx.stockMovement.update({ where: { id: original.id }, data: { qty: '6.000' } }))).rejects.toThrow(/append-only/);
       await expect(voidIt(b.id)).rejects.toThrow(/compensated first/);
       await mv({ qty: '-5.000', reversesMovementId: original.id, reason: 'void' });
       expect((await voidIt(b.id)).status).toBe('VOIDED');
+    });
+
+    const newProduct = async () =>
+      (await withTenant(companyAId, (tx) =>
+        tx.product.create({ data: { companyId: companyAId, sku: `ISO-OB-${++seq}`, name: 'OB Product', baseUnit: 'dona' } }),
+      )).id;
+    const openingMv = (batchId: string, productId: string, extra: Record<string, unknown> = {}) =>
+      withTenant(companyAId, (tx) =>
+        tx.stockMovement.create({
+          data: { companyId: companyAId, productId, warehouseId: whId, type: 'ADJUST', qty: '5.000', refType: 'OpeningBalance', refId: batchId, ...extra },
+        }),
+      );
+
+    it('void -> re-import of the same invoice externalDocRef / payment customer / stock pair is allowed', async () => {
+      const customer4 = (await withTenant(companyAId, (tx) => tx.customer.create({ data: { companyId: companyAId, code: 'A-OB-4', name: 'Opening A4' } }))).id;
+      const p = await newProduct();
+      const b = await newBatch('CUSTOMER_BALANCE');
+      const inv = await openingInvoice(b.id, { customerId: customer4, externalDocRef: 'DOC-R' });
+      const pay = await openingPayment(b.id, { customerId: customer4 });
+      await post(b.id, { debtTotal: '100.00', creditTotal: '30.00' });
+      const s = await newBatch('STOCK');
+      const m = await openingMv(s.id, p);
+      await post(s.id, { qtyTotal: '5.000' });
+
+      // While the first batches are live, a second import collides on all three.
+      const live = await newBatch('CUSTOMER_BALANCE');
+      await expect(openingInvoice(live.id, { customerId: customer4, externalDocRef: 'DOC-R' })).rejects.toThrow(/Unique constraint|unique/i);
+      await expect(openingPayment(live.id, { customerId: customer4 })).rejects.toThrow(/Unique constraint|unique/i);
+      const liveS = await newBatch('STOCK');
+      await expect(openingMv(liveS.id, p)).rejects.toThrow(/opening stock already exists/);
+
+      await withTenant(companyAId, async (tx) => {
+        await tx.invoice.update({ where: { id: inv.id }, data: { status: 'CANCELLED' } });
+        await tx.paymentReversal.create({ data: { companyId: companyAId, reversesPaymentId: pay.id, reason: 'void', actorId: ownerAId } });
+        await tx.payment.update({ where: { id: pay.id }, data: { status: 'REVERSED' } });
+      });
+      await openingMv(s.id, p, { qty: '-5.000', reversesMovementId: m.id, reason: 'void' });
+      // Reversed but batch not yet VOIDED: stock pair is still held.
+      await expect(openingMv(liveS.id, p)).rejects.toThrow(/opening stock already exists/);
+      expect((await voidIt(b.id)).status).toBe('VOIDED');
+      expect((await voidIt(s.id)).status).toBe('VOIDED');
+
+      const b2 = await newBatch('CUSTOMER_BALANCE');
+      expect((await openingInvoice(b2.id, { customerId: customer4, externalDocRef: 'DOC-R' })).status).toBe('OPEN');
+      expect((await openingPayment(b2.id, { customerId: customer4 })).status).toBe('POSTED');
+      const s2 = await newBatch('STOCK');
+      expect((await openingMv(s2.id, p)).refId).toBe(s2.id);
+      // The re-imported row now holds the pair again.
+      await expect(openingMv(liveS.id, p)).rejects.toThrow(/opening stock already exists/);
+    });
+
+    it('opening stock: two concurrent inserts for one pair from different batches -> exactly one wins', async () => {
+      const p = await newProduct();
+      const [s1, s2] = [await newBatch('STOCK'), await newBatch('STOCK')];
+      const results = await Promise.allSettled([openingMv(s1.id, p), openingMv(s2.id, p)]);
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      const rejected = results.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+      expect(String(rejected.reason)).toMatch(/opening stock already exists/);
+      const [row] = await withTenant(companyAId, (tx) =>
+        tx.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM "StockMovement" WHERE "productId" = ${p}::uuid AND "refType" = 'OpeningBalance'`,
+      );
+      expect(Number(row!.n)).toBe(1);
     });
 
     it('SalesOrder: CANCELLED needs a reason; legacy note marker is read; backfill left no CANCELLED row without reason', async () => {
