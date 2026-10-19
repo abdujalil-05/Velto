@@ -265,9 +265,9 @@
     "logoutDiscardConfirmTitle": "Удалить неотправленные документы?",
     "logoutDiscardConfirmDescription": "{count} док. не дошли до сервера и будут потеряны навсегда.",
     "logoutDiscardConfirm": "Да, удалить и выйти",
-    "quarantineTitle": "Документы неизвестного владельца",
+    "quarantineTitle": "В карантине",
     "quarantineWarning": "Эти документы остались от старой версии, автор неизвестен. Они не отправляются и не считаются вашей работой. Можно выгрузить в файл или удалить.",
-    "quarantineExport": "Выгрузить документы неизвестного владельца",
+    "quarantineExport": "Экспорт",
     "quarantineExportWarning": "Внимание: файл содержит данные неизвестного владельца. Храните его осторожно.",
     "quarantineDiscard": "Удалить",
     "quarantineDiscardConfirmTitle": "Удалить документ неизвестного владельца?",
@@ -278,7 +278,12 @@
     "handoverPosted": "Кассир принял",
     "handoverRejected": "Кассир отклонил",
     "handoverPendingNote": "Сервер принял. Сдайте деньги кассиру — долг уменьшится после приёма кассиром.",
-    "handoverRejectedNote": "Кассир отклонил платёж, долг не уменьшен."
+    "handoverRejectedNote": "Кассир отклонил платёж, долг не уменьшен.",
+    "quarantineBody": "Документов, задержанных после отзыва доступа: {count}. Они НЕ отправляются. Экспортируйте, удалите или разрешите отправку.",
+    "quarantineRelease": "Разрешить отправку",
+    "quarantineReleaseTitle": "Разрешить отправку?",
+    "quarantineReleaseDescription": "Документов будет отправлено на сервер от вашего имени: {count}.",
+    "quarantineReleaseConfirm": "Отправить"
   },
   "Revoked": {
     "title": "Доступ отозван",

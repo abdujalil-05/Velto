@@ -526,6 +526,22 @@ export async function quarantineOwnerEntries(owner: OfflineSession): Promise<num
   return quarantined;
 }
 
+/** Current user's OWN quarantined rows (after a block was lifted and they signed in again). */
+export async function listOwnQuarantined(): Promise<QueueEntry[]> {
+  return (await listAll()).filter((e) => !!e.quarantinedAt && e.status !== 'SYNCED').sort(bySeq);
+}
+
+/** Explicit, confirmed re-enable of the current user's own quarantined rows: they become ordinary again and are pushed under their own identity (ADR-022 ownership check still applies). */
+export async function releaseOwnQuarantine(): Promise<number> {
+  const rows = await listOwnQuarantined();
+  for (const e of rows) {
+    const { quarantinedAt: _q, ...rest } = e;
+    void _q;
+    await store.put(rest as QueueEntry);
+  }
+  return rows.length;
+}
+
 /** Revoked owner's quarantined rows (no session exists at this point, so the owner is passed explicitly). */
 export async function listRevokedFor(owner: OfflineSession): Promise<QueueEntry[]> {
   return (await readAll()).filter((e) => ownedBy(e, owner) && !!e.quarantinedAt).sort(bySeq);
@@ -603,6 +619,8 @@ export const queueRepository = {
   deleteOwnEntries,
   queueRowCount,
   quarantineOwnerEntries,
+  listOwnQuarantined,
+  releaseOwnQuarantine,
   listRevokedFor,
   exportRevokedToJson,
   discardRevokedFor,

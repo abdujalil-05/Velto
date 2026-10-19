@@ -45,11 +45,13 @@ export function onUnauthorized(handler: UnauthorizedHandler): () => void {
 
 let refreshInFlight: Promise<RefreshResult> | null = null;
 
-type RefreshResult = { token: string } | { rejected: boolean };
+/** `rejected`: refresh answered 401/403. `revoked`: ONLY the server's explicit AUTH_ACCOUNT_BLOCKED (user/company disabled). AUTH_SESSION_EXPIRED is shared by expired, rotated-reuse and unknown tokens, so it can never trigger a wipe. */
+type RefreshResult = { token: string } | { rejected: boolean; revoked: boolean };
+export const REVOKE_ERROR_CODES: readonly string[] = ['AUTH_ACCOUNT_BLOCKED'];
 
 async function refreshAccessToken(): Promise<RefreshResult> {
   const refreshToken = getRefreshToken();
-  if (!refreshToken) return { rejected: false };
+  if (!refreshToken) return { rejected: false, revoked: false };
 
   if (!refreshInFlight) {
     refreshInFlight = (async () => {
@@ -59,13 +61,16 @@ async function refreshAccessToken(): Promise<RefreshResult> {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ refreshToken }),
         });
-        if (res.status === 401 || res.status === 403) return { rejected: true };
-        if (!res.ok) return { rejected: false };
+        if (res.status === 401 || res.status === 403) {
+          const body = (await res.json().catch(() => null)) as { code?: string } | null;
+          return { rejected: true, revoked: res.status === 403 && !!body?.code && REVOKE_ERROR_CODES.includes(body.code) };
+        }
+        if (!res.ok) return { rejected: false, revoked: false };
         const data = (await res.json()) as TokenPair;
         setTokens(data.accessToken, data.refreshToken);
         return { token: data.accessToken };
       } catch {
-        return { rejected: false };
+        return { rejected: false, revoked: false };
       } finally {
         refreshInFlight = null;
       }
@@ -105,7 +110,7 @@ export async function apiFetch<T = void>(path: string, options: ApiFetchOptions 
       // Tokens are dropped only when the server refused them; on a network/5xx
       // failure they stay so the next online attempt can still refresh.
       if (refreshed.rejected) clearTokens();
-      unauthorizedHandlers.forEach((handler) => handler({ revoked: refreshed.rejected }));
+      unauthorizedHandlers.forEach((handler) => handler({ revoked: refreshed.revoked }));
     }
   }
 

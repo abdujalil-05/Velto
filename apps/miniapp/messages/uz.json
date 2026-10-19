@@ -265,9 +265,9 @@
     "logoutDiscardConfirmTitle": "Yuborilmagan hujjatlar o'chiriladimi?",
     "logoutDiscardConfirmDescription": "{count} ta hujjat serverga yetmagan va butunlay yo'qoladi.",
     "logoutDiscardConfirm": "Ha, o'chirib chiqish",
-    "quarantineTitle": "Egasi noma'lum hujjatlar",
+    "quarantineTitle": "Karantinda",
     "quarantineWarning": "Bu hujjatlar eski versiyadan qolgan, kim yaratgani noma'lum. Ular yuborilmaydi va sizning ishingiz hisoblanmaydi. Faylga yuklash yoki o'chirish mumkin.",
-    "quarantineExport": "Egasi noma'lum hujjatlarni yuklash",
+    "quarantineExport": "Eksport",
     "quarantineExportWarning": "Diqqat: fayl egasi noma'lum ma'lumotni o'z ichiga oladi. Uni ehtiyotkorlik bilan saqlang.",
     "quarantineDiscard": "O'chirish",
     "quarantineDiscardConfirmTitle": "Egasi noma'lum hujjat o'chiriladimi?",
@@ -278,7 +278,12 @@
     "handoverPosted": "Kassir qabul qildi",
     "handoverRejected": "Kassir rad etdi",
     "handoverPendingNote": "Server qabul qildi. Pulni kassirga topshiring — qarz kassir qabul qilgandan keyin kamayadi.",
-    "handoverRejectedNote": "Kassir to'lovni rad etdi, qarz kamaymadi."
+    "handoverRejectedNote": "Kassir to'lovni rad etdi, qarz kamaymadi.",
+    "quarantineBody": "Kirish bekor qilingandan keyin ushlab qolingan hujjatlar: {count}. Ular YUBORILMAYAPTI. Eksport qiling, o'chiring yoki yuborishga ruxsat bering.",
+    "quarantineRelease": "Yuborishga ruxsat berish",
+    "quarantineReleaseTitle": "Yuborishga ruxsat berilsinmi?",
+    "quarantineReleaseDescription": "{count} ta hujjat sizning hisobingizdan serverga yuboriladi.",
+    "quarantineReleaseConfirm": "Yuborish"
   },
   "Revoked": {
     "title": "Kirish huquqi bekor qilindi",

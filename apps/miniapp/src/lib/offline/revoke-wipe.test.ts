@@ -31,6 +31,7 @@ const fakeFetch = async (url: string | URL | Request) => {
   return json(401, { code: 'UNAUTHORIZED', message: { uz: '', ru: '', en: '' } });
 };
 const rejected = (status: number) => () => json(status, { code: status === 403 ? 'AUTH_ACCOUNT_BLOCKED' : 'AUTH_SESSION_EXPIRED', message: { uz: '', ru: '', en: '' } });
+const blocked = rejected(403);
 
 const order = { customerId: 'c', lines: [{ productId: 'p', packagingId: 'k', qty: 1, expectedUnitPrice: '1.00' }] };
 async function seedCache() {
@@ -61,8 +62,8 @@ describe('revoke wipe (TZ 8.6, ADR-022)', () => {
     vi.unstubAllGlobals();
   });
 
-  it.each([401, 403])('refresh %i: cache wiped, unsynced docs quarantined and never pushed, tokens dropped', async (status) => {
-    refresh = rejected(status);
+  it('refresh 403 AUTH_ACCOUNT_BLOCKED: cache wiped, unsynced docs quarantined and never pushed, tokens dropped', async () => {
+    refresh = blocked;
     await seedCache();
     const id = await queueRepository.enqueue('order', order);
     await expect(apiFetch('/auth/me')).rejects.toBeTruthy();
@@ -78,6 +79,31 @@ describe('revoke wipe (TZ 8.6, ADR-022)', () => {
     expect(await queueRepository.listPushable(20)).toEqual([]);
     await runPush();
     expect(pushCalls).toBe(0);
+  });
+
+  it('expired/rotated refresh (401 AUTH_SESSION_EXPIRED): NO wipe, doc stays PENDING and pushes after re-login', async () => {
+    refresh = rejected(401);
+    await seedCache();
+    const id = await queueRepository.enqueue('order', order);
+    await expect(apiFetch('/auth/me')).rejects.toBeTruthy();
+    expect(await cacheEmpty()).toBe(false);
+    expect(getRevokedInfo()).toBeNull();
+    setTokens('new-access', 'new-refresh');
+    asUser(A);
+    expect((await queueRepository.listPushable(20)).map((e) => e.clientId)).toEqual([id]);
+  });
+
+  it('same user signing in after the block: sees own quarantine, release (confirmed) makes it pushable', async () => {
+    const id = await queueRepository.enqueue('order', order);
+    await handleSessionRevoked();
+    asUser(A);
+    expect((await queueRepository.listOwnQuarantined()).map((e) => e.clientId)).toEqual([id]);
+    expect(await queueRepository.listPushable(20)).toEqual([]);
+    asUser(B);
+    expect(await queueRepository.listOwnQuarantined()).toEqual([]);
+    asUser(A);
+    expect(await queueRepository.releaseOwnQuarantine()).toBe(1);
+    expect((await queueRepository.listPushable(20)).map((e) => e.clientId)).toEqual([id]);
   });
 
   it('network error / 5xx on refresh: nothing wiped, tokens kept, doc still pushable', async () => {
