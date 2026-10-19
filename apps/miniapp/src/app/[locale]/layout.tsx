@@ -6,13 +6,18 @@ import { notFound } from 'next/navigation';
 import { routing } from '@/i18n/routing';
 import { Providers } from '@/components/providers';
 import { TelegramInit } from '@/components/telegram-init';
+import { THEME_COLOR } from '@/lib/pwa/manifest';
 import '../globals.css';
 
 export const metadata: Metadata = {
   title: 'Velto Agent',
+  // Served by src/app/manifest.ts; Next prefixes basePath on the link.
+  manifest: '/manifest.webmanifest',
+  appleWebApp: { capable: true, title: 'Velto', statusBarStyle: 'default' },
 };
 
 export const viewport = {
+  themeColor: THEME_COLOR,
   // Bot API 7.x fullscreen mode can render behind the notch/home indicator —
   // globals.css pads env(safe-area-inset-*) to compensate.
   viewportFit: 'cover',

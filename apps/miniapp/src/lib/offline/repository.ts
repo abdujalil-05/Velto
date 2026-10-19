@@ -13,6 +13,7 @@ import type {
   SyncStock,
 } from '@/lib/api/sync';
 import { db, type RawRow } from './db';
+import { DATASET_KEYS, type DatasetKey } from './staleness';
 import { EncryptedStore } from './encrypted-store';
 import { getOfflineSession, sessionKey, type OfflineSession } from './session';
 
@@ -61,11 +62,35 @@ export async function getLastPullAt(): Promise<string | null> {
   return (row?.value as string | undefined) ?? null;
 }
 
+/** Datasets whose "last successful sync" is shown to the agent (TZ 8.6). */
+function pullAtByDatasetKey(session: OfflineSession): string {
+  return `pullAtByDataset:${sessionKey(session)}`;
+}
+
+/**
+ * Per-dataset last successful sync (ISO). A complete pull refreshes every dataset, so today the times coincide;
+ * they are stored separately so a partial/failed dataset can never display another dataset's time.
+ * Falls back to the legacy single `pullAt` for sessions written before this key existed.
+ */
+export async function getDatasetSyncTimes(): Promise<Record<DatasetKey, string | null>> {
+  const session = getOfflineSession();
+  const empty = Object.fromEntries(DATASET_KEYS.map((k) => [k, null])) as Record<DatasetKey, string | null>;
+  if (!session) return empty;
+  const row = await db.meta.get(pullAtByDatasetKey(session));
+  const stored = (row?.value as Partial<Record<DatasetKey, string>> | undefined) ?? {};
+  const legacy = await getLastPullAt();
+  return Object.fromEntries(DATASET_KEYS.map((k) => [k, stored[k] ?? legacy])) as Record<DatasetKey, string | null>;
+}
+
 /** Call only after the final page (hasMore=false) was applied. */
 export async function markPullComplete(at: Date = new Date()): Promise<void> {
   const session = getOfflineSession();
   if (!session) return;
-  await db.meta.put({ key: pullAtKey(session), value: at.toISOString() });
+  const iso = at.toISOString();
+  await db.meta.bulkPut([
+    { key: pullAtKey(session), value: iso },
+    { key: pullAtByDatasetKey(session), value: Object.fromEntries(DATASET_KEYS.map((k) => [k, iso])) },
+  ]);
 }
 
 export async function getCursor(): Promise<string | undefined> {

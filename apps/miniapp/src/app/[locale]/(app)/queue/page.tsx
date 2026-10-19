@@ -1,5 +1,6 @@
 'use client';
 
+import { DatasetFreshnessList } from '@/components/freshness-label';
 import { useCallback, useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslations } from 'next-intl';
@@ -97,6 +98,8 @@ export default function QueuePage() {
   return (
     <div className="space-y-4">
       <h1 className="text-lg font-semibold">{t('title')}</h1>
+
+      <DatasetFreshnessList />
 
       {entries.isLoading && <Skeleton className="h-24 w-full" />}
       {!entries.isLoading && rows.length === 0 && <p className="text-sm text-muted-foreground">{t('empty')}</p>}

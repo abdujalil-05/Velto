@@ -167,6 +167,10 @@
   "Common": {
     "stockUpdatedAt": "Остатки обновлены: {time}",
     "balanceSyncedAt": "Долг/баланс синхронизирован: {time}",
+    "productsSyncedAt": "Товары обновлены: {time}",
+    "pricesSyncedAt": "Цены обновлены: {time}",
+    "customersSyncedAt": "Клиенты обновлены: {time}",
+    "routeSyncedAt": "Маршрут обновлён: {time}",
     "neverSynced": "Ещё не синхронизировано",
     "dataStale": "Данные устарели — подключитесь к интернету",
     "somUnit": "сум",
@@ -209,8 +213,10 @@
     "attentionTitle": "Требует внимания",
     "pendingTitle": "Не отправлено",
     "syncedTitle": "Принято сервером",
-    "onDevice": "Сохранено на устройстве",
-    "onServer": "На сервере",
+    "deviceOnly": "Только на этом устройстве",
+    "sendPending": "Ожидает отправки",
+    "serverAccepted": "Сервер принял",
+    "needsAttention": "Требует внимания",
     "failed": "Ошибка",
     "conflict": "Конфликт",
     "deviceOnlyNote": "Документ только на этом устройстве — сервер его ещё не принял",
@@ -270,7 +276,7 @@
     "logoutQuarantineNote": "Документы неизвестного владельца при выходе не удаляются — они остаются на устройстве.",
     "handoverPending": "Ожидает сдачи кассиру",
     "handoverPosted": "Кассир принял",
-    "handoverRejected": "Требует внимания: кассир отклонил",
+    "handoverRejected": "Кассир отклонил",
     "handoverPendingNote": "Сервер принял. Сдайте деньги кассиру — долг уменьшится после приёма кассиром.",
     "handoverRejectedNote": "Кассир отклонил платёж, долг не уменьшен."
   }

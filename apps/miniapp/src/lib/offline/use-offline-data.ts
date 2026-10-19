@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { offlineRepository, getDefaultPriceListId, getLastPullAt } from './repository';
+import { offlineRepository, getDefaultPriceListId, getLastPullAt, getDatasetSyncTimes } from './repository';
 import { queueRepository } from './queue';
 
 // Local-first reads: these hit Dexie only, never the network — the sync
@@ -60,4 +60,8 @@ export function useOfflineTodayQueue(type: 'order' | 'visit' | 'payment') {
 /** ISO time of the last complete pull for the current user; null = never synced (TZ 8.2 freshness). */
 export function useOfflineLastPullAt() {
   return useQuery({ queryKey: ['offline', 'lastPullAt'], queryFn: getLastPullAt, staleTime: Infinity });
+}
+
+export function useOfflineDatasetSyncTimes() {
+  return useQuery({ queryKey: ['offline', 'datasetSyncTimes'], queryFn: getDatasetSyncTimes, staleTime: Infinity });
 }

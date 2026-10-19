@@ -2,32 +2,46 @@
 
 import { useLocale, useTranslations } from 'next-intl';
 import { AlertTriangle } from 'lucide-react';
-import { useOfflineLastPullAt } from '@/lib/offline/use-offline-data';
+import { useOfflineDatasetSyncTimes } from '@/lib/offline/use-offline-data';
+import { DATASET_KEYS, isDatasetStale, type DatasetKey } from '@/lib/offline/staleness';
 import { formatDateTime } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
-/** Older than this the cached stock/balance is shown as a warning. */
-export const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
+/** Common message key per dataset ("<Dataset> synced: {time}"). */
+const MESSAGE_KEY: Record<DatasetKey, string> = {
+  products: 'productsSyncedAt',
+  prices: 'pricesSyncedAt',
+  customers: 'customersSyncedAt',
+  stock: 'stockUpdatedAt',
+  balances: 'balanceSyncedAt',
+  route: 'routeSyncedAt',
+};
 
-export function isStale(lastPullAt: string | null, now: number = Date.now()): boolean {
-  return !lastPullAt || now - Date.parse(lastPullAt) > STALE_AFTER_MS;
-}
-
-/** TZ 8.2: "Qoldiq yangilangan" / "Qarz/balans sinxronlangan" next to cached stock / customer balance. */
-export function FreshnessLabel({ kind, className }: { kind: 'stock' | 'balance'; className?: string }) {
+/** TZ 8.2/8.6: last successful sync of one dataset, with a stale warning (never a silent change). */
+export function FreshnessLabel({ dataset, className }: { dataset: DatasetKey; className?: string }) {
   const t = useTranslations('Common');
   const locale = useLocale();
-  const { data: lastPullAt, isLoading } = useOfflineLastPullAt();
+  const { data, isLoading } = useOfflineDatasetSyncTimes();
   if (isLoading) return null;
-  const stale = isStale(lastPullAt ?? null);
-  const text = lastPullAt
-    ? t(kind === 'stock' ? 'stockUpdatedAt' : 'balanceSyncedAt', { time: formatDateTime(lastPullAt, locale) })
-    : t('neverSynced');
+  const last = data?.[dataset] ?? null;
+  const stale = isDatasetStale(last, dataset);
+  const text = last ? t(MESSAGE_KEY[dataset], { time: formatDateTime(last, locale) }) : t('neverSynced');
   return (
     <p className={cn('flex items-center gap-1 text-xs', stale ? 'font-medium text-warning' : 'text-muted-foreground', className)} role={stale ? 'status' : undefined}>
       {stale && <AlertTriangle className="size-3" aria-hidden />}
       <span>{text}</span>
-      {stale && lastPullAt && <span>· {t('dataStale')}</span>}
+      {stale && last && <span>· {t('dataStale')}</span>}
     </p>
+  );
+}
+
+/** All datasets at once (queue/status screen). */
+export function DatasetFreshnessList() {
+  return (
+    <div className="space-y-1">
+      {DATASET_KEYS.map((k) => (
+        <FreshnessLabel key={k} dataset={k} />
+      ))}
+    </div>
   );
 }

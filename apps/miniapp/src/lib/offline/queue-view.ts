@@ -1,34 +1,9 @@
-import type { PaymentStatus } from '@/lib/api/payments';
-import type { QueueEntry, QueueError, QueueStatus } from './queue';
+import type { QueueEntry, QueueError } from './queue';
 
 /**
  * Pure presentation logic for the queue / conflicts screen (TZ 8.4, 9.3):
  * kept free of React/Dexie so it is unit-testable and the components stay thin.
  */
-
-export type StatusBadgeVariant = 'secondary' | 'success' | 'destructive' | 'warning';
-
-/** Device-saved (PENDING/SYNCING) vs server-accepted (SYNCED) are different, translated states. */
-export type StatusLabelKey = 'onDevice' | 'onServer' | 'failed' | 'conflict' | 'handoverPending' | 'handoverPosted' | 'handoverRejected';
-
-export function statusView(status: QueueStatus, paymentStatus?: PaymentStatus): { labelKey: StatusLabelKey; variant: StatusBadgeVariant } {
-  if (status === 'SYNCED' && paymentStatus) {
-    // ADR-029: server-accepted is not cashier-accepted; debt is reduced only at POSTED.
-    if (paymentStatus === 'PENDING_HANDOVER') return { labelKey: 'handoverPending', variant: 'warning' };
-    if (paymentStatus === 'REJECTED') return { labelKey: 'handoverRejected', variant: 'destructive' };
-    return { labelKey: 'handoverPosted', variant: 'success' };
-  }
-  switch (status) {
-    case 'SYNCED':
-      return { labelKey: 'onServer', variant: 'success' };
-    case 'FAILED':
-      return { labelKey: 'failed', variant: 'destructive' };
-    case 'CONFLICT':
-      return { labelKey: 'conflict', variant: 'warning' };
-    default:
-      return { labelKey: 'onDevice', variant: 'secondary' };
-  }
-}
 
 /** Prefers the trilingual server message, then the Uzbek `message`, then the bare code. */
 export function localizedError(err: QueueError | undefined, locale: string): string | null {

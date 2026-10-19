@@ -140,7 +140,7 @@ export default function NewPaymentPage() {
           <p className={cn('text-2xl font-bold tabular-nums', Number(customer.cachedBalance) > 0 && 'text-destructive')}>
             {formatMoney(customer.cachedBalance)} {tCommon('somUnit')}
           </p>
-          <FreshnessLabel kind="balance" />
+          <FreshnessLabel dataset="balances" />
           <p className="text-xs text-muted-foreground">{t('debtNotReducedNote')}</p>
           {inTransit.data && inTransit.data.count > 0 && (
             <p className="text-sm font-medium tabular-nums">

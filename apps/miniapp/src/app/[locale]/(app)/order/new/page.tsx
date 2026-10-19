@@ -321,7 +321,8 @@ export default function NewOrderPage() {
             </div>
           )}
 
-          <FreshnessLabel kind="stock" />
+          <FreshnessLabel dataset="stock" />
+          <FreshnessLabel dataset="prices" />
 
           {filteredProducts.length === 0 && (
             <Card>
