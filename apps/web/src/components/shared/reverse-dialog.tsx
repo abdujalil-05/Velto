@@ -21,10 +21,12 @@ interface ReverseDialogProps {
   error?: string | null;
   isPending?: boolean;
   onConfirm: (reason: string) => void;
+  /** Overrides the default "Reverse" button label (e.g. handover reject). */
+  confirmLabel?: string;
 }
 
 /** Confirmation + mandatory reason (3-500 chars, TZ F2.1) for payment / stock reversals. */
-export function ReverseDialog({ open, onOpenChange, title, description, error, isPending = false, onConfirm }: ReverseDialogProps) {
+export function ReverseDialog({ open, onOpenChange, title, description, error, isPending = false, onConfirm, confirmLabel }: ReverseDialogProps) {
   const t = useTranslations('Common.reverse');
   const tCommon = useTranslations('Common');
   const [reason, setReason] = useState('');
@@ -60,7 +62,7 @@ export function ReverseDialog({ open, onOpenChange, title, description, error, i
           </Button>
           <Button variant="destructive" onClick={() => onConfirm(trimmed)} disabled={isPending || invalid}>
             {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {t('confirm')}
+            {confirmLabel ?? t('confirm')}
           </Button>
         </DialogFooter>
       </DialogContent>
