@@ -16,6 +16,7 @@
 | F5 Hisobot, import/eksport, 1C | **✅ kod tomoni** — F5.1, F5.2, F5.4 ✅; F5.3+ ✅ (pastda). Pilot buxgalter imzosi (G4) ochiq |
 | F5.3+ 1C eksport mustahkamlash (ADR-034..039) | **✅** — branch `feat/f5-3-1c-hardening`: sxema e724d6a, ack1c ACCOUNTANT 4cc0b0f, advisory lock f83f348, processor/CSV/retry d9fc766, download/ACK/throttle 6145969 a8f6139, davr qoidasi + audit hash e5a7461, web `/export-1c` 5dc01f7, CORS+idempotent 03064c3, QA c8bbcdd, Excel Ид+sanitize 3673d05, review tuzatishlari e634b08. Testlar: database 81, api 649, miniapp 88. G4 (buxgalter imzosi) ochiq |
 | F8.1 Agent to'lovi PENDING_HANDOVER (ADR-029) | **✅** — branch `feat/f8-1-payment-handover` (sxema 8289caa+1ec7f03, API 9fa62a3+b876aad, customers b9145dd, web aa7d384, miniapp 3832810+880502b, QA 471bfff, permission 2b2152c). Testlar: database 74, api 577 (61 fayl), miniapp 88. Opening balance importi va OWNER-alert (ADR-032) F8.1 dan keyin ochiq |
+| F4.5 Offline v5 / PWA (ADR-022 qo'shimchasi) | **✅ kod tomoni** — branch `feat/f4-5-offline-pwa`: PWA manifest + yorliqlar + staleness 33eab8f, revoke-wipe 722a542, tuzatishlar 1eb6d0b fe427b1 b14427c, flaky 64165fd. Testlar: database 81, api 653, miniapp 109 (jami 890). Qurilma matritsasi foydalanuvchi ma'lumotiga bog'liq |
 | F6 Platforma | Boshlanmagan |
 | F7 Chiniqtirish va reliz | Boshlanmagan |
 
@@ -75,6 +76,14 @@ MVP kodining katta qismi yozilgan: F0–F2 asosan, F3 ✅, F4 kod tomoni ✅, F5
   - **Qo'shimcha:** ACK'ni OWNER+ACCOUNTANT bera oladi (ADR-003c istisnosi faqat `integrations.ack1c`); eksport davri oxiri kompaniya TZ bo'yicha KECHAdan kech bo'lmasligi shart (`EXPORT_PERIOD_NOT_CLOSED`) — yangi POSTED to'lov posting sanasi doim server "bugun"i, shuning uchun yopiq kunlar GENERATED dan keyin o'zgarmaydi; route prefiksi `export/1c` (`/api/v1` yo'q, ADR-031).
   - **Operatsion qadamlar (mavjud tenantlar, HALI ISHGA TUSHIRILMAGAN):** `backfill-permissions.ts` (`payments.handover`, `integrations.ack1c`), `revoke-director-handover.ts` (avval `--dry-run`).
   - **Ochiq qarzlar:** migratsiyadan oldingi GENERATED qatorlari (fileHash yo'q, NOT VALID CHECK) — qayta eksport kerak, download/ack `EXPORT_LEGACY_NO_CHECKSUM` 409; `ExportJob.fileUrl` deprecated nullable (keyingi relizda olib tashlash); processor 3 ko'rinishda (documents/csvDocuments/salesDocuments) quriladi — DRY qarzi (LOW); Invoice CANCELLED eksportdan keyin lock/tekshiruvsiz (hozir bekor qilish servis yo'li yo'q); BullMQ stalled qayta yetkazishda job PROCESSING ni ko'rib no-op, 15 daq sweep FAILED qiladi; audit'da fileHash ko'rinadi (deny-list'dan faqat `filehash` istisno); throttler barcha autentifikatsiyalangan yo'llarda userId (public IP bo'yicha, trust proxy tekshirilmagan); CSV `,` pilot buxgalter tasdig'ini kutadi; pilot 1C konfiguratsiyasi (UT 11/BP 3.0) va namunaviy fayl yo'q — G4 ochiq; ustun tartibi (Ид Excelda oxirda, CSV da 2-o'rinda); uz `POSTED` tarjimasi (F6); flaky testlar (`reconciliation.e2e.test.ts:94`, miniapp handover-sync va search-perf 5s timeout) ochiq.
+
+- **2026-10-19 — F4.5 Offline v5 (ADR-022 qo'shimchasi, branch `feat/f4-5-offline-pwa`):**
+  - **Qilindi:** PWA manifest (`/manifest.webmanifest`, ikonkalar YO'Q); bitta hujjat-holat yorlig'i xaritasi (Faqat shu qurilmada / Yuborish kutilmoqda / Server qabul qildi / E'tibor kerak; buyurtma/to'lov/tashrif); per-dataset staleness (TTL placeholder 24 soat, `NEXT_PUBLIC_STALE_HOURS_<DATASET>`).
+  - **Revoke-wipe:** FAQAT `403 AUTH_ACCOUNT_BLOCKED` da: kesh o'chadi, sinxronlanmagan navbat ADR-022 karantiniga o'tadi, navbat bo'sh bo'lsa qurilma kaliti o'chadi. Oddiy tarmoq xatosi / muddati tugagan token wipe QILMAYDI. Karantin bannerida qayta kirgan user: eksport / "Yuborishga ruxsat" / tasdiqli o'chirish. Eksport faqat Telegram user id = karantin egasi `telegramId` bo'lsa (client tekshiruvi, to'liq himoya EMAS).
+  - **Auth:** `auth.refresh` bloklangan user/kompaniya uchun reuse shoxidan OLDIN `403 AUTH_ACCOUNT_BLOCKED` (`auth.service.ts`); yolg'on reuse audit yozilmaydi.
+  - **Qarorlar:** offline'da yakuniy tasdiq bloklanmaydi (TZ §8.6 "authority unreachable" MVP'da qilinmaydi — confirm/deliver baribir onlayn serverda); staleness TTL qiymatlari foydalanuvchidan kutilmoqda.
+  - **Flaky tuzatishlar (64165fd):** miniapp vitest `maxForks=3` (`VITEST_MAX_FORKS`) + seed uchun 30s timeout (asl sabab: 7k AES-GCM yozuv seed, CPU raqobati; 150ms NFR chegarasi o'zgarmadi); `users.service.test.ts` tx timeout 30s; `reconciliation.e2e.test.ts:94` 400 bir marta ko'rindi, qayta chiqmadi (3 to'liq + 12 parallel yurish) — sababi NOMA'LUM, diagnostika qo'shilgan; fixture slug `Date.now()` to'qnashuvi (parallel bir xil fayl) ma'lum.
+  - **Ochiq/operatsion:** (1) PWA ikonkalari (PNG 192/512 + maskable 512) kerak — usiz o'rnatib bo'lmaydi; (2) staleness TTL qiymatlari (mahsulot/narx/mijoz/qoldiq/marshrut); (3) pilot qurilmalar/OS/Telegram versiyalari (`OFFLINE-DEVICE-MATRIX.md` hammasi "kutilmoqda"); (4) hard delete (biznes yozuvi yo'q user, `users.service.ts:431`) tokenlarni o'chiradi -> 401, qurilmada wipe bermaydi (sxema o'zgarishi kerak); (5) bloklangan user refresh'ida audit yo'q (`auth.refresh_blocked` — forensik, throttle bilan o'ylab qo'shish); (6) admin sessiyani bekor qilish (logout-all) endpointi yo'q, refresh reuse/expired bir xil 401; (7) PWA qurilmada eksport o'chiq (`/auth/me` da `telegramId` yo'q); (8) eksport client tekshiruvi `initDataUnsafe` ga tayanadi; (9) `markPullComplete` hamma dataset uchun bir xil vaqt yozadi (per-dataset farq hozircha yo'q); (10) SALES_DIRECTOR handover olib tashlash va backfill skriptlari mavjud tenantlarda ishga tushirilmagan.
 
 ## Texnik qarzlar / bloker
 
@@ -139,12 +148,12 @@ MVP kodining katta qismi yozilgan: F0–F2 asosan, F3 ✅, F4 kod tomoni ✅, F5
 ## Keyingi qadamlar (ustuvorlik bilan)
 
 Batafsil: `docs/PLAN.md` (F8.x gap-tahlil tartibi).
-1. F4.5 — PWA manifest, holat yorliqlari, qurilma matritsasi → `miniapp-dev`
-2. F6 — trial, onboarding, "Ichki hisob" yorlig'i → `web-dev`, `i18n-sync`
-3. F7 — outbox qarori, rate-limit, live/ready, runbook, restore drill, perf → `devops`, `qa-engineer`
+1. F6 — trial, onboarding, "Ichki hisob" yorlig'i → `web-dev`, `i18n-sync`
+2. F7 — outbox qarori, rate-limit, live/ready, runbook, restore drill, perf → `devops`, `qa-engineer`
 
 ## Oxirgi sessiya
 
+- 2026-10-19: F4.5 Offline v5 + revoke wipe tugadi (890 test: database 81, api 653, miniapp 109); branch `feat/f4-5-offline-pwa`, push qilinmagan. Keyin: F6, F7.
 - 2026-10-19: F5.3+ 1C eksport mustahkamlash tugadi (ADR-034..039); branch `feat/f5-3-1c-hardening`, push qilinmagan. Keyin: F4.5, F6, F7, flaky testlar, outbox qarori.
 - 2026-10-19: F8.1 (PENDING_HANDOVER) tugadi, ADR-029 qo'shimchasi yozildi; branch `feat/f8-1-payment-handover`, push qilinmagan.
 - 2026-10-19: Master TZ v5.0 ga review qarorlari kiritildi (ADR-028..033), STATUS/PLAN yangilandi. Faqat hujjat o'zgargan, kod yo'q. Branch `docs/tz-v5`, push qilinmagan.
