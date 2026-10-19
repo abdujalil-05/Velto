@@ -1823,6 +1823,40 @@
       "confirm": "Paketni bekor qilish",
       "success": "Paket bekor qilindi",
       "touchedHint": "Avval bog'liq to'lov taqsimoti yoki ombor harakatini hal qiling."
+    },
+    "downloadTemplate": "CSV shablonni yuklab olish"
+  },
+  "CompanyExport": {
+    "title": "Kompaniya ma'lumotlarini eksport qilish",
+    "purpose": "Mijozning o'z ma'lumotlariga bo'lgan huquqi va offboarding uchun: kompaniya ma'lumotlarining to'liq nusxasi bitta Excel faylida.",
+    "includes": "Kiradi: mijozlar, savdo nuqtalari, mahsulotlar, narxlar, qoldiqlar, buyurtmalar, hisob-fakturalar, to'lovlar, kassa smenalari, foydalanuvchilar (faqat ism, telefon, email, rollar).",
+    "excludes": "Kirmaydi: parollar, tokenlar, Telegram identifikatorlari va boshqa maxfiy kalitlar.",
+    "create": "Eksport yaratish",
+    "inProgress": "Eksport tayyorlanmoqda",
+    "created": "Eksport boshlandi",
+    "throttled": "So'rovlar juda ko'p. Bir daqiqadan so'ng qayta urinib ko'ring.",
+    "retry": "Qayta urinish",
+    "empty": "Hali eksportlar yo'q. Birinchi faylni olish uchun \"Eksport yaratish\" tugmasini bosing.",
+    "failedUnknown": "Eksport yaratib bo'lmadi",
+    "download": "Yuklab olish",
+    "col": {
+      "status": "Holat",
+      "file": "Fayl",
+      "size": "Hajm",
+      "date": "Sana"
+    },
+    "status": {
+      "QUEUED": "Navbatda",
+      "PROCESSING": "Yaratilmoqda",
+      "GENERATED": "Tayyor",
+      "FAILED": "Xato",
+      "ACCOUNTING_ACCEPTED": "Tayyor",
+      "FAILED_REVIEW": "Tayyor"
+    },
+    "hash": {
+      "match": "Nazorat summasi mos keldi",
+      "mismatch": "Nazorat summasi mos kelmadi - faylni ishlatmang",
+      "unavailable": "Nazorat summasini tekshirib bo'lmadi"
     }
   }
 }

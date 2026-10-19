@@ -15,6 +15,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { ImportErrorsTable } from '@/components/import/import-errors-table';
 import { PostOpeningForm } from './post-opening-form';
 import { OpeningHistory } from './opening-history';
+import { OpeningTemplateDownload } from './template-download';
 
 const KINDS: OpeningKind[] = ['CUSTOMER_BALANCE', 'STOCK'];
 
@@ -106,7 +107,8 @@ export function OpeningBalancesPanel({ showHistory = true }: { showHistory?: boo
               </Alert>
             )}
 
-            <div className="flex justify-end">
+            <div className="flex flex-wrap justify-end gap-2">
+              <OpeningTemplateDownload kind={kind} />
               <Button onClick={() => fileInput.current?.click()} disabled={preview.isPending}>
                 {preview.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
                 {preview.isError ? t('uploadRetry') : t('upload')}

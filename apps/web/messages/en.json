@@ -1823,6 +1823,40 @@
       "confirm": "Void batch",
       "success": "Batch voided",
       "touchedHint": "Resolve the linked payment allocation or stock movement first."
+    },
+    "downloadTemplate": "Download CSV template"
+  },
+  "CompanyExport": {
+    "title": "Export company data",
+    "purpose": "For the customer's right to access their data and for offboarding: a full copy of your company's data as one Excel file.",
+    "includes": "Included: customers, outlets, products, prices, stock, orders, invoices, payments, cash sessions, users (name, phone, email, roles only).",
+    "excludes": "Never included: passwords, tokens, Telegram identifiers and other secrets.",
+    "create": "Create export",
+    "inProgress": "Export in progress",
+    "created": "Export started",
+    "throttled": "Too many requests. Try again in a minute.",
+    "retry": "Retry",
+    "empty": "No exports yet. Press \"Create export\" to get your first file.",
+    "failedUnknown": "Export failed",
+    "download": "Download",
+    "col": {
+      "status": "Status",
+      "file": "File",
+      "size": "Size",
+      "date": "Date"
+    },
+    "status": {
+      "QUEUED": "Queued",
+      "PROCESSING": "Processing",
+      "GENERATED": "Ready",
+      "FAILED": "Failed",
+      "ACCOUNTING_ACCEPTED": "Ready",
+      "FAILED_REVIEW": "Ready"
+    },
+    "hash": {
+      "match": "Checksum verified",
+      "mismatch": "Checksum mismatch - do not use this file",
+      "unavailable": "Checksum could not be verified"
     }
   }
 }
