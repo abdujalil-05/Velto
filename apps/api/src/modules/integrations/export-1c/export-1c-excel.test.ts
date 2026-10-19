@@ -6,8 +6,8 @@ describe('buildExport1cWorkbook', () => {
   it('produces a 3-sheet workbook (kontragentlar/sotish/tolovlar) that round-trips through ExcelJS', async () => {
     const buffer = await buildExport1cWorkbook({
       customers: [{ id: 'c1', code: 'C-1', name: 'Test Customer', phone: '+998900000000' }],
-      salesDocuments: [{ number: 'INV-1', date: new Date('2026-08-01'), customerName: 'Test Customer', total: '150000' }],
-      payments: [{ number: 'PAY-1', date: new Date('2026-08-01'), customerName: 'Test Customer', amount: '150000', method: 'CASH' }],
+      salesDocuments: [{ id: 'i1', number: 'INV-1', date: new Date('2026-08-01'), customerName: 'Test Customer', total: '150000' }],
+      payments: [{ id: 'p1', number: 'PAY-1', date: new Date('2026-08-01'), customerName: 'Test Customer', amount: '150000', method: 'CASH' }],
     });
 
     const workbook = new ExcelJS.Workbook();

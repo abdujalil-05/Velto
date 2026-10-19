@@ -11,7 +11,11 @@ export interface Export1cJobData extends TraceableJobData {
 export const EXPORT_1C_JOB_OPTS = { attempts: 3, backoff: { type: 'exponential' as const, delay: 10_000 }, removeOnComplete: 1000, removeOnFail: 5000 };
 
 /** Bumped whenever the column/field mapping of the produced file changes (audited per ExportJob). */
-export const EXPORT_1C_MAPPING_VERSION = 1;
+/** Bumped to 2: Excel sheets gained the 'Ид' (Velto UUID) column and sanitized text cells. */
+export const EXPORT_1C_MAPPING_VERSION = 2;
+
+/** ADR-024: shared by CSV and Excel builders — Velto UUID column, stable across re-exports (1C dedup key). */
+export const EXPORT_1C_ID_COLUMN = 'Ид';
 
 /** A job stuck in PROCESSING longer than this is failed by the recovery sweep. */
 export const EXPORT_1C_STALE_PROCESSING_MS = 15 * 60_000;

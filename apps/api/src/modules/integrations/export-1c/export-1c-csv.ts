@@ -1,4 +1,5 @@
 import { sanitizeCell } from '../../../common/export/spreadsheet-safety';
+import { EXPORT_1C_ID_COLUMN } from './export-1c.constants';
 
 /** One accounting document (sales invoice or payment) flattened for the CSV fallback. */
 export interface CsvDocument {
@@ -16,7 +17,7 @@ export interface CsvDocument {
   lines: Array<{ sku: string; externalCode: string | null; qty: string; unitPrice: string; lineTotal: string }>;
 }
 
-export const EXPORT_1C_CSV_HEADER = ['docType', 'Ид', 'number', 'date', 'partnerCode', 'partnerName', 'sku', 'externalCode', 'qty', 'unitPrice', 'lineTotal', 'total', 'method'] as const;
+export const EXPORT_1C_CSV_HEADER = ['docType', EXPORT_1C_ID_COLUMN, 'number', 'date', 'partnerCode', 'partnerName', 'sku', 'externalCode', 'qty', 'unitPrice', 'lineTotal', 'total', 'method'] as const;
 
 function cell(value: string): string {
   const safe = String(sanitizeCell(value));

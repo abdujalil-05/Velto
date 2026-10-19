@@ -201,7 +201,7 @@ describe('E2E F5.3: 1C export hardening', () => {
     });
 
     // ADR-024: "Ид = Velto UUID" must also hold for the Excel alternative. export-1c-excel.ts has no Ид column today.
-    it.fails('EXCEL (KNOWN GAP): sales/payments sheets carry the Velto UUID in an "Ид" column', async () => {
+    it('EXCEL: sales/payments sheets carry the Velto UUID in an "Ид" column', async () => {
       const { buffer } = await generate(companyA, 'EXCEL');
       const wb = await loadXlsx(buffer);
       const header = wb.getWorksheet('Sotish hujjatlari')!.getRow(1).values as unknown[];
@@ -397,8 +397,7 @@ describe('E2E F5.3: 1C export hardening', () => {
         expect(sale.slice(8, 12)).toEqual(['1', '100', '100', '100']); // qty, unitPrice, lineTotal, total
       });
 
-      // KNOWN GAP: export-1c-excel.ts writes customer/name cells without sanitizeCell (CSV and reports do sanitize).
-      it.fails('EXCEL (KNOWN GAP): hostile customer names are neutralised in Kontragentlar / Sotish / Tolovlar sheets', async () => {
+            it('EXCEL: hostile customer names are neutralised in Kontragentlar / Sotish / Tolovlar sheets', async () => {
         const { buffer } = await generate(company, 'EXCEL');
         const wb = await loadXlsx(buffer);
         const cells = [

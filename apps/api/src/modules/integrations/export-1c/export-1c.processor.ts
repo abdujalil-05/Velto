@@ -239,8 +239,8 @@ export class Export1cProcessor extends WorkerHost {
     return {
       customers: [...customersById.values()],
       documents,
-      salesDocuments: invoices.map((i) => ({ number: i.number, date: i.createdAt, customerName: i.customer.name, total: i.total.toString() })),
-      payments: payments.map((p) => ({ number: p.number, date: paymentPostedAt(p), customerName: p.customer.name, amount: p.amount.toString(), method: p.method })),
+      salesDocuments: invoices.map((i) => ({ id: i.id, number: i.number, date: i.createdAt, customerName: i.customer.name, total: i.total.toString() })),
+      payments: payments.map((p) => ({ id: p.id, number: p.number, date: paymentPostedAt(p), customerName: p.customer.name, amount: p.amount.toString(), method: p.method })),
       csvDocuments,
       missingExternalCode: [...missingExternalCode],
     };

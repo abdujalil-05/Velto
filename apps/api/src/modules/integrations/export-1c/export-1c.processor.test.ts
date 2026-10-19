@@ -87,7 +87,7 @@ describe('Export1cProcessor (integration, real Postgres + RLS)', () => {
     expect(updated.storageKey).toBe(`exports/1c/${companyId}/${exportJob.id}.xml`);
     expect(updated.fileHash).toMatch(/^[0-9a-f]{64}$/);
     expect(updated.recordCount).toBe(2);
-    expect(updated.mappingVersion).toBe(1);
+    expect(updated.mappingVersion).toBe(2);
     expect(updated.attemptCount).toBe(1);
     expect(updated.fileUrl).toBeNull();
     expect(updated.errorLog).toBeNull();
