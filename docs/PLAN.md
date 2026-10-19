@@ -1,6 +1,6 @@
-# Velto — reja (TZ v4.0 bo'yicha MVP ni to'liq yakunlash)
+# Velto — reja (Master TZ v5.0 bo'yicha MVP ni to'liq yakunlash)
 
-> Qoidalar: `docs/WORKING-AGREEMENT.md`. Joriy holat: `docs/STATUS.md`. Talablar: `docs/VELTO-TZ-v4.0.md`.
+> Qoidalar: `docs/WORKING-AGREEMENT.md`. Joriy holat: `docs/STATUS.md`. Talablar: `docs/VELTO-MASTER-TZ-v5.0-2026-10-19.md`.
 > Reja faza darajasida; har faza boshida `architect` uni DoR (§15.2) bilan aniq tasklarga bo'ladi. Tartib xavf va bog'liqlik bo'yicha: avval to'g'rilik/xavfsizlik, keyin funksiya, keyin chiniqtirish.
 
 Boshlang'ich holat: kod bazasi katta qismi yozilgan (audit 2026-10-12, `STATUS.md`). Yondashuv — **modul-modul tekshirib, yetishmaganini qurish, sifatsizini yaxshilash** (qayta yozish emas).
@@ -47,7 +47,7 @@ Boshlang'ich holat: kod bazasi katta qismi yozilgan (audit 2026-10-12, `STATUS.m
 - F5.4 Notifications/job holatlari UI; audit UI.
 
 ## Faza 6 — Platforma (TZ M00/M11)
-- F6.1 Trial holati, sozlamalar testi; `PLATFORM_ADMIN` (cheklangan, auditli support kirishi).
+- F6.1 Trial holati, sozlamalar testi. (`PLATFORM_ADMIN` support kirishi qilinmaydi — ADR-003b; Faza 8 ga qarang.)
 - F6.2 Onboarding to'liq yo'l (wizard → import → agent qo'llanmasi), P1 foydalanuvchanlik.
 
 ## Faza 7 — Chiniqtirish va reliz (TZ §12, §16.4, §17)
@@ -56,6 +56,21 @@ Boshlang'ich holat: kod bazasi katta qismi yozilgan (audit 2026-10-12, `STATUS.m
 - F7.2 Backup/restore mashqi (RPO/RTO), `/health/live|ready`, monitoring/alert, deploy tekshiruvi (port 3101 va PM2 haqiqiy konfiguratsiya bilan).
 - F7.3 a11y, i18n CI tekshiruvi, hardcoded string tekshiruvi, performance hisoboti.
 - F7.4 Reliz oldi checklist (§16 hammasi), TZ ↔ kod nomuvofiqliklarini yopish, hujjatlar (OpenAPI).
+
+## Faza 8 — v5.0 gap-tahlil tartibi (qarorlar: STATUS ADR-028..033)
+
+Tartib: hujjat gigienasi → moliya/ma'lumot → 1C → offline/PWA → platforma → chiniqtirish. Faqat Mode A (ADR-028).
+- F8.0 Hujjat gigienasi (TZ v5 havolalari, ADR nomlash, ziddiyatlar) — **BAJARILDI (2026-10-19)**.
+- F8.1 Moliya: `PENDING_HANDOVER` oqimi (ADR-029: agent naqdi qarzni kamaytirmaydi, kassir smenada qabul qilgach POSTED+FIFO; kassir/ofis to'lovi darhol POSTED), majburiy rad etish sababi, opening balance importi (sana, manba, sign-off), summa chegarasidan oshgan reversal/adjust uchun OWNER alert+audit (ADR-032; chegara TBD). → `db-rls`, `finance-stock`, `qa-engineer`
+- F5.3+ 1C: ExportJob `GENERATED → ACCOUNTING_ACCEPTED | FAILED_REVIEW`, qo'lda ACK UI (checksum+izoh, audit), retry/fileHash/CSV zaxira/reversal bilan lock/davr TZ (ADR-024/025/030), signed URL + expiry, web 1C eksport sahifasi. → `integrations-dev`, `web-dev`
+- F4.5 Offline/PWA: PWA manifest, holat yorliqlari (saved on device / synced / rejected), qurilma matritsasi (`docs/OFFLINE-DEVICE-MATRIX.md`, pilot qurilmalar ro'yxati foydalanuvchidan). → `miniapp-dev`, `qa-engineer`
+- F6 Platforma: trial holati, onboarding yo'li, UI yorlig'i "Ichki hisob" / "Внутренний счёт" / "Internal invoice" (ADR-033). **PLATFORM_ADMIN support access QILINMAYDI (ADR-003b)** — F6.1 dagi "cheklangan support kirishi" bekor. → `web-dev`, `i18n-sync`
+- F7 Chiniqtirish: outbox qarori (ochiq), rate-limit, `/health/live|ready`, runbook'lar, restore drill, yagona yuk profili (TZ §12.5) bo'yicha perf. → `devops`, `qa-engineer`
+
+### Gate'lar
+- **v0.9 (yopiq pilot):** Mode A; F8.1 (PENDING_HANDOVER, opening balance); F5.3+ ACK + pilot 1C konfiguratsiyasida eksport qabuli; F4.5 pilot qurilmalarda matritsa; kunlik backup + restore drill (RPO 15m talab qilinmaydi); sign-off 3 imzo: Product, Accounting, Security.
+- **v1.0 (GA):** barcha F5–F7 + §16 P0; RPO ≤15m (WAL/incremental) va RTO ≤4h isbotlangan; to'liq §16.5 matritsa imzolari; yuk profili (§12.5) hisoboti.
+- **v1.1:** Mode B/DATA_CUTOVER, 4-eyes tasdiq, `/api/v1` prefiksi.
 
 ## Har faza oxirida
 STATUS yangilanadi → foydalanuvchiga qisqa hisobot + "`/clear` qilsangiz bo'ladi" → branch push → keyingi faza.

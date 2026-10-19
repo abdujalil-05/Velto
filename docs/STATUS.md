@@ -1,6 +1,6 @@
 # Velto — loyiha holati
 
-> Yangilangan: 2026-10-12 · Manba: `architect` agenti auditi (kod ↔ `docs/VELTO-TZ-v4.0.md` §5.1 va §16).
+> Yangilangan: 2026-10-19 (v5.0 review qarorlari, ADR-028..033) · Manba: `architect` agenti auditi (kod ↔ `docs/VELTO-MASTER-TZ-v5.0-2026-10-19.md` §5.1 va §16).
 > Bu hujjat holat uchun. Qoidalar `CLAUDE.md` da. Har katta ishdan keyin shu fayl yangilanadi.
 > Audit yuzaki: "Tayyor" = real kod + test bor; chuqur QA o'tkazilmagan.
 
@@ -10,16 +10,16 @@
 |---|---|
 | F0 Poydevor va baseline (baza, testlar, M08 tasdiq) | **Deyarli tayyor** — lokal baza ko'tarildi, migratsiyalar qo'llandi, **274/274 test o'tdi** (database 29, api 223, miniapp 22; lint/typecheck/build toza, 2026-10-12). Qoldi: production rol modeli (foydalanuvchi tekshiradi), web testi yo'q, MinIO image yuklanmadi |
 | F1 Xavfsizlik va shartnoma (traceId, auth P0, idempotentlik) | **Jarayonda** — F1.1 traceId ✅ (branch `feat/f1-1-trace-id`); F1.2 auth P0 ✅ (branch `test/f1-2-auth-p0`: refresh-reuse audit, initData 10 daq oyna + 20 foydalanish limiti, constant-time HMAC, 403+audit testlari; 295/295 test). F1.3 idempotentlik ✅ (branch `feat/f1-3-idempotency`: `IdempotencyRecord` + RLS, `@Idempotent()` interceptor (Idempotency-Key ixtiyoriy, 72 soat), order `FOR UPDATE`, stock `ON CONFLICT`, web/miniapp kalit; 312/312 test). F1.4 rollar ADR + ACCOUNTANT cheklovi testi ✅ (branch `test/f1-4-roles-accountant`). F1.5 audit + scan ✅ (branch `feat/f1-5-audit-scan`: audit maskalash `redactAuditJson`, `payment.allocate`/`export.create`/`import.confirm` eventlari, gitleaks CI job (sha256 bilan), `audit --audit-level=high` bloklaydi, zaif paketlar tuzatildi; 340 test: api 283+1 skip, database 35, miniapp 22). F1 FAZASI TUGADI. Eski qoldiq: audit testi + CI secret/dependency scan |
-| F2 Ombor va moliya yadrosi | **Jarayonda** — F1 main'ga merge qilindi (lokal, `origin` ga push qilinmagan). F2.1 main'ga merge qilindi (lokal). F2.4 main'ga merge qilindi. F2.5 main'ga merge qilindi. Faza 5 (hisobot, import, 1C) ✅ QISMAN: `feat/f5-reports-import-1c` — F5.1 hisobot eksporti XLSX+CSV (ekran servisi bilan bir xil), `reports.export`, audit `report.export`, `Company.timezone` kun chegarasi; F5.2 import create-only (preview/confirm, bo'lakli yozish + kursor, zip-bomb/qator limiti, 1000 mijoz/2000 mahsulot testi, MinIO'siz e2e); F5.4 bildirishnoma qo'ng'irog'i, import progress UI. **F5.3 (1C eksport mustahkamlash: retry, fileHash, CSV zaxira, reversal bilan lock, davr TZ) BAJARILMAGAN**, sxema tayyor (`ExportJob.fileHash/recordCount/mappingVersion/attemptCount`). Faza 4 (offline/sinxronizatsiya) ✅ kod tomoni: `feat/f4-offline-sync` — `changeSeq` kursori + `SyncTombstone`, push natijalari ACCEPTED/DUPLICATE/REJECTED/CONFLICT/RETRY, `PRICE_CHANGED`, agent doirasi (faqat o'z marshruti), `clientId` egalik tekshiruvi, miniapp Dexie v4 (seq tartib, egalik, karantin), navbat/konflikt ekrani, service worker, yangilanish vaqti ko'rsatkichlari; **qo'lda qurilma matritsasi (§8.5) bajarilmagan**. Faza 3 ✅: `feat/f3-field-courier` — server GPS statusi (6 natija, tashrif bloklanmaydi, `gpsStatus` DB'da, `gpsOk` trigger bilan hosil), `SKIPPED`+sabab, marshrut yakuni validatsiyasi (`routes.finish`, `skip-stop`, 409 `openStops`), kompaniya radius/aniqlik sozlamasi, kunlik in-app alert, web Tashriflar sahifasi, miniapp GPS. Oldingi: `feat/f2-5-reconciliation`: F2.5 ✅ + F2.2 drift job ✅ (kunlik 03:00 Toshkent, faqat aniqlash; `ReconciliationRun/Finding`, `reconciliation.read` OWNER+ACCOUNTANT, `reconciliation.fix` faqat OWNER, in-app alert, `/reconciliation` web sahifa). F2.4 ✅ (qisman yetkazish, `SalesOrderLine.deliveredQty`, 1 order = 1 invoice, qoldiq rezervdan bo'shatiladi, kuryer faqat to'liq; parallel testlar `delivery-race.test.ts`); F2.1 reversal ✅ (Payment/StockMovement append-only trigger, `PaymentReversal`, `payments.reverse`/`stock.reverse`, smena/1C taqiqi), F2.2 avans ✅ qisman (ledger formula, `advance`, `payments.allocate`; **drift reconciliation job + alert yo'q**, backfill skripti yozilgan, ishga tushirilmagan), F2.3 ✅ qisman (aging asOf+TZ guruhlari, invoices, 5 qatorli VAT testi; **yaxlitlash strategiyasi testi yo'q**). F5 dan keyin 698 test (api 552, database 65, miniapp 81). Qoldi: F2.5 qoldiq reconciliation job, F2.6 parallel testlar (oxirgi qoldiq, sequence), drift job |
-| F3 Dala savdosi va kuryer | Boshlanmagan |
-| F4 Offline/sync | Boshlanmagan |
-| F5 Hisobot, import/eksport, 1C | Boshlanmagan |
+| F2 Ombor va moliya yadrosi | **Jarayonda** — F1 main'ga merge qilindi (lokal, `origin` ga push qilinmagan). F2.1 main'ga merge qilindi (lokal). F2.4 main'ga merge qilindi. F2.5 main'ga merge qilindi. Faza 5 (hisobot, import, 1C) ✅ QISMAN: `feat/f5-reports-import-1c` — F5.1 hisobot eksporti XLSX+CSV (ekran servisi bilan bir xil), `reports.export`, audit `report.export`, `Company.timezone` kun chegarasi; F5.2 import create-only (preview/confirm, bo'lakli yozish + kursor, zip-bomb/qator limiti, 1000 mijoz/2000 mahsulot testi, MinIO'siz e2e); F5.4 bildirishnoma qo'ng'irog'i, import progress UI. **F5.3 (1C eksport mustahkamlash: retry, fileHash, CSV zaxira, reversal bilan lock, davr TZ) BAJARILMAGAN**, sxema tayyor (`ExportJob.fileHash/recordCount/mappingVersion/attemptCount`). Faza 4 (offline/sinxronizatsiya) ✅ kod tomoni: `feat/f4-offline-sync` — `changeSeq` kursori + `SyncTombstone`, push natijalari ACCEPTED/DUPLICATE/REJECTED/CONFLICT/RETRY, `PRICE_CHANGED`, agent doirasi (faqat o'z marshruti), `clientId` egalik tekshiruvi, miniapp Dexie v4 (seq tartib, egalik, karantin), navbat/konflikt ekrani, service worker, yangilanish vaqti ko'rsatkichlari; **qo'lda qurilma matritsasi (§8.5) bajarilmagan**. Faza 3 ✅: `feat/f3-field-courier` — server GPS statusi (6 natija, tashrif bloklanmaydi, `gpsStatus` DB'da, `gpsOk` trigger bilan hosil), `SKIPPED`+sabab, marshrut yakuni validatsiyasi (`routes.finish`, `skip-stop`, 409 `openStops`), kompaniya radius/aniqlik sozlamasi, kunlik in-app alert, web Tashriflar sahifasi, miniapp GPS. Oldingi: `feat/f2-5-reconciliation`: F2.5 ✅ + F2.2 drift job ✅ (kunlik 03:00 Toshkent, faqat aniqlash; `ReconciliationRun/Finding`, `reconciliation.read` OWNER+ACCOUNTANT, `reconciliation.fix` faqat OWNER, in-app alert, `/reconciliation` web sahifa). F2.4 ✅ (qisman yetkazish, `SalesOrderLine.deliveredQty`, 1 order = 1 invoice, qoldiq rezervdan bo'shatiladi, kuryer faqat to'liq; parallel testlar `delivery-race.test.ts`); F2.1 reversal ✅ (Payment/StockMovement append-only trigger, `PaymentReversal`, `payments.reverse`/`stock.reverse`, smena/1C taqiqi), F2.2 avans ✅ qisman (ledger formula, `advance`, `payments.allocate`; **drift reconciliation job + alert yo'q**, backfill skripti yozilgan, ishga tushirilmagan), F2.3 ✅ qisman (aging asOf+TZ guruhlari, invoices, 5 qatorli VAT testi; **yaxlitlash strategiyasi testi yo'q**). F5 dan keyin 698 test (api 552, database 65, miniapp 81). Qoldi: F2.6 parallel testlar (oxirgi qoldiq, sequence); F2.5 qoldiq reconciliation va drift job bajarilgan |
+| F3 Dala savdosi va kuryer | **✅** — branch `feat/f3-field-courier` (server GPS 6 natija, marshrut yakuni validatsiyasi, web Tashriflar, miniapp GPS); qoldiq qarzlar "Qarorlar" bo'limida |
+| F4 Offline/sync | **✅ kod tomoni** — branch `feat/f4-offline-sync`; **qo'lda qurilma matritsasi (§8.5) bajarilmagan** (pilot qurilmalar ro'yxati kerak) |
+| F5 Hisobot, import/eksport, 1C | **Qisman** — F5.1 hisobot eksporti, F5.2 import, F5.4 ✅; **F5.3 (1C mustahkamlash + ACK, ADR-030) bajarilmagan**; web 1C sahifasi va signed URL yo'q |
 | F6 Platforma | Boshlanmagan |
 | F7 Chiniqtirish va reliz | Boshlanmagan |
 
 ## Umumiy
 
-MVP kodining katta qismi yozilgan. Asosiy bo'shliqlar: **M08 Xarid yo'q**, **reversal/correction yo'q**, **offline va auth P0 testlari yetarli emas**, **traceId yo'q**. Pilot (1C qabul, backup-restore) hali o'tmagan.
+MVP kodining katta qismi yozilgan: F0–F2 asosan, F3 ✅, F4 kod tomoni ✅, F5 qisman (698 test, 2026-10-15). Qolgan bo'shliqlar (v5.0 gap-tahlili): **PENDING_HANDOVER** (ADR-029), **1C ACK + eksport mustahkamlash** (ADR-030), majburiy rad etish sababi, opening balance importi, qurilma matritsasi, signed URL, PWA manifest, trial/onboarding, outbox/rate-limit/live-ready/runbook/restore drill. Pilot (1C qabul, backup-restore mashqi) hali o'tmagan. Qaror: MVP/v0.9/v1.0 da faqat Mode A (ADR-028).
 
 ## Modullar (TZ §5.1)
 
@@ -42,15 +42,15 @@ MVP kodining katta qismi yozilgan. Asosiy bo'shliqlar: **M08 Xarid yo'q**, **rev
 
 ## P0 qabul mezonlari (§16)
 
-- **§16.1 biznes:** testlangan: FIFO, parallel rezerv, parallel to'lov, clientId idempotentlik. Yo'q/testlanmagan: reversal, avans, aging as-of, GPS 3 natija, hisobot-eksport moslik, 1C pilot sign-off.
-- **§16.2 offline:** testlangan: clientId 3x yuborish, DUPLICATE. Yo'q: airplane-mode 20 order, sync uzilishidan tiklanish, stale conflict UI, cleanup himoyasi, logout/revoke/storage error.
-- **§16.3 xavfsizlik:** testlangan: RLS (barcha `companyId` jadvallari + FORCE). Yo'q: refresh-reuse, initData replay/expired, 403+audit, secret-scan, backup-restore mashqi.
+- **§16.1 biznes:** testlangan: FIFO, parallel rezerv/to'lov, clientId idempotentlik, reversal, avans, aging as-of, GPS natijalari. Yo'q: PENDING_HANDOVER oqimi, yaxlitlash strategiyasi testi, hisobot-eksport filtr moslik testi (qisman), 1C pilot sign-off.
+- **§16.2 offline:** kod+testlar F4 da (clientId 3x, DUPLICATE, konflikt UI, cleanup himoyasi, quota). Yo'q: qurilmalarda qo'lda airplane-mode/20 order/mid-sync cut matritsasi.
+- **§16.3 xavfsizlik:** testlangan: RLS (FORCE), refresh-reuse, initData replay/expired, 403+audit, secret/dependency scan (F1). Yo'q: backup-restore mashqi, pentest, signed URL, rate-limit sozlamalari.
 
 ## TZ ↔ kod nomuvofiqliklari
 
 - **traceId:** F1.1 da qo'shildi (xato javobi, `X-Request-Id`, loglar, BullMQ joblari, `AuditLog.traceId`). Qoldirilgan: `AuditLog.userAgent` ustuni yo'q (TZ §11.4 "kerak bo'lganda") — qaror kerak bo'lsa alohida migratsiya.
-- **Rollar:** `rbac-catalog.ts` da 7 ta (OWNER, SALES_DIRECTOR, SALES_AGENT, **COURIER**, WAREHOUSE, CASHIER, ACCOUNTANT). TZ: 6 operatsion + `PLATFORM_ADMIN`. COURIER TZ da yo'q, `PLATFORM_ADMIN` roli yo'q. Katalog bitta joyda (`rbac-catalog.ts`), seed va bootstrap-owner uni import qiladi.
-- **Idempotentlik:** `clientId` unique faqat SalesOrder, Payment, Visit da. confirm/deliver/cash-session close da `Idempotency-Key` yo'q.
+- **Rollar:** `rbac-catalog.ts` da 7 operatsion rol (OWNER, SALES_DIRECTOR, SALES_AGENT, COURIER, WAREHOUSE, CASHIER, ACCOUNTANT) — TZ v5.0 §4.1 bilan mos; `PLATFORM_ADMIN` rol/endpoint emas (ADR-003b). Katalog bitta joyda, seed va bootstrap-owner import qiladi.
+- **Idempotentlik (F1.3, ADR-031):** create = `clientId` (SalesOrder, Payment, Visit, sync), holat o'tishi = `Idempotency-Key` (`@Idempotent()`, `IdempotencyRecord`, 72 soat). TZ §7.1/§7.6.1 shunga moslangan.
 - **COURIER (ADR-003a, qoladi):** COURIER roli, kuryer marshrut/`assign-courier`, miniapp `delivery/[id]`, web couriers — §5.2 "to'liq logistika" chegarasida.
 - Mos: hujjat raqamlash (`DocumentCounter`), RLS qamrovi, portlar (`.env.example` ↔ `env.schema`; prod 3100–3102 `deploy/README.md` da).
 
@@ -93,16 +93,36 @@ MVP kodining katta qismi yozilgan. Asosiy bo'shliqlar: **M08 Xarid yo'q**, **rev
 - **Hodisa (2026-10-12):** `prisma migrate diff` xato shadow URL bilan `velto_dev` ni reset qildi; qo'lda kiritilgan dev ma'lumot yo'qoldi (sxema tiklandi, `pnpm db:seed` kerak).
 - M08: `GET /purchases/receipts` ro'yxati va GoodsReceipt(+Line) uchun UPDATE/DELETE taqiqlovchi trigger (LOW).
 
+- **2026-10-19 — v5.0 review qarorlari (ADR-028..033; foydalanuvchi qabul qildi, TZ ga kiritildi):**
+  - **ADR-028 Mode A only:** MVP, v0.9 va v1.0 faqat Mode A (Velto stock/receivables master). Mode B (1C master, `AWAITING_ACCOUNTING`, `DATA_CUTOVER`) v1.1. TZ §5.2/§6.3/§6.7/§7.6 mos.
+  - **ADR-029 PENDING_HANDOVER:** agent naqdi `LOCAL_PENDING` → `PENDING_HANDOVER` (qarzni kamaytirmaydi, "yo'lda") → kassir smenada qabul qilgach `POSTED` + FIFO. Kassir/ofis to'lovi darhol `POSTED`. (TZ §6.5, §6.7.2, §5.4.2 F-01.) Kod: HALI YO'Q (F8.1).
+  - **ADR-030 1C ACK:** bir tomonlama eksport; `ExportJob` `GENERATED → ACCOUNTING_ACCEPTED | FAILED_REVIEW`; ACK faqat buxgalterning UI'da qo'lda tasdig'i + checksum (+izoh), auditli; 1C callback yo'q. Kod: yo'q (F5.3+).
+  - **ADR-031 Idempotentlik/versiya/prefiks:** create = `clientId`, holat o'tishi = `Idempotency-Key`; optimistic `version` ustunlari qo'shilmaydi (row lock + har qatorda `expectedUnitPrice`, repo ADR-020; `expectedPriceVersion` bekor); `/api/v1` prefiksi v1.1 (MVP'da strategiya hujjatlangan).
+  - **ADR-032 4-eyes v1.1:** MVP'da 4-eyes yo'q; summa chegarasidan oshgan reversal/adjust → OWNER'ga darhol alert + audit. Chegara: **TBD — foydalanuvchi belgilaydi.**
+  - **ADR-033 Nomlash/atama:** TZ dagi ADR-011..020 = `V5-ADR-011..020`; repo ADR-011..027 shu faylda o'z nomida; yangilari ADR-028 dan. Invoice UI atamasi: uz "Ichki hisob", ru "Внутренний счёт", en "Internal invoice". Pilot (v0.9) sign-off: 3 imzo (Product, Accounting, Security); GA — to'liq §16.5 matritsa. RPO 15m faqat GA; pilotda kunlik backup + drill. Yagona yuk profili: TZ §12.5.
+
+## Ochiq savollar (foydalanuvchi hal qilmagan; TZ §19.2)
+
+1. 1 user = 1 kompaniya (ko'p kompaniyali a'zolik).
+2. MFA (rollar, bosqich).
+3. Outbox qarori (hozir in-process BullMQ; transactional outbox kerakmi).
+4. Qator darajasidagi `HALF_UP` yaxlitlash (1C bilan kopeyka farqi, buxgalter tasdig'i).
+5. CSV ajratgich (vergul yoki `;`).
+6. F2.1 (a) o'chirilgan mijozda `reverse()/allocate()`, (b) `GET /stock/movements` ruxsati, (c) ochiq buyurtmali mijozni o'chirish (batafsil yuqorida).
+7. Reversal/adjust OWNER-alert summa chegarasi (ADR-032).
+8. Pilot 1C konfiguratsiyasi (UT 11 / BP 3.0) va buxgalter namunaviy fayli.
+9. Pilot qurilmalar va Telegram versiyalari ro'yxati (`docs/OFFLINE-DEVICE-MATRIX.md`).
+
 ## Keyingi qadamlar (ustuvorlik bilan)
 
-1. M08 Xarid tiklash (qaror qabul qilindi): `db-rls` (sxema+RLS+rbac) → `finance-stock`/`api-dev` (modul) → `web-dev` → `i18n-sync` → `qa-engineer` → `reviewer` → `security-auditor`
-2. Payment/StockMovement reversal-correction, avans ko'rinishi, aging as-of testi → `finance-stock`, `qa-engineer`
-3. traceId/correlation ID: interceptor + error filter + loglar → `api-dev`, keyin `reviewer`
-4. Auth P0 testlari: refresh-reuse, initData, 403+audit → `qa-engineer`, `security-auditor`
-5. Offline P0: stale conflict UI, cleanup himoyasi, logout/revoke, GPS natijalari → `miniapp-dev`, `api-dev`, `qa-engineer`
+Batafsil: `docs/PLAN.md` (F8.x gap-tahlil tartibi).
+1. F8.1 — PENDING_HANDOVER, majburiy rad etish sababi, opening balance importi → `db-rls`, `finance-stock`, `qa-engineer`
+2. F5.3+ — 1C ACK (ADR-030), signed URL, web 1C sahifasi → `integrations-dev`, `web-dev`
+3. F4.5 — PWA manifest, holat yorliqlari, qurilma matritsasi → `miniapp-dev`
+4. F6 — trial, onboarding, "Ichki hisob" yorlig'i → `web-dev`, `i18n-sync`
+5. F7 — outbox qarori, rate-limit, live/ready, runbook, restore drill, perf → `devops`, `qa-engineer`
 
 ## Oxirgi sessiya
 
-- `.claude/agents` (15 agent) va `.claude/skills/velto-*` yaratildi; `CLAUDE.md` yangilandi; `README.md` va shu fayl yozildi.
-- Commit qilinmagan: `docs/`, `.claude/`, `README.md`, `CLAUDE.md` o'zgarishlari.
-- Git tarixi ma'nosiz commit xabarlariga ega ("a", "sd", "mvp"); keyingi commitlar `feat(finance): ...` shaklida bo'lsin.
+- 2026-10-19: Master TZ v5.0 ga review qarorlari kiritildi (ADR-028..033), STATUS/PLAN yangilandi. Faqat hujjat o'zgargan, kod yo'q. Branch `docs/tz-v5`, push qilinmagan.
+- Commit xabarlari `feat(finance): ...` / `docs: ...` shaklida.

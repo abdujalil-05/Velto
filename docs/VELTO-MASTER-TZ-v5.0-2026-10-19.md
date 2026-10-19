@@ -18,7 +18,7 @@
 
 **Arxitektura qarori:** NestJS REST API + TypeScript + Prisma/PostgreSQL + company-scoped RLS asosidagi **modulli monolit**; mavjud repository, migratsiyalar va deploy o‘rganilmasdan refactor qilinmaydi. Telegram Mini App — tez kirish; PWA — qurilmada sinovdan o‘tgan offline fallback. PostgreSQL va biznes tranzaksiyasi — pul/qoldiq haqiqat manbai.
 
-**Ishga chiqarish strategiyasi:** `Discovery & code audit` → `v0.9 closed pilot` (cheklangan va haqiqiy order-to-office loop) → `v1.0 commercial GA` (v4.0 §5.1 dagi M modullar to‘liq qabul mezonlariga mos) → `v1.1+ expansion`. v0.9 alohida tijoriy GA emas, cheklangan mijozlar bilan shartnomali pilot. v1.0 scope’dagi M modullar sukut bo‘yicha bekor qilinmadi.
+**Ishga chiqarish strategiyasi:** `Discovery & code audit` → `v0.9 closed pilot` (cheklangan va haqiqiy order-to-office loop) → `v1.0 commercial GA` (§5.1 dagi M modullar to‘liq qabul mezonlariga mos) → `v1.1+ expansion`. v0.9 alohida tijoriy GA emas, cheklangan mijozlar bilan shartnomali pilot. v1.0 scope’dagi M modullar sukut bo‘yicha bekor qilinmadi.
 
 **Qat’iy cheklov:** real repository ko‘rilmagan; v4.0 da keltirilgan VPS `~/projects/parviz_aka/Velto`, PM2 `velto-api`, port `3101`, NestJS/Prisma/Postgres va mavjud test nomlari — **v4.0 hujjatidagi ma’lumot, kod auditida tasdiqlanmagan**. Hujjat *ishlab turgan funksiya* yoki *o‘tgan test* deb ularni kafolatlamaydi.
 
@@ -377,6 +377,7 @@ Quyidagilar MVP’da kodlanmaydi, model yoki placeholder UI ham bo‘lmaydi:
 - Qaytarish (returns) va qaytarish sabablariga asoslangan hisob-kitob; shu sababli prod moliyaviy hujjatni o‘chirish yoki return orqali “tuzatish” MVP’da amalga oshmaydi — reversal/correction faqat ruxsatli admin oqimi orqali.
 - Partiya/lot, yaroqlilik muddati, FEFO, omborlararo transfer, to‘liq inventarizatsiya WMS’i.
 - Ikki tomonlama 1C sinxronizatsiyasi; faqat MVP’da tekshirilgan eksport.
+- Mode B (1C master: `AWAITING_ACCOUNTING`, `DATA_CUTOVER`), 4-eyes tasdiq oqimi va `/api/v1` URL prefiksi — v1.1 (ADR-028, ADR-031, ADR-032).
 - Custom role builder, hisobot konstruktori, ochiq API/webhook marketplace.
 - Talab bashorati, AI yordamchi, ML, kredit scoring, ishlab chiqaruvchi kabineti, B2B buyurtma portali.
 - React Native alohida ilovasi; PWA/TMA mavjud imkoniyatlari pilot uchun yetarli bo‘lmasa, alohida qaror chiqariladi.
@@ -395,12 +396,12 @@ Har bir yangi feature quyidagi savollarga javob bermasa, MVP’ga qo‘shilmaydi
 
 ## 5.4 Scope’ni startup uchun darajalash: Discovery → v0.9 → v1.0
 
-V4.0 §5.1 da 14 modul `M` sifatida qoldirilgan — ular **v1.0 GA uchun must**. **Pilotga to‘liq GA’ni kutish** va **pilotning cheklangan ishlashini “v1.0 tayyor” deyish** bir xil xavfli. Shu sababli v0.9 `Closed Pilot` uchun quyidagi vertikal slice ajratiladi (scope o‘chirilmaydi):
+Ushbu hujjatning §5.1 bo‘limida 14 modul `M` sifatida saqlangan — ular **v1.0 GA uchun must**. **Pilotga to‘liq GA’ni kutish** va **pilotning cheklangan ishlashini “v1.0 tayyor” deyish** bir xil xavfli. Shu sababli v0.9 `Closed Pilot` uchun quyidagi vertikal slice ajratiladi (scope o‘chirilmaydi):
 
 | Daraja | Buyurtma–ofis operatsiya | Ruxsat | Ishga chiqarish qoidasi |
 |---|---|---|---|
 | Discovery / technical spike | 1C mapping, offline device, RLS, legacy schema audit | Ichki/demo synthetic | Business data chiqarilmaydi |
-| **v0.9 Closed Pilot** | Auth+company/RBAC, customer/outlet+SKU+price import, agent buyurtma, offline queue, confirm, warehouse stock **faqat to‘g‘ri master belgilanganda**, internal invoice/payment/debt minimal, audit, uz/ru UI, safe 1C/CSV export | 2–3 kelishilgan kompaniya, faqat testlangan flow | Contract’da missing features, support channel, data ownership, marked goods exclusion va reconciliation aniq |
+| **v0.9 Closed Pilot** | Auth+company/RBAC, customer/outlet+SKU+price import, agent buyurtma, offline queue, confirm, warehouse stock **faqat Mode A (VELTO — stock master)** (ADR-028), internal invoice/payment/debt minimal, audit, uz/ru UI, safe 1C/CSV export | 2–3 kelishilgan kompaniya, faqat testlangan flow | Contract’da missing features, support channel, data ownership, marked goods exclusion va reconciliation aniq |
 | **v1.0 GA** | §5.1 M00–M13 **hammasi** (jumladan purchase, courier simple delivery, cash session, route, reports, onboarding) + barcha §16 P0 acceptance | Qabul testidan o‘tgan ICP | Security/data/finance/reliability sign-off |
 | v1.1+ | Returns, advanced 1C sync, inventory, shipping, akt sverka | Faqat yangi scope approval | Paid customer signal + ADR |
 
@@ -412,7 +413,7 @@ V4.0 §5.1 da 14 modul `M` sifatida qoldirilgan — ular **v1.0 GA uchun must**.
 |---|---|---|---|---|
 | F-CUST-001 | Company-scoped outlet, kontakt, route assignment; boshqa agent/tenant ko‘rmaydi | Admin/Agent | Outlet ID + assignment interval | object access negative tests |
 | F-CAT-001 | Product unit/pack conversion, dated price snapshot | Admin/Agent | decimal server total + VAT snapshot | rounding/property tests |
-| F-STK-001 | Stock onHand/reserved/available; pessimistic lock | Warehouse/Director | append-only movement, never oversell default | 50 parallel reservation test |
+| F-STK-001 | Stock onHand/reserved/available; pessimistic lock | Warehouse/Director | append-only movement, never oversell default | 50 parallel reservation race testi (yuk profili emas, §12.5) |
 | F-ORD-001 | Agent 5-line order, no duplicate clientId, snapshot | Agent | local pending→server SUBMITTED | airplane mode & 3x retry |
 | F-ORD-002 | Approve/reject by privileged actor, reason and audit | Director | reservation/status single transaction | unauthorized deny + rollback |
 | F-DLV-001 | Simple goods issue vs actual physical dispatch; COURIER only assigned list | Warehouse/Courier | deliveredQty + movement + proof status | partial/full & no over-issue |
@@ -422,7 +423,7 @@ V4.0 §5.1 da 14 modul `M` sifatida qoldirilgan — ular **v1.0 GA uchun must**.
 | F-INT-001 | One pilot 1C export with mapping and external duplicate guard | Accountant | traceable export job + record status | accountant sign-off |
 | F-OPS-001 | Multi-tenant isolation on UI, API, job, report, file | All | deny cross-tenant by default | DB RLS + API full negative suite |
 | F-ONB-001 | Excel import preview, row error and dry-run | Admin | job/validated mapping/no hidden writes | 1k outlets + 2k SKU fixture |
-| F-VAL-001 | Baseline, activation and signed impact evidence | Owner | stored metrics definitions, no fabricated ROI | dated before/after report |
+| F-VAL-001 | Baseline, activation and signed impact evidence | Owner | pilot jadvali/hujjati sifatida yuritiladi (ilova kodi yoki modul emas); metric ta’riflari saqlanadi, fabricated ROI yo‘q | dated before/after report |
 
 ### 5.4.2 Aniq business scenario’lar (Gherkin usulida)
 
@@ -430,7 +431,7 @@ V4.0 §5.1 da 14 modul `M` sifatida qoldirilgan — ular **v1.0 GA uchun must**.
 
 **Scenario S-01 — Last-unit race:** GIVEN 1 available unit; WHEN 2 direktor bir vaqtda 1 tadan confirm yuboradi; THEN eng ko‘pi 1 reservation confirmed, ikkinchisiga documented stock conflict, onHand/reserved consistent, duplicate movement yo‘q.
 
-**Scenario F-01 — Cash + receivables:** GIVEN 3 invoice, bitta cash collection 1 500 000 UZS; WHEN payment post qilinadi; THEN allocation FIFO by due/posting policy, ortiqcha summa advance; auditor original payment va adjustment/reversal’ni alohida ko‘ra oladi. Offline collection *intent* hech qachon posted payment bilan tenglashtirilmaydi.
+**Scenario F-01 — Cash + receivables:** GIVEN 3 invoice, bitta cash collection 1 500 000 UZS; WHEN payment post qilinadi; THEN allocation FIFO by due/posting policy, ortiqcha summa advance; auditor original payment va adjustment/reversal’ni alohida ko‘ra oladi. Offline collection *intent* hech qachon posted payment bilan tenglashtirilmaydi. Agent yig‘gan naqd: `LOCAL_PENDING` → `PENDING_HANDOVER` (server ACK; qarzni kamaytirmaydi, allocation yo‘q, mijoz kartasida “yo‘lda” ko‘rinadi) → kassir smenada qabul qilgach `POSTED` + FIFO (bitta tranzaksiya). Kassir/ofis kiritgan to‘lov darhol `POSTED` (ADR-029).
 
 **Scenario I-01 — 1C export:** GIVEN export X has 80 documents; WHEN 1C first import succeeds but network ACK lost; THEN retry same external IDs with import duplicate prevention, zero repeated accounting documents; accountant mapping totals match.
 
@@ -440,7 +441,7 @@ V4.0 §5.1 da 14 modul `M` sifatida qoldirilgan — ular **v1.0 GA uchun must**.
 
 - Returns business modelning daily core requirement’i bo‘lsa, `v0.9`ga majburan qabul qilinmaydi; v1.1’dagi documented returns yo‘li yoki customer-specific phased design kerak. Ombor adjustment orqali qaytarish “yashirin returns” sifatida bajarilmaydi.
 - Marked goods, serials, FEFO, legal EHF submission qatnashsa, alohida compliance adapter ishlamasdan v1.0 jarayonni taxmin bilan yopish mumkin emas.
-- `Invoice` VELTO ichidagi **operatsion hisob-kitob hujjati**; bu EHF’ning davlat tomonidan qabul qilingan elektron hujjati emas. UI’da `Internal invoice / Ichki hisob` deb aniq ko‘rsatiladi.
+- `Invoice` VELTO ichidagi **operatsion hisob-kitob hujjati**; bu EHF’ning davlat tomonidan qabul qilingan elektron hujjati emas. UI atamasi (ADR-033): uz — **“Ichki hisob”**, ru — **“Внутренний счёт”**, en — **“Internal invoice”**; “faktura/счёт-фактура/tax invoice” deb atalmaydi.
 - Credit limit, stock availability va dynamic price sinxronlangan tashqi hisob tizimiga bog‘liq bo‘lsa, stale snapshot ko‘rinadi; authoritative source aniqlanmagan mijozda auto approval/reservation yoqilmaydi.
 
 ---
@@ -503,7 +504,7 @@ V4.0 §5.1 da 14 modul `M` sifatida qoldirilgan — ular **v1.0 GA uchun must**.
 
 ## 6.3 Hujjat statuslari va raqamlash
 
-> **V5.0 cheklov:** `CONFIRMED`=real ombor rezervi qoidasi faqat §6.7 dagi Mode A — VELTO operatsion stock master bo‘lganda amal qiladi. Mode B — 1C stock master mijozda ombor tasdig‘i yoki yozma approved adapter bo‘lmaguncha VELTO local approval haqiqiy rezerv emas; qo‘shimcha `AWAITING_ACCOUNTING` adapter bosqichi va UI cheklovi bilan ishlanadi.
+> **V5.0 cheklov (ADR-028):** `CONFIRMED`=real ombor rezervi qoidasi MVP, v0.9 va v1.0 da **faqat Mode A** (§6.7) — VELTO operatsion stock master. Mode B (1C master, `AWAITING_ACCOUNTING`, `DATA_CUTOVER`) **v1.1 ga ko‘chirilgan**; unga muhtoj mijoz MVP/pilotga olinmaydi.
 
 
 ### Buyurtma statuslari
@@ -534,7 +535,7 @@ Raqamlash DB transaction/locking orqali concurrent so‘rovda ham takrorlanmaydi
 
 ## 6.4 Ombor hisobi
 
-> **V5.0 cheklov:** Quyidagi reserve/issue invariants VELTO stock master rejimiga taalluqli. 1C master rejimida “qoldiq oxirgi ma’lum snapshot” bo‘lib, 1C ACK’siz stock’ni authoritative tarzda o‘zgartirish taqiqlanadi (§6.7).
+> **V5.0 cheklov:** Quyidagi reserve/issue invariants VELTO stock master rejimiga (Mode A — MVP’dagi yagona rejim, ADR-028) taalluqli. 1C-master rejimi (Mode B) v1.1 da; shu paytgacha 1C’dagi qoldiq VELTO’ga yozilmaydi (§6.7).
 
 
 `StockMovement` harakatlari qoldiq o‘zgarishining asosiy izi: `RECEIVE`, `RESERVE`, `RELEASE`, `ISSUE`, `ADJUST` (nomlar implementatsiyada mavjud enum bilan moslashtiriladi). Harakatlar append-only. `StockLevel` proyeksiya sifatida yangilanishi mumkin.
@@ -548,7 +549,7 @@ Raqamlash DB transaction/locking orqali concurrent so‘rovda ham takrorlanmaydi
 
 ## 6.5 Moliya va qarzdorlik
 
-> **V5.0 cross-reference:** moliyaviy ledgerning qaysi tizimda authoritative ekani §6.7 ADR-011 bilan mijoz kesimida belgilanadi; ikki tizim mustaqil master bo‘lmaydi.
+> **V5.0 cross-reference:** moliyaviy ledger MVP’da faqat VELTO’da (Mode A, V5-ADR-011 / ADR-028); ikki tizim mustaqil master bo‘lmaydi, Mode B v1.1.
 
 
 Asosiy formula:
@@ -563,7 +564,7 @@ Asosiy formula:
 - To‘lovni `DELETE` qilish mumkin emas; xato to‘lov reversal/void operatsiyasi bilan tuzatiladi.
 - `cachedBalance` ishlatilsa, u transaction ichida asosiy ledger bilan birga yangilanadi; kunlik reconciliation drift aniqlaydi va alert beradi.
 - Aging guruhi boshlang‘ich sozlama sifatida: muddati kelmagan, 1–7, 8–30, 31–60, 60+ kun. Guruhlar to‘lov shartlari va hisobot sanasiga asoslanadi, kalendar farqi aniq belgilanadi.
-- To‘lovni “agent qabul qildi” deb offline qayd etish va “kassaga tushdi/bank tasdiqladi” holatlari aralashtirilmaydi. Naqd pul bo‘yicha handover/reconciliation qoidasi alohida status va audit bilan ifodalanadi.
+- To‘lovni “agent qabul qildi” deb qayd etish va “kassaga tushdi/bank tasdiqladi” holatlari aralashtirilmaydi (ADR-029): agent yig‘gan naqd `PENDING_HANDOVER` bo‘ladi — u qarzdorlikni **kamaytirmaydi**, FIFO allocation qilinmaydi va mijoz kartasida “yo‘lda” (in transit) ko‘rinadi; kassir ochiq kassa smenasida qabul qilgach `POSTED` bo‘ladi va FIFO shu tranzaksiyada bajariladi. Kassir/ofis to‘lovi (naqd, bank) darhol `POSTED`. Har o‘tish actor/vaqt/izoh bilan auditlanadi.
 
 ## 6.6 Pul, QQS va narx
 
@@ -591,12 +592,12 @@ Asosiy formula:
 | Bank-confirmed cash and legal receivable | contract bo‘yicha 1C/accounting yoki VELTO internal ledger | other system imported/exported as operational mirror | ledger origin + external reference + reconciliation |
 | EHF/marking state | Authorised EHF/tax/marking provider or tax authority | VELTO roadmapped reference | MVP internal invoice ≠ official EHF |
 
-**Two supported operating configurations (ADR-011):**
+**Operating configurations (V5-ADR-011; qaror ADR-028):** MVP, v0.9 va v1.0 da **faqat Mode A** qo‘llab-quvvatlanadi; Mode B v1.1 ga ko‘chirilgan. Yuqoridagi jadvaldagi “VELTO yoki 1C” variantlari MVP’da faqat VELTO deb o‘qiladi.
 
-- **Mode A — VELTO-OPERATED (MVP default):** pilot ombor qoldiqlari va operatsion receivables VELTO’da yuritiladi; 1C eksportga o‘tadi. Birinchi balans/stock import — *opening balance*, sanasi, aniqlik, manbasi, operator sign-off bilan qabul qilinadi; cutover vaqtidan keyin eski tizimda parallel stock mutation qilinmaydi yoki explicit reconciled change files sifatida kiritiladi. Bu rejim mijoz bilan operatsion kelishuvsiz yoqilmaydi.
-- **Mode B — 1C MASTER / VELTO SFA (v0.9 conditional):** 1C stock/receivables master, VELTO faqat stale-labelled read mirror, route, order intent va approval workflow. 1C’ga real reservation API bo‘lmasa, VELTO “reserved” deb yozmaydi va `CONFIRMED` state’ga authoritative warehouse fulfilment ma’nosini bermaydi; `ACCEPTED_FOR_EXPORT / AWAITING_ACCOUNTING` kabi adapter statuslardan foydalanadi. Legacy status va schema migration ADR bilan qilinadi. Mode B’ni pilotingdan oldin UI’ning qaysi business promise cheklanishi belgilanadi.
+- **Mode A — VELTO-OPERATED (MVP, v0.9, v1.0 — yagona rejim):** pilot ombor qoldiqlari va operatsion receivables VELTO’da yuritiladi; 1C eksportga o‘tadi. Birinchi balans/stock import — *opening balance*, sanasi, aniqlik, manbasi, operator sign-off bilan qabul qilinadi; cutover vaqtidan keyin eski tizimda parallel stock mutation qilinmaydi yoki explicit reconciled change files sifatida kiritiladi. Bu rejim mijoz bilan operatsion kelishuvsiz yoqilmaydi.
+- **Mode B — 1C MASTER / VELTO SFA [v1.1 — MVP, v0.9 va v1.0 da QO‘LLAB-QUVVATLANMAYDI]:** 1C stock/receivables master, VELTO faqat stale-labelled read mirror, route, order intent va approval workflow. 1C’ga real reservation API bo‘lmasa, VELTO “reserved” deb yozmaydi va `CONFIRMED` ga authoritative warehouse fulfilment ma’nosini bermaydi; `ACCEPTED_FOR_EXPORT / AWAITING_ACCOUNTING` kabi adapter statuslar v1.1 da loyihalanadi. Hozir hech bir model, status yoki UI placeholder qo‘shilmaydi (§5.2, §0.2-3).
 
-**Never** bitta company/warehouse va invoice intervalida 1C va VELTO’ga bir vaqtning o‘zida yozish huquqini bermang. Mode almashishi `DATA_CUTOVER` job: freeze new postings → snapshot → reconciliation → owner switch → idempotency cursor reset strategy → client cache invalidation → sign-off → resume. Failed cutover rollback/runbook bilan to‘xtatiladi.
+**Never** bitta company/warehouse va invoice intervalida 1C va VELTO’ga bir vaqtning o‘zida yozish huquqini bermang. [v1.1] Mode almashishi `DATA_CUTOVER` job: freeze new postings → snapshot → reconciliation → owner switch → idempotency cursor reset strategy → client cache invalidation → sign-off → resume. Failed cutover rollback/runbook bilan to‘xtatiladi.
 
 ### 6.7.1 Critical ledger va stock invariantlari
 
@@ -606,6 +607,7 @@ Asosiy formula:
 - `invoice_open = invoice_posted_total − valid_applications − valid_credit_adjustment`; `unapplied_cash = posted_payment_total − Σ valid_allocations − valid_refunds`. Har bir amount `DECIMAL` va currency=`UZS`; client float emas.
 - Reversal original ledger entry’ni DELETE qilmaydi; `reversedEntryId`, `reason`, `approver`, `postedAt`, `sourceDoc` bilan qarama-qarshi jurnal yozuvi va materialized balance recalculation bir transaction’da.
 - Multi-entity v1: `tenantId` partition + companyId access scope, `warehouse.companyId == order.companyId`, `invoice.customerId == payment.customerId` yoki authorized cross-allocation (MVP’da none). Reference table uchun `(companyId, externalSystem, externalId)` unique; payment uchun `(companyId, source, transactionRef)` unique when non-null.
+- **Risk nazorati (ADR-032):** MVP’da 4-eyes tasdiq yo‘q (v1.1). Summa chegarasidan oshgan reversal/adjustment bajarilganda OWNER’ga darhol alert (in-app + Telegram) va alohida audit yozuvi yaratiladi. Chegara qiymati: **TBD — foydalanuvchi belgilaydi** (kompaniya sozlamasi sifatida).
 - Document sequence concurrent safe, gaps are allowed where cancellation; audit always preserves gaps and uniqueness. Historical snapshot immutable once posted.
 
 ### 6.7.2 Business object lifecycle va status (product contract)
@@ -613,20 +615,21 @@ Asosiy formula:
 | Operation | Start | Next | Forbidden / conflict | Source of truth |
 |---|---|---|---|---|
 | Order submit | LOCAL_DRAFT | SUBMITTED (server ACK) | offline local ≠ submitted | server VELTO |
-| Approval | SUBMITTED | CONFIRMED, stock reservation | stale price, credit blocked, stock insufficient, permission denied | Mode A VELTO; Mode B approval ≠ 1C reserve |
+| Approval | SUBMITTED | CONFIRMED, stock reservation | stale price, credit blocked, stock insufficient, permission denied | VELTO (Mode A; Mode B v1.1) |
 | Picking / simple delivery | CONFIRMED | DELIVERED | issueQty greater than reserved/approved | stock authority |
 | Closed | DELIVERED | CLOSED | internal closed ≠ invoice fully paid | order ledger |
-| Payment intent | LOCAL_PENDING | RECEIVED_BY_AGENT_PENDING_HANDOVER | offline intent ≠ legal cash settlement | collector device→server queue |
-| Posted payment | PENDING_HANDOVER | POSTED after authorised cash/bank reconciliation | cannot offline POSTED; cannot silently edit | finance authority |
-| 1C export | QUEUED | EXPORTED → ACCOUNTING_ACCEPTED / FAILED_REVIEW | file generated ≠ document imported | 1C accountant callback/manual ACK |
+| Payment intent (agent naqd) | LOCAL_PENDING | PENDING_HANDOVER (server ACK; qarzni kamaytirmaydi, “yo‘lda” ko‘rinadi) | offline intent ≠ settlement; PENDING_HANDOVER da allocation yo‘q | collector device→server queue |
+| Posted payment (agent naqd) | PENDING_HANDOVER | POSTED + FIFO — kassir smenada qabul qilganda | cannot offline POSTED; cannot silently edit | cashier / finance authority |
+| Posted payment (kassir/ofis) | — | POSTED darhol (+FIFO) | draft/pending bosqichi yo‘q; hard delete yo‘q | cashier / finance authority |
+| 1C export | QUEUED | GENERATED → ACCOUNTING_ACCEPTED / FAILED_REVIEW | file generated ≠ document imported | buxgalter UI’da qo‘lda tasdig‘i (checksum + izoh, auditli); 1C callback yo‘q |
 
-**Rule:** statuslarda foydalanuvchiga ko‘rsatiladigan `operational order accepted` bilan `accounting accepted` yoki `tax accepted` bir-biridan ajralgan bo‘lishi kerak. Har bir transition bilan `actor`, `reason`, `timestamp`, `idempotencyKey`, `tenantScope`, `version` yoziladi.
+**Rule:** statuslarda foydalanuvchiga ko‘rsatiladigan `operational order accepted` bilan `accounting accepted` yoki `tax accepted` bir-biridan ajralgan bo‘lishi kerak. Har bir transition bilan `actor`, `reason`, `timestamp`, `idempotencyKey`, `tenantScope` yoziladi.
 
 ### 6.7.3 DB constraints va migrations rejasi
 
 - Scoped unique constraints: `(company_id, doc_type, year, sequence)`, `(company_id, actor_id, client_id)`, `(company_id, source_system, external_id)` where relevant; FKs tenant/company scope’ni DB check/composite FK bilan ham imkon qadar saqlash.
 - Posted financial/stock rows: `UPDATE/DELETE` by normal role rad etiladi; append-only corrections uchun explicit service with DB permissions. Database constraints + service rules parallel.
-- Optimistic version on `SalesOrder`, `PriceListItem`, `Customer` va assignment; expectedVersion header/body signed auth bilan validatsiya. Stock/money uchun `SERIALIZABLE`/row locks/retry bounded strategy, deadlocks/retries observability.
+- Optimistic `version` ustunlari **qo‘shilmaydi** (ADR-031, repo ADR-020). Raqobat himoyasi: stock/money uchun row lock (`FOR UPDATE`) / `SERIALIZABLE` + bounded retry; narx o‘zgarishi — har buyurtma qatorida `expectedUnitPrice` (server farq topsa `PRICE_CHANGED`, silent repricing yo‘q). Deadlock/retry observability talab qilinadi.
 - PostgreSQL RLS policy `current_setting('app.current_company_id', true)` missing/invalid bo‘lsa **deny**, migration/admin roles minimal. Job/worker tenant context ham har DB transaction’da qo‘yiladi. Table owner/security definer bypass audit qilinadi.
 - Schema changes: expand→backfill→dual-read (temporary only)→cutover→contract; backfill idempotent; seed production ledger’ga demo qo‘shmaydi. Production destructive migration requires DBA/owner approval + restore plan.
 
@@ -636,10 +639,10 @@ Asosiy formula:
 
 ## 7.1 API standartlari
 
-- REST + JSON, URL versiyalash strategiyasi hujjatlashtiriladi (masalan `/api/v1`). Mavjud API bilan moslikni buzadigan o‘zgarish version/deprecation bilan joriy qilinadi.
+- REST + JSON. MVP’da URL prefiksi **yo‘q** (hozirgi marshrutlar o‘zgarmaydi); `/api/v1` prefiksi v1.1 da joriy qilinadi (ADR-031). MVP’da versiyalash strategiyasi: moslikni buzadigan o‘zgarish deprecation muddati va `API-Version` header bilan e’lon qilinadi, OpenAPI bilan birga yangilanadi.
 - Ro‘yxatlarda pagination majburiy: default 25, maximum 100; cursor pagination katta tarixiy jadvallar uchun afzal.
-- Standart xato shakli: `{ code, message, details, traceId }`. `message` uz/ru/en lokalizatsiyalanadi; `code` barqaror machine-readable qiymat.
-- Create/money/stock/sync operatsiyalari `Idempotency-Key` yoki scoped `clientId` bilan idempotent bo‘ladi. Oddiy `GET` uchun idempotency kerak emas.
+- Standart xato shakli: `{ code, message: { uz, ru, en }, details?, traceId }`. `message` har uch tilda qaytadi; `code` barqaror machine-readable qiymat.
+- Idempotentlik (ADR-031): **create** operatsiyalari (buyurtma, to‘lov, tashrif, sync item) scoped `clientId` bilan; **holat o‘tishlari** (confirm, deliver, cancel, reverse, allocate, export) `Idempotency-Key` header bilan. Oddiy `GET` uchun idempotency kerak emas.
 - Barcha request DTO serverda validate qilinadi; noma’lum field’lar qabul qilinmaydi.
 - Har bir list endpoint’da company scope, permission check, pagination, sort/filter whitelist va N+1 nazorati bor.
 - OpenAPI/Swagger API bilan birga yangilanadi.
@@ -666,13 +669,13 @@ Bu ro‘yxat joriy koddagi route nomlariga moslashtiriladi; nomlashning o‘zi a
 
 ## 7.3 1C integratsiyasi — realistik yondashuv
 
-> **V5.0 cross-reference:** generated export ≠ 1C import accepted. §7.6 mapping, stable external ID, ACK va file checksum majburiy.
+> **V5.0 cross-reference (ADR-030):** generated export ≠ 1C import accepted. §7.6 mapping, stable external ID va file checksum majburiy; ACK — faqat buxgalterning VELTO UI’da qo‘lda tasdig‘i. 1C’dan avtomatik callback yo‘q (bir tomonlama eksport).
 
 
 **MVP sharti:** kamida bitta real pilot mijozning haqiqiy 1C konfiguratsiyasida eksport fayli importdan o‘tishi. “CommerceML 2” yoki boshqa formatni tanlashning o‘zi universal 1C integratsiyasi hisoblanmaydi: konfiguratsiya, katalog moslashtirish, kontragent kodlari va hujjat turi bo‘yicha test talab etiladi.
 
 - Pilot boshida ma’lumot mapping’i kelishiladi: mahsulot kodi, kontragent kodi, birlik, QQS, hujjat sana/raqami, summa va to‘lov turi.
-- Export job background’da bajarilishi mumkin; statuslar `PENDING/PROCESSING/DONE/FAILED` va xato sababi ko‘rinadi.
+- Export job background’da bajariladi; generatsiya statuslari `PENDING/PROCESSING/GENERATED/FAILED`, xato sababi ko‘rinadi. Buxgalter fayl 1C’ga yuklangach UI’da `GENERATED` → `ACCOUNTING_ACCEPTED` yoki `FAILED_REVIEW` ga o‘tkazadi: fayl checksum’i ko‘rsatiladi/tasdiqlanadi, izoh ixtiyoriy, har o‘tish auditlanadi. Boshqa ACK kanali (1C accountant callback) MVP’da yo‘q.
 - Fayl hash’i, yaratuvchi, davr, record count va mapping versiyasi auditlanadi.
 - Eksport qayta ishga tushsa duplicate accounting document yuzaga kelmasligi uchun tashqi ID/unique mapping yoki import qoidasi aniqlanadi.
 - Birinchi relizda xavfsiz CSV/XLSX fallback bor; XML eksport faqat konkret konfiguratsiyada testdan o‘tsa “supported” deb belgilanadi.
@@ -696,15 +699,15 @@ Bu ro‘yxat joriy koddagi route nomlariga moslashtiriladi; nomlashning o‘zi a
 
 ## 7.6 REST contract, transaction boundary va integratsiya acceptance
 
-**Architecture interface:** API `/api/v1` OpenAPI → ApplicationService → Domain policy → Prisma DB tx → transactional outbox → worker/webhook/export. UI va bot hech qachon DB/1C bilan to‘g‘ridan-to‘g‘ri credential almashmaydi.
+**Architecture interface:** API (OpenAPI; `/api/v1` prefiksi v1.1 da) → ApplicationService → Domain policy → Prisma DB tx → transactional outbox → worker/webhook/export. UI va bot hech qachon DB/1C bilan to‘g‘ridan-to‘g‘ri credential almashmaydi.
 
 ### 7.6.1 API conventions
 
 - All timestamps UTC ISO-8601 (`2026-10-19T09:00:00Z`) + business report Asia/Tashkent; locale only presentation. Money JSON decimal string (`"1500000.00"`) va UZS currency. Product quantity `"2.500"`; rounding strategy shared library’da tested.
-- `X-Request-Id` (server generates if absent), `traceId`, `API-Version`, `Content-Language`; `Idempotency-Key` protected on all critical POST. `Idempotency-Key` scoped by tenant+actor+operation and payload hash, same key/different payload = conflict.
-- `POST /api/v1/orders` input example: `{ "clientId": "uuid", "customerId": "uuid", "outletId": "uuid", "lines": [{ "productId": "uuid", "packagingId": "uuid", "quantity": "2" }], "expectedPriceVersion": "v18" }`. Client subtotal/grandTotal is advisory; server recalculates.
-- `POST /api/v1/orders/{id}/confirm`: role + customer block/credit + price version + authoritative stock available; confirmation and reservation in one transaction. If Mode B external stock master, `confirm` semantics require an alternate explicitly documented state.
-- Error response: `{ "code":"PRICE_CHANGED", "message":"Narx yangilangan", "details": {"orderId":"...", "newVersion":"v19"}, "traceId":"..." }`. Error may contain authorized object metadata only; never expose another tenant’s object or tokens.
+- `X-Request-Id` (server generates if absent), `traceId`, `API-Version`, `Content-Language`. Create’da `clientId` (UUID, scoped tenant+actor); holat o‘tishlarida (confirm/deliver/cancel/reverse/allocate/export) `Idempotency-Key`, scoped tenant+actor+operation va payload hash; same key/different payload = conflict.
+- `POST /orders` input example: `{ "clientId": "uuid", "customerId": "uuid", "outletId": "uuid", "lines": [{ "productId": "uuid", "packagingId": "uuid", "quantity": "2", "expectedUnitPrice": "12500.00" }] }`. Client subtotal/grandTotal is advisory; server recalculates. Narx farqi → `PRICE_CHANGED` (silent repricing taqiqlanadi). `expectedPriceVersion` ishlatilmaydi.
+- `POST /orders/{id}/confirm` (`Idempotency-Key` bilan): role + customer block/credit + har qatorda `expectedUnitPrice` + authoritative stock available; confirmation and reservation in one transaction. Mode B (1C stock master) v1.1 da; MVP’da `confirm` har doim VELTO stock ledger bilan.
+- Error response: `{ "code":"PRICE_CHANGED", "message":{"uz":"Narx yangilangan","ru":"Цена изменилась","en":"Price has changed"}, "details": {"orderId":"...", "lineId":"...", "expectedUnitPrice":"12500.00", "currentUnitPrice":"12800.00"}, "traceId":"..." }`. Error may contain authorized object metadata only; never expose another tenant’s object or tokens.
 - IDs are opaque UUID; `companyId` from authenticated session/company context; URL company selector membership is independently verified. Pagination & filters explicitly whitelisted; body mass-assignment rejected.
 - Rate limits on auth, OTP, export, import, sync push and broad report separately; sensitive exports require permission and audit. Cross-origin requests allowed only approved origins with CSRF policy appropriate to cookie/bearer scheme.
 
@@ -712,7 +715,7 @@ Bu ro‘yxat joriy koddagi route nomlariga moslashtiriladi; nomlashning o‘zi a
 
 `IntegrationMapping` fields (if compatible with existing schema): `{companyId, connectorKey, externalConfigId, entityType, veltoId, externalId, mappingVersion, createdAt, updatedAt, lastVerifiedAt}`. Export payload `{externalDocumentId, veltoDocumentId, type, date, partnerCode, skuCode, unit, qty, price, vatMode, total, currency, revision}`. Never assume all 1C installations accept one universal CSV/CommerceML format.
 
-`IntegrationJob`: `QUEUED → EXPORT_GENERATED → IMPORTED_AND_CONFIRMED | FAILED_NEEDS_FIX`; `EXPORT_GENERATED` is **not** confirmed import. Accountants can download mapping discrepancies; re-export same business document maintains stable external ID. 1C output checksum + signed/manual acknowledgement stored with evidence and auditor. In one-way export, 1C’s later changes do not automatically reflect back; dashboard shows source and last sync time.
+`ExportJob`: `QUEUED → GENERATED → ACCOUNTING_ACCEPTED | FAILED_REVIEW` (generatsiya xatosi — `FAILED`); `GENERATED` is **not** confirmed import. Accountants can download mapping discrepancies; re-export same business document maintains stable external ID. 1C output checksum + accountant’s manual acknowledgement (UI, izoh bilan) stored with evidence and auditor. In one-way export, 1C’s later changes do not automatically reflect back; dashboard shows source and last sync time.
 
 **Data import:** preview→mapping→validation→dedupe→dry-run differences→operator approval→atomic chunk processing→result report. Row provenance (file hash, sheet, row, user, mapping version) available for troubleshooting. CSV formula injection in generated spreadsheets prevented by sanitizing untrusted cells (`=`, `+`, `-`, `@`, tabs/newlines), with human readable export and security test. Spreadsheet upload macro never executed.
 
@@ -720,7 +723,7 @@ Bu ro‘yxat joriy koddagi route nomlariga moslashtiriladi; nomlashning o‘zi a
 
 ### 7.6.3 Contract test set
 
-- Two concurrent duplicate `Idempotency-Key` requests produce same recorded effect and an unambiguous repeat response.
+- Two concurrent duplicate create requests (same `clientId`) or duplicate transition requests (same `Idempotency-Key`) produce same recorded effect and an unambiguous repeat response.
 - A valid actor cannot mutate another company by changing headers, URLs, IDs or `companyId` body field.
 - When queue down, committed business document and durable outbox event survive; later retry processes it once.
 - Importing the same Excel file twice previews changes and creates no unintended duplicates.
@@ -990,7 +993,7 @@ Mavjud ishchi muhit bo‘yicha hozirgacha qayd etilgan parametrlar: VPS loyihasi
 - At least dev/staging/prod config separation, private DB/firewall, least-privilege secrets, HTTPS, process restart on crash with error telemetry, resource usage alert, disk-space and WAL/backup volume alerts.
 - Release pipeline: lint/types/tests → migration dry-run on staging copy → security checks → preflight backup/restore readiness → smoke test under production-like DB RLS role → deploy with change log → auth+order+stock+payment+sync smoke → 30/60 minute post-deploy monitoring (observability schedule, not a claim to background execution by this document).
 - Backward-compatible API and DB migrations; expand-and-contract. Rollback relies on deploy version AND compatible schema, not just `pm2 restart` or `git reset --hard`; user data never discarded.
-- Backups encrypted and access-tested, restore into isolated environment; RPO≤15m and RTO≤4h are **targets** needing WAL/incremental and restore drill. Daily backup alone does not prove 15m RPO.
+- Backups encrypted and access-tested, restore into isolated environment; RPO≤15m (faqat GA maqsadi) and RTO≤4h are **targets** needing WAL/incremental and restore drill. Daily backup alone does not prove 15m RPO; pilotda kunlik backup + restore drill yetarli.
 - No hardcoded secrets, no production login in staging, no destructive SQL or unsafe `prisma db push` on prod. Production data masked before dev.
 
 ### 10.6.3 Growth triggers (microservice decision only with evidence)
@@ -1075,7 +1078,7 @@ Velto uchun majburiy ishlar:
 | Restricted | refresh token, bot token, access secret, DB credential | takeover, financial manipulation | vault/env secret manager, encryption, rotation, zero logging |
 | Confidential business | narx, stock, debt, payment, client list | tenant breach, competitor intelligence | company RLS, RBAC/ABAC, private export link, audit |
 | Personal | agent phone, outlet contact, GPS, Telegram user ID | privacy breach, unauthorized surveillance | notice, data minimisation, explicit purpose, retention, DSR flow |
-| Financial/posting | invoice, ledger, allocations, adjustment | fraud, reconciliation drift | append-only, 4-eyes approval for risky adjustment, immutable snapshot |
+| Financial/posting | invoice, ledger, allocations, adjustment | fraud, reconciliation drift | append-only, immutable snapshot; MVP: summa chegarasidan oshgan reversal/adjust → OWNER’ga darhol alert + audit (ADR-032); 4-eyes tasdiq v1.1 |
 | Operational telemetry | logs, events, error payloads | accidental PII exposure | masking, sampling, purpose-bound retention |
 
 ### 11.7.1 Threat → mitigation → test
@@ -1086,7 +1089,7 @@ Velto uchun majburiy ishlar:
 | SEC-002 | Telegram `initDataUnsafe` forged / stale initData | validate raw initData HMAC server-side, auth_date freshness, account binding | tamper/hash replay / wrong account rejected |
 | SEC-003 | Session theft/refresh replay | short access TTL, hashed rotating refresh token family, reuse revocation, scoped sessions | concurrent reuse invalidates family safely |
 | SEC-004 | Agent gains cashier/admin via mass-assignment | DTO whitelist, deny default, RBAC/ABAC and field-scoped mutation, sensitive role grant approval | body role/companyId injection rejected |
-| SEC-005 | Race oversells / duplicate payment | DB lock/constraints/idempotency + ledger transaction | 50 concurrent checkout / same payment ref |
+| SEC-005 | Race oversells / duplicate payment | DB lock/constraints/idempotency + ledger transaction | 50 parallel race (yuk profili emas, §12.5) / same payment ref |
 | SEC-006 | Client XSS steals offline catalog/token | strict CSP, sanitization, escaping, audited dependencies, no sensitive token in untrusted localStorage | XSS test on product/customer names |
 | SEC-007 | CSRF / cors abuse | correct origin allowlist, bearer/cookie-specific CSRF rules, SameSite where applicable | cross-origin mutation blocked |
 | SEC-008 | Malicious Excel or CSV export injection | allowlisted MIME/extension/size, parsing cap, formula escaping, virus/macro never execute | =HYPERLINK payload safe export |
@@ -1128,21 +1131,21 @@ Metrikalar target muhitda va aniq workload bilan o‘lchanadi. Quyidagi sonlar b
 
 | ID | Talab | MVP maqsadi |
 |---|---|---|
-| NFR-PERF-001 | Oddiy list/detail API latency | p95 ≤ 300 ms, 50 concurrent agent testida |
-| NFR-PERF-002 | Mutatsiya API latency | p95 ≤ 700 ms, fon ishlar kiritilmaydi |
+| NFR-PERF-001 | Oddiy list/detail API latency | p95 ≤ 300 ms, §12.5 kanonik yuk profilida (50 concurrency) |
+| NFR-PERF-002 | Mutatsiya API latency | p95 ≤ 700 ms, §12.5 kanonik yuk profilida; fon ishlar kiritilmaydi |
 | NFR-PERF-003 | Oddiy dashboard/report | p95 ≤ 2 s yoki uzoq ish uchun job/progress ko‘rsatiladi |
 | NFR-PERF-004 | Offline katalog qidiruvi | p95 ≤ 150 ms, pilot ma’lumot hajmida |
 | NFR-PERF-005 | Lokal buyurtma saqlash | p95 ≤ 300 ms, storage muvaffaqiyatli bo‘lganda |
 | NFR-PERF-006 | 100 pending hujjat sinxi | testdagi tarmoq sharoitida ≤ 30 s maqsad; har item statusi saqlanadi |
 | NFR-PERF-007 | Pagination | max page 100; katta eksport async job |
-| NFR-PERF-008 | Scale test | 100 concurrent agent va demo dataset bilan xatosiz critical-flow load test |
+| NFR-PERF-008 | Scale test | §12.5 profilidagi 100 concurrency (stress) bilan xatosiz critical-flow load test |
 
 ## 12.2 Availability va tiklanish
 
 | ID | Talab | MVP maqsadi |
 |---|---|---|
 | NFR-REL-001 | Uptime | Dastlab monthly 99.5% target, texnik monitoring asosida o‘lchanadi; SLA bilan bir xil deb qabul qilinmaydi |
-| NFR-REL-002 | RPO | ≤ 15 daqiqa maqsad; backup/WAL texnologiyasiga mos ravishda tasdiqlanadi |
+| NFR-REL-002 | RPO | **GA (v1.0) maqsadi:** ≤ 15 daqiqa (WAL/incremental bilan tasdiqlanadi). **Pilot (v0.9):** kunlik backup + restore drill, RPO ≤ 24 soat (shartnomada yoziladi) |
 | NFR-REL-003 | RTO | ≤ 4 soat maqsad; restore drill bilan isbotlanadi |
 | NFR-REL-004 | Backup | Daily encrypted backup + DB hajmi/RPO talabiga mos incremental strategy |
 | NFR-REL-005 | Restore | Pilot yoki relizdan oldin backup’dan staging’ga tiklash mashqi |
@@ -1170,9 +1173,9 @@ Metrikalar target muhitda va aniq workload bilan o‘lchanadi. Quyidagi sonlar b
 
 ## 12.5 NFR’larni isbotlash profili va operational SLO
 
-V4.0 §12’dagi sonlar **performance/reliability goal**, real production SLA emas. Benchmark protokoli bo‘lmasa “p95 300 ms” degan da’vo taqqoslab bo‘lmaydi.
+Ushbu hujjat §12.1–12.2 dagi sonlar **performance/reliability goal**, real production SLA emas. Benchmark protokoli bo‘lmasa “p95 300 ms” degan da’vo taqqoslab bo‘lmaydi.
 
-**Reproducible workload profile:** 1 test tenant with 20 agents, 2k SKU, 1k outlets, 3 warehouses, 100k historical orders + 100k finance/stock postings (bu dataset sonlari muhandislik sinovi uchun sintetik target, haqiqiy mijoz hajmi emas); concurrency 50 and 100; API read/write mix documented, DB warm/cold, caching state and server spec logged. Device test Android mid-range + iPhone Safari/Telegram version, latency 150ms and packet loss 2%/10% profiles. Report: p50/p95/p99, max, throughput, timeout/error rates, DB query plans, memory and disk, 95% CI if sample enough.
+**Kanonik yuk profili (yagona; §12.1, F-STK-001, SEC-005 shunga havola qiladi; “50 parallel” — race testi, yuk profili emas):** 1 test tenant with 20 agents, 2k SKU, 1k outlets, 3 warehouses, 100k historical orders + 100k finance/stock postings (bu dataset sonlari muhandislik sinovi uchun sintetik target, haqiqiy mijoz hajmi emas); concurrency 50 and 100; API read/write mix documented, DB warm/cold, caching state and server spec logged. Device test Android mid-range + iPhone Safari/Telegram version, latency 150ms and packet loss 2%/10% profiles. Report: p50/p95/p99, max, throughput, timeout/error rates, DB query plans, memory and disk, 95% CI if sample enough.
 
 | Area | v1.0 goal [T] | QA / runtime alert | Hard release gate |
 |---|---|---|---|
@@ -1184,7 +1187,7 @@ V4.0 §12’dagi sonlar **performance/reliability goal**, real production SLA em
 | Agent local save | p95 ≤300ms where IndexedDB supported | storage quota errors | silent pending document loss |
 | Sync | deterministic 20 offline orders, 3 retries, 1 unique per ID; every valid item has terminal ACK or explicit unresolved conflict | sync backlog age + errors | silent drop / false ACK |
 | Reliability | 99.5% calendar-month target (monitor after pilot) | health, worker queue, DB | inability to restore critical DB |
-| Recovery | RPO≤15m, RTO≤4h (target) | backup failure, restore time | restore drill absent |
+| Recovery | RPO≤15m (GA only; pilot: daily backup + drill), RTO≤4h (target) | backup failure, restore time | restore drill absent |
 | Security | secret scan + dependency scan + P0 negative suite | critical vulnerability alert | critical/high unaccepted exploitable finding |
 | Accessibility/i18n | uz/ru/en critical routes and errors; WCAG 2.1 AA aim | missing translation keys | critical flow inaccessible/untranslated |
 
@@ -1369,6 +1372,7 @@ Faqat MVP metrikalarini ko‘rgandan keyin:
 - Akt sverka/statement PDF/XLSX.
 - Discount rules va trade promotions — biznes talabi tasdiqlanganda.
 - Audit advanced filters va custom role UI.
+- Mode B (1C master), 4-eyes tasdiq oqimi va `/api/v1` URL prefiksi (ADR-028, 031, 032).
 - Nuqta fotosi yoki shelf-check — agent KPI uchun haqiqiy foyda aniqlanganda.
 
 ## v1.2 — Mahalliy komplayens va to‘lov integratsiyalari
@@ -1538,6 +1542,8 @@ Task boshlanishidan oldin:
 | Operations | staged restore drill, RPO/RTO measured, log alerts, incident on-call | Ops owner | no verified restore or no incident contact |
 | Customer success | import how-to, Uzbek/Russian help, trial expiry/export policy | Customer Success | users cannot complete first order |
 
+**Pilot (v0.9) sign-off — 3 imzo:** Product, Accounting, Security. Har biri sana, build SHA va test artifact bilan. Yuqoridagi to‘liq matritsa **GA (v1.0)** uchun to‘liq saqlanadi.
+
 **Definition of release:** No P0 red item, each row signed by responsible person with date, build SHA and test artifact URL/path. A failing manual test cannot be overridden by “unit coverage high”. GA feature claims tie to demonstrated outcome on supported deployment, not just code availability.
 
 ### 16.5.1 Worked negative test checklist
@@ -1634,18 +1640,32 @@ Quyidagi masalalar implementatsiyadan oldin repository va pilot bilan tasdiqlani
 
 | ID | Status | Business/technical decision | Completion evidence |
 |---|---|---|---|
-| ADR-011 | **PROPOSED (must sign before pilot)** | Owner-of-record per company/warehouse/ledger entity: Mode A VELTO-operated vs Mode B 1C master; dual-write forbidden | source-of-truth diagram signed by customer accountant + IT |
-| ADR-012 | **ACCEPTED as plan** | v0.9 closed pilot is bounded; full v4 M00–M13 preserved for v1.0 GA | product owner acceptance of stage map |
-| ADR-013 | **PROPOSED** | Legal internal invoice label, no EHF implication | accounting/legal UI review |
-| ADR-014 | **PROPOSED** | Narrow initial ICP, markirovka/FEFO/complex returns excluded until adapter | buyer interview and segment review |
-| ADR-015 | **PROPOSED** | Master stock and balance cutover policy, reconciliation and freeze window | data migration rehearsal |
-| ADR-016 | **ACCEPTED default; repo unverified** | REST + NestJS modular monolith and existing deployment preservation; microservice only after measured trigger | repository audit + load/cost ADR |
-| ADR-017 | **PROPOSED** | Order/Payment idempotency durable scope, sync ACK and conflict UI | DB test + E2E device matrix |
-| ADR-018 | **PROPOSED** | Pricing as research, agent tier vs company plan experiment | 10–15 buyers and 3 written commercial responses |
-| ADR-019 | **PROPOSED** | Sensitive GPS retention, legal basis, data export and subprocessors | legal memo + DPA and DPIA-like risk review |
-| ADR-020 | **PROPOSED** | Competitor differentiation only with dated demo/test/cost evidence | signed competitive proof card |
+| V5-ADR-011 | **ACCEPTED (repo ADR-028)** | Owner-of-record per company/warehouse/ledger entity: MVP/v0.9/v1.0 — faqat Mode A VELTO-operated; Mode B 1C master v1.1; dual-write forbidden | source-of-truth diagram signed by customer accountant + IT |
+| V5-ADR-012 | **ACCEPTED as plan** | v0.9 closed pilot is bounded; full v4 M00–M13 preserved for v1.0 GA | product owner acceptance of stage map |
+| V5-ADR-013 | **ACCEPTED (repo ADR-033)** | Legal internal invoice label (uz “Ichki hisob”, ru “Внутренний счёт”, en “Internal invoice”), no EHF implication | accounting/legal UI review |
+| V5-ADR-014 | **PROPOSED** | Narrow initial ICP, markirovka/FEFO/complex returns excluded until adapter | buyer interview and segment review |
+| V5-ADR-015 | **PROPOSED** | Master stock and balance cutover policy, reconciliation and freeze window | data migration rehearsal |
+| V5-ADR-016 | **ACCEPTED default; repo unverified** | REST + NestJS modular monolith and existing deployment preservation; microservice only after measured trigger | repository audit + load/cost ADR |
+| V5-ADR-017 | **ACCEPTED (repo ADR-031)** | Order/Payment idempotency durable scope: create=clientId, transition=Idempotency-Key; sync ACK and conflict UI | DB test + E2E device matrix |
+| V5-ADR-018 | **PROPOSED** | Pricing as research, agent tier vs company plan experiment | 10–15 buyers and 3 written commercial responses |
+| V5-ADR-019 | **PROPOSED** | Sensitive GPS retention, legal basis, data export and subprocessors | legal memo + DPA and DPIA-like risk review |
+| V5-ADR-020 | **PROPOSED** | Competitor differentiation only with dated demo/test/cost evidence | signed competitive proof card |
+
+**ADR nomlash (ADR-033):** ushbu hujjatdagi ADR-011..020 `V5-ADR-011..020` deb ataladi. Repo ADR’lari (011..027) `docs/STATUS.md` da o‘z nomida qoladi va mazmunan boshqa; yangi qarorlar repo’da ADR-028 dan boshlanadi (v5.0 sharhidan: ADR-028..033). Repo ADR-nomerlari bilan TZ ADR-nomerlari aralashtirilmaydi.
 
 **ADR governance:** `PROPOSED` ≠ implemented or approved. Existing v4.0 **accepted** ADR-003a (COURIER), ADR-003b (no PLATFORM_ADMIN endpoint), ADR-003c (ACCOUNTANT read/export only) remain binding until code evidence and formal supersession. If a proposal contradicts production behavior, do not silently deploy; record migration, customer communication and fallback before change.
+
+### 19.2 Ochiq qarorlar (“Ochiq qaror” — foydalanuvchi hali hal qilmagan; kodga/hujjatga taxmin sifatida kiritilmaydi)
+
+- **Ochiq qaror:** 1 user = 1 kompaniya (bir foydalanuvchi bir nechta kompaniyaga a’zo bo‘la oladimi).
+- **Ochiq qaror:** MFA (qaysi rollar uchun, qaysi bosqichda).
+- **Ochiq qaror:** transactional outbox (hozirgi in-process BullMQ o‘rniga/qo‘shimcha) — §7.6.2 outbox semantikasi bilan moslash.
+- **Ochiq qaror:** qator darajasidagi `HALF_UP` yaxlitlash (1C bilan kopeyka farqi — buxgalter tasdig‘i).
+- **Ochiq qaror:** CSV ajratgich (vergul yoki `;`).
+- **Ochiq qaror:** F2.1 (a) o‘chirilgan mijozda `reverse()/allocate()`, (b) `GET /stock/movements` ruxsati (SALES_AGENT), (c) ochiq buyurtmali mijozni o‘chirish.
+- **Ochiq qaror:** reversal/adjust OWNER-alert summa chegarasi — TBD, foydalanuvchi belgilaydi (ADR-032).
+- **Ochiq qaror:** pilot 1C konfiguratsiyasi (UT 11 / BP 3.0) va buxgalter namunaviy fayli.
+- **Ochiq qaror:** pilot qurilmalar ro‘yxati (`docs/OFFLINE-DEVICE-MATRIX.md`).
 
 ---
 
@@ -1714,6 +1734,7 @@ Quyidagi ommaviy manbalar v4.0 da 2026-10-12 kuni tekshirilgan; **v5.0 bo‘yich
 | v3.x | 2026-yil iyul–avgust (oldingi TZ) | MVP modullari, ma’lumot modeli, UI, offline, 1C eksporti va roadmap jamlangan |
 | **v4.0** | **2026-10-12** | **Strategiya va texnik talablar qayta tuzildi; bozor faktlari va raqobatchilar qayta tekshirildi; raqib haqida isbotsiz kamchilik da’volari olib tashlandi; KPI’lar fact emas, pilot maqsadi sifatida belgilandi; offline/TMA cheklovlari aniqlandi; 1C eksporti pilot konfiguratsiyaga bog‘landi; RLS, ledger, stock concurrency, sync conflict, data protection va acceptance criteria kuchaytirildi; mavjud repo/deploy’ni sababsiz almashtirmaslik qoidasi kiritildi.** |
 | **v5.0** | **2026-10-19** | **O‘zbekiston bozori va raqobat evidence register, wedge ICP, TAM/SAM/SOM metodikasi, buyer objection playbook, defensibility, north-star va monetizatsiya, v0.9 pilot va v1.0 GA gates, SoT/1C split-brain siyosati, DB ledger invariants, security threat model, REST+modular monolith, GTM/ROI, qo‘shimcha release sign-off va ADR-011–020. V4 scope/accepted ADR lar saqlangan; 6/7 role matn ziddiyati tuzatilgan.** |
+| v5.0 (review) | 2026-10-19 | Review qarorlari kiritildi (repo ADR-028..033): faqat Mode A (Mode B v1.1); PENDING_HANDOVER; 1C qo‘lda ACK (ExportJob GENERATED → ACCOUNTING_ACCEPTED/FAILED_REVIEW); 4-eyes v1.1 + OWNER alert; `version` ustunlarisiz (row lock + expectedUnitPrice); `/api/v1` v1.1; “Ichki hisob” atamasi; V5-ADR nomlash; pilot 3 imzo; idempotentlik create/transition ajratildi; yagona yuk profili; RPO 15m faqat GA; ochiq qarorlar §19.2 |
 
 ---
 

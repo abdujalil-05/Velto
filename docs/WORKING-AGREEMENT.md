@@ -1,7 +1,7 @@
 # Ish kelishuvi (Working Agreement)
 
 > Kelishilgan: 2026-10-12 (Parviz bilan). Barcha sessiyalar uchun majburiy. Qoidalar o'zgarsa, shu fayl yangilanadi.
-> Hujjatlar: `CLAUDE.md` (kod qoidalari) · `docs/VELTO-TZ-v4.0.md` (talablar) · `docs/PLAN.md` (reja) · `docs/STATUS.md` (holat).
+> Hujjatlar: `CLAUDE.md` (kod qoidalari) · `docs/VELTO-MASTER-TZ-v5.0-2026-10-19.md` (talablar) · `docs/PLAN.md` (reja) · `docs/STATUS.md` (holat).
 
 ## 1. Rollar
 
