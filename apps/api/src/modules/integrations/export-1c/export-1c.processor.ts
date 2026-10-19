@@ -24,7 +24,7 @@ function collectionMethod(payment: { id: string; method: PaymentMethod | null })
  * upload would leave the accountant looking at `{ "message": "" }` with no
  * way to tell what actually went wrong.
  */
-function describeError(err: unknown): string {
+export function describeError(err: unknown): string {
   if (err instanceof AggregateError) {
     const inner = err.errors.map((e) => describeError(e)).join('; ');
     return inner || err.message || err.name;
