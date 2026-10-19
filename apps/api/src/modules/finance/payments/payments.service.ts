@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { assertClientIdReplayAllowed } from '../../../common/idempotency/client-id-replay';
-import { InvoiceStatus, PaymentMethod, PaymentStatus, Prisma, withSavepoint, type TenantClient } from '@velto/database';
+import { ExportJobStatus, InvoiceStatus, PaymentMethod, PaymentStatus, Prisma, withSavepoint, type TenantClient } from '@velto/database';
+import { lockExport1cShared } from '../../../common/locks/export1c-lock';
 import { AuditLogService, toAuditJson } from '../../../common/audit/audit-log.service';
 import type { AppException } from '../../../common/errors/app-exception';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
@@ -409,13 +410,17 @@ export class PaymentsService {
    * PaymentReversal row first); its allocation rows stay and simply stop
    * counting (VALID_ALLOCATION_WHERE). Lock order matches create()/allocate():
    * payment -> customer -> invoices (createdAt asc), so no deadlock with a
-   * concurrent allocation or new payment.
+   * concurrent allocation or new payment. ADR-025: the shared export1c
+   * advisory lock is taken before ALL of them (export create() takes it
+   * exclusive and holds no row lock first), so reversals run in parallel
+   * with each other but serialize with a concurrent 1C export create().
    */
   async reverse(paymentId: string, reason: string, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
     const trimmedReason = reason?.trim() ?? '';
     if (trimmedReason.length < 3) throw new PaymentReversalReasonRequiredException();
 
+    await lockExport1cShared();
     await tx.$queryRaw(Prisma.sql`SELECT id FROM "Payment" WHERE id = ${paymentId}::uuid FOR UPDATE`);
     const before = await tx.payment.findUnique({ where: { id: paymentId }, include: PAYMENT_INCLUDE });
     if (!before) throw new PaymentNotFoundException();
@@ -489,12 +494,14 @@ export class PaymentsService {
 
   /**
    * Export1cProcessor exports every POSTED payment whose paymentPostedAt is
-   * within [periodFrom, periodTo] of the job. A PENDING/PROCESSING job will,
-   * and a DONE job did, include it — only FAILED jobs exported nothing.
+   * within [periodFrom, periodTo] of the job. QUEUED/PROCESSING will, and
+   * GENERATED/ACCOUNTING_ACCEPTED/FAILED_REVIEW did, include it — only FAILED
+   * exported nothing (ADR-030). Runs after lockExport1cShared() under READ
+   * COMMITTED, so a job committed by a concurrent create() is visible here.
    */
   private async assertNotExportedTo1c(tx: TenantClient, postedAt: Date): Promise<void> {
     const job = await tx.exportJob.findFirst({
-      where: { type: '1c', status: { not: 'FAILED' }, periodFrom: { lte: postedAt }, periodTo: { gte: postedAt } },
+      where: { type: '1c', status: { not: ExportJobStatus.FAILED }, periodFrom: { lte: postedAt }, periodTo: { gte: postedAt } },
       select: { id: true },
     });
     if (job) throw new PaymentExportedTo1cException(job.id);
