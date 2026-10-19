@@ -99,6 +99,8 @@ describe('E2E F5.3: 1C export download / ACK / limits', () => {
     await seedUser(companyA, 'OWNER', ['OWNER']);
     await seedUser(companyA, 'ACCOUNTANT', ['ACCOUNTANT']);
     await seedUser(companyA, 'AGENT', ['SALES_AGENT']);
+    await seedUser(companyA, 'CASHIER', ['CASHIER']);
+    await seedUser(companyA, 'DIRECTOR', ['SALES_DIRECTOR']);
     await seedUser(companyA, 'THROTTLED', ['ACCOUNTANT']);
     await seedUser(companyB, 'OWNER_B', ['OWNER']);
   });
@@ -201,13 +203,27 @@ describe('E2E F5.3: 1C export download / ACK / limits', () => {
       await ackReq('OWNER', job.id, { result: 'ACCEPTED', checksum: HASH }).expect(409);
     });
 
-    it('tenant B => 404; ACCOUNTANT (no integrations.ack1c, decision pending) => 403 + denied audit', async () => {
+    it('tenant B => 404 and the job stays GENERATED', async () => {
       const job = await newJob(companyA, 'GENERATED');
       await ackReq('OWNER_B', job.id, { result: 'ACCEPTED', checksum: HASH }).expect(404);
+      expect((await dbJob(companyA, job.id)).status).toBe('GENERATED');
+    });
+
+    it('ADR-003c exception: ACCOUNTANT holds integrations.ack1c => ACK 2xx, acknowledgedBy = accountant, audit export.ack', async () => {
+      const job = await newJob(companyA, 'GENERATED');
+      const res = await ackReq('ACCOUNTANT', job.id, { result: 'ACCEPTED', checksum: HASH }).expect(201);
+      expect(res.body.status).toBe('ACCOUNTING_ACCEPTED');
+      expect((await dbJob(companyA, job.id)).acknowledgedBy).toBe(tokens.ACCOUNTANT!.userId);
+      expect(await audits(companyA, 'export.ack', job.id)).toHaveLength(1);
+    });
+
+    it.each([['AGENT'], ['CASHIER'], ['DIRECTOR']])('%s (no integrations.ack1c) => 403 + auth.permission_denied audit, job unchanged', async (who) => {
+      const job = await newJob(companyA, 'GENERATED');
       const traceId = `trace-ack-${randomUUID()}`;
-      await ackReq('ACCOUNTANT', job.id, { result: 'ACCEPTED', checksum: HASH }).set('x-request-id', traceId).expect(403);
+      await ackReq(who, job.id, { result: 'ACCEPTED', checksum: HASH }).set('x-request-id', traceId).expect(403);
       const rows = await tenantPrisma.run(companyA, (tx) => tx.auditLog.findMany({ where: { action: 'auth.permission_denied', traceId } }));
       expect(rows).toHaveLength(1);
+      expect(rows[0]!.newValue).toMatchObject({ permission: 'integrations.ack1c' });
       expect((await dbJob(companyA, job.id)).status).toBe('GENERATED');
     });
   });

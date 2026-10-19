@@ -73,6 +73,14 @@ describe('E2E F1.4: ACCOUNTANT restrictions', () => {
     ['stock adjust', 'post', '/stock/adjust', 'stock.adjust'],
     ['users create', 'post', '/users', 'users.create'],
     ['settings update', 'patch', '/settings', 'settings.update'],
+    // ADR-003c: ACCOUNTANT's only write is integrations.ack1c — every other write stays 403.
+    ['payment reverse (F2.1)', 'post', `/payments/${id}/reverse`, 'payments.reverse'],
+    ['payment handover accept (ADR-029)', 'post', `/payments/${id}/handover/accept`, 'payments.handover'],
+    ['payment handover reject (ADR-029)', 'post', `/payments/${id}/handover/reject`, 'payments.handover'],
+    ['customer block', 'post', `/customers/${id}/block`, 'customers.update'],
+    ['purchase order create', 'post', '/purchases/orders', 'purchases.create'],
+    ['supplier create', 'post', '/purchases/suppliers', 'purchases.create'],
+    ['reconciliation run', 'post', '/reconciliation/run', 'reconciliation.fix'],
   ];
 
   it.each(denied)('%s => 403 + auth.permission_denied audit', async (_label, method, path, permission) => {

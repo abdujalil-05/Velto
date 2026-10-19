@@ -25,11 +25,12 @@ describe('export1c advisory lock (ADR-025, real Postgres + RLS)', () => {
   const export1c = new Export1cService(tenantPrisma, fakeQueue, auditLog);
   const stock = new StockService(tenantPrisma, auditLog);
   const DAY = 24 * 3600 * 1000;
-  const period = () => ({
-    from: new Date(Date.now() - DAY).toISOString().slice(0, 10),
-    to: new Date(Date.now() + DAY).toISOString().slice(0, 10),
-    format: 'EXCEL' as const,
-  });
+  // 1C export periods must end yesterday (Asia/Tashkent): the payment is posted "yesterday", the period is that one day.
+  const yesterday = () => new Date(Date.now() - DAY);
+  const period = () => {
+    const day = yesterday().toLocaleDateString('en-CA', { timeZone: 'Asia/Tashkent' });
+    return { from: day, to: day, format: 'EXCEL' as const };
+  };
 
   afterAll(async () => {
     await prisma.$disconnect();
@@ -57,8 +58,11 @@ describe('export1c advisory lock (ADR-025, real Postgres + RLS)', () => {
     const { customer } = await tenantPrisma.run(user.companyId, () =>
       customers.create({ code: `X1C-${Date.now()}-${Math.random()}`, name: 'X1C Customer' }, user),
     );
-    const p = await tenantPrisma.run(user.companyId, () =>
-      payments.create({ customerId: (customer as { id: string }).id, amount: 10000, method: 'TRANSFER' }, user),
+    // Inserted directly with a past createdAt: payments.create() always posts "now", which a closed-period export cannot cover.
+    const p = await tenantPrisma.run(user.companyId, (tx) =>
+      tx.payment.create({
+        data: { companyId: user.companyId, number: `PAY-X1C-${Date.now()}-${Math.floor(Math.random() * 1e9)}`, customerId: (customer as { id: string }).id, amount: 10000, method: 'TRANSFER', createdAt: yesterday() },
+      }),
     );
     return p.id;
   }
