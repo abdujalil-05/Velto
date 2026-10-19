@@ -8,10 +8,11 @@ vi.mock('@sentry/node', () => ({ captureException: vi.fn() }));
 function mockHost() {
   const json = vi.fn();
   const status = vi.fn(() => ({ json }));
+  const setHeader = vi.fn();
   const host = {
-    switchToHttp: () => ({ getResponse: () => ({ status }) }),
+    switchToHttp: () => ({ getResponse: () => ({ status, setHeader }) }),
   } as unknown as ArgumentsHost;
-  return { host, status, json };
+  return { host, status, json, setHeader };
 }
 
 /** Silences Nest's console output and lets the level (warn vs error) be asserted. */
@@ -189,6 +190,62 @@ describe('AllExceptionsFilter', () => {
       expect(status).toHaveBeenCalledWith(HttpStatus.INTERNAL_SERVER_ERROR);
       expect(json.mock.calls[0]![0].code).toBe('HTTP_500');
       expect(logger.error).toHaveBeenCalledTimes(1);
+      expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('DB pool exhaustion (SERVICE_BUSY)', () => {
+    let logger: ReturnType<typeof spyOnLogger>;
+    beforeEach(() => {
+      logger = spyOnLogger();
+      vi.mocked(Sentry.captureException).mockClear();
+    });
+    afterEach(() => vi.restoreAllMocks());
+
+    const prismaErr = (code: string, message: string) => Object.assign(new Error(message), { code });
+
+    it.each([
+      ['P2024', 'Timed out fetching a new connection from the connection pool.'],
+      ['P2028', 'Unable to start a transaction in the allocated time'],
+      ['P2028', 'Unable to start a transaction in the given time.'],
+    ])('maps %s (%s) to 503 SERVICE_BUSY with Retry-After, warn only, no Sentry', (code, message) => {
+      const filter = new AllExceptionsFilter();
+      const { host, status, json, setHeader } = mockHost();
+
+      filter.catch(prismaErr(code, message), host);
+
+      expect(status).toHaveBeenCalledWith(HttpStatus.SERVICE_UNAVAILABLE);
+      const body = json.mock.calls[0]![0];
+      expect(body.code).toBe('SERVICE_BUSY');
+      expect(Object.keys(body.message).sort()).toEqual(['en', 'ru', 'uz']);
+      expect(setHeader).toHaveBeenCalledWith('Retry-After', '5');
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+    });
+
+    it('keeps P2028 "Transaction already closed" (timeout inside a tx) as 500 + Sentry', () => {
+      const filter = new AllExceptionsFilter();
+      const { host, status, json, setHeader } = mockHost();
+
+      filter.catch(
+        prismaErr('P2028', 'Transaction API error: Transaction already closed: A commit cannot be executed on an expired transaction. The timeout for this transaction was 5000 ms'),
+        host,
+      );
+
+      expect(status).toHaveBeenCalledWith(HttpStatus.INTERNAL_SERVER_ERROR);
+      expect(json.mock.calls[0]![0].code).toBe('HTTP_500');
+      expect(setHeader).not.toHaveBeenCalled();
+      expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps an unrelated error as 500 + Sentry', () => {
+      const filter = new AllExceptionsFilter();
+      const { host, status } = mockHost();
+
+      filter.catch(new Error('boom'), host);
+
+      expect(status).toHaveBeenCalledWith(HttpStatus.INTERNAL_SERVER_ERROR);
       expect(Sentry.captureException).toHaveBeenCalledTimes(1);
     });
   });

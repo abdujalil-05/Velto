@@ -71,6 +71,10 @@ export const envSchema = z.object({
   QUEUE_ENQUEUE_TIMEOUT_MS: z.coerce.number().int().min(100).max(60_000).default(DEFAULT_QUEUE_ENQUEUE_TIMEOUT_MS),
   // ADR-047: an orphaned QUEUED export job older than this is failed. Min 15 minutes.
   ABANDONED_QUEUED_MS: z.coerce.number().int().min(15 * 60_000).default(DEFAULT_ABANDONED_QUEUED_MS),
+  // Prisma pool sizing; bounds/defaults mirror packages/database/src/pool-config.ts (kept in sync by env.schema.test.ts).
+  PRISMA_POOL_SIZE: z.coerce.number().int().min(1).max(95).default(30),
+  PRISMA_SYSTEM_POOL_SIZE: z.coerce.number().int().min(1).max(95).default(5),
+  PRISMA_POOL_TIMEOUT_S: z.coerce.number().int().min(1).max(120).default(10),
   S3_ENDPOINT: z.string().min(1),
   S3_REGION: z.string().default('us-east-1'),
   S3_ACCESS_KEY: z.string().min(1),

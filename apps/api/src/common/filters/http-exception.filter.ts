@@ -109,6 +109,31 @@ function describeOverflow(exception: unknown): string {
   return parts.length > 0 ? parts.join(' ') : String(exception);
 }
 
+const SERVICE_BUSY_MESSAGE: LocalizedMessage = {
+  uz: "Server band — birozdan so'ng qayta urinib ko'ring",
+  ru: 'Сервер занят — повторите попытку чуть позже',
+  en: 'Server is busy — please retry shortly',
+};
+const SERVICE_BUSY_RETRY_AFTER_SECONDS = 5;
+
+/** P2028 text when the transaction could not even be opened (nothing was written). */
+const TX_START_TIMEOUT_PATTERN = /Unable to start a transaction in the (?:given|allocated) time/i;
+
+/**
+ * Pool exhaustion (P2024) and tx-start timeout (P2028 "Unable to start...")
+ * both fail BEFORE any statement ran, so a retry is safe -> 503. The other
+ * P2028 shapes ("Transaction already closed", "expired transaction", "not
+ * found") mean the timeout hit INSIDE an open transaction: the outcome may be
+ * partially applied, so they must stay a 500 (and reach Sentry), never a
+ * retry-me 503.
+ */
+function isPoolBusy(exception: unknown): boolean {
+  if (!(exception instanceof Error) || !isPrismaKnownRequestError(exception)) return false;
+  const code = (exception as { code?: unknown }).code;
+  if (code === 'P2024') return true;
+  return code === 'P2028' && TX_START_TIMEOUT_PATTERN.test(exception.message);
+}
+
 /**
  * Normalizes every error response to `{ code, message, details }` (7.1),
  * with `message` always in uz/ru/en (9.1/14.6). Never leaks a stack trace
@@ -136,6 +161,17 @@ export class AllExceptionsFilter implements ExceptionFilter {
       this.logger.warn(`Rejected out-of-range numeric input (SQLSTATE 22003): ${describeOverflow(exception)}`);
       response.status(HttpStatus.BAD_REQUEST).json(
         this.withTrace({ code: 'NUMERIC_OUT_OF_RANGE', message: NUMERIC_OUT_OF_RANGE_MESSAGE }),
+      );
+      return;
+    }
+
+    // Warn-level, not Sentry: transient load shedding, not a defect.
+    if (isPoolBusy(exception)) {
+      const { code, message } = exception as Error & { code: string };
+      this.logger.warn(`DB pool busy (${code}) traceId=${getTraceId() ?? '-'}: ${message.slice(0, 300)}`);
+      response.setHeader('Retry-After', String(SERVICE_BUSY_RETRY_AFTER_SECONDS));
+      response.status(HttpStatus.SERVICE_UNAVAILABLE).json(
+        this.withTrace({ code: 'SERVICE_BUSY', message: SERVICE_BUSY_MESSAGE }),
       );
       return;
     }
