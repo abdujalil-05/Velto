@@ -12,7 +12,50 @@
 ## Stsenariy (`scripts/load/velto-load.js`, `run.sh`, `prepare-load-data.sh`, `start-api.sh`)
 Aralash profil: ~20% agent (sync push 20 hujjat + 2 pull), ~15-20% yozuv zanjiri (buyurtma yaratish -> tasdiqlash -> yetkazish), 1 kassir (handover accept), qolgani o'qish (mahsulot/mijoz/narx/qoldiq/buyurtma/balans, + dashboard/sales/overview hisobotlari). `REPORTS=0` hisobotlarsiz variant (sababni ajratish uchun). 90-120 s. 429 va 5xx va ulanish xatolari alohida sanaladi.
 
-## Yakuniy qayta o'lchov: (A) hisobotsiz vs (B) hisobotli (2026-10-20, kod: 4f145f5 — kesh, `@TenantTx(15s)`, invoiceDebtAsOfMany, SalesOrder(companyId,createdAt) indeksi, 40P01->503)
+## Yangi kod bilan qayta o'lchov (2026-10-20, kod: eba0895 — sync push hujjat-bo'yicha tx, hisobot semafori per-tenant kvota, dashboard kesh, indeks, 40P01 tuzatish, pool 30, health kesh)
+**Lokal, SLA emas.** Muhit yuqoridagidek; `apps/api/dist` qayta qurildi (yangilangani tekshirildi), `velto_load` `db:load:reset`+`seed` bilan qayta yaratildi, parol sessiya uchun tasodifiy (hech qayerga yozilmagan). 24 run x 120 s; har konfiguratsiya 2 marta (cold = yangi API jarayoni, warm = keyingi run). (A) hisobotsiz aralashma, (B) hisobotli aralashma, (C) sync-push dominant (`MODE=syncheavy`, yangi: agentlar 50% (maks 30) + ~20% yozuv + 1 kassir + o'qish; hisobotsiz). Hamma 24 run: verify-integrity 0 topilma, `pg_stat_database.deadlocks` 0. Lock ulushi = 2 s oraliqda `pg_stat_activity` (velto_app, state != idle) namunalarida `wait_event_type=Lock` ulushi.
+
+p95 ms read / write(order-create+confirm+deliver+handover) / sync-push-20; keyingi qatorda 5xx/503 (r1c r1w r2c r2w):
+| Konf. | r1 cold | r1 warm | r2 cold | r2 warm |
+|---|---|---|---|---|
+| A50 p95 read/write/sync | 180/518/7968 | 89/193/3709 | 252/707/9100 | 107/251/4372 |
+| A50 5xx/503 | 0/0 | 0/0 | 0/0 | 0/0 |
+| B50 p95 read/write/sync | 59/97/2674 | 95/170/3254 | 367/1003/11316 | 142/389/7845 |
+| B50 5xx/503 | 0/197 | 0/212 | 0/300 | 0/311 |
+| A100 p95 read/write/sync | 1024/2572/23820 | 280/1232/18663 | 85/264/5855 | 83/211/6038 |
+| A100 5xx/503 | 11/0 | 0/0 | 0/0 | 0/0 |
+| B100 p95 read/write/sync | 114/470/7480 | 182/648/11437 | 119/436/8294 | 213/802/11991 |
+| B100 5xx/503 | 0/887 | 0/895 | 0/874 (+13 conn) | 0/859 |
+| C50 p95 read/write/sync | 121/453/11238 | 113/407/8531 | 371/1007/12111 | 163/873/12597 |
+| C50 order-create p95 | 1068 | 812 | 1781 | 1578 |
+| C50 5xx/503 | 0/0 | 0/0 | 0/0 | 0/0 |
+| C100 p95 read/write/sync | 935/1797/22701 | 645/2231/27892 | 307/1036/18187 | 227/940/18140 |
+| C100 order-create p95 | 3414 | 3760 | 1681 | 1750 |
+| C100 5xx/503 | 5/0 | 12/0 | 2/0 | 0/0 |
+
+sync-push-20 p50 (ms): A50 1566/1300/3838/2433; B50 988/1167/5316/4689; C50 1470/2722/7008/7916; C100 8926/22228/5715/7553 (bitta so'rov = 20 hujjat ketma-ket, har biri o'z tx i). Dashboard hit p95 (B50): 913/1137/2803/1776; (B100): 1653/2768/2472/3666; miss (n=3-4/run): 50 VU 5.9-13.2 s, 100 VU 8.5-14.9 s.
+Lock ulushi (4 run jami): A50 37%, B50 29%, A100 53%, B100 42%, C50 70%, C100 71%. "Transaction already closed" (API logidan, run bo'yicha): A100 34/3/0/0; C50 0/0/6/0; C100 30/38/12/3; qolganlari 0. Sync hujjat tx timeout endi 500 emas, shu hujjat uchun `RETRY` natijasi (k6 check "20 ACCEPTED/DUPLICATE" yiqilgan: A100 r1cold 22/103 so'rov, C50 r2cold 6/187, C100 25/128, 3/213).
+
+| Mezon | Oldin (4f145f5) | Keyin | Holat |
+|---|---|---|---|
+| 50 VU read p95 <= 300 | A 47-247, B 1159-1719 | A 89-252, B 59-367 | A **O'TDI** 4/4; B 3/4 (B50 r2cold 367) |
+| 50 VU write p95 <= 700 | A 186-1219, B 3887-5046 | A 193-707, B 97-1003 | A 3/4 (r2cold 707 — chegarada), B 3/4 (r2cold 1003) — **qisman O'TMADI**; C50 3/4 emas: 453/407/1007/873 |
+| 100 VU 5xx = 0 | A 27-126, B 99-110 | A 11/0/0/0; B 0/0/0/0; C 5/12/2/0 | A,C **O'TMADI** (cold/warm tebranish); B 5xx o'tdi, lekin 503 859-895 |
+| 503 SERVICE_BUSY | B100 567-778 | B50 197-311, B100 859-895; A,C ~0 (A100 11, C100 5-12 ichki) | hammasi `/reports/*` (per-tenant semafor: 1 parallel + 5 navbat, bitta tenant => ko'p rad); retryable |
+| Dashboard p95 <= 2 s | hit 5.8-12.2 s | hit B50 0.9-2.8 s (3/4 o'tdi), B100 1.7-3.7 s (1/4); miss 5.9-14.9 s | hit qisman, miss **O'TMADI** |
+| 'Transaction already closed' | 446+ (500) | A100 37, C50 6, C100 83 (RETRY/order-create 5xx) | 5xx **kamaydi**, nolga tushmadi |
+| verify-integrity = 0 | 0 | 0 (24/24) | **O'TDI** |
+| deadlocks | 0 | 0 | **O'TDI** |
+
+**Xulosa va sabablar**
+1. Yaxshilandi: 5xx 100-126 -> 0-12 (asosan 0); hisobotli aralashmada read p95 1.2-1.7 s -> 59-367 ms, write 3.9-5.0 s -> 97-1003 ms (semafor: ortiqcha hisobotlar tezda 503, pool band bo'lmaydi); sync 500 lar yo'q.
+2. Hali o'tmaydi: (a) sync-push-20 p95 2.7-28 s — hujjatlar ketma-ket, har biri lock kutadi; Lock ulushi C da 70%, A100 53% — to'sqich hanuz bitta qatorli resurs (DocumentCounter 'SO' + Customer FOR UPDATE; `sales.service.ts:365`, `document-numbering.service.ts:44`), tx lari qisqargan lekin hanuz ketma-ket. Bu run'da lock ob'ekti alohida o'lchanmadi (oldingi run pg_locks tahliliga tayanadi). (b) C50 write p95 453-1007 va order-create p95 0.8-1.8 s: sync agentlar bilan counter navbati. (c) 100 VU cold: A100 r1cold (read p95 1024, sync 23.8 s, 11 5xx), C100 r1 — sovuq jarayon + lock navbati 5 s tx timeout dan oshadi (`TenantContextInterceptor` default 5 s, order-create). (d) Dashboard miss 6-15 s — keshsiz hisoblash `report-sql.ts` hanuz og'ir, semafor navbat kutishini qo'shadi; hit B100 da 1.7-3.7 s (semafor navbati).
+3. B da 503 ulushi 37% (50 VU) / 66% (100 VU) hisobotlarning — sinov bitta tenantdan (per-tenant kvota 1+5 `env.schema.ts:10-11`); ko'p tenantli prod uchun kvota umumiy emas, shuning uchun lokal natija bu yerda qattiq.
+4. Variatsiya katta (r2cold vs r1warm 2-5x): bitta laptop, 2 takror.
+
+**Takliflar (prod kodiga tegilmadi)**: `document-numbering.service.ts:44` hujjat raqamini tx oxiriga yoki per-user/blokli ajratish (counter bloki oldindan 20 ga), `sync.service.ts` hujjat tx timeout/lock_timeout ni qisqartirish va RETRY ni mijoz tomonida exponential backoff bilan; order-create (`TenantContextInterceptor` 5 s) uchun `@TenantTx({timeout})`; dashboard miss uchun fon isitish (cron) yoki materialized agregat.
+
+## Oldingi: Yakuniy qayta o'lchov: (A) hisobotsiz vs (B) hisobotli (2026-10-20, kod: 4f145f5 — kesh, `@TenantTx(15s)`, invoiceDebtAsOfMany, SalesOrder(companyId,createdAt) indeksi, 40P01->503)
 **Lokal, SLA emas.** Muhit yuqoridagidek; pool default 30; API qayta qurildi (dist eskirgan edi) va har juftlikdan oldin restart (cold = yangi jarayon, warm = keyingi run). `velto_load` qayta yaratildi (migratsiya `20261020100000` qo'llangan), parol sessiya uchun tasodifiy, hech qayerga yozilmagan. Har run 120 s, har konfiguratsiya 2 marta (cold/warm, cold2/warm2). (A) `REPORTS=0`; (B) `REPORTS=1` — hisobotlar jami so'rovlarning ~12-13% i (maqsad 5-10% dan biroz ko'p). Dashboard hit/miss `cached` maydoni bo'yicha alohida (`dash_dur`). Hamma 16 run: verify-integrity 0 topilma, `pg_stat_database.deadlocks` 0.
 
 p95 ms (read / write / sync-push-20), 5xx (503 alohida):

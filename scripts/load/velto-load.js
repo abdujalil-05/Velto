@@ -30,8 +30,8 @@ export const tDash = new Trend('dash_dur', true);
 
 // Allocation: ~10-20% write chains, ~20% agents (sync), 1 cashier, rest reads.
 const nWrite = MODE === 'read' || MODE === 'sync' ? 0 : Math.max(1, Math.round(VUS * (VUS >= 100 ? 0.15 : 0.2)));
-const nAgent = MODE === 'read' || MODE === 'write' ? 0 : Math.max(1, Math.round(VUS * 0.2));
-const nCash = MODE === 'mixed' ? 1 : 0;
+const nAgent = MODE === 'read' || MODE === 'write' ? 0 : Math.max(1, Math.min(30, Math.round(VUS * (MODE === 'syncheavy' ? 0.5 : 0.2)))); // syncheavy = (C) sync-push dominant, capped by 30 agent users
+const nCash = MODE === 'mixed' || MODE === 'syncheavy' ? 1 : 0;
 const nRead = MODE === 'write' || MODE === 'sync' ? 0 : Math.max(1, VUS - nWrite - nAgent - nCash);
 if (nWrite + nRead > FX.owners.length) fail(`not enough owner users (${FX.owners.length}) for ${nWrite + nRead} VUs`);
 if (nAgent > FX.agents.length) fail('not enough agent users');
