@@ -1,10 +1,14 @@
-import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { assertClientIdReplayAllowed } from '../../common/idempotency/client-id-replay';
 import { ClientIdConflictException } from '../../common/errors/client-id-conflict.exception';
 import { ConfigService } from '@nestjs/config';
-import { Prisma, SyncEntity, withSavepoint } from '@velto/database';
+import { Prisma, SyncEntity, type TenantClient } from '@velto/database';
+import { AuditLogService } from '../../common/audit/audit-log.service';
+import { PermissionDeniedException } from '../../common/auth/auth-exceptions';
+import { loadAuthenticatedUser } from '../../common/auth/load-authenticated-user';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { GENERIC_MESSAGES } from '../../common/filters/http-exception.filter';
+import { TenantContext } from '../../common/tenant/tenant-context';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { CustomersService } from '../customers/customers.service';
 import { CreatePaymentDto } from '../finance/dto/create-payment.dto';
@@ -38,6 +42,9 @@ export type {
 /** TZ 10.3 default; overridable via SYNC_PUSH_MAX_BATCH (env.schema.ts). */
 export const SYNC_PUSH_DEFAULT_MAX_BATCH = 20;
 
+/** @RequirePermission of POST /sync/push; re-checked per document (§8.4). */
+export const SYNC_PUSH_PERMISSION = 'field.create';
+
 /** Mirrors env.schema.ts SYNC_PULL_LOOKBACK_SECONDS default. */
 export const SYNC_PULL_DEFAULT_LOOKBACK_SECONDS = 60;
 
@@ -50,6 +57,7 @@ export class SyncService {
     private readonly visits: VisitsService,
     private readonly customers: CustomersService,
     private readonly config: ConfigService,
+    private readonly auditLog: AuditLogService = new AuditLogService(),
   ) {}
 
   /** Effective per-request document cap — validated by env.schema.ts at boot, re-clamped here defensively. */
@@ -250,112 +258,132 @@ export class SyncService {
    * per-document outcome (ACCEPTED | DUPLICATE | REJECTED | CONFLICT | RETRY)
    * so the client's queue can resolve, retry, or surface each one on its own
    * — one document's failure never blocks or rolls back the others.
+   *
+   * F7 (route is @TenantTx({ scope: 'handler' })): no request-wide tx. EACH
+   * document runs in its OWN short tenantPrisma.run() tx (5 s default, not
+   * raised), so its Customer / StockLevel / DocumentCounter locks are released
+   * at its own COMMIT and a concurrent POST /orders waits for at most one
+   * document, never the whole batch. One document = one customer + one
+   * counter, so the in-tx lock order of DocumentNumberingService (advisory ->
+   * header -> Customer -> StockLevel -> DocumentCounter -> INSERT) holds per
+   * document and no batch-level customer pre-lock / savepoint is needed.
+   * Processing order = counter docType asc (VISIT: none, then PAY, then SO),
+   * stable within a type; results are returned in input order. Documents of
+   * one batch never read each other's rows (an order is SUBMITTED with no
+   * invoice, an agent payment is PENDING_HANDOVER without allocation).
    */
   async push(documents: SyncPushDocumentDto[], user: AuthenticatedUser): Promise<SyncPushResponse> {
     const max = this.maxBatch;
     if (documents.length > max) throw new SyncBatchTooLargeException(max, documents.length);
 
-    await this.lockBatchCustomers(documents);
-    // F7 40P01: each document's DocumentCounter row lock is held to COMMIT, so
-    // a batch [ORDER, PAYMENT] next to a batch [PAYMENT, ORDER] (different
-    // customers) took SO/PAY in opposite order and deadlocked. Process by
-    // counter docType asc (VISIT: none, then PAY, then SO) — stable within a
-    // type, results returned in input order. Safe: the three types never read
-    // each other's rows within a batch (an order is SUBMITTED, no invoice, so
-    // a payment's FIFO cannot see it). Also shortens the SO counter hold.
     const results: SyncPushResultItem[] = new Array(documents.length);
     const order = documents.map((doc, i) => ({ doc, i })).sort((a, b) => PROCESS_RANK[a.doc.type] - PROCESS_RANK[b.doc.type] || a.i - b.i);
+    let revoked: Revocation | undefined;
     for (const { doc, i } of order) {
-      results[i] = await this.pushOne(doc, user);
+      if (revoked) {
+        // Access lost mid-batch: same outcome for the rest, no further tx / audit spam.
+        results[i] = revocationResult(doc, revoked);
+        continue;
+      }
+      const outcome = await this.pushOne(doc, user);
+      results[i] = outcome.item;
+      revoked = outcome.revoked;
     }
     return { results };
   }
 
   /**
-   * The whole batch shares one request transaction, and PaymentsService.create()
-   * takes a Customer FOR UPDATE per document that is held to commit. Two
-   * batches touching the same customers in opposite order (A→B vs B→A) would
-   * deadlock (40P01) and fail both batches. Locking every customer the batch
-   * references up front, in one global order (id asc), makes the per-document
-   * locks re-entrant no-ops and the lock graph acyclic. Plain lockForUpdate
-   * (no deletedAt check): a missing/deleted customer must not fail the batch —
-   * each document still gets its own CustomerNotFound via lockActiveOrThrow.
-   * Payloads are unvalidated here, so only well-formed UUIDs are considered
-   * (a bad ::uuid cast would abort the whole transaction).
+   * One document = one tenant tx. §8.4: the user's isActive / roles /
+   * permissions are re-read by PK at the start of every document's tx, so a
+   * deactivation or role removal committed mid-batch applies to the next
+   * document: no permission -> REJECTED PERMISSION_DENIED + audit (what the
+   * request-level 403 gives); user or company deactivated (same rule as
+   * TenantContextInterceptor's 401) -> REJECTED HTTP_401. Audit rows written by the
+   * services commit with the document. The result is captured inside the tx;
+   * an afterCommit callback failing after COMMIT is only logged and never
+   * turns a committed document into RETRY.
    */
-  private async lockBatchCustomers(documents: SyncPushDocumentDto[]): Promise<void> {
-    const ids = new Set<string>();
-    for (const doc of documents) {
-      if (doc.type !== SyncDocType.PAYMENT && doc.type !== SyncDocType.ORDER) continue;
-      const customerId = (doc.payload as Record<string, unknown> | undefined)?.customerId;
-      if (typeof customerId === 'string' && UUID_RE.test(customerId)) ids.add(customerId.toLowerCase());
+  private async pushOne(doc: SyncPushDocumentDto, user: AuthenticatedUser): Promise<{ item: SyncPushResultItem; revoked?: Revocation }> {
+    let item: SyncPushResultItem | undefined;
+    let revoked: Revocation | undefined;
+    let committed = false;
+    try {
+      await this.tenantPrisma.run(user.companyId, async (tx) => {
+        // Callbacks run only after COMMIT and all run even if another throws.
+        TenantContext.afterCommit(() => {
+          committed = true;
+        });
+        const actor = await loadAuthenticatedUser(tx, user.id, user.companyId);
+        if (!actor) {
+          revoked = 'INACTIVE';
+          item = revocationResult(doc, revoked);
+          return;
+        }
+        if (!actor.permissions.includes(SYNC_PUSH_PERMISSION)) {
+          await this.auditLog.log(tx, {
+            companyId: user.companyId,
+            userId: actor.id,
+            action: 'auth.permission_denied',
+            entity: 'User',
+            entityId: actor.id,
+            newValue: { permission: SYNC_PUSH_PERMISSION, method: 'POST', path: '/sync/push', clientId: doc.clientId },
+          });
+          revoked = 'DENIED';
+          item = revocationResult(doc, revoked);
+          return;
+        }
+        item = await this.applyDocument(tx, doc, actor);
+      });
+      return { item: item!, revoked };
+    } catch (error) {
+      if (committed && item) {
+        logger.error(`sync push ${doc.type} ${doc.clientId}: committed, afterCommit side effect failed (${error instanceof Error ? error.name : 'error'})`);
+        return { item, revoked };
+      }
+      return { item: await this.toFailureResult(doc, error, user) };
     }
-    if (ids.size === 0) return;
-    // One statement; ORDER BY id makes Postgres take the row locks in id asc.
-    await this.tenantPrisma.client.$queryRaw(
-      Prisma.sql`SELECT id FROM "Customer" WHERE id = ANY(${[...ids].sort()}::uuid[]) ORDER BY id FOR UPDATE`,
-    );
   }
 
-  private async pushOne(doc: SyncPushDocumentDto, user: AuthenticatedUser): Promise<SyncPushResultItem> {
-    const tx = this.tenantPrisma.client;
-
-    try {
-      // One SAVEPOINT per document, so "each independently" (see push()'s
-      // doc) actually holds: the whole batch shares the single request
-      // transaction opened by TenantContextInterceptor. Without it, a
-      // rejected document keeps whatever it wrote before failing — e.g.
-      // PaymentsService.create() inserts the Payment row *before* allocating
-      // it, so an AllocationExceedsInvoiceException would still commit an
-      // orphan payment (and burn that clientId, which every later retry then
-      // resolves to) alongside the rest of the batch. A document that fails
-      // on a DB error would additionally leave the transaction aborted
-      // (25P02) and take every later document in the batch down with it.
-      // CONFLICT (PRICE_CHANGED) is thrown before any write or SO number is
-      // consumed, and the rollback discards anything else regardless.
-      return await withSavepoint(tx, 'sync_push_doc', async () => {
-        switch (doc.type) {
-          case SyncDocType.ORDER: {
-            // createWithOutcome() reports whether *this* call inserted the
-            // order, so DUPLICATE is exact even when a concurrent push of the
-            // same clientId wins the unique-index race (10.4).
-            const dto = await validatePayload(CreateOrderDto, { ...doc.payload, clientId: doc.clientId });
-            const { order, created } = await this.sales.createWithOutcome(dto, user);
-            return { clientId: doc.clientId, id: order.id, status: created ? 'ACCEPTED' : 'DUPLICATE' };
-          }
-          case SyncDocType.VISIT: {
-            const alreadyExisted = (await tx.visit.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: doc.clientId } } })) !== null;
-            const dto = await validatePayload(CreateVisitDto, { ...doc.payload, clientId: doc.clientId });
-            const visit = await this.visits.create(dto, user);
-            return {
-              clientId: doc.clientId,
-              id: visit.id,
-              status: alreadyExisted ? 'DUPLICATE' : 'ACCEPTED',
-              gpsStatus: visit.gpsStatus,
-              distanceM: visit.distanceM?.toString() ?? null,
-            };
-          }
-          case SyncDocType.PAYMENT: {
-            const alreadyExisted = (await tx.payment.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: doc.clientId } } })) !== null;
-            const dto = await validatePayload(CreatePaymentDto, { ...doc.payload, clientId: doc.clientId });
-            const payment = await this.payments.create(dto, user);
-            // ADR-029: any agent payment (CASH/CARD/TRANSFER) is ACKed as PENDING_HANDOVER ("yo'lda"), not settled.
-            return { clientId: doc.clientId, id: payment.id, status: alreadyExisted ? 'DUPLICATE' : 'ACCEPTED', paymentStatus: payment.status };
-          }
-        }
-        // Unreachable — `type` is already constrained to SyncDocType by
-        // @IsEnum on the DTO — but satisfies the compiler's control-flow
-        // analysis for the declared return type.
-        throw new Error(`Unknown sync document type: ${doc.type as string}`);
-      });
-    } catch (error) {
-      return this.toFailureResult(doc, error, user);
+  private async applyDocument(tx: TenantClient, doc: SyncPushDocumentDto, user: AuthenticatedUser): Promise<SyncPushResultItem> {
+    const byClientId = { companyId_clientId: { companyId: user.companyId, clientId: doc.clientId } };
+    switch (doc.type) {
+      case SyncDocType.ORDER: {
+        // createWithOutcome() reports whether *this* call inserted the
+        // order, so DUPLICATE is exact even when a concurrent push of the
+        // same clientId wins the unique-index race (10.4). CONFLICT
+        // (PRICE_CHANGED) is thrown before any write or SO number is used.
+        const dto = await validatePayload(CreateOrderDto, { ...doc.payload, clientId: doc.clientId });
+        const { order, created } = await this.sales.createWithOutcome(dto, user);
+        return { clientId: doc.clientId, id: order.id, status: created ? 'ACCEPTED' : 'DUPLICATE' };
+      }
+      case SyncDocType.VISIT: {
+        const alreadyExisted = (await tx.visit.findUnique({ where: byClientId, select: { id: true } })) !== null;
+        const dto = await validatePayload(CreateVisitDto, { ...doc.payload, clientId: doc.clientId });
+        const visit = await this.visits.create(dto, user);
+        return {
+          clientId: doc.clientId,
+          id: visit.id,
+          status: alreadyExisted ? 'DUPLICATE' : 'ACCEPTED',
+          gpsStatus: visit.gpsStatus,
+          distanceM: visit.distanceM?.toString() ?? null,
+        };
+      }
+      case SyncDocType.PAYMENT: {
+        const alreadyExisted = (await tx.payment.findUnique({ where: byClientId, select: { id: true } })) !== null;
+        const dto = await validatePayload(CreatePaymentDto, { ...doc.payload, clientId: doc.clientId });
+        const payment = await this.payments.create(dto, user);
+        // ADR-029: any agent payment (CASH/CARD/TRANSFER) is ACKed as PENDING_HANDOVER ("yo'lda"), not settled.
+        return { clientId: doc.clientId, id: payment.id, status: alreadyExisted ? 'DUPLICATE' : 'ACCEPTED', paymentStatus: payment.status };
+      }
     }
+    // Unreachable — `type` is already constrained to SyncDocType by @IsEnum
+    // on the DTO — but satisfies the compiler's control-flow analysis.
+    throw new Error(`Unknown sync document type: ${doc.type as string}`);
   }
 
   /**
    * Maps a failed document to its result status. Runs after the document's
-   * savepoint was rolled back, so the shared transaction is usable again:
+   * own tx was rolled back; any DB lookup here opens a NEW short tx:
    * - P2002 (clientId unique race lost to a concurrent push) → DUPLICATE with
    *   the winner's id; if no such doc exists the violation was something
    *   else → RETRY.
@@ -370,7 +398,9 @@ export class SyncService {
    */
   private async toFailureResult(doc: SyncPushDocumentDto, error: unknown, user: AuthenticatedUser): Promise<SyncPushResultItem> {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-      const existing = await this.findExistingByClientId(doc, user).catch((e: unknown) => (e instanceof ClientIdConflictException ? e : null));
+      const existing = await this.tenantPrisma
+        .run(user.companyId, () => this.findExistingByClientId(doc, user))
+        .catch((e: unknown) => (e instanceof ClientIdConflictException ? e : null));
       if (existing instanceof ClientIdConflictException) return { clientId: doc.clientId, status: 'REJECTED', error: toErrorDetail(existing) };
       if (existing) return { ...existing, clientId: doc.clientId, status: 'DUPLICATE' };
       return retryResult(doc, error);
@@ -420,8 +450,6 @@ export class SyncService {
 
 const logger = new Logger('SyncService');
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 const PRICE_CHANGED = 'PRICE_CHANGED';
 
 /** push() processing order = DocumentCounter docType asc (none < PAY < SO); see DocumentNumberingService. */
@@ -452,6 +480,15 @@ function sqlStateOf(error: unknown): string | undefined {
     return DETERMINISTIC_PRISMA_CODES[error.code];
   }
   return undefined;
+}
+
+/** Access lost mid-batch (§8.4): DENIED = role/permission removed, INACTIVE = user or company deactivated. */
+type Revocation = 'DENIED' | 'INACTIVE';
+
+function revocationResult(doc: SyncPushDocumentDto, revoked: Revocation): SyncPushResultItem {
+  if (revoked === 'DENIED') return { clientId: doc.clientId, status: 'REJECTED', error: toErrorDetail(new PermissionDeniedException(SYNC_PUSH_PERMISSION)) };
+  // User or company deactivated: the interceptor's 401 contract, per document.
+  return { clientId: doc.clientId, status: 'REJECTED', error: toErrorDetail(new UnauthorizedException()) };
 }
 
 function retryResult(doc: SyncPushDocumentDto, error: unknown): SyncPushResultItem {

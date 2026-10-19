@@ -6,6 +6,7 @@ import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { AuditLogService } from '../../common/audit/audit-log.service';
 import { DocumentNumberingService } from '../../common/document-numbering/document-numbering.service';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
+import { grantRole } from '../../common/testing/grant-role';
 import { expectWithinBudget } from '../../common/testing/perf';
 import { CustomersService } from '../customers/customers.service';
 import { PaymentsService } from '../finance/payments/payments.service';
@@ -53,6 +54,7 @@ describe('Writer lock order: sync push x orders x deliver x payments (real Postg
     companyId = (await systemPrisma.company.create({ data: { tenantId: tenant.id, name: 'Lock Order Co' } })).id;
     const mk = async (phone: string, roles: string[], permissions: string[]): Promise<AuthenticatedUser> => {
       const u = await systemPrisma.user.create({ data: { companyId, firstName: 'U', lastName: phone, phone } });
+      await grantRole(companyId, u.id, roles[0]!, permissions); // push re-reads permissions per document (§8.4)
       return { id: u.id, companyId, firstName: 'U', lastName: phone, roles, permissions };
     };
     agent = await mk(`+99890${Date.now() % 10000000}`.slice(0, 13), ['SALES_AGENT'], ['orders.create', 'payments.create', 'field.create']);
@@ -107,10 +109,10 @@ describe('Writer lock order: sync push x orders x deliver x payments (real Postg
 
       const ops: Array<Promise<unknown>> = [
         // sync batches: same customer, plus opposite docType order on other customers (SO/PAY counter inversion).
-        run(() => sync.push([orderDoc(0), paymentDoc(0), orderDoc(1)], agent)),
-        run(() => sync.push([paymentDoc(1), orderDoc(0, true), paymentDoc(0)], agent)),
-        run(() => sync.push([orderDoc(2), paymentDoc(2)], agent)),
-        run(() => sync.push([paymentDoc(2), orderDoc(2, true)], agent)),
+        sync.push([orderDoc(0), paymentDoc(0), orderDoc(1)], agent),
+        sync.push([paymentDoc(1), orderDoc(0, true), paymentDoc(0)], agent),
+        sync.push([orderDoc(2), paymentDoc(2)], agent),
+        sync.push([paymentDoc(2), orderDoc(2, true)], agent),
         // POST /orders (online) on the same customer.
         run(() => sales.create(orderPayload(0), director)),
         run(() => sales.create(orderPayload(0, true), director)),
@@ -147,7 +149,7 @@ describe('Writer lock order: sync push x orders x deliver x payments (real Postg
       i % 7 === 6 ? paymentDoc(i % 3) : { ...orderDoc(i % 3), payload: { ...orderPayload(i % 3), lines: orderPayload(i % 3).lines.slice(0, 2) } },
     );
     const t0 = performance.now();
-    const res = await run(() => sync.push(docs, agent));
+    const res = await sync.push(docs, agent);
     const ms = Math.round(performance.now() - t0);
     console.info(`[PERF] sync push 20 docs: ${ms} ms`);
     expect(res.results.every((r) => r.status === 'ACCEPTED')).toBe(true);
@@ -168,7 +170,7 @@ describe('Writer lock order: sync push x orders x deliver x payments (real Postg
     for (const [kind, make] of kinds) {
       const docs = Array.from({ length: 20 }, (_, i) => make(i));
       const t0 = performance.now();
-      const res = await run(() => sync.push(docs, agent));
+      const res = await sync.push(docs, agent);
       console.info(`[PERF] sync push 20 ${kind}: ${Math.round(performance.now() - t0)} ms`);
       expect(res.results.map((r) => r.status).filter((s) => s !== 'ACCEPTED')).toEqual([]);
     }

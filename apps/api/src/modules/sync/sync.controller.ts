@@ -5,7 +5,8 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { SyncPullQueryDto } from './dto/sync-pull.query';
 import { SyncPushDto } from './dto/sync-push.dto';
-import { SyncService } from './sync.service';
+import { TenantTx } from '../../common/tenant/tenant-tx-options.decorator';
+import { SYNC_PUSH_PERMISSION, SyncService } from './sync.service';
 
 /** 7.3/10: offline-first sync for the agent's Telegram Mini App — gated by the existing `field.*` permissions (M06 Dala). */
 @Controller('sync')
@@ -21,8 +22,10 @@ export class SyncController {
   }
 
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  // F7: auth/RBAC in a short tx, then one short tx PER DOCUMENT (SyncService.push) — no batch-long locks.
   @Post('push')
-  @RequirePermission('field.create')
+  @RequirePermission(SYNC_PUSH_PERMISSION)
+  @TenantTx({ scope: 'handler' })
   push(@Body() dto: SyncPushDto, @CurrentUser() user: AuthenticatedUser) {
     return this.sync.push(dto.documents, user);
   }

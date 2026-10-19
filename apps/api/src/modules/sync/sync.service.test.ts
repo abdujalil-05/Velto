@@ -5,8 +5,10 @@ import { ForbiddenException } from '@nestjs/common';
 import { Prisma, prisma, systemPrisma } from '@velto/database';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { AuditLogService } from '../../common/audit/audit-log.service';
+import { grantRole } from '../../common/testing/grant-role';
 import { envSchema } from '../../common/config/env.schema';
 import { DocumentNumberingService } from '../../common/document-numbering/document-numbering.service';
+import { TenantContext } from '../../common/tenant/tenant-context';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { CustomersService } from '../customers/customers.service';
 import { PaymentsService } from '../finance/payments/payments.service';
@@ -58,6 +60,8 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
       roles: ['SALES_AGENT'],
       permissions: ['orders.create', 'payments.create', 'field.create'],
     };
+    // push re-reads roles/permissions from the DB per document (§8.4).
+    await grantRole(companyId, dbUser.id, 'SALES_AGENT', user.permissions);
 
     await tenantPrisma.run(companyId, async (tx) => {
       const warehouse = await tx.warehouse.create({ data: { companyId, name: 'Sync Test Warehouse' } });
@@ -156,8 +160,7 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
       const visitClientId = randomUUID();
       const paymentClientId = randomUUID();
 
-      const { results } = await tenantPrisma.run(companyId, () =>
-        sync.push(
+      const { results } = await sync.push(
           [
             {
               type: SyncDocType.ORDER,
@@ -182,8 +185,7 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
               payload: { customerId, clientId: paymentClientId, amount: 5000, method: 'CASH' },
             },
           ],
-          user,
-        ),
+        user,
       );
 
       expect(results).toHaveLength(3);
@@ -196,11 +198,9 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
       const skipped = randomUUID();
       const startedAt = new Date().toISOString();
       const doc = { type: SyncDocType.VISIT, clientId: far, payload: { outletId, startedAt, latitude: OUTLET_LAT + 0.01, longitude: OUTLET_LNG, accuracyM: 10, outcome: 'ORDERED' } };
-      const { results } = await tenantPrisma.run(companyId, () =>
-        sync.push(
+      const { results } = await sync.push(
           [doc, { type: SyncDocType.VISIT, clientId: skipped, payload: { outletId, startedAt, permissionDenied: true, outcome: 'SKIPPED', skipReason: 'Yopiq' } }],
-          user,
-        ),
+        user,
       );
       expect(results.map((r) => r.status)).toEqual(['ACCEPTED', 'ACCEPTED']);
       expect(results[0]?.gpsStatus).toBe('OUTSIDE_RADIUS');
@@ -208,7 +208,7 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
       expect(results[1]?.gpsStatus).toBe('NO_PERMISSION');
       const stored = await tenantPrisma.run(companyId, (tx) => tx.visit.findUnique({ where: { companyId_clientId: { companyId, clientId: far } } }));
       expect(stored?.gpsStatus).toBe('OUTSIDE_RADIUS');
-      const again = await tenantPrisma.run(companyId, () => sync.push([doc], user));
+      const again = await sync.push([doc], user);
       expect(again.results[0]?.status).toBe('DUPLICATE');
       expect(again.results[0]?.gpsStatus).toBe('OUTSIDE_RADIUS');
       expect(again.results[0]?.distanceM).toBe(results[0]?.distanceM);
@@ -222,10 +222,10 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
         payload: { customerId, clientId, lines: [{ productId, packagingId, qty: 1 }] },
       };
 
-      const first = await tenantPrisma.run(companyId, () => sync.push([doc], user));
+      const first = await sync.push([doc], user);
       expect(first.results[0]?.status).toBe('ACCEPTED');
 
-      const second = await tenantPrisma.run(companyId, () => sync.push([doc], user));
+      const second = await sync.push([doc], user);
       expect(second.results[0]?.status).toBe('DUPLICATE');
       expect(second.results[0]?.id).toBe(first.results[0]?.id);
     });
@@ -243,8 +243,7 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
       );
       const clientId = randomUUID();
 
-      const { results } = await tenantPrisma.run(companyId, () =>
-        sync.push(
+      const { results } = await sync.push(
           [
             {
               type: SyncDocType.ORDER,
@@ -252,8 +251,7 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
               payload: { customerId: blockedCustomer.id, clientId, lines: [{ productId, packagingId, qty: 1 }] },
             },
           ],
-          user,
-        ),
+        user,
       );
 
       expect(results[0]?.status).toBe('REJECTED');
@@ -264,8 +262,7 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
       const badClientId = randomUUID();
       const goodClientId = randomUUID();
 
-      const { results } = await tenantPrisma.run(companyId, () =>
-        sync.push(
+      const { results } = await sync.push(
           [
             { type: SyncDocType.ORDER, clientId: badClientId, payload: { clientId: badClientId, lines: [] } },
             {
@@ -274,8 +271,7 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
               payload: { customerId, clientId: goodClientId, amount: 1000, method: 'CASH' },
             },
           ],
-          user,
-        ),
+        user,
       );
 
       expect(results[0]?.status).toBe('REJECTED');
@@ -292,7 +288,7 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
       );
       const clientId = randomUUID();
       const doc = { type: SyncDocType.PAYMENT, clientId, payload: { customerId: cust.id, clientId, amount: 3000, method: 'CASH' } };
-      const all = await Promise.all([1, 2, 3].map(() => tenantPrisma.run(companyId, () => sync.push([doc], user))));
+      const all = await Promise.all([1, 2, 3].map(() => sync.push([doc], user)));
       const items = all.map((r) => r.results[0]!);
 
       expect(new Set(items.map((i) => i.id)).size).toBe(1);
@@ -328,8 +324,8 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
         const batch1 = [payDoc(custA.id), ghost, payDoc(custB.id)];
         const batch2 = [payDoc(custB.id), payDoc(custA.id)];
         const settled = await Promise.allSettled([
-          tenantPrisma.run(companyId, () => sync.push(batch1, user)),
-          tenantPrisma.run(companyId, () => sync.push(batch2, user)),
+          sync.push(batch1, user),
+          sync.push(batch2, user),
         ]);
         for (const s of settled) {
           if (s.status === 'rejected') throw s.reason; // e.g. 40P01 deadlock
@@ -340,7 +336,7 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
         expect(r2!.map((r) => r.status)).toEqual(['ACCEPTED', 'ACCEPTED']);
 
         // Same batches again: idempotent by clientId.
-        const again = await tenantPrisma.run(companyId, () => sync.push([...batch2, ...batch1], user));
+        const again = await sync.push([...batch2, ...batch1], user);
         expect(again.results.map((r) => r.status)).toEqual(['DUPLICATE', 'DUPLICATE', 'DUPLICATE', 'REJECTED', 'DUPLICATE']);
         allClientIds.push(...batch1.filter((d) => d !== ghost).map((d) => d.clientId), ...batch2.map((d) => d.clientId));
       }
@@ -377,7 +373,7 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
 
     it('ACCEPTED when expectedUnitPrice equals the server price', async () => {
       const doc = orderDoc({ expectedUnitPrice: '10000.00' });
-      const { results } = await tenantPrisma.run(companyId, () => sync.push([doc], user));
+      const { results } = await sync.push([doc], user);
       expect(results[0]).toMatchObject({ clientId: doc.clientId, status: 'ACCEPTED' });
       expect((await orderByClientId(doc.clientId))?.id).toBe(results[0]?.id);
     });
@@ -385,7 +381,7 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
     it('ACCEPTED as SUBMITTED with no reservation even when qty exceeds on-hand stock (8.4: never dropped; reserve only at confirm)', async () => {
       const reservedBefore = await reservedQty();
       const doc = orderDoc({ qty: 1_000_000 });
-      const { results } = await tenantPrisma.run(companyId, () => sync.push([doc], user));
+      const { results } = await sync.push([doc], user);
       expect(results[0]).toMatchObject({ clientId: doc.clientId, status: 'ACCEPTED' });
       expect((await orderByClientId(doc.clientId))?.status).toBe('SUBMITTED');
       expect(await reservedQty()).toBe(reservedBefore);
@@ -399,7 +395,7 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
       ]);
       const changed = orderDoc({ expectedUnitPrice: '9500', qty: 2 });
       const pay = payDoc();
-      const { results } = await tenantPrisma.run(companyId, () => sync.push([changed, pay], user));
+      const { results } = await sync.push([changed, pay], user);
 
       expect(results[0]?.status).toBe('CONFLICT');
       expect(results[0]?.id).toBeUndefined();
@@ -421,8 +417,8 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
     it('race: two parallel pushes of the same order clientId → exactly one ACCEPTED, one DUPLICATE with the same serverId, one order row', async () => {
       const doc = orderDoc({ expectedUnitPrice: '10000' });
       const settled = await Promise.all([
-        tenantPrisma.run(companyId, () => sync.push([doc], user)),
-        tenantPrisma.run(companyId, () => sync.push([doc], user)),
+        sync.push([doc], user),
+        sync.push([doc], user),
       ]);
       const statuses = settled.map((r) => r.results[0]?.status).sort();
       expect(statuses).toEqual(['ACCEPTED', 'DUPLICATE']);
@@ -432,15 +428,15 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
 
     it('P2002 lost race on clientId → DUPLICATE carrying the existing document id', async () => {
       const doc = orderDoc();
-      const first = await tenantPrisma.run(companyId, () => sync.push([doc], user));
+      const first = await sync.push([doc], user);
       vi.spyOn(sales, 'createWithOutcome').mockRejectedValueOnce(pgError('P2002'));
-      const { results } = await tenantPrisma.run(companyId, () => sync.push([doc], user));
+      const { results } = await sync.push([doc], user);
       expect(results[0]).toMatchObject({ status: 'DUPLICATE', id: first.results[0]?.id });
     });
 
     it('P2002 with no existing doc for the clientId → RETRY (not a duplicate)', async () => {
       vi.spyOn(sales, 'createWithOutcome').mockRejectedValueOnce(pgError('P2002'));
-      const { results } = await tenantPrisma.run(companyId, () => sync.push([orderDoc()], user));
+      const { results } = await sync.push([orderDoc()], user);
       expect(results[0]?.status).toBe('RETRY');
     });
 
@@ -449,15 +445,15 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
       ['40P01 deadlock', pgError('P2034', '40P01')],
       ['55P03 lock timeout', pgError('P2010', '55P03')],
       ['unexpected infra error', new Error('connection reset')],
-    ])('%s → RETRY with a rolled-back savepoint; the rest of the batch still applies', async (_name, failure) => {
+    ])('%s → RETRY with the document tx rolled back; the rest of the batch still applies', async (_name, failure) => {
       const doc = orderDoc();
-      // Real write first, then fail — proves the savepoint discards it.
+      // Real write first, then fail — proves the document tx rollback discards it.
       vi.spyOn(sales, 'createWithOutcome').mockImplementationOnce(async (dto, u) => {
         await sales.create(dto, u);
         throw failure;
       });
       const pay = payDoc();
-      const { results } = await tenantPrisma.run(companyId, () => sync.push([doc, pay], user));
+      const { results } = await sync.push([doc, pay], user);
       expect(results[0]).toMatchObject({ clientId: doc.clientId, status: 'RETRY', error: { code: 'SYNC_RETRY' } });
       expect(results[0]?.error?.message).not.toContain('simulated');
       expect(results[1]?.status).toBe('ACCEPTED');
@@ -469,7 +465,7 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
         tx.customer.create({ data: { companyId, code: `SYNC-F4-BLK-${Date.now()}`, name: 'F4 Blocked', isBlocked: true } }),
       );
       const ok = orderDoc({ expectedUnitPrice: '10000' });
-      const { results } = await tenantPrisma.run(companyId, () => sync.push([orderDoc({ customer: blocked.id }), ok], user));
+      const { results } = await sync.push([orderDoc({ customer: blocked.id }), ok], user);
       expect(results[0]?.status).toBe('REJECTED');
       expect(results[0]?.error?.code).toBe('SALES_CUSTOMER_BLOCKED');
       expect(results[0]?.error?.messages).toEqual({ uz: expect.any(String), ru: expect.any(String), en: expect.any(String) });
@@ -478,7 +474,7 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
 
     it('REJECTED for a permission failure (plain ForbiddenException → HTTP_403 with trilingual copy)', async () => {
       vi.spyOn(sales, 'createWithOutcome').mockRejectedValueOnce(new ForbiddenException());
-      const { results } = await tenantPrisma.run(companyId, () => sync.push([orderDoc()], user));
+      const { results } = await sync.push([orderDoc()], user);
       expect(results[0]).toMatchObject({ status: 'REJECTED', error: { code: 'HTTP_403', messages: { en: 'Forbidden' } } });
     });
 
@@ -486,11 +482,11 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
       const small = new SyncService(tenantPrisma, sales, payments, visits, customers, new ConfigService({ SYNC_PUSH_MAX_BATCH: 2 }));
       expect(small.maxBatch).toBe(2);
       const docs = [payDoc(), payDoc(), payDoc()];
-      const err = await tenantPrisma.run(companyId, () => small.push(docs, user)).catch((e: unknown) => e);
+      const err = await small.push(docs, user).catch((e: unknown) => e);
       expect((err as { getResponse(): { code: string } }).getResponse().code).toBe('SYNC_BATCH_TOO_LARGE');
       const written = await tenantPrisma.run(companyId, (tx) => tx.payment.count({ where: { clientId: { in: docs.map((d) => d.clientId) } } }));
       expect(written).toBe(0);
-      const { results } = await tenantPrisma.run(companyId, () => small.push(docs.slice(0, 2), user));
+      const { results } = await small.push(docs.slice(0, 2), user);
       expect(results.map((r) => r.status)).toEqual(['ACCEPTED', 'ACCEPTED']);
     });
 
@@ -500,6 +496,157 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
       expect(envSchema.parse({ ...base, SYNC_PUSH_MAX_BATCH: '50' }).SYNC_PUSH_MAX_BATCH).toBe(50);
       expect(envSchema.safeParse({ ...base, SYNC_PUSH_MAX_BATCH: '0' }).success).toBe(false);
       expect(envSchema.safeParse({ ...base, SYNC_PUSH_MAX_BATCH: '101' }).success).toBe(false);
+    });
+  });
+
+  describe('push F7: one tx per document (@TenantTx handler scope)', () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    const orderDoc = (customer = customerId) => {
+      const clientId = randomUUID();
+      return { type: SyncDocType.ORDER, clientId, payload: { customerId: customer, clientId, lines: [{ productId, packagingId, qty: 1 }] } };
+    };
+    const payDoc = () => {
+      const clientId = randomUUID();
+      return { type: SyncDocType.PAYMENT, clientId, payload: { customerId, clientId, amount: 1000, method: 'CASH' } };
+    };
+    const soNumbers = (clientIds: string[]) =>
+      tenantPrisma.run(companyId, async (tx) =>
+        (await tx.salesOrder.findMany({ where: { clientId: { in: clientIds } }, select: { number: true } })).map((o) => Number(o.number.split('-').pop())),
+      );
+    const soCounter = () =>
+      tenantPrisma.run(companyId, async (tx) => (await tx.documentCounter.findFirst({ where: { docType: 'SO', year: new Date().getFullYear() } }))?.lastNumber ?? 0);
+    const mkAgent = async (label: string): Promise<AuthenticatedUser> => {
+      const u = await systemPrisma.user.create({ data: { companyId, firstName: label, lastName: 'Sync', phone: `+99893${String(Date.now()).slice(-7)}` } });
+      await grantRole(companyId, u.id, 'SALES_AGENT', user.permissions);
+      return { ...user, id: u.id, firstName: label };
+    };
+
+    it('20 docs, 7 commit then the connection drops (throw inside the doc tx) -> 7 ACCEPTED + 13 RETRY; re-push -> 7 DUPLICATE (same ids) + 13 ACCEPTED; SO numbers unique, no gaps', async () => {
+      const docs = Array.from({ length: 20 }, () => orderDoc());
+      const counterBefore = await soCounter();
+      const real = sales.createWithOutcome.bind(sales);
+      let n = 0;
+      vi.spyOn(sales, 'createWithOutcome').mockImplementation(async (dto, u) => {
+        const r = await real(dto, u); // real write + SO number taken, then the tx dies
+        if (++n > 7) throw new Error('connection reset');
+        return r;
+      });
+      const first = await sync.push(docs, user);
+      expect(first.results.map((r) => r.status)).toEqual([...Array(7).fill('ACCEPTED'), ...Array(13).fill('RETRY')]);
+      expect(first.results.map((r) => r.clientId)).toEqual(docs.map((d) => d.clientId));
+      expect(await soCounter()).toBe(counterBefore + 7);
+      vi.restoreAllMocks();
+
+      const again = await sync.push(docs, user);
+      expect(again.results.map((r) => r.status)).toEqual([...Array(7).fill('DUPLICATE'), ...Array(13).fill('ACCEPTED')]);
+      expect(again.results.slice(0, 7).map((r) => r.id)).toEqual(first.results.slice(0, 7).map((r) => r.id));
+      const nums = (await soNumbers(docs.map((d) => d.clientId))).sort((a, b) => a - b);
+      expect(nums).toHaveLength(20);
+      expect(nums).toEqual(Array.from({ length: 20 }, (_, i) => counterBefore + 1 + i));
+      expect(await soCounter()).toBe(counterBefore + 20);
+    });
+
+    it('race: one order clientId pushed 3x in parallel -> exactly 1 ACCEPTED + 2 DUPLICATE, same id, one row', async () => {
+      const doc = orderDoc();
+      const all = await Promise.all([1, 2, 3].map(() => sync.push([doc], user)));
+      const items = all.map((r) => r.results[0]!);
+      expect(items.map((i) => i.status).sort()).toEqual(['ACCEPTED', 'DUPLICATE', 'DUPLICATE']);
+      expect(new Set(items.map((i) => i.id)).size).toBe(1);
+      expect(await tenantPrisma.run(companyId, (tx) => tx.salesOrder.count({ where: { clientId: doc.clientId } }))).toBe(1);
+    });
+
+    it('§8.4 role removed mid-batch: docs already committed stay ACCEPTED, the rest REJECTED PERMISSION_DENIED, one audit row, nothing else written', async () => {
+      const agent = await mkAgent('Revoked');
+      const docs = [payDoc(), payDoc(), payDoc(), payDoc()];
+      const real = payments.create.bind(payments);
+      let n = 0;
+      vi.spyOn(payments, 'create').mockImplementation(async (dto, u) => {
+        const r = await real(dto, u);
+        if (++n === 2) {
+          await prisma.$transaction(async (tx) => {
+            await tx.$executeRaw`SELECT set_config('app.current_company_id', ${companyId}, true)`;
+            await tx.userRole.deleteMany({ where: { userId: agent.id } });
+          });
+        }
+        return r;
+      });
+      const { results } = await sync.push(docs, agent);
+      expect(results.map((r) => r.status)).toEqual(['ACCEPTED', 'ACCEPTED', 'REJECTED', 'REJECTED']);
+      expect(results[2]?.error?.code).toBe('PERMISSION_DENIED');
+      const [written, audits] = await tenantPrisma.run(companyId, (tx) =>
+        Promise.all([
+          tx.payment.count({ where: { clientId: { in: docs.map((d) => d.clientId) } } }),
+          tx.auditLog.count({ where: { action: 'auth.permission_denied', userId: agent.id } }),
+        ]),
+      );
+      expect(written).toBe(2);
+      expect(audits).toBe(1);
+    });
+
+    it.each([
+      ['user', (id: string) => systemPrisma.user.update({ where: { id }, data: { isActive: false } })],
+      ['company', () => systemPrisma.company.update({ where: { id: companyId }, data: { isActive: false } })],
+    ] as const)('%s deactivated mid-batch: committed doc stays ACCEPTED, the rest REJECTED HTTP_401, nothing else written', async (_k, deactivate) => {
+      const agent = await mkAgent(`Deact-${_k}`);
+      const docs = [payDoc(), payDoc(), payDoc()];
+      const real = payments.create.bind(payments);
+      let n = 0;
+      vi.spyOn(payments, 'create').mockImplementation(async (dto, u) => {
+        const r = await real(dto, u);
+        if (++n === 1) await deactivate(agent.id);
+        return r;
+      });
+      try {
+        const { results } = await sync.push(docs, agent);
+        expect(results.map((r) => r.status)).toEqual(['ACCEPTED', 'REJECTED', 'REJECTED']);
+        expect(results[1]?.error?.code).toBe('HTTP_401');
+      } finally {
+        await systemPrisma.company.update({ where: { id: companyId }, data: { isActive: true } });
+      }
+      const written = await tenantPrisma.run(companyId, (tx) => tx.payment.count({ where: { clientId: { in: docs.map((d) => d.clientId) } } }));
+      expect(written).toBe(1);
+    });
+
+    it('afterCommit callback throws after COMMIT -> the document stays ACCEPTED (not RETRY), row exists', async () => {
+      const doc = orderDoc();
+      const real = sales.createWithOutcome.bind(sales);
+      vi.spyOn(sales, 'createWithOutcome').mockImplementationOnce(async (dto, u) => {
+        const r = await real(dto, u);
+        TenantContext.afterCommit(() => {
+          throw new Error('enqueue failed');
+        });
+        return r;
+      });
+      const { results } = await sync.push([doc], user);
+      expect(results[0]).toMatchObject({ clientId: doc.clientId, status: 'ACCEPTED' });
+      expect(await tenantPrisma.run(companyId, (tx) => tx.salesOrder.count({ where: { clientId: doc.clientId } }))).toBe(1);
+    });
+
+    it('a concurrent POST /orders on the same customer slips in between push documents (does not wait for the 20-doc batch)', async () => {
+      const director: AuthenticatedUser = { ...user, roles: ['SALES_DIRECTOR'] };
+      const docs = Array.from({ length: 20 }, () => orderDoc());
+      const counterBefore = await soCounter();
+      const t0 = performance.now();
+      let pushEnd = 0;
+      const pushP = sync.push(docs, user).then((r) => ((pushEnd = performance.now()), r));
+      // Start once the batch is under way (its first document committed).
+      while ((await tenantPrisma.run(companyId, (tx) => tx.salesOrder.count({ where: { clientId: { in: docs.map((d) => d.clientId) } } }))) < 2) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      const c0 = performance.now();
+      const created = await tenantPrisma.run(companyId, () => sales.create({ customerId, lines: [{ productId, packagingId, qty: 1 }] } as never, director));
+      const createMs = performance.now() - c0;
+      const createEnd = performance.now();
+      const { results } = await pushP;
+      const pushMs = pushEnd - t0;
+      console.info(`[F7 micro] push 20 orders: ${pushMs.toFixed(0)} ms; concurrent order-create: ${createMs.toFixed(0)} ms`);
+      expect(results.every((r) => r.status === 'ACCEPTED')).toBe(true);
+      expect(created.id).toBeTruthy();
+      expect(createEnd).toBeLessThan(pushEnd);
+      const nums = (await soNumbers([...docs.map((d) => d.clientId)])).concat(Number(created.number.split('-').pop()));
+      expect(new Set(nums).size).toBe(21);
+      expect(nums.sort((a, b) => a - b)).toEqual(Array.from({ length: 21 }, (_, i) => counterBefore + 1 + i));
     });
   });
 });
