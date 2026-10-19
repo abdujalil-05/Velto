@@ -52,7 +52,8 @@
     "cash": "Cash & payments",
     "purchases": "Purchasing",
     "reconciliation": "Reconciliation",
-    "visits": "Visits"
+    "visits": "Visits",
+    "export1c": "1C export"
   },
   "LanguageSwitcher": {
     "label": "Language"
@@ -1665,5 +1666,66 @@
     "emptyUnread": "No unread notifications",
     "retry": "Retry",
     "unread": "Unread"
+  },
+  "Export1c": {
+    "title": "1C export",
+    "subtitle": "Generate accounting files for 1C by period, download them and confirm the result.",
+    "refresh": "Refresh",
+    "retry": "Retry",
+    "noPermission": "You do not have permission to use the 1C export.",
+    "throttled": "Too many requests. Please wait a minute and try again.",
+    "created": "Export queued. It will appear in the list below.",
+    "empty": "No exports yet. Choose a period and format above and create the first export.",
+    "failedUnknown": "Generation failed. Create the export again.",
+    "download": "Download",
+    "form": {
+      "from": "Period from",
+      "to": "Period to",
+      "format": "Format",
+      "create": "Create export",
+      "hint": "The period must end no later than yesterday ({date}, company time zone).",
+      "periodInvalid": "Choose a valid period: start not after end, end not later than yesterday.",
+      "xmlUnverified": "XML (CommerceML) has not been verified in a pilot with 1C yet. Prefer Excel."
+    },
+    "format": {
+      "EXCEL": "Excel",
+      "CSV": "CSV",
+      "XML": "XML (not pilot-verified)"
+    },
+    "status": {
+      "QUEUED": "Queued",
+      "PROCESSING": "Processing",
+      "GENERATED": "Ready",
+      "FAILED": "Failed",
+      "ACCOUNTING_ACCEPTED": "Accepted by accounting",
+      "FAILED_REVIEW": "Rejected in 1C"
+    },
+    "col": {
+      "status": "Status",
+      "period": "Period",
+      "format": "Format",
+      "records": "Records",
+      "file": "File / SHA-256",
+      "generated": "Generated",
+      "ack": "Confirmation"
+    },
+    "hash": {
+      "copy": "Copy SHA-256",
+      "copied": "SHA-256 copied.",
+      "copyFailed": "Could not copy.",
+      "match": "Downloaded file matches the SHA-256",
+      "mismatch": "Downloaded file does NOT match the SHA-256. Do not import it into 1C.",
+      "unavailable": "Downloaded; SHA-256 could not be compared in the browser."
+    },
+    "ack": {
+      "accept": "Accepted",
+      "reject": "Error (rejected)",
+      "acceptTitle": "Confirm acceptance in 1C",
+      "acceptDescription": "Confirm that the file {file} was imported into 1C successfully. This cannot be changed later.",
+      "rejectTitle": "Report an error in 1C",
+      "rejectDescription": "Describe why the file {file} was rejected by 1C. This cannot be changed later.",
+      "doneAccepted": "Marked as accepted.",
+      "doneRejected": "Marked as rejected."
+    }
   }
 }
