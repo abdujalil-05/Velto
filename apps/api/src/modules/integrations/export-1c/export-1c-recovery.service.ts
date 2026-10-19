@@ -2,6 +2,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, Optional, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import type { Queue } from 'bullmq';
 import { Prisma, systemPrisma } from '@velto/database';
+import { fetchAllById } from '../../../common/pagination/fetch-all-by-id';
 import { addTracedJob } from '../../../common/queue/trace-job';
 import { COMPANY_EXPORT_JOB_OPTS, COMPANY_EXPORT_QUEUE, COMPANY_EXPORT_TYPE, type CompanyExportJobData } from '../../company-export/company-export.constants';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
@@ -43,7 +44,7 @@ export class Export1cRecoveryService implements OnModuleInit, OnModuleDestroy {
   /** Returns the number of jobs failed. */
   async sweep(now: Date = new Date()): Promise<number> {
     const cutoff = new Date(now.getTime() - EXPORT_1C_STALE_PROCESSING_MS);
-    const stuck = await systemPrisma.exportJob.findMany({ where: { status: 'PROCESSING', updatedAt: { lt: cutoff } }, select: { id: true, companyId: true }, take: 100 });
+    const stuck = await fetchAllById((page) => systemPrisma.exportJob.findMany({ where: { status: 'PROCESSING', updatedAt: { lt: cutoff } }, select: { id: true, companyId: true }, orderBy: { id: 'asc' }, ...page }));
     let failed = 0;
     for (const j of stuck) {
       const res = await this.tenantPrisma.run(j.companyId, (tx) =>
@@ -67,13 +68,7 @@ export class Export1cRecoveryService implements OnModuleInit, OnModuleDestroy {
     const cutoff = new Date(now.getTime() - EXPORT_1C_STALE_QUEUED_MS);
     const abandonedCutoff = new Date(now.getTime() - export1cAbandonedQueuedMs());
     const where = { type, status: 'QUEUED' as const, updatedAt: { lt: cutoff } };
-    const orphans: Array<{ id: string; companyId: string; updatedAt: Date }> = [];
-    for (let cursor: string | undefined; ; ) {
-      const batch = await systemPrisma.exportJob.findMany({ where, select: { id: true, companyId: true, updatedAt: true }, orderBy: { id: 'asc' }, take: 100, ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}) });
-      orphans.push(...batch);
-      if (batch.length < 100) break;
-      cursor = batch[batch.length - 1]!.id;
-    }
+    const orphans = await fetchAllById((page) => systemPrisma.exportJob.findMany({ where, select: { id: true, companyId: true, updatedAt: true }, orderBy: { id: 'asc' }, ...page }));
     let failed = 0;
     let queueDown = false; // after one enqueue failure/timeout skip further attempts this pass (avoids N x timeout)
     for (const j of orphans) {

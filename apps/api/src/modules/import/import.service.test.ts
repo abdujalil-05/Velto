@@ -125,5 +125,7 @@ describe('ImportService (integration, real Postgres + RLS)', () => {
     const recovery = new ImportRecoveryService(tenantPrisma, { add, getJob: vi.fn().mockResolvedValue(undefined) } as unknown as Queue<ImportJobData>);
     await recovery.sweep();
     expect(add).toHaveBeenCalledWith('commit', expect.objectContaining({ importJobId: created.id, companyId }), expect.objectContaining({ jobId: `import-${created.id}` }));
+    // do not leave PROCESSING residue in the shared dev DB
+    await tenantPrisma.run(companyId, (tx) => tx.importJob.updateMany({ where: { id: created.id, status: 'PROCESSING' }, data: { status: 'FAILED' } }));
   });
 });
