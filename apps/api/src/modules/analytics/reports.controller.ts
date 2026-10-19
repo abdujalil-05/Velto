@@ -2,6 +2,7 @@ import { Controller, Get, Header, Query, StreamableFile } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
+import { TenantTx } from '../../common/tenant/tenant-tx-options.decorator';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { AgentPerformanceReportService } from './agent-performance.service';
 import { DashboardService } from './dashboard.service';
@@ -10,7 +11,9 @@ import { OverviewReportService } from './overview-report.service';
 import { CSV_MIME, XLSX_MIME } from './report-export';
 import { ReportExportService } from './report-export-audit.service';
 import { agentPerformanceTable, overviewReportTable, salesReportTable } from './report-tables';
+import { REPORT_TX_OPTIONS } from './report-tx.constants';
 import { SalesReportService } from './sales-report.service';
+
 
 @Controller('reports')
 export class ReportsController {
@@ -25,12 +28,14 @@ export class ReportsController {
   // 9.3: the home dashboard, not one of the 4 "/reports" tabs — kept on this
   // controller anyway (7.2 lists it as GET /reports/dashboard).
   @Get('dashboard')
+  @TenantTx(REPORT_TX_OPTIONS)
   @RequirePermission('reports.read')
   getDashboard() {
     return this.dashboard.getDashboard();
   }
 
   @Get('sales')
+  @TenantTx(REPORT_TX_OPTIONS)
   @RequirePermission('reports.read')
   getSales(@Query() query: DateRangeQueryDto) {
     return this.salesReport.getSalesReport(query);
@@ -84,6 +89,7 @@ export class ReportsController {
   }
 
   @Get('overview')
+  @TenantTx(REPORT_TX_OPTIONS)
   @RequirePermission('reports.read')
   getOverview(@Query() query: DateRangeQueryDto) {
     return this.overview.getOverview(query);

@@ -102,3 +102,50 @@ export async function invoiceDebt(
     ) x WHERE x."outstanding" > 0`;
   return { total: dec(rows[0]?.total), overdue: dec(rows[0]?.overdue) };
 }
+
+/**
+ * `invoiceDebt` in `asOf` mode for several points in time in ONE scan of
+ * Invoice/PaymentAllocation (dashboard: now + yesterday end). Result k equals
+ * `invoiceDebt(tx, { kind: 'asOf', asOf: asOfs[k] })` exactly.
+ */
+export async function invoiceDebtAsOfMany(
+  tx: TenantClient,
+  asOfs: Date[],
+): Promise<{ total: Prisma.Decimal; overdue: Prisma.Decimal }[]> {
+  if (asOfs.length === 0) return [];
+  const latest = new Date(Math.max(...asOfs.map((d) => d.getTime())));
+  const paidCols = Prisma.join(
+    asOfs.map((at, k) => Prisma.sql`SUM(a."amount") FILTER (WHERE COALESCE(p."handoverAt", p."createdAt") <= ${at}) AS ${Prisma.raw(`"paid${k}"`)}`),
+  );
+  const outCols = Prisma.join(
+    asOfs.map(
+      (at, k) =>
+        Prisma.sql`(CASE WHEN i."createdAt" <= ${at} THEN i."total" - COALESCE(pa.${Prisma.raw(`"paid${k}"`)}, 0) END) AS ${Prisma.raw(`"out${k}"`)}`,
+    ),
+  );
+  const sumCols = Prisma.join(
+    asOfs.flatMap((at, k) => {
+      const o = Prisma.raw(`x."out${k}"`);
+      return [
+        Prisma.sql`COALESCE(SUM(${o}) FILTER (WHERE ${o} > 0), 0) AS ${Prisma.raw(`"total${k}"`)}`,
+        Prisma.sql`COALESCE(SUM(${o}) FILTER (WHERE ${o} > 0 AND x."dueAt" < ${at}), 0) AS ${Prisma.raw(`"overdue${k}"`)}`,
+      ];
+    }),
+  );
+  const rows = await tx.$queryRaw<Record<string, Prisma.Decimal>[]>`
+    SELECT ${sumCols}
+    FROM (
+      SELECT ${outCols}, i."createdAt" + c."paymentTermDays" * interval '1 day' AS "dueAt"
+      FROM "Invoice" i
+      JOIN "Customer" c ON c."id" = i."customerId"
+      LEFT JOIN (
+        SELECT a."invoiceId", ${paidCols}
+        FROM "PaymentAllocation" a JOIN "Payment" p ON p."id" = a."paymentId"
+        WHERE p."status" = 'POSTED'
+        GROUP BY a."invoiceId"
+      ) pa ON pa."invoiceId" = i."id"
+      WHERE i."createdAt" <= ${latest} AND i."status" <> 'CANCELLED'
+    ) x`;
+  const row = rows[0] ?? {};
+  return asOfs.map((_, k) => ({ total: dec(row[`total${k}`]), overdue: dec(row[`overdue${k}`]) }));
+}

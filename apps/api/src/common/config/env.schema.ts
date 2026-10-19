@@ -3,6 +3,7 @@ import { z } from 'zod';
 /** Single source of the defaults; trace-job.ts / export-1c.constants.ts fall back to these. */
 export const DEFAULT_QUEUE_ENQUEUE_TIMEOUT_MS = 3000;
 export const DEFAULT_ABANDONED_QUEUED_MS = 24 * 60 * 60_000;
+export const DEFAULT_DASHBOARD_CACHE_TTL_S = 30;
 
 /** Fails fast on boot if required env vars are missing/malformed, instead of failing on the first request that needs them. */
 export const envSchema = z.object({
@@ -75,6 +76,8 @@ export const envSchema = z.object({
   PRISMA_POOL_SIZE: z.coerce.number().int().min(1).max(95).default(30),
   PRISMA_SYSTEM_POOL_SIZE: z.coerce.number().int().min(1).max(95).default(5),
   PRISMA_POOL_TIMEOUT_S: z.coerce.number().int().min(1).max(120).default(10),
+  // Dashboard JSON per-company in-memory cache TTL (seconds); 0 = off. Single process only (PM2 instances=1, ADR-051); multi-process needs Redis.
+  DASHBOARD_CACHE_TTL_S: z.coerce.number().int().min(0).max(600).default(DEFAULT_DASHBOARD_CACHE_TTL_S),
   S3_ENDPOINT: z.string().min(1),
   S3_REGION: z.string().default('us-east-1'),
   S3_ACCESS_KEY: z.string().min(1),

@@ -1,12 +1,21 @@
 import { Injectable } from '@nestjs/common';
 import { PaymentSource, PaymentStatus, Prisma, type TenantClient } from '@velto/database';
+import { DEFAULT_DASHBOARD_CACHE_TTL_S } from '../../common/config/env.schema';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { paymentPostedWithin } from '../finance/ledger-filters';
 import { companyDay } from '../field/company-day';
 import { AgingReportService } from '../finance/reports/aging-report.service';
 import { DAY_MS, companyTimeZone, eachCompanyDay, pctChange } from './report-utils';
-import { invoiceDebt, turnoverPerAgent, turnoverPerDay } from './report-sql';
+import { invoiceDebtAsOfMany, turnoverPerAgent, turnoverPerDay } from './report-sql';
 
+type DashboardResult = Awaited<ReturnType<DashboardService['compute']>>;
+type CacheEntry = { expiresAt: number; value: Promise<{ data: DashboardResult; generatedAt: string }> };
+
+function dashboardCacheTtlMs(): number {
+  const raw = process.env.DASHBOARD_CACHE_TTL_S;
+  const n = raw === undefined || raw === '' ? DEFAULT_DASHBOARD_CACHE_TTL_S : Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) * 1000 : DEFAULT_DASHBOARD_CACHE_TTL_S * 1000;
+}
 
 /** 9.3: the home dashboard — today's headline cards (each vs. yesterday), a 30-day turnover trend, today's per-agent activity, and the top debtors. */
 @Injectable()
@@ -16,7 +25,52 @@ export class DashboardService {
     private readonly agingReport: AgingReportService,
   ) {}
 
-  async getDashboard() {
+  /**
+   * Dashboard JSON with a short per-company cache (screen only: exports and
+   * the aging/sales/overview services never go through here and always
+   * recompute, ADR-027). Key = companyId + company day + timezone. Concurrent
+   * misses share one in-flight computation (no stampede); failures are not
+   * cached. In-process Map: valid for a single API process (PM2 instances=1,
+   * ADR-051) — several processes would each hold their own copy (needs Redis).
+   * Called after the permission check (TenantContextInterceptor), so a cached
+   * body is never served to an unauthorised caller.
+   */
+  async getDashboard(): Promise<DashboardResult & { generatedAt: string; cached: boolean }> {
+    const ttlMs = dashboardCacheTtlMs();
+    if (ttlMs === 0) return { ...(await this.compute()), generatedAt: new Date().toISOString(), cached: false };
+    const tx = this.tenantPrisma.client;
+    const now = Date.now();
+    const timeZone = await companyTimeZone(tx);
+    const key = `${this.tenantPrisma.companyId}|${companyDay(new Date(now), timeZone).date}|${timeZone}`;
+    const hit = this.cache.get(key);
+    if (hit && hit.expiresAt > now) {
+      const value = await hit.value;
+      return { ...value.data, generatedAt: value.generatedAt, cached: true };
+    }
+    const entry: CacheEntry = {
+      expiresAt: now + ttlMs,
+      value: this.compute().then((data) => ({ data, generatedAt: new Date().toISOString() })),
+    };
+    this.cache.set(key, entry);
+    // Drop expired entries opportunistically so the Map stays bounded by active companies.
+    for (const [k, e] of this.cache) if (e.expiresAt <= now) this.cache.delete(k);
+    try {
+      const value = await entry.value;
+      return { ...value.data, generatedAt: value.generatedAt, cached: false };
+    } catch (err) {
+      if (this.cache.get(key) === entry) this.cache.delete(key);
+      throw err;
+    }
+  }
+
+  /** Test hook. */
+  clearCache() {
+    this.cache.clear();
+  }
+
+  private readonly cache = new Map<string, CacheEntry>();
+
+  private async compute() {
     const tx = this.tenantPrisma.client;
     const now = new Date();
     const timeZone = await companyTimeZone(tx);
@@ -31,20 +85,22 @@ export class DashboardService {
     const [
       todayCollected,
       yesterdayCollected,
-      overdueNow,
-      overdueYesterday,
+      overdueDebt,
       dailyOrders,
       agentsToday,
       topDebtors,
     ] = await Promise.all([
       this.paymentsTotal(tx, todayStart, todayEnd),
       this.paymentsTotal(tx, yesterdayStart, yesterdayEnd),
-      this.overdueDebtAsOf(tx, now),
-      this.overdueDebtAsOf(tx, yesterdayEnd),
+      // One scan for both snapshots (now / end of yesterday). Yesterday is a best-effort reconstruction: invoices cancelled since are excluded.
+      invoiceDebtAsOfMany(tx, [now, yesterdayEnd]),
       turnoverPerDay(tx, trendStart, todayEnd, timeZone),
       this.agentsToday(tx, todayStart, todayEnd, today.isoWeekday),
       this.agingReport.getAging({ page: 1, pageSize: 10 }),
     ]);
+
+    const overdueNow = overdueDebt[0]!.overdue;
+    const overdueYesterday = overdueDebt[1]!.overdue;
 
     // Today/yesterday cards come from the same per-day aggregation as the trend (one scan, same company-day boundaries).
     const zero = { turnover: new Prisma.Decimal(0), count: 0 };
@@ -79,20 +135,6 @@ export class DashboardService {
       _sum: { amount: true },
     });
     return agg._sum.amount ?? new Prisma.Decimal(0);
-  }
-
-  /**
-   * Best-effort historical reconstruction for the "vs yesterday" delta on a
-   * snapshot metric that has no real "yesterday" value without full event
-   * sourcing: invoices that existed by `asOf`, minus whatever had been
-   * allocated to them by `asOf`, counted only if already overdue at that
-   * point. Invoices cancelled since `asOf` are still excluded from the
-   * result even though they may have still been active then — cancellations
-   * are rare and happen close to same-day in practice, so this is the one
-   * place the approximation can diverge from a true point-in-time value.
-   */
-  private async overdueDebtAsOf(tx: TenantClient, asOf: Date): Promise<Prisma.Decimal> {
-    return (await invoiceDebt(tx, { kind: 'asOf', asOf })).overdue;
   }
 
   private async agentsToday(tx: TenantClient, start: Date, end: Date, weekday: number) {

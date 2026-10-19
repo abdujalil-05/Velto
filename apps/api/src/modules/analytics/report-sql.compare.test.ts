@@ -4,7 +4,7 @@ import { InvoiceStatus, OrderStatus, PaymentStatus, PaymentMethod, Prisma, prism
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { AgingReportService, bucketFor, companyDate, daysPastDue } from '../finance/reports/aging-report.service';
 import { VALID_ALLOCATION_WHERE, paymentPostedAt } from '../finance/ledger-filters';
-import { invoiceDebt, orderTotalsInWindow, topProductsInWindow, turnoverPerAgent, turnoverPerDay } from './report-sql';
+import { invoiceDebt, invoiceDebtAsOfMany, orderTotalsInWindow, topProductsInWindow, turnoverPerAgent, turnoverPerDay } from './report-sql';
 import { COUNTED_ORDER_STATUSES, DAY_MS, ORDER_AMOUNT_SELECT, localDateString, orderTotal } from './report-utils';
 
 /** Regression: the DB-side aggregation must equal the previous in-memory (findMany + orderTotal) implementation on the same data. */
@@ -163,6 +163,14 @@ describe('report-sql == legacy JS aggregation (golden comparison)', () => {
         const all = await legacyOverdueAsOf(tx, asOf);
         const n = await invoiceDebt(tx, { kind: 'asOf', asOf });
         expect(n.overdue.toFixed(2)).toBe(all.toFixed(2));
+      }
+      // one-scan multi-point variant == the single-point query, per point
+      const points = [now, new Date(now.getTime() - DAY_MS), new Date(now.getTime() - 5 * DAY_MS)];
+      const many = await invoiceDebtAsOfMany(tx, points);
+      for (const [k, asOf] of points.entries()) {
+        const single = await invoiceDebt(tx, { kind: 'asOf', asOf });
+        expect(many[k]!.total.toFixed(2)).toBe(single.total.toFixed(2));
+        expect(many[k]!.overdue.toFixed(2)).toBe(single.overdue.toFixed(2));
       }
     });
 

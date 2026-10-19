@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { InvoiceStatus, OrderStatus, PaymentMethod, PaymentStatus, prisma, systemPrisma, VisitOutcome } from '@velto/database';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import ExcelJS from 'exceljs';
@@ -274,6 +274,89 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
       expect(report.totalDebt.toString()).toBe('500000');
       // paymentTermDays=0 on the fixture customer, so it's overdue immediately.
       expect(report.overdueDebt.toString()).toBe('500000');
+    });
+  });
+
+  describe('DashboardService cache', () => {
+    const withTtl = async (ttl: string | undefined, fn: () => Promise<void>) => {
+      const prev = process.env.DASHBOARD_CACHE_TTL_S;
+      if (ttl === undefined) delete process.env.DASHBOARD_CACHE_TTL_S;
+      else process.env.DASHBOARD_CACHE_TTL_S = ttl;
+      dashboard.clearCache();
+      try {
+        await fn();
+      } finally {
+        if (prev === undefined) delete process.env.DASHBOARD_CACHE_TTL_S;
+        else process.env.DASHBOARD_CACHE_TTL_S = prev;
+        dashboard.clearCache();
+      }
+    };
+
+    it('miss then hit within TTL (same generatedAt), recomputes after TTL expiry', async () => {
+      const companyId = await createCompany('dash-cache');
+      await withTtl('30', async () => {
+        const a = await tenantPrisma.run(companyId, () => dashboard.getDashboard());
+        const b = await tenantPrisma.run(companyId, () => dashboard.getDashboard());
+        expect([a.cached, b.cached]).toEqual([false, true]);
+        expect(b.generatedAt).toBe(a.generatedAt);
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(Date.now() + 31_000);
+          const c = await tenantPrisma.run(companyId, () => dashboard.getDashboard());
+          expect(c.cached).toBe(false);
+          expect(c.generatedAt).not.toBe(a.generatedAt);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+
+    it('TTL 0 disables the cache', async () => {
+      const companyId = await createCompany('dash-nocache');
+      await withTtl('0', async () => {
+        const a = await tenantPrisma.run(companyId, () => dashboard.getDashboard());
+        const b = await tenantPrisma.run(companyId, () => dashboard.getDashboard());
+        expect([a.cached, b.cached]).toEqual([false, false]);
+      });
+    });
+
+    it('is keyed by company: tenant B never sees tenant A data', async () => {
+      const a = await createCompany('dash-iso-a');
+      const b = await createCompany('dash-iso-b');
+      const fx = await seedBaseFixtures(a);
+      await seedPaidAndReversed(a, fx);
+      await withTtl('30', async () => {
+        const ra = await tenantPrisma.run(a, () => dashboard.getDashboard());
+        const rb = await tenantPrisma.run(b, () => dashboard.getDashboard());
+        expect(ra.today.collected.toString()).toBe('100000');
+        expect(rb.cached).toBe(false);
+        expect(rb.today.collected.toString()).toBe('0');
+        expect(rb.agentsToday).toEqual([]);
+        const rb2 = await tenantPrisma.run(b, () => dashboard.getDashboard());
+        expect(rb2.today.collected.toString()).toBe('0');
+      });
+    });
+
+    it('concurrent misses share one computation', async () => {
+      const companyId = await createCompany('dash-stampede');
+      await withTtl('30', async () => {
+        const spy = vi.spyOn(dashboard as unknown as { compute: () => Promise<unknown> }, 'compute');
+        const results = await Promise.all(
+          Array.from({ length: 8 }, () => tenantPrisma.run(companyId, () => dashboard.getDashboard())),
+        );
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(new Set(results.map((r) => r.generatedAt)).size).toBe(1);
+        spy.mockRestore();
+      });
+    });
+
+    it('exports / report services never use the cache', async () => {
+      const companyId = await createCompany('dash-exp');
+      await withTtl('30', async () => {
+        await tenantPrisma.run(companyId, () => dashboard.getDashboard());
+        const o1 = await tenantPrisma.run(companyId, () => overview.getOverview({}));
+        expect(o1).not.toHaveProperty('cached');
+      });
     });
   });
 
