@@ -31,7 +31,7 @@ export class ReportsController {
   // controller anyway (7.2 lists it as GET /reports/dashboard).
   @Get('dashboard')
   @UseGuards(DashboardReportGuard)
-  @TenantTx(REPORT_TX_OPTIONS)
+  @TenantTx({ scope: 'handler' })
   @RequirePermission('reports.read')
   getDashboard() {
     return this.dashboard.getDashboard();

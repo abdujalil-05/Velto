@@ -64,8 +64,8 @@ describe('F7 D2: health', () => {
     app = await buildApp({ redis: deadRedis, storage: deadStorage });
     const res = await request(app.getHttpServer()).get('/health/live').expect(200);
     expect(res.body.status).toBe('up');
-    expect(res.body.version).toBeDefined();
-    expect(res.body.commit).toBeDefined();
+    expect(res.body).not.toHaveProperty('version');
+    expect(res.body).not.toHaveProperty('commit');
   });
 
   it('ready/health 503 with redis+storage down, no error text/DSN leaked', async () => {

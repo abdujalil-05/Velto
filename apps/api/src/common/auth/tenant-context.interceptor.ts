@@ -78,23 +78,11 @@ export class TenantContextInterceptor implements NestInterceptor {
       const { permissions } = actor;
 
       if (requiredPermission && !permissions.includes(requiredPermission)) {
-        if (handlerScope) {
-          // Commit this short tx cleanly, then audit + throw outside it (no nested tx).
-          denied = actor;
-          return undefined;
-        }
-        // SEC-020..024 / SEC-054: "ruxsat rad etilsa 403 + audit" — logged
-        // against the acting user themselves (there's no other natural
-        // entity for a denied permission check on an arbitrary route).
-        // Written in its own transaction (like AuthService.logFailedLogin):
-        // throwing here rolls back `tx`, which would take the audit row with it.
-        await this.tenantPrisma.run(
-          payload.companyId,
-          (auditTx) => this.logDenied(auditTx, payload.companyId, actor.id, requiredPermission, request),
-          undefined,
-          { allowNested: true },
-        );
-        throw new PermissionDeniedException(requiredPermission);
+        // Commit this short tx cleanly, then audit + throw outside it (no nested tx):
+        // throwing here would roll back `tx` (and the audit row), and a second
+        // run() while this tx is open can self-wait on the pool.
+        denied = actor;
+        return undefined;
       }
 
       request.user = actor;
@@ -102,15 +90,17 @@ export class TenantContextInterceptor implements NestInterceptor {
       return firstValueFrom(next.handle());
     }, handlerScope || Object.keys(txOptions).length === 0 ? undefined : txOptions);
 
-    if (!handlerScope) return result;
-    // handler scope: short auth tx is committed; the handler now runs with no open tx.
     if (denied) {
       const d = denied;
+      // SEC-020..024 / SEC-054: "ruxsat rad etilsa 403 + audit" — logged
+      // against the acting user themselves, in its own tx (like AuthService.logFailedLogin).
       await this.tenantPrisma.run(payload.companyId, (auditTx) =>
         this.logDenied(auditTx, payload.companyId, d.id, requiredPermission!, request),
       );
       throw new PermissionDeniedException(requiredPermission!);
     }
+    if (!handlerScope) return result;
+    // handler scope: short auth tx is committed; the handler now runs with no open tx.
     return TenantContext.run(handlerScopeStore(payload.companyId), () => firstValueFrom(next.handle()));
   }
 

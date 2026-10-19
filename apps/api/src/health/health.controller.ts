@@ -59,7 +59,7 @@ export class HealthController {
   /** Liveness: process is up; no dependency touched. */
   @Get('live')
   live() {
-    return { status: 'up' as CheckStatus, ...this.build() };
+    return { status: 'up' as CheckStatus };
   }
 
   /** `GET /health` is an alias of ready (deploy/deploy.sh health gate). */
@@ -73,7 +73,7 @@ export class HealthController {
     const { ready, checks } = await this.readiness();
     const status: CheckStatus = ready ? 'up' : 'down';
     if (!ready) res.status(503);
-    return { status, ...this.build(), checks };
+    return { status, checks };
   }
 
   private readiness(): Promise<ReadyBody> {
@@ -98,9 +98,5 @@ export class HealthController {
       probe((signal) => this.storage.headBucket(signal)),
     ]);
     return { ready: db === 'up' && redis === 'up' && storage === 'up', checks: { db, redis, storage } };
-  }
-
-  private build() {
-    return { version: this.config.get<string>('APP_VERSION', 'dev'), commit: this.config.get<string>('GIT_SHA', 'dev') };
   }
 }

@@ -8,6 +8,8 @@ import { ReportsController } from '../../modules/analytics/reports.controller';
 import { AgingReportController } from '../../modules/finance/reports/aging-report.controller';
 
 const opts = { maxConcurrency: 2, queueMax: 3, queueTimeoutMs: 200 };
+const noPermReflector = { getAllAndOverride: () => undefined } as never;
+const noTenant = {} as never;
 const tick = () => new Promise((r) => setTimeout(r, 5));
 
 function fakeCtx(companyId = 'c1') {
@@ -20,10 +22,36 @@ function fakeCtx(companyId = 'c1') {
     },
   });
   const ctx = {
-    switchToHttp: () => ({ getRequest: () => ({ tokenPayload: { companyId } }), getResponse: () => res }),
+    switchToHttp: () => ({ getRequest: () => ({ tokenPayload: { companyId, sub: 'u1' } }), getResponse: () => res }),
+    getHandler: () => fakeCtx,
+    getClass: () => fakeCtx,
   } as unknown as ExecutionContext;
   return { res, ctx };
 }
+
+describe('ReportConcurrencyGuard permission-first', () => {
+  const reflector = { getAllAndOverride: () => 'reports.read' } as never;
+  const tenantWith = (permissions: string[]) =>
+    ({
+      run: async (_c: string, fn: (tx: unknown) => unknown) =>
+        fn({
+          user: { findFirst: async () => ({ id: 'u1', isActive: true, firstName: 'a', lastName: 'b' }) },
+          userRole: { findMany: async () => [{ role: { code: 'X', permissions: permissions.map((code) => ({ permission: { module: 'reports', code } })) } }] },
+        }),
+    }) as never;
+
+  it('caller without the permission takes no permit (interceptor then denies)', async () => {
+    const lim = new ReportConcurrencyLimiter({ ...opts, maxConcurrency: 1 });
+    await new ReportConcurrencyGuard(lim, reflector, tenantWith(['export'])).canActivate(fakeCtx().ctx);
+    expect(lim.stats.active).toBe(0);
+  });
+
+  it('caller with the permission takes a permit', async () => {
+    const lim = new ReportConcurrencyLimiter({ ...opts, maxConcurrency: 1 });
+    await new ReportConcurrencyGuard(lim, reflector, tenantWith(['read'])).canActivate(fakeCtx().ctx);
+    expect(lim.stats.active).toBe(1);
+  });
+});
 
 describe('ReportConcurrencyLimiter', () => {
   it('runs at most maxConcurrency of N+M at once; rest queue FIFO', async () => {
@@ -77,7 +105,7 @@ describe('ReportConcurrencyLimiter', () => {
 describe('ReportConcurrencyGuard', () => {
   it('releases the permit when the response closes (finish or client abort)', async () => {
     const lim = new ReportConcurrencyLimiter(opts);
-    const guard = new ReportConcurrencyGuard(lim);
+    const guard = new ReportConcurrencyGuard(lim, noPermReflector, noTenant);
     const a = fakeCtx();
     const b = fakeCtx('c2');
     await guard.canActivate(a.ctx);
@@ -91,7 +119,7 @@ describe('ReportConcurrencyGuard', () => {
 
   it('error path: response close after a failed handler still returns the permit', async () => {
     const lim = new ReportConcurrencyLimiter({ ...opts, maxConcurrency: 1 });
-    const guard = new ReportConcurrencyGuard(lim);
+    const guard = new ReportConcurrencyGuard(lim, noPermReflector, noTenant);
     const a = fakeCtx();
     await guard.canActivate(a.ctx);
     a.res.writableEnded = true; // filter wrote the error body
@@ -101,7 +129,7 @@ describe('ReportConcurrencyGuard', () => {
 
   it('client abort while queued leaves the queue without taking a permit', async () => {
     const lim = new ReportConcurrencyLimiter({ ...opts, maxConcurrency: 1 });
-    const guard = new ReportConcurrencyGuard(lim);
+    const guard = new ReportConcurrencyGuard(lim, noPermReflector, noTenant);
     const a = fakeCtx();
     const b = fakeCtx();
     await guard.canActivate(a.ctx);
@@ -117,7 +145,7 @@ describe('ReportConcurrencyGuard', () => {
 
   it('queue full -> 503 with Retry-After: 2', async () => {
     const lim = new ReportConcurrencyLimiter({ maxConcurrency: 1, queueMax: 0, queueTimeoutMs: 100 });
-    const guard = new ReportConcurrencyGuard(lim);
+    const guard = new ReportConcurrencyGuard(lim, noPermReflector, noTenant);
     await guard.canActivate(fakeCtx().ctx);
     const c = fakeCtx();
     const err = await guard.canActivate(c.ctx).catch((e) => e);
@@ -200,7 +228,7 @@ describe('DashboardReportGuard', () => {
   it('cache hit takes no permit; miss does', async () => {
     const lim = new ReportConcurrencyLimiter({ ...opts, maxConcurrency: 1 });
     let live = true;
-    const guard = new DashboardReportGuard(lim, { hasLiveEntry: () => live } as never);
+    const guard = new DashboardReportGuard(lim, noPermReflector, noTenant, { hasLiveEntry: () => live } as never);
     await guard.canActivate(fakeCtx().ctx);
     expect(lim.stats.active).toBe(0);
     live = false;

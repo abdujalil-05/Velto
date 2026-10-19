@@ -2,13 +2,14 @@ import { Injectable } from '@nestjs/common';
 import { PaymentSource, PaymentStatus, Prisma, type TenantClient } from '@velto/database';
 import { DEFAULT_DASHBOARD_CACHE_TTL_S } from '../../common/config/env.schema';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
+import { REPORT_TX_OPTIONS } from './report-tx.constants';
 import { paymentPostedWithin } from '../finance/ledger-filters';
 import { companyDay } from '../field/company-day';
 import { AgingReportService } from '../finance/reports/aging-report.service';
 import { DAY_MS, companyTimeZone, eachCompanyDay, pctChange } from './report-utils';
 import { invoiceDebtAsOfMany, turnoverPerAgent, turnoverPerDay } from './report-sql';
 
-type DashboardResult = Awaited<ReturnType<DashboardService['compute']>>;
+type DashboardResult = Awaited<ReturnType<DashboardService['computeInTx']>>;
 type CacheEntry = { expiresAt: number; value: Promise<{ data: DashboardResult; generatedAt: string }> };
 
 function dashboardCacheTtlMs(): number {
@@ -33,15 +34,19 @@ export class DashboardService {
    * cached. In-process Map: valid for a single API process (PM2 instances=1,
    * ADR-051) — several processes would each hold their own copy (needs Redis).
    * Called after the permission check (TenantContextInterceptor), so a cached
-   * body is never served to an unauthorised caller.
+   * body is never served to an unauthorised caller. The route is
+   * @TenantTx({ scope: 'handler' }): no request tx is open here, and the shared
+   * compute runs in its OWN short tenant tx, so waiters never hold a pool
+   * connection nor depend on another request's tx.
    */
   async getDashboard(): Promise<DashboardResult & { generatedAt: string; cached: boolean }> {
     const ttlMs = dashboardCacheTtlMs();
-    if (ttlMs === 0) return { ...(await this.compute()), generatedAt: new Date().toISOString(), cached: false };
-    const tx = this.tenantPrisma.client;
+    const companyId = this.tenantPrisma.companyId;
+    if (ttlMs === 0) return { ...(await this.compute(companyId)), generatedAt: new Date().toISOString(), cached: false };
     const now = Date.now();
-    const timeZone = await companyTimeZone(tx);
-    const key = `${this.tenantPrisma.companyId}|${companyDay(new Date(now), timeZone).date}|${timeZone}`;
+    const timeZone = await this.tenantPrisma.run(companyId, (tx) => companyTimeZone(tx));
+    this.timeZones.set(companyId, timeZone);
+    const key = this.cacheKey(companyId, now, timeZone);
     const hit = this.cache.get(key);
     if (hit && hit.expiresAt > now) {
       const value = await hit.value;
@@ -49,7 +54,7 @@ export class DashboardService {
     }
     const entry: CacheEntry = {
       expiresAt: now + ttlMs,
-      value: this.compute().then((data) => ({ data, generatedAt: new Date().toISOString() })),
+      value: this.compute(companyId).then((data) => ({ data, generatedAt: new Date().toISOString() })),
     };
     this.cache.set(key, entry);
     // Drop expired entries opportunistically so the Map stays bounded by active companies.
@@ -67,23 +72,37 @@ export class DashboardService {
    * Guard probe (no DB): true when this company has a live cache entry (done or
    * in flight), so the request does no new report computation and needs no
    * semaphore permit. The response is still served only after the permission
-   * check in TenantContextInterceptor.
+   * check in TenantContextInterceptor. Matches the full current key (company
+   * day + last-seen timezone), so a stale previous-day entry never bypasses
+   * the semaphore. Skipping is safe: handler-scope waiters hold no connection.
    */
   hasLiveEntry(companyId: string): boolean {
+    const timeZone = this.timeZones.get(companyId);
+    if (!timeZone) return false;
     const now = Date.now();
-    const prefix = `${companyId}|`;
-    for (const [k, e] of this.cache) if (e.expiresAt > now && k.startsWith(prefix)) return true;
-    return false;
+    const e = this.cache.get(this.cacheKey(companyId, now, timeZone));
+    return !!e && e.expiresAt > now;
+  }
+
+  private cacheKey(companyId: string, now: number, timeZone: string): string {
+    return `${companyId}|${companyDay(new Date(now), timeZone).date}|${timeZone}`;
   }
 
   /** Test hook. */
   clearCache() {
     this.cache.clear();
+    this.timeZones.clear();
   }
 
   private readonly cache = new Map<string, CacheEntry>();
+  private readonly timeZones = new Map<string, string>();
 
-  private async compute() {
+  /** Own short tenant tx: independent of any request tx (shared by waiters). */
+  private compute(companyId: string) {
+    return this.tenantPrisma.run(companyId, () => this.computeInTx(), REPORT_TX_OPTIONS);
+  }
+
+  private async computeInTx() {
     const tx = this.tenantPrisma.client;
     const now = new Date();
     const timeZone = await companyTimeZone(tx);

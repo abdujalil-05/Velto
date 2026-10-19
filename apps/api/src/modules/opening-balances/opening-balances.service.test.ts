@@ -6,6 +6,7 @@ import { AuditLogService } from '../../common/audit/audit-log.service';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { DocumentNumberingService } from '../../common/document-numbering/document-numbering.service';
 import type { StorageService } from '../../common/storage/storage.service';
+import { TenantContext, handlerScopeStore } from '../../common/tenant/tenant-context';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { DashboardService } from '../analytics/dashboard.service';
 import { localDateString } from '../analytics/report-utils';
@@ -297,7 +298,7 @@ describe('OpeningBalancesService (integration)', () => {
   it('OPENING docs are not exported to 1C, not counted as collected (dashboard, payments period filter, cash session)', async () => {
     const [c1, c2] = await makeCustomers(`EX${tag}`, 2);
     const dashboardSvc = new DashboardService(tenantPrisma, new AgingReportService(tenantPrisma));
-    const collectedBefore = (await run(() => dashboardSvc.getDashboard())).today.collected;
+    const collectedBefore = (await TenantContext.run(handlerScopeStore(companyId), () => dashboardSvc.getDashboard())).today.collected;
     const cash = new CashSessionsService(tenantPrisma, auditLog);
     await run(() => cash.open({ openAmount: 0 } as never, owner));
     const p = await previewCustomers([
@@ -317,7 +318,7 @@ describe('OpeningBalancesService (integration)', () => {
     for (const n of numbers) expect(csv).not.toContain(n.number);
 
     // The OPENING credit is dated today (asOfDate = today) yet is not "collected today".
-    const dashboard = await run(() => dashboardSvc.getDashboard());
+    const dashboard = await TenantContext.run(handlerScopeStore(companyId), () => dashboardSvc.getDashboard());
     expect(new Prisma.Decimal(dashboard.today.collected).toFixed(2)).toBe(new Prisma.Decimal(collectedBefore).toFixed(2));
 
     const listed = await run(() => payments.list({ page: 1, pageSize: 100, from: today(), to: today() } as never, owner));

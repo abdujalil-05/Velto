@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { InvoiceStatus, OrderStatus, PaymentMethod, PaymentStatus, prisma, systemPrisma, VisitOutcome } from '@velto/database';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
+import { TenantContext, handlerScopeStore } from '../../common/tenant/tenant-context';
 import ExcelJS from 'exceljs';
 import { AgingReportService } from '../finance/reports/aging-report.service';
 import { buildReportCsv, buildReportXlsx, xlsxHeaderRow } from './report-export';
@@ -19,6 +20,9 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
   const agentPerformance = new AgentPerformanceReportService(tenantPrisma);
   const overview = new OverviewReportService(tenantPrisma);
   const dashboard = new DashboardService(tenantPrisma, new AgingReportService(tenantPrisma));
+
+  // Dashboard route is @TenantTx({ scope: 'handler' }): no outer tx.
+  const getDash = (companyId: string) => TenantContext.run(handlerScopeStore(companyId), () => dashboard.getDashboard());
 
   afterAll(async () => {
     await prisma.$disconnect();
@@ -168,7 +172,7 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
       const ov = await tenantPrisma.run(companyId, () => overview.getOverview({}));
       expect(ov.turnover.toString()).toBe(expected);
 
-      const dash = await tenantPrisma.run(companyId, () => dashboard.getDashboard());
+      const dash = await getDash(companyId);
       expect(dash.today.turnover.toString()).toBe(expected);
       expect(dash.agentsToday.find((a) => a.agentId === fx.agentId)?.turnover.toString()).toBe(expected);
       const todayKey = localDateString(new Date());
@@ -295,14 +299,14 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
     it('miss then hit within TTL (same generatedAt), recomputes after TTL expiry', async () => {
       const companyId = await createCompany('dash-cache');
       await withTtl('30', async () => {
-        const a = await tenantPrisma.run(companyId, () => dashboard.getDashboard());
-        const b = await tenantPrisma.run(companyId, () => dashboard.getDashboard());
+        const a = await getDash(companyId);
+        const b = await getDash(companyId);
         expect([a.cached, b.cached]).toEqual([false, true]);
         expect(b.generatedAt).toBe(a.generatedAt);
         vi.useFakeTimers({ toFake: ['Date'] });
         try {
           vi.setSystemTime(Date.now() + 31_000);
-          const c = await tenantPrisma.run(companyId, () => dashboard.getDashboard());
+          const c = await getDash(companyId);
           expect(c.cached).toBe(false);
           expect(c.generatedAt).not.toBe(a.generatedAt);
         } finally {
@@ -311,11 +315,37 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
       });
     });
 
+    it('hasLiveEntry matches the full current key: stale previous-day entry does not count', async () => {
+      const companyId = await createCompany('dash-stale');
+      await withTtl('999999', async () => {
+        expect(dashboard.hasLiveEntry(companyId)).toBe(false);
+        await getDash(companyId);
+        expect(dashboard.hasLiveEntry(companyId)).toBe(true);
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(Date.now() + 48 * 3_600_000);
+          expect(dashboard.hasLiveEntry(companyId)).toBe(false);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+
+    it('waiters do not depend on the first caller: shared compute runs in its own tx', async () => {
+      const companyId = await createCompany('dash-own-tx');
+      await withTtl('30', async () => {
+        const first = getDash(companyId); // no outer tx exists at all; compute opens its own
+        const waiter = getDash(companyId);
+        const [a, b] = await Promise.all([first, waiter]);
+        expect(b.generatedAt).toBe(a.generatedAt);
+      });
+    });
+
     it('TTL 0 disables the cache', async () => {
       const companyId = await createCompany('dash-nocache');
       await withTtl('0', async () => {
-        const a = await tenantPrisma.run(companyId, () => dashboard.getDashboard());
-        const b = await tenantPrisma.run(companyId, () => dashboard.getDashboard());
+        const a = await getDash(companyId);
+        const b = await getDash(companyId);
         expect([a.cached, b.cached]).toEqual([false, false]);
       });
     });
@@ -326,13 +356,13 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
       const fx = await seedBaseFixtures(a);
       await seedPaidAndReversed(a, fx);
       await withTtl('30', async () => {
-        const ra = await tenantPrisma.run(a, () => dashboard.getDashboard());
-        const rb = await tenantPrisma.run(b, () => dashboard.getDashboard());
+        const ra = await getDash(a);
+        const rb = await getDash(b);
         expect(ra.today.collected.toString()).toBe('100000');
         expect(rb.cached).toBe(false);
         expect(rb.today.collected.toString()).toBe('0');
         expect(rb.agentsToday).toEqual([]);
-        const rb2 = await tenantPrisma.run(b, () => dashboard.getDashboard());
+        const rb2 = await getDash(b);
         expect(rb2.today.collected.toString()).toBe('0');
       });
     });
@@ -342,7 +372,7 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
       await withTtl('30', async () => {
         const spy = vi.spyOn(dashboard as unknown as { compute: () => Promise<unknown> }, 'compute');
         const results = await Promise.all(
-          Array.from({ length: 8 }, () => tenantPrisma.run(companyId, () => dashboard.getDashboard())),
+          Array.from({ length: 8 }, () => getDash(companyId)),
         );
         expect(spy).toHaveBeenCalledTimes(1);
         expect(new Set(results.map((r) => r.generatedAt)).size).toBe(1);
@@ -353,7 +383,7 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
     it('exports / report services never use the cache', async () => {
       const companyId = await createCompany('dash-exp');
       await withTtl('30', async () => {
-        await tenantPrisma.run(companyId, () => dashboard.getDashboard());
+        await getDash(companyId);
         const o1 = await tenantPrisma.run(companyId, () => overview.getOverview({}));
         expect(o1).not.toHaveProperty('cached');
       });
@@ -365,7 +395,7 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
       const companyId = await createCompany('dashboard-rev');
       const fx = await seedBaseFixtures(companyId);
       await seedPaidAndReversed(companyId, fx);
-      const result = await tenantPrisma.run(companyId, () => dashboard.getDashboard());
+      const result = await getDash(companyId);
       expect(result.today.collected.toString()).toBe('100000');
       expect(result.today.overdueDebt.toString()).toBe('400000');
     });
@@ -390,7 +420,7 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
         }),
       );
 
-      const result = await tenantPrisma.run(companyId, () => dashboard.getDashboard());
+      const result = await getDash(companyId);
       expect(result.today.overdueDebt.toString()).toBe('120000');
       expect(result.today.overdueDebtChangePct).toBe(0);
     });
