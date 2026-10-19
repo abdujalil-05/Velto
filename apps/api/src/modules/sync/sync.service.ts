@@ -330,7 +330,7 @@ export class SyncService {
             const alreadyExisted = (await tx.payment.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: doc.clientId } } })) !== null;
             const dto = await validatePayload(CreatePaymentDto, { ...doc.payload, clientId: doc.clientId });
             const payment = await this.payments.create(dto, user);
-            // ADR-029: agent cash is ACKed as PENDING_HANDOVER ("yo'lda"), not settled.
+            // ADR-029: any agent payment (CASH/CARD/TRANSFER) is ACKed as PENDING_HANDOVER ("yo'lda"), not settled.
             return { clientId: doc.clientId, id: payment.id, status: alreadyExisted ? 'DUPLICATE' : 'ACCEPTED', paymentStatus: payment.status };
           }
         }

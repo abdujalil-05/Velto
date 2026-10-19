@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import { RequirePermission } from '../../../common/decorators/require-permission.decorator';
@@ -8,6 +8,7 @@ import { AllocatePaymentDto } from '../dto/allocate-payment.dto';
 import { CreatePaymentDto } from '../dto/create-payment.dto';
 import { ListPaymentsQueryDto } from '../dto/list-payments.query';
 import { PaymentInTransitQueryDto } from '../dto/payment-in-transit.query';
+import { PaymentStatusesDto } from '../dto/payment-statuses.dto';
 import { RejectPaymentHandoverDto } from '../dto/reject-payment-handover.dto';
 import { PaymentsService } from './payments.service';
 
@@ -26,6 +27,15 @@ export class PaymentsController {
   @RequirePermission('payments.read')
   inTransit(@Query() query: PaymentInTransitQueryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.payments.inTransitSummary(query.customerId, user);
+  }
+
+  // ADR-029: read-only batch status lookup (POST only because of the id list
+  // size); declared before ':id' routes. SALES_AGENT sees own payments only.
+  @Post('statuses')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('payments.read')
+  statuses(@Body() dto: PaymentStatusesDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.payments.statuses(dto, user);
   }
 
   @Get(':id')

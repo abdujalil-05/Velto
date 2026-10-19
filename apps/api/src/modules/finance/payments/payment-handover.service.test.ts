@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { prisma, systemPrisma } from '@velto/database';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
@@ -13,9 +14,11 @@ import {
   PaymentHandoverSelfResolveException,
   PaymentInClosedCashSessionException,
   PaymentNotPendingHandoverException,
-  PaymentNotReversibleException,
+  PaymentNotPostedException,
   PaymentPendingHandoverAllocationException,
+  PaymentStatusesLimitException,
 } from '../finance-exceptions';
+import { localDateString } from '../../analytics/report-utils';
 import { paymentPostedWithin } from '../ledger-filters';
 import { PaymentsService } from './payments.service';
 
@@ -91,9 +94,80 @@ describe('Payment handover (integration, real Postgres + RLS)', () => {
     await expect(
       run(() => payments.create({ customerId, amount: 1000, method: 'CASH', allocations: [{ invoiceId: invoiceIds[0]!, amount: 1000 }] }, agent)),
     ).rejects.toBeInstanceOf(PaymentPendingHandoverAllocationException);
-    // Agent non-cash and cashier cash keep posting immediately.
-    expect((await run(() => payments.create({ customerId, amount: 1000, method: 'TRANSFER' }, agent))).status).toBe('POSTED');
+    // Office entries (no SALES_AGENT role) keep posting immediately.
     expect((await run(() => payments.create({ customerId, amount: 1000, method: 'CASH' }, cashier))).status).toBe('POSTED');
+    expect((await run(() => payments.create({ customerId, amount: 1000, method: 'CARD' }, cashier))).status).toBe('POSTED');
+  });
+
+  it('ANY agent method (CARD/TRANSFER) is PENDING_HANDOVER too — cash cannot be hidden as "card"; accept posts it', async () => {
+    const { customerId, invoiceIds } = await customerWithInvoices([{ total: '30000', ageDays: 2 }]);
+    const card = await run(() => payments.create({ customerId, amount: 10000, method: 'CARD' }, agent));
+    const transfer = await run(() => payments.create({ customerId, amount: 5000, method: 'TRANSFER' }, agent));
+    expect([card.status, transfer.status]).toEqual(['PENDING_HANDOVER', 'PENDING_HANDOVER']);
+    expect(card.allocations).toHaveLength(0);
+    expect((await balance(customerId)).toString()).toBe('30000');
+    expect(await cached(customerId)).toBe('0');
+    expect(await run(() => payments.inTransitSummary(customerId, agent))).toEqual({ customerId, amount: '15000', count: 2 });
+    await expect(
+      run(() => payments.create({ customerId, amount: 1000, method: 'CARD', allocations: [{ invoiceId: invoiceIds[0]!, amount: 1000 }] }, agent)),
+    ).rejects.toBeInstanceOf(PaymentPendingHandoverAllocationException);
+
+    const accepted = await run(() => payments.acceptHandover(card.id, cashier));
+    expect(accepted.status).toBe('POSTED');
+    expect(accepted.allocations.map((a) => a.amount.toString())).toEqual(['10000']);
+    expect((await balance(customerId)).toString()).toBe('20000');
+    expect(await cached(customerId)).toBe('20000');
+  });
+
+  it('POST /payments/statuses: by id and clientId, agent sees only own, other tenant invisible, 1..100 enforced', async () => {
+    const otherAgent = await newUser(['SALES_AGENT']);
+    const { customerId } = await customerWithInvoices([{ total: '10000', ageDays: 1 }]);
+    const mine = await run(() => payments.create({ customerId, amount: 1000, method: 'CASH', clientId: randomUUID() }, agent));
+    const mine2 = await run(() => payments.create({ customerId, amount: 2000, method: 'CARD', clientId: randomUUID() }, agent));
+    const foreign = await run(() => payments.create({ customerId, amount: 3000, method: 'CASH', clientId: randomUUID() }, otherAgent));
+    await run(() => payments.rejectHandover(mine2.id, 'wrong amount', cashier));
+    await run(() => payments.acceptHandover(mine.id, cashier));
+
+    // Other tenant's payment: RLS hides it even from a tenant-wide role.
+    const t2 = await systemPrisma.tenant.create({ data: { slug: `test-handover-x-${Date.now()}`, name: 'X' } });
+    const c2 = (await systemPrisma.company.create({ data: { tenantId: t2.id, name: 'X Co' } })).id;
+    const xCustomer = await systemPrisma.customer.create({ data: { companyId: c2, code: `X-${Date.now()}`, name: 'X' } });
+    const xPayment = await systemPrisma.payment.create({
+      data: { companyId: c2, number: `X-PAY-${Date.now()}`, customerId: xCustomer.id, amount: 1, method: 'CASH', status: 'POSTED', clientId: randomUUID() },
+    });
+
+    const asAgent = await run(() =>
+      payments.statuses({ ids: [mine.id, foreign.id, xPayment.id], clientIds: [mine2.clientId!, foreign.clientId!, xPayment.clientId!] }, agent),
+    );
+    expect(asAgent.map((r) => r.id).sort()).toEqual([mine.id, mine2.id].sort());
+    const byId = new Map(asAgent.map((r) => [r.id, r]));
+    expect(byId.get(mine.id)).toMatchObject({ status: 'POSTED', clientId: mine.clientId, handoverRejectReason: null });
+    expect(byId.get(mine.id)!.handoverAt).toBeInstanceOf(Date);
+    expect(byId.get(mine2.id)).toMatchObject({ status: 'REJECTED', handoverRejectReason: 'wrong amount' });
+    expect(Object.keys(byId.get(mine.id)!).sort()).toEqual(['clientId', 'handoverAt', 'handoverRejectReason', 'id', 'status']);
+
+    const asCashier = await run(() => payments.statuses({ ids: [mine.id, foreign.id, xPayment.id] }, cashier));
+    expect(asCashier.map((r) => r.id).sort()).toEqual([mine.id, foreign.id].sort());
+
+    await expect(run(() => payments.statuses({}, agent))).rejects.toBeInstanceOf(PaymentStatusesLimitException);
+    const many = Array.from({ length: 60 }, () => randomUUID());
+    await expect(run(() => payments.statuses({ ids: many, clientIds: many }, agent))).rejects.toBeInstanceOf(PaymentStatusesLimitException);
+  });
+
+  it('list() from/to uses the posting date coalesce(handoverAt, createdAt)', async () => {
+    const { customerId } = await customerWithInvoices([{ total: '10000', ageDays: 1 }]);
+    // Collected by the agent two days ago (still pending), accepted today.
+    const twoDaysAgo = new Date(Date.now() - 2 * 86_400_000);
+    const p = await systemPrisma.payment.create({
+      data: { companyId, number: `HO-PAY-${Date.now()}-${++seq}`, customerId, amount: 1000, method: 'CASH', status: 'PENDING_HANDOVER', collectedBy: agent.id, createdAt: twoDaysAgo },
+    });
+    await run(() => payments.acceptHandover(p.id, cashier));
+    const day = (d: Date) => localDateString(d);
+
+    const today = await run(() => payments.list({ page: 1, pageSize: 50, customerId, status: 'POSTED', from: day(new Date()), to: day(new Date()) }, cashier));
+    expect(today.data.map((x) => x.id)).toEqual([p.id]);
+    const collectionDay = await run(() => payments.list({ page: 1, pageSize: 50, customerId, status: 'POSTED', from: day(twoDaysAgo), to: day(twoDaysAgo) }, cashier));
+    expect(collectionDay.data).toHaveLength(0);
   });
 
   it('accept: 1 500 000 over 3 invoices -> POSTED, FIFO oldest first, Σ ≤ payment, balance + cachedBalance, shift total, audit', async () => {
@@ -141,7 +215,7 @@ describe('Payment handover (integration, real Postgres + RLS)', () => {
     expect((await balance(customerId)).toString()).toBe('50000');
 
     await expect(run(() => payments.acceptHandover(p.id, cashier))).rejects.toBeInstanceOf(PaymentNotPendingHandoverException);
-    await expect(run(() => payments.reverse(p.id, 'try reverse', cashier))).rejects.toBeInstanceOf(PaymentNotReversibleException);
+    await expect(run(() => payments.reverse(p.id, 'try reverse', cashier))).rejects.toBeInstanceOf(PaymentNotPostedException);
     const audit = await tenantPrisma.run(companyId, (tx) => tx.auditLog.findFirst({ where: { entityId: p.id, action: 'payment.handover.reject' } }));
     expect(audit).not.toBeNull();
   });
@@ -149,7 +223,7 @@ describe('Payment handover (integration, real Postgres + RLS)', () => {
   it('reverse of a PENDING_HANDOVER payment is refused', async () => {
     const { customerId } = await customerWithInvoices([{ total: '10000', ageDays: 1 }]);
     const p = await run(() => payments.create({ customerId, amount: 5000, method: 'CASH' }, agent));
-    await expect(run(() => payments.reverse(p.id, 'not yet', cashier))).rejects.toBeInstanceOf(PaymentNotReversibleException);
+    await expect(run(() => payments.reverse(p.id, 'not yet', cashier))).rejects.toBeInstanceOf(PaymentNotPostedException);
   });
 
   it('the collector can never accept/reject their own cash, even holding a cashier role and an open shift', async () => {

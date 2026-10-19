@@ -134,16 +134,19 @@ export class PaymentExportedTo1cException extends AppException {
   }
 }
 
-/** F2.1: only a POSTED payment's advance can be allocated later (REVERSED has none). */
+/**
+ * F2.1 / ADR-029: allocate and reverse both need a POSTED payment (REVERSED
+ * has no advance; PENDING_HANDOVER/REJECTED never touched the ledger).
+ */
 export class PaymentNotPostedException extends AppException {
   constructor(status: string) {
     super(
       HttpStatus.CONFLICT,
       'PAYMENT_NOT_POSTED',
       {
-        uz: "Faqat o'tkazilgan (POSTED) to'lovni taqsimlash mumkin",
-        ru: 'Распределять можно только проведённый (POSTED) платёж',
-        en: 'Only a POSTED payment can be allocated',
+        uz: "Bu amal faqat o'tkazilgan (POSTED) to'lov uchun mumkin",
+        ru: 'Это действие доступно только для проведённого (POSTED) платежа',
+        en: 'This action is only allowed for a POSTED payment',
       },
       { status },
     );
@@ -226,18 +229,18 @@ export class PaymentPendingHandoverAllocationException extends AppException {
   }
 }
 
-/** ADR-029: only a POSTED payment can be reversed; PENDING_HANDOVER/REJECTED never touched the ledger. */
-export class PaymentNotReversibleException extends AppException {
-  constructor(status: string) {
+/** ADR-029: POST /payments/statuses takes 1..100 ids + clientIds in total. */
+export class PaymentStatusesLimitException extends AppException {
+  constructor(max: number) {
     super(
-      HttpStatus.CONFLICT,
-      'PAYMENT_NOT_REVERSIBLE',
+      HttpStatus.BAD_REQUEST,
+      'PAYMENT_STATUSES_LIMIT',
       {
-        uz: "Faqat o'tkazilgan (POSTED) to'lovni qaytarish mumkin",
-        ru: 'Сторнировать можно только проведённый (POSTED) платёж',
-        en: 'Only a POSTED payment can be reversed',
+        uz: `1 dan ${max} tagacha to'lov identifikatori yuboring`,
+        ru: `Передайте от 1 до ${max} идентификаторов платежей`,
+        en: `Send between 1 and ${max} payment identifiers`,
       },
-      { status },
+      { max },
     );
   }
 }

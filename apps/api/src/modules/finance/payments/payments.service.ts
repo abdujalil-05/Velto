@@ -12,6 +12,7 @@ import { CustomersService } from '../../customers/customers.service';
 import type { AllocatePaymentDto } from '../dto/allocate-payment.dto';
 import type { CreatePaymentDto } from '../dto/create-payment.dto';
 import type { ListPaymentsQueryDto } from '../dto/list-payments.query';
+import { PAYMENT_STATUSES_MAX, type PaymentStatusesDto } from '../dto/payment-statuses.dto';
 import {
   AllocationExceedsAdvanceException,
   AllocationExceedsInvoiceException,
@@ -27,11 +28,11 @@ import {
   PaymentHandoverSelfResolveException,
   PaymentNotPendingHandoverException,
   PaymentNotPostedException,
-  PaymentNotReversibleException,
   PaymentPendingHandoverAllocationException,
   PaymentReversalReasonRequiredException,
+  PaymentStatusesLimitException,
 } from '../finance-exceptions';
-import { VALID_ALLOCATION_WHERE, paymentAdvanceOf, paymentPostedAt } from '../ledger-filters';
+import { VALID_ALLOCATION_WHERE, paymentAdvanceOf, paymentPostedAt, paymentPostedWithin } from '../ledger-filters';
 
 // customer is included alongside allocations so the web UI (9.2 "/payments")
 // can render a full row without an extra round-trip per payment.
@@ -68,13 +69,15 @@ export class PaymentsService {
       ...(query.customerId ? { customerId: query.customerId } : {}),
       ...(scopedCollectedBy ? { collectedBy: scopedCollectedBy } : {}),
       ...(query.status ? { status: query.status } : {}),
+      // ADR-029: the period is the posting date coalesce(handoverAt, createdAt),
+      // same rule as 1C export/dashboards — an accepted handover counts on the
+      // day the cashier accepted it. PENDING_HANDOVER has handoverAt null, so
+      // it is still filtered by its collection time.
       ...(query.from || query.to
-        ? {
-            createdAt: {
-              ...(query.from ? { gte: startOfDay(new Date(query.from)) } : {}),
-              ...(query.to ? { lte: endOfDay(new Date(query.to)) } : {}),
-            },
-          }
+        ? paymentPostedWithin({
+            ...(query.from ? { gte: startOfDay(new Date(query.from)) } : {}),
+            ...(query.to ? { lte: endOfDay(new Date(query.to)) } : {}),
+          })
         : {}),
     };
 
@@ -143,9 +146,14 @@ export class PaymentsService {
       throw new InvalidPaymentAmountException("To'lov summasi musbat bo'lishi kerak");
     }
 
-    // ADR-029 / F-01: cash collected by a field agent is PENDING_HANDOVER until
-    // a cashier accepts it; cashier/office entries (any method) post at once.
-    const inTransit = dto.method === PaymentMethod.CASH && user.roles.includes('SALES_AGENT');
+    // ADR-029 / F-01: ANY payment a field agent enters (CASH/CARD/TRANSFER) is
+    // PENDING_HANDOVER until a cashier accepts it — otherwise an agent could
+    // hide cash by labelling it 'CARD' (security audit BLOCK). Office entries
+    // (no SALES_AGENT role) post at once. MVP fixed roles: a user holding
+    // SALES_AGENT + CASHIER/OWNER is treated as an agent here and, by the
+    // four-eyes rule (lockPendingHandover + DB trigger), can never accept
+    // their own collection — another cashier must.
+    const inTransit = user.roles.includes('SALES_AGENT');
     if (inTransit && dto.allocations?.length) throw new PaymentPendingHandoverAllocationException();
 
     // Customer row lock FIRST, then the deletedAt check as a fresh read: a
@@ -286,6 +294,29 @@ export class PaymentsService {
     return { customerId, amount: (agg._sum.amount ?? new Prisma.Decimal(0)).toString(), count: agg._count._all };
   }
 
+  /**
+   * ADR-029: handover decision lookup for the Mini App queue — up to 100 ids
+   * and/or clientIds, never paginated, so no decision is lost past page 1.
+   * SEC-023: a SALES_AGENT only gets payments they collected; unknown,
+   * foreign-agent and other-tenant (RLS) ids are simply absent.
+   */
+  async statuses(dto: PaymentStatusesDto, user: AuthenticatedUser) {
+    const ids = dto.ids ?? [];
+    const clientIds = dto.clientIds ?? [];
+    if (ids.length + clientIds.length === 0 || ids.length + clientIds.length > PAYMENT_STATUSES_MAX) {
+      throw new PaymentStatusesLimitException(PAYMENT_STATUSES_MAX);
+    }
+    const scopedCollectedBy = user.roles.includes('SALES_AGENT') ? user.id : undefined;
+    return this.tenantPrisma.client.payment.findMany({
+      where: {
+        OR: [...(ids.length ? [{ id: { in: ids } }] : []), ...(clientIds.length ? [{ clientId: { in: clientIds } }] : [])],
+        ...(scopedCollectedBy ? { collectedBy: scopedCollectedBy } : {}),
+      },
+      select: { id: true, clientId: true, status: true, handoverAt: true, handoverRejectReason: true },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
   /** Payment FOR UPDATE, then: exists, still PENDING_HANDOVER, and not resolved by its own collector. */
   private async lockPendingHandover(tx: TenantClient, paymentId: string, user: AuthenticatedUser) {
     await tx.$queryRaw(Prisma.sql`SELECT id FROM "Payment" WHERE id = ${paymentId}::uuid FOR UPDATE`);
@@ -390,7 +421,8 @@ export class PaymentsService {
     if (!before) throw new PaymentNotFoundException();
     if (before.status === PaymentStatus.REVERSED) throw new PaymentAlreadyReversedException();
     // ADR-029: PENDING_HANDOVER/REJECTED never reached the ledger — reject/accept instead.
-    if (before.status !== PaymentStatus.POSTED) throw new PaymentNotReversibleException(before.status);
+    // Same PAYMENT_NOT_POSTED code as allocate() for the same state.
+    if (before.status !== PaymentStatus.POSTED) throw new PaymentNotPostedException(before.status);
     await this.customers.lockForUpdate(tx, before.customerId);
 
     await this.assertNotInClosedCashSession(tx, before);

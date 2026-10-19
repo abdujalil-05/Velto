@@ -183,10 +183,12 @@ describe('CustomersService (integration, real Postgres + RLS)', () => {
       details: { count: 1 },
     });
 
+    // ADR-029 four-eyes (DB trigger): the collector may not resolve their own handover.
+    const resolver = await systemPrisma.user.create({ data: { companyId, firstName: 'Cash', lastName: 'Resolver', phone: '+998900000095' } });
     await tenantPrisma.run(companyId, (tx) =>
       tx.payment.update({
         where: { id: pay.id },
-        data: { status: 'REJECTED', handoverActorId: user.id, handoverAt: new Date(), handoverRejectReason: 'test' },
+        data: { status: 'REJECTED', handoverActorId: resolver.id, handoverAt: new Date(), handoverRejectReason: 'test' },
       }),
     );
     const deleted = await tenantPrisma.run(companyId, () => customers.remove(id, user));
