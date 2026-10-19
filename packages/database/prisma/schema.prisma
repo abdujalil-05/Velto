@@ -1136,6 +1136,7 @@ model AuditLog {
 // Append-only — o'chirish/o'zgartirish imkonsiz (DB trigger orqali
 // ta'minlanadi, ko'ring: prisma/migrations/*_audit_append_only).
 
+/// DEPRECATED (ADR-047): kod ishlatmaydi, DROP keyingi relizda expand-contract.
 model OutboxEvent {
   id          String    @id @default(uuid()) @db.Uuid
   companyId   String    @db.Uuid
