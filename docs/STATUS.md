@@ -14,6 +14,7 @@
 | F3 Dala savdosi va kuryer | **✅** — branch `feat/f3-field-courier` (server GPS 6 natija, marshrut yakuni validatsiyasi, web Tashriflar, miniapp GPS); qoldiq qarzlar "Qarorlar" bo'limida |
 | F4 Offline/sync | **✅ kod tomoni** — branch `feat/f4-offline-sync`; **qo'lda qurilma matritsasi (§8.5) bajarilmagan** (pilot qurilmalar ro'yxati kerak) |
 | F5 Hisobot, import/eksport, 1C | **Qisman** — F5.1 hisobot eksporti, F5.2 import, F5.4 ✅; **F5.3 (1C mustahkamlash + ACK, ADR-030) bajarilmagan**; web 1C sahifasi va signed URL yo'q |
+| F8.1 Agent to'lovi PENDING_HANDOVER (ADR-029) | **✅** — branch `feat/f8-1-payment-handover` (sxema 8289caa+1ec7f03, API 9fa62a3+b876aad, customers b9145dd, web aa7d384, miniapp 3832810+880502b, QA 471bfff, permission 2b2152c). Testlar: database 74, api 577 (61 fayl), miniapp 88. Opening balance importi va OWNER-alert (ADR-032) F8.1 dan keyin ochiq |
 | F6 Platforma | Boshlanmagan |
 | F7 Chiniqtirish va reliz | Boshlanmagan |
 
@@ -95,11 +96,21 @@ MVP kodining katta qismi yozilgan: F0–F2 asosan, F3 ✅, F4 kod tomoni ✅, F5
 
 - **2026-10-19 — v5.0 review qarorlari (ADR-028..033; foydalanuvchi qabul qildi, TZ ga kiritildi):**
   - **ADR-028 Mode A only:** MVP, v0.9 va v1.0 faqat Mode A (Velto stock/receivables master). Mode B (1C master, `AWAITING_ACCOUNTING`, `DATA_CUTOVER`) v1.1. TZ §5.2/§6.3/§6.7/§7.6 mos.
-  - **ADR-029 PENDING_HANDOVER:** agent naqdi `LOCAL_PENDING` → `PENDING_HANDOVER` (qarzni kamaytirmaydi, "yo'lda") → kassir smenada qabul qilgach `POSTED` + FIFO. Kassir/ofis to'lovi darhol `POSTED`. Agent to'lovi usuldan qat'i nazar `PENDING_HANDOVER`. Kassir rad etsa `REJECTED` (sabab majburiy, balansga ta'sir yo'q, terminal; TZ §6.7.2 ga qo'shildi). `payments.handover` egalari: faqat OWNER va CASHIER (SALES_DIRECTOR dan olib tashlandi — `cash.open` yo'q, vazifalar ajratilgan; mavjud tenantlar uchun `packages/database/src/revoke-director-handover.ts`). O'z to'lovini qabul/rad etish DB darajasida taqiqlangan. (TZ §6.5, §6.7.2, §5.4.2 F-01.) Kod: `feat/f8-1-payment-handover` branchida (F8.1).
+  - **ADR-029 PENDING_HANDOVER:** agent naqdi `LOCAL_PENDING` → `PENDING_HANDOVER` (qarzni kamaytirmaydi, "yo'lda") → kassir smenada qabul qilgach `POSTED` + FIFO. Kassir/ofis to'lovi darhol `POSTED`. Agent to'lovi usuldan qat'i nazar `PENDING_HANDOVER`. Kassir rad etsa `REJECTED` (sabab majburiy, balansga ta'sir yo'q, terminal; TZ §6.7.2 ga qo'shildi). `payments.handover` egalari: faqat OWNER va CASHIER (SALES_DIRECTOR dan olib tashlandi — `cash.open` yo'q, vazifalar ajratilgan; mavjud tenantlar uchun `packages/database/src/revoke-director-handover.ts`). O'z to'lovini qabul/rad etish DB darajasida taqiqlangan. (TZ §6.5, §6.7.2, §5.4.2 F-01.) Kod: `feat/f8-1-payment-handover` branchida (F8.1 ✅).
+  - **ADR-029 qo'shimcha (2026-10-19, foydalanuvchi qarori):** (1) agentning HAR QANDAY usuldagi to'lovi `PENDING_HANDOVER` — xavfsizlik auditi BLOCK topdi: agent naqdni "karta" deb yashirishi mumkin edi (sxema 1ec7f03 CHECK barcha usul, API b876aad); (2) `payments.handover` faqat OWNER+CASHIER, SALES_DIRECTOR dan olib tashlandi (`cash.open` yo'q edi; 2b2152c); (3) davr hisobi `coalesce(handoverAt, createdAt)`; `POST /payments/statuses` (100 tadan bo'lib, miniapp) va `GET /payments/in-transit`; PENDING_HANDOVER bor mijozni o'chirish taqiq.
+  - **Operatsion qadamlar (mavjud tenantlar, HALI ISHGA TUSHIRILMAGAN):** `packages/database/src/backfill-permissions.ts` (`payments.handover`) va `revoke-director-handover.ts` (avval `--dry-run`).
   - **ADR-030 1C ACK:** bir tomonlama eksport; `ExportJob` `GENERATED → ACCOUNTING_ACCEPTED | FAILED_REVIEW`; ACK faqat buxgalterning UI'da qo'lda tasdig'i + checksum (+izoh), auditli; 1C callback yo'q. Kod: yo'q (F5.3+).
   - **ADR-031 Idempotentlik/versiya/prefiks:** create = `clientId`, holat o'tishi = `Idempotency-Key`; optimistic `version` ustunlari qo'shilmaydi (row lock + har qatorda `expectedUnitPrice`, repo ADR-020; `expectedPriceVersion` bekor); `/api/v1` prefiksi v1.1 (MVP'da strategiya hujjatlangan).
   - **ADR-032 4-eyes v1.1:** MVP'da 4-eyes yo'q; summa chegarasidan oshgan reversal/adjust → OWNER'ga darhol alert + audit. Chegara: **TBD — foydalanuvchi belgilaydi.**
   - **ADR-033 Nomlash/atama:** TZ dagi ADR-011..020 = `V5-ADR-011..020`; repo ADR-011..027 shu faylda o'z nomida; yangilari ADR-028 dan. Invoice UI atamasi: uz "Ichki hisob", ru "Внутренний счёт", en "Internal invoice". Pilot (v0.9) sign-off: 3 imzo (Product, Accounting, Security); GA — to'liq §16.5 matritsa. RPO 15m faqat GA; pilotda kunlik backup + drill. Yagona yuk profili: TZ §12.5.
+
+- **F8.1 ochiq qarzlar (2026-10-19):**
+  - Beqaror testlar: `reconciliation.e2e.test.ts:94` parallel yuklamada bir marta 403 o'rniga 400 berdi (yolg'iz va qayta to'liq yurishda o'tdi); miniapp `handover-sync.test.ts` va `search-perf.test.ts` parallel yuklamada 5s timeout (yolg'iz o'tadi) — barqarorlashtirish kerak.
+  - uz `POSTED` tarjimasi "Qabul qilingan" — ma'no siljishi (F6 da "Ichki hisob" bilan birga ko'rish).
+  - Mijozlar ro'yxatida "yo'lda" ustuni yo'q (faqat karta).
+  - Smena naqd summasiga faqat CASH qo'shiladi (CARD/TRANSFER qabulida smena talab qilinadi, lekin summaga kirmaydi).
+  - Agentning "bugun yig'ilgan" summasi posting sanasiga o'tdi.
+  - Reviewer LOW: ikki rolli (SALES_AGENT+CASHIER) foydalanuvchi o'z naqdini qabul qila olmaydi (MVP fixed rollar).
 
 ## Ochiq savollar (foydalanuvchi hal qilmagan; TZ §19.2)
 
@@ -116,13 +127,13 @@ MVP kodining katta qismi yozilgan: F0–F2 asosan, F3 ✅, F4 kod tomoni ✅, F5
 ## Keyingi qadamlar (ustuvorlik bilan)
 
 Batafsil: `docs/PLAN.md` (F8.x gap-tahlil tartibi).
-1. F8.1 — PENDING_HANDOVER, majburiy rad etish sababi, opening balance importi → `db-rls`, `finance-stock`, `qa-engineer`
-2. F5.3+ — 1C ACK (ADR-030), signed URL, web 1C sahifasi → `integrations-dev`, `web-dev`
-3. F4.5 — PWA manifest, holat yorliqlari, qurilma matritsasi → `miniapp-dev`
-4. F6 — trial, onboarding, "Ichki hisob" yorlig'i → `web-dev`, `i18n-sync`
-5. F7 — outbox qarori, rate-limit, live/ready, runbook, restore drill, perf → `devops`, `qa-engineer`
+1. F5.3+ — 1C ACK (ADR-030), signed URL, web 1C sahifasi → `integrations-dev`, `web-dev`
+2. F4.5 — PWA manifest, holat yorliqlari, qurilma matritsasi → `miniapp-dev`
+3. F6 — trial, onboarding, "Ichki hisob" yorlig'i → `web-dev`, `i18n-sync`
+4. F7 — outbox qarori, rate-limit, live/ready, runbook, restore drill, perf → `devops`, `qa-engineer`
 
 ## Oxirgi sessiya
 
+- 2026-10-19: F8.1 (PENDING_HANDOVER) tugadi, ADR-029 qo'shimchasi yozildi; branch `feat/f8-1-payment-handover`, push qilinmagan.
 - 2026-10-19: Master TZ v5.0 ga review qarorlari kiritildi (ADR-028..033), STATUS/PLAN yangilandi. Faqat hujjat o'zgargan, kod yo'q. Branch `docs/tz-v5`, push qilinmagan.
 - Commit xabarlari `feat(finance): ...` / `docs: ...` shaklida.
