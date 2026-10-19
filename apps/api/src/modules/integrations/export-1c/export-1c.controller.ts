@@ -28,6 +28,7 @@ export class Export1cController {
   @Post()
   @RequirePermission('integrations.export1c')
   @Throttle({ default: { limit: 5, ttl: PER_MINUTE } })
+  @Idempotent()
   async create(@Body() dto: CreateExportDto, @CurrentUser() user: AuthenticatedUser) {
     await this.limits.assertCanCreate();
     return toExportJobView(await this.export1c.create(dto, user));
