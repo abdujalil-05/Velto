@@ -42,7 +42,8 @@ describe('refreshHandoverDecisions', () => {
     expect(byServer.get('srv-120')?.paymentStatus).toBe('REJECTED');
     expect(byServer.get('srv-120')?.handoverRejectReason).toBe('no cash');
     expect(rows).toHaveLength(130);
-  });
+    // 30s covers only seed() (130 sequential encrypted queue writes); assertions are unchanged.
+  }, 30_000);
 
   it('does not call the server when nothing awaits handover', async () => {
     expect(await refreshHandoverDecisions()).toBe(false);

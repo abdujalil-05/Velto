@@ -9,6 +9,10 @@ export default defineConfig({
     // needs a real-looking origin to be usable at all.
     environmentOptions: { jsdom: { url: 'http://localhost/' } },
     setupFiles: ['./src/test/setup.ts'],
+    // Each file seeds encrypted IndexedDB rows (AES-GCM per row, up to 7k) — CPU-bound. Unbounded forks
+    // (= core count) plus the api suite under `turbo test` starve it 5x+ (0.9s alone -> >5s). Cap forks.
+    pool: 'forks',
+    poolOptions: { forks: { maxForks: Number(process.env.VITEST_MAX_FORKS ?? 3), minForks: 1 } },
   },
   // tsconfig.json sets `jsx: "preserve"` (Next.js compiles JSX itself), which
   // makes esbuild fall back to the classic `React.createElement` runtime and
