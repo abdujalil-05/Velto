@@ -1,11 +1,11 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import type { Queue } from 'bullmq';
 import { AuditLogService } from '../../common/audit/audit-log.service';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { lockCompanyExportExclusive } from '../../common/locks/company-export-lock';
 import { paginate } from '../../common/pagination/pagination.dto';
-import { addTracedJob } from '../../common/queue/trace-job';
+import { addTracedJob, enqueueBestEffort } from '../../common/queue/trace-job';
 import { TenantContext } from '../../common/tenant/tenant-context';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { ExportJobNotFoundException } from '../integrations/integrations-exceptions';
@@ -16,6 +16,7 @@ import { COMPANY_EXPORT_JOB_OPTS, COMPANY_EXPORT_QUEUE, COMPANY_EXPORT_TYPE, MAX
 /** ADR-045: full tenant data export (DSR/offboarding, §11.7.2). Reuses ExportJob (type='company', format EXCEL; ACK statuses are never used). */
 @Injectable()
 export class CompanyExportService {
+  private readonly logger = new Logger(CompanyExportService.name);
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     @InjectQueue(COMPANY_EXPORT_QUEUE) private readonly queue: Queue<CompanyExportJobData>,
@@ -33,7 +34,7 @@ export class CompanyExportService {
       data: { companyId: user.companyId, type: COMPANY_EXPORT_TYPE, format: 'EXCEL', periodFrom: now, periodTo: now, status: 'QUEUED', requestedBy: user.id },
     });
     await this.auditLog.log(tx, { companyId: user.companyId, userId: user.id, action: 'company.export', entity: 'ExportJob', entityId: job.id, newValue: { jobId: job.id, format: 'EXCEL' } });
-    TenantContext.afterCommit(() => addTracedJob(this.queue, 'export', { exportJobId: job.id, companyId: user.companyId }, { ...COMPANY_EXPORT_JOB_OPTS, jobId: `export-${job.id}` }));
+    TenantContext.afterCommit(() => enqueueBestEffort(this.logger, `export ${job.id}`, () => addTracedJob(this.queue, 'export', { exportJobId: job.id, companyId: user.companyId }, { ...COMPANY_EXPORT_JOB_OPTS, jobId: `export-${job.id}` })));
     return job;
   }
 

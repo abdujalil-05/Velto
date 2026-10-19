@@ -30,5 +30,11 @@ export function export1cStorageKey(companyId: string, jobId: string, extension: 
 /** QUEUED job untouched this long is considered orphaned (enqueue lost) and is re-enqueued by the sweep. */
 export const EXPORT_1C_STALE_QUEUED_MS = 15 * 60_000;
 
-/** An orphaned QUEUED job older than this is failed (frees the active-job limit). */
-export const EXPORT_1C_ABANDONED_QUEUED_MS = 60 * 60_000;
+/**
+ * An orphaned QUEUED job older than this is failed (frees the active-job limit). ADR-047: default 24h so a
+ * Redis/worker outage of an hour or more (16.5.1) does not fail jobs; env ABANDONED_QUEUED_MS overrides.
+ */
+export function export1cAbandonedQueuedMs(): number {
+  const n = Number(process.env.ABANDONED_QUEUED_MS);
+  return Number.isFinite(n) && n > 0 ? n : 24 * 60 * 60_000;
+}

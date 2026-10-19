@@ -1,9 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { withTenant, type TenantClient, type TenantTxOptions } from '@velto/database';
 import { TenantContext } from './tenant-context';
 
 @Injectable()
 export class TenantPrismaService {
+  private readonly logger = new Logger(TenantPrismaService.name);
+
   /**
    * Runs `fn` inside a tenant-scoped RLS transaction and exposes it via
    * TenantContext for the duration. Callbacks registered via
@@ -24,9 +26,21 @@ export class TenantPrismaService {
       (tx) => TenantContext.run({ companyId, tx, afterCommit }, () => fn(tx)),
       options,
     );
+    // One failing callback must not starve the others; the first error is rethrown once all have run.
+    let firstError: unknown;
+    let failed = false;
     for (const cb of afterCommit) {
-      await cb();
+      try {
+        await cb();
+      } catch (e) {
+        this.logger.error(`afterCommit callback failed: ${e instanceof Error ? e.name : 'error'}`);
+        if (!failed) {
+          failed = true;
+          firstError = e;
+        }
+      }
     }
+    if (failed) throw firstError;
     return result;
   }
 
