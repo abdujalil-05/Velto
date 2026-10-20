@@ -140,7 +140,8 @@ describe('E2E F5.3: 1C export hardening', () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).overrideProvider(StorageService).useValue(storage).compile();
     app = moduleRef.createNestApplication();
     configureApp(app, ['http://localhost:3000']);
-    await app.init();
+    // Loopback-only listen: supertest's default `::` bind can collide with a foreign 127.0.0.1 listener (e.g. VS Code helper) => random 4xx.
+    await app.listen(0, '127.0.0.1');
     [companyA, companyB, companyP, companyR] = await Promise.all([seedCompany('a'), seedCompany('b'), seedCompany('p'), seedCompany('r')]);
     await seedUser(companyA, 'OWNER_A', 'OWNER');
     await seedUser(companyB, 'OWNER_B', 'OWNER');
@@ -273,7 +274,7 @@ describe('E2E F5.3: 1C export hardening', () => {
   });
 
   describe('period rule + throttle + recovery sweep (ADR-030)', () => {
-    const dayOffset = (n: number) => new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
+    const dayOffset = (n: number) => new Date(Date.now() + n * 86_400_000).toLocaleDateString('en-CA', { timeZone: 'Asia/Tashkent' });
 
     it('period ending today or in the future => 400 EXPORT_PERIOD_NOT_CLOSED; nothing created', async () => {
       for (const to of [dayOffset(0), dayOffset(1), dayOffset(30)]) {
@@ -310,7 +311,7 @@ describe('E2E F5.3: 1C export hardening', () => {
       expect((await dbJob(companyP, stale)).status).toBe('FAILED');
     });
 
-    it('sweep: orphaned QUEUED (>15 min) is re-enqueued with jobId export-{id}; a fresh QUEUED is not; >1h + enqueue failure => FAILED', async () => {
+    it('sweep: orphaned QUEUED (>15 min) is re-enqueued with jobId export-{id}; a fresh QUEUED is not; >ABANDONED_QUEUED_MS + enqueue failure => FAILED', async () => {
       const make = async (ageMs: number) =>
         tenantPrisma.run(companyP, async (tx) => {
           const j = await tx.exportJob.create({ data: { companyId: companyP, type: '1c', format: 'CSV', ...nowPeriod() } });
@@ -327,7 +328,14 @@ describe('E2E F5.3: 1C export hardening', () => {
       expect((await dbJob(companyP, orphan)).status).toBe('QUEUED');
 
       const dead = await make(2 * 3_600_000);
-      await new Export1cRecoveryService(tenantPrisma, { add: vi.fn().mockRejectedValue(new Error('redis down')) } as never).sweep();
+      const prevAbandoned = process.env.ABANDONED_QUEUED_MS;
+      process.env.ABANDONED_QUEUED_MS = String(3_600_000); // ADR-047 default is 24h; pin 1h so the 2h-old job is abandoned
+      try {
+        await new Export1cRecoveryService(tenantPrisma, { add: vi.fn().mockRejectedValue(new Error('redis down')) } as never).sweep();
+      } finally {
+        if (prevAbandoned === undefined) delete process.env.ABANDONED_QUEUED_MS;
+        else process.env.ABANDONED_QUEUED_MS = prevAbandoned;
+      }
       expect((await dbJob(companyP, dead)).status).toBe('FAILED');
       expect((await dbJob(companyP, orphan)).status).toBe('QUEUED'); // young enough: kept for the next sweep
     });

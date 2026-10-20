@@ -1,9 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import { InvoiceStatus, Prisma } from '@velto/database';
+import { Prisma } from '@velto/database';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
-import { VALID_ALLOCATION_WHERE } from '../finance/ledger-filters';
 import type { DateRangeQueryDto } from './dto/date-range.query';
-import { COUNTED_ORDER_STATUSES, DAY_MS, companyTimeZone, resolveDateRange, ORDER_AMOUNT_SELECT, orderTotal } from './report-utils';
+import { companyTimeZone, resolveDateRange } from './report-utils';
+import { invoiceDebt, orderTotalsInWindow } from './report-sql';
 
 /** 9.2 "Hisobotlar ... umumiy" — company-wide summary for the window: turnover, active/new customers, and outstanding debt (17.2 KPI defs). */
 @Injectable()
@@ -15,49 +15,26 @@ export class OverviewReportService {
     const timeZone = await companyTimeZone(tx);
     const { start, end } = resolveDateRange(query.from, query.to, 30, timeZone);
 
-    const [orders, newCustomers, totalCustomers, openInvoices] = await Promise.all([
-      tx.salesOrder.findMany({
-        where: { createdAt: { gte: start, lte: end }, status: { in: COUNTED_ORDER_STATUSES } },
-        select: { customerId: true, ...ORDER_AMOUNT_SELECT },
-      }),
+    const [orders, newCustomers, totalCustomers, debt] = await Promise.all([
+      orderTotalsInWindow(tx, start, end),
       tx.customer.count({ where: { createdAt: { gte: start, lte: end }, deletedAt: null } }),
       tx.customer.count({ where: { deletedAt: null } }),
-      tx.invoice.findMany({
-        where: { status: { in: [InvoiceStatus.OPEN, InvoiceStatus.PARTIALLY_PAID] } },
-        include: { allocations: { where: VALID_ALLOCATION_WHERE }, customer: { select: { paymentTermDays: true } } },
-      }),
+      // Debt is a current snapshot, not scoped to the [start,end] window —
+      // "qarzdorlik" is always "as of now" (see /reports/aging, same convention).
+      invoiceDebt(tx, { kind: 'open', now: new Date() }),
     ]);
+    const { turnover } = orders;
+    const totalDebt = debt.total;
+    const overdueDebt = debt.overdue;
 
-    let turnover = new Prisma.Decimal(0);
-    const activeCustomers = new Set<string>();
-    for (const order of orders) {
-      turnover = turnover.plus(orderTotal(order));
-      activeCustomers.add(order.customerId);
-    }
-
-    // Debt is a current snapshot, not scoped to the [start,end] window —
-    // "qarzdorlik" is always "as of now" (see /reports/aging, same convention).
-    let totalDebt = new Prisma.Decimal(0);
-    let overdueDebt = new Prisma.Decimal(0);
-    const now = Date.now();
-    for (const invoice of openInvoices) {
-      const allocated = invoice.allocations.reduce((sum, a) => sum.plus(a.amount), new Prisma.Decimal(0));
-      const outstanding = invoice.total.minus(allocated);
-      if (!outstanding.greaterThan(0)) continue;
-      totalDebt = totalDebt.plus(outstanding);
-
-      const dueAt = invoice.createdAt.getTime() + invoice.customer.paymentTermDays * DAY_MS;
-      if (dueAt < now) overdueDebt = overdueDebt.plus(outstanding);
-    }
-
-    const orderCount = orders.length;
+    const orderCount = orders.count;
     return {
       range: { from: start, to: end },
       timeZone,
       turnover,
       orderCount,
       avgCheck: orderCount > 0 ? turnover.dividedBy(orderCount) : new Prisma.Decimal(0),
-      activeCustomers: activeCustomers.size,
+      activeCustomers: orders.activeCustomers,
       newCustomers,
       totalCustomers,
       totalDebt,

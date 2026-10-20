@@ -19,7 +19,13 @@ import { writeCompanyWorkbook, type WrittenWorkbook } from './company-export-wri
 
 /** Own transaction/connection (the read tx is long); CAS on PROCESSING so a swept job is never resurrected. */
 export async function companyExportHeartbeat(tenantPrisma: TenantPrismaService, companyId: string, exportJobId: string): Promise<void> {
-  await tenantPrisma.run(companyId, (tx) => tx.exportJob.updateMany({ where: { id: exportJobId, status: 'PROCESSING' }, data: { updatedAt: new Date() } }));
+  // Intentionally runs on a 2nd connection while the export's read tx is open (liveness must commit independently).
+  await tenantPrisma.run(
+    companyId,
+    (tx) => tx.exportJob.updateMany({ where: { id: exportJobId, status: 'PROCESSING' }, data: { updatedAt: new Date() } }),
+    undefined,
+    { allowNested: true },
+  );
 }
 
 /**

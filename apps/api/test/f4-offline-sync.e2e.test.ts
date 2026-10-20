@@ -7,6 +7,7 @@ import request from 'supertest';
 import { prisma, systemPrisma } from '@velto/database';
 import { permissionKeysForRole } from '../../../packages/database/src/rbac-catalog';
 import { AppModule } from '../src/app.module';
+import { expectWithinBudget } from '../src/common/testing/perf';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
 import { SalesService } from '../src/modules/sales/sales.service';
@@ -35,7 +36,7 @@ describe('E2E F4 offline sync (TZ 8.5 / 16.2)', () => {
   const http = () => request(app.getHttpServer());
   const push = (k: string, documents: unknown[]) => http().post('/sync/push').set(auth(k)).send({ documents });
   const pull = (k: string, qs = '') => http().get(`/sync/pull${qs}`).set(auth(k));
-  const run = <T>(c: string, fn: () => Promise<T>) => tenantPrisma.run(c, fn);
+  const run = <T>(c: string, fn: () => Promise<T>, o?: { timeout?: number }) => tenantPrisma.run(c, fn, o);
   const rid = () => randomUUID().slice(0, 8);
 
   const orderDoc = (opts: { expectedUnitPrice?: string; customer?: string; qty?: number } = {}) => {
@@ -92,7 +93,8 @@ describe('E2E F4 offline sync (TZ 8.5 / 16.2)', () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
     app = moduleRef.createNestApplication();
     configureApp(app, ['http://localhost:3000']);
-    await app.init();
+    // Loopback-only listen: supertest's default `::` bind can collide with a foreign 127.0.0.1 listener (e.g. VS Code helper) => random 4xx.
+    await app.listen(0, '127.0.0.1');
     sales = app.get(SalesService);
 
     const a = await seedCompany('A', ['SALES_AGENT', 'OWNER']);
@@ -295,7 +297,8 @@ describe('E2E F4 offline sync (TZ 8.5 / 16.2)', () => {
       await run(cid, async () => {
         await tenantPrisma.client.product.delete({ where: { id: prodId } });
         await tenantPrisma.client.customer.delete({ where: { id: custId } });
-      });
+        // FK checks on Invoice/Payment/Outlet(customerId) have no standalone customerId index: ~0.7s each on a 1.2M-customer dev DB, >5s under load.
+      }, { timeout: 30_000 });
       const res = await pull('OWNER', `?cursor=${encodeURIComponent(cursor2)}`).expect(200);
       const tomb = res.body.tombstones as Array<{ entity: string; entityId: string }>;
       expect(tomb.some((t) => t.entity === 'Product' && t.entityId === prodId)).toBe(true);
@@ -371,8 +374,8 @@ describe('E2E F4 offline sync (TZ 8.5 / 16.2)', () => {
       expect(res.body.results.every((r: { status: string }) => r.status === 'ACCEPTED' || r.status === 'DUPLICATE')).toBe(true);
       // eslint-disable-next-line no-console
       console.log(`[F4 PERF] full pull 5k products + 2k customers: ${pullMs} ms over ${pages} pages; push 20 orders: ${pushMs} ms`);
-      expect(pullMs).toBeLessThan(8000);
-      expect(pushMs).toBeLessThan(3000);
+      expectWithinBudget("F4 full pull 5k+2k", pullMs, 8000);
+      expectWithinBudget("F4 push 20 orders", pushMs, 3000);
     }, 120_000);
   });
 });

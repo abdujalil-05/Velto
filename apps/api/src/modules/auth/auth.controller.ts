@@ -13,6 +13,7 @@ import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
 import { TelegramAuthDto } from './dto/telegram-auth.dto';
 import { PasswordResetService } from './password-reset.service';
+import { AllowDuringMaintenance } from '../../common/maintenance/allow-during-maintenance.decorator';
 
 function requestMeta(req: Request): RequestMeta {
   return { ip: req.ip, userAgent: req.headers['user-agent'] };
@@ -48,6 +49,7 @@ export class AuthController {
   }
 
   @Public()
+  @AllowDuringMaintenance()
   @Post('login')
   async login(@Body() dto: LoginDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const result = await this.authService.login(dto, requestMeta(req));
@@ -56,6 +58,7 @@ export class AuthController {
   }
 
   @Public()
+  @AllowDuringMaintenance()
   @Post('telegram')
   telegram(@Body() dto: TelegramAuthDto, @Req() req: Request) {
     return this.authService.telegramLogin(dto, requestMeta(req));
@@ -82,6 +85,7 @@ export class AuthController {
   }
 
   @Public()
+  @AllowDuringMaintenance()
   @Post('refresh')
   async refresh(@Body() dto: RefreshTokenDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const tokenFromCookie = req.cookies?.[REFRESH_COOKIE_NAME] as string | undefined;
@@ -125,6 +129,7 @@ export class AuthController {
   // log out even when their session has technically expired.
   @Public()
   @HttpCode(HttpStatus.NO_CONTENT)
+  @AllowDuringMaintenance()
   @Post('logout')
   async logout(@Body() dto: LogoutDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const tokenFromCookie = req.cookies?.[REFRESH_COOKIE_NAME] as string | undefined;

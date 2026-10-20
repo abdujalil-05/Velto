@@ -141,6 +141,25 @@ describe('SyncService.pull (F4, integration)', () => {
     expect(p2.products).toHaveLength(0);
   });
 
+  it('stableSeq: another tenant\'s higher-seq StockLevel/ProductPackaging never influence this tenant\'s terminal cursor', async () => {
+    const a = await mkCompany('seqA');
+    const dirA = userOf(a, randomUUID(), 'OWNER');
+    const pA = await run(a, () => tenantPrisma.client.product.create({ data: { companyId: a, sku: 'A', name: 'a', baseUnit: 'dona', vatRate: 12, updatedAt: OLD() } }));
+    const b = await mkCompany('seqB');
+    const { sl, pk } = await run(b, async () => {
+      const tx = tenantPrisma.client;
+      const prod = await tx.product.create({ data: { companyId: b, sku: 'B', name: 'b', baseUnit: 'dona', vatRate: 12, updatedAt: OLD() } });
+      const wh = await tx.warehouse.create({ data: { companyId: b, name: 'WB' } });
+      const stock = await tx.stockLevel.create({ data: { productId: prod.id, warehouseId: wh.id, updatedAt: OLD() } });
+      const pack = await tx.productPackaging.create({ data: { productId: prod.id, name: 'dona', qtyInBaseUnit: 1, updatedAt: OLD() } });
+      return { sl: stock.changeSeq, pk: pack.changeSeq };
+    });
+    const pa = await run(a, () => sync.pull({}, dirA));
+    const s = decodeCursor(pa.cursor)!.s;
+    expect(s).toBe(pA.changeSeq);
+    expect(s < sl && s < pk).toBe(true);
+  });
+
   it('sends tombstones (not rows) for deleted/soft-deleted/deactivated product, customer, price item, packaging', async () => {
     const cid = await mkCompany('tomb');
     const dir = userOf(cid, randomUUID(), 'OWNER');

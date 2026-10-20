@@ -23,3 +23,11 @@ pnpm-debug.log*
 
 apps/database/generated/
 packages/database/generated/
+
+# Backups / passphrases / drill artifacts must never be committed (deploy/backup)
+*.dump
+*.dump.gpg
+*.sql.gpg
+*.gpg
+backup-passphrase*
+.backup-passphrase*

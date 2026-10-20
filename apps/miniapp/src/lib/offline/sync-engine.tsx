@@ -7,7 +7,7 @@ import { toast } from 'sonner';
 import { useAuth } from '@/lib/auth/auth-context';
 import { queueRepository } from './queue';
 import { getLastStorageStatus, onStorageStatus, publishStorageStatus, type StorageStatus } from './storage-budget';
-import { ApiError } from '@/lib/api/client';
+import { ApiError, degradedKind, type DegradedKind } from '@/lib/api/client';
 import { runPull, runPush } from './sync-engine-core';
 
 const FLUSH_INTERVAL_MS = 30_000;
@@ -31,6 +31,8 @@ interface SyncEngineValue {
   storage: StorageStatus;
   /** True after a 401 survived refresh: sync is paused until the user signs in again. */
   authPaused: boolean;
+  /** F7: server temporarily refusing (503 maintenance / 429). Documents wait on the device; null when healthy. */
+  degraded: DegradedKind | null;
   lastSyncAt: Date | null;
   /** Code/message of the last failed push or pull (null after a clean cycle). Surfaced, never swallowed. */
   syncError: string | null;
@@ -55,6 +57,7 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
   const [unsyncedCount, setUnsyncedCount] = useState(0);
   const [storage, setStorage] = useState<StorageStatus>(getLastStorageStatus);
   const [authPaused, setAuthPaused] = useState(false);
+  const [degraded, setDegraded] = useState<DegradedKind | null>(null);
   const nextDelayRef = useRef<number | undefined>(undefined);
   const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -96,6 +99,7 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
       let didPull = false;
       let pullFailed = false;
       let pullAuth = false;
+      let pullDegraded: DegradedKind | null = null;
       // Push and pull are independent: a failing pull (5xx/401/network) must
       // never keep documents on the device, and a failing push never blocks pull.
       let outcome: Awaited<ReturnType<typeof runPush>> | null = null;
@@ -118,16 +122,21 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
           pullFailed = true;
           // apiFetch already refreshed the token once; a surviving 401 pauses sync.
           if (err instanceof ApiError && err.status === 401) pullAuth = true;
-          else backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
+          else if (degradedKind(err)) {
+            pullDegraded = degradedKind(err);
+            if (err instanceof ApiError && err.retryAfterMs !== undefined) nextDelayRef.current = Math.min(err.retryAfterMs, MAX_BACKOFF_MS);
+          } else backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
           setSyncError(describeError(err));
         }
       }
       if (outcome) {
         setAuthPaused(outcome.paused === 'AUTH' || pullAuth);
-        nextDelayRef.current = outcome.nextRetryInMs;
+        setDegraded(outcome.degraded ?? pullDegraded);
+        nextDelayRef.current = outcome.nextRetryInMs ?? (pullDegraded ? nextDelayRef.current : undefined);
         if (outcome.paused === 'NETWORK') {
           backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
         } else {
+          // DEGRADED waits on each item's nextAttemptAt (Retry-After), not on the network backoff.
           backoffRef.current = MIN_BACKOFF_MS;
           if (outcome.paused === null && !pullFailed) {
             setLastSyncAt(new Date());
@@ -136,6 +145,8 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
         }
       } else if (pullAuth) {
         setAuthPaused(true);
+      } else {
+        setDegraded(pullDegraded);
       }
       } finally {
         runningRef.current = false;
@@ -204,7 +215,7 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
 
   return (
     <SyncEngineContext.Provider
-      value={{ isOnline, isSyncing, pendingCount, failedCount, conflictCount, unsyncedCount, storage, authPaused, lastSyncAt, syncError, notifyQueueChanged, forceSyncNow }}
+      value={{ isOnline, isSyncing, pendingCount, failedCount, conflictCount, unsyncedCount, storage, authPaused, degraded, lastSyncAt, syncError, notifyQueueChanged, forceSyncNow }}
     >
       {children}
     </SyncEngineContext.Provider>

@@ -109,6 +109,65 @@ function describeOverflow(exception: unknown): string {
   return parts.length > 0 ? parts.join(' ') : String(exception);
 }
 
+const SERVICE_BUSY_MESSAGE: LocalizedMessage = {
+  uz: "Server band — birozdan so'ng qayta urinib ko'ring",
+  ru: 'Сервер занят — повторите попытку чуть позже',
+  en: 'Server is busy — please retry shortly',
+};
+const SERVICE_BUSY_RETRY_AFTER_SECONDS = 5;
+const TX_CONFLICT_RETRY_AFTER_SECONDS = 1;
+
+/** P2028 text when the transaction could not even be opened (nothing was written). */
+const TX_START_TIMEOUT_PATTERN = /Unable to start a transaction in the (?:given|allocated) time/i;
+
+/**
+ * Pool exhaustion (P2024) and tx-start timeout (P2028 "Unable to start...")
+ * both fail BEFORE any statement ran, so a retry is safe -> 503. The other
+ * P2028 shapes ("Transaction already closed", "expired transaction", "not
+ * found") mean the timeout hit INSIDE an open transaction: the outcome may be
+ * partially applied, so they must stay a 500 (and reach Sentry), never a
+ * retry-me 503.
+ */
+function isPoolBusy(exception: unknown): boolean {
+  if (!(exception instanceof Error) || !isPrismaKnownRequestError(exception)) return false;
+  const code = (exception as { code?: unknown }).code;
+  if (code === 'P2024') return true;
+  return code === 'P2028' && TX_START_TIMEOUT_PATTERN.test(exception.message);
+}
+
+function isPrismaUnknownRequestError(exception: object): boolean {
+  return exception instanceof Prisma.PrismaClientUnknownRequestError;
+}
+
+/**
+ * PostgreSQL deadlock_detected (40P01) / serialization_failure (40001) abort
+ * the WHOLE transaction (full rollback, no partial write), so a retry is safe.
+ * Prisma surfaces them as P2034, as a SQLSTATE on `code`/`meta.code`, or only
+ * in the message (raw query / driver adapter). The bare SQLSTATE digits in a
+ * message are trusted ONLY on Prisma errors (known/unknown request error): an
+ * arbitrary Error whose text merely contains "40001" must stay a 500 + Sentry.
+ * The long phrases are specific enough to match any Error. Returns the state for logging.
+ * F7: lock_not_available (55P03, the per-request `SET LOCAL lock_timeout`, see
+ * common/tenant/lock-timeout.ts) is the same class: the statement fails before
+ * the lock is granted and the request tx is rolled back -> 503, retry-safe.
+ */
+function txConflictState(exception: unknown): string | undefined {
+  if (!(exception instanceof Error)) return undefined;
+  const prismaErr = isPrismaKnownRequestError(exception) || isPrismaUnknownRequestError(exception);
+  if (isPrismaKnownRequestError(exception) && (exception as { code?: unknown }).code === 'P2034') return 'P2034';
+  const state = sqlState(exception);
+  if (state === '40P01' || state === '40001' || state === '55P03') return state;
+  if (/deadlock detected/i.test(exception.message)) return '40P01';
+  if (/could not serialize access/i.test(exception.message)) return '40001';
+  if (/canceling statement due to lock timeout/i.test(exception.message)) return '55P03';
+  if (prismaErr) {
+    if (/\b40P01\b/.test(exception.message)) return '40P01';
+    if (/\b40001\b/.test(exception.message)) return '40001';
+    if (/\b55P03\b/.test(exception.message)) return '55P03';
+  }
+  return undefined;
+}
+
 /**
  * Normalizes every error response to `{ code, message, details }` (7.1),
  * with `message` always in uz/ru/en (9.1/14.6). Never leaks a stack trace
@@ -140,11 +199,36 @@ export class AllExceptionsFilter implements ExceptionFilter {
       return;
     }
 
+    // Warn-level, not Sentry: transient load shedding, not a defect.
+    if (isPoolBusy(exception)) {
+      const { code, message } = exception as Error & { code: string };
+      this.logger.warn(`DB pool busy (${code}) traceId=${getTraceId() ?? '-'}: ${message.slice(0, 300)}`);
+      this.sendServiceBusy(response, SERVICE_BUSY_RETRY_AFTER_SECONDS);
+      return;
+    }
+
+    // Full rollback, safe to retry immediately: warn-level, not Sentry.
+    const conflict = txConflictState(exception);
+    if (conflict) {
+      this.logger.warn(
+        `Tx conflict (sqlstate=${conflict}) traceId=${getTraceId() ?? '-'}: ${(exception as Error).message.slice(0, 300)}`,
+      );
+      this.sendServiceBusy(response, TX_CONFLICT_RETRY_AFTER_SECONDS);
+      return;
+    }
+
     this.logger.error(exception instanceof Error ? exception.stack : exception);
     // No-op if SENTRY_DSN wasn't set at bootstrap (main.ts) — only truly
     // unexpected errors are reported, not routine 4xx HttpExceptions above.
     Sentry.captureException(exception);
     response.status(HttpStatus.INTERNAL_SERVER_ERROR).json(this.withTrace(this.normalize(HttpStatus.INTERNAL_SERVER_ERROR, null)));
+  }
+
+  private sendServiceBusy(response: Response, retryAfterSeconds: number) {
+    response.setHeader('Retry-After', String(retryAfterSeconds));
+    response.status(HttpStatus.SERVICE_UNAVAILABLE).json(
+      this.withTrace({ code: 'SERVICE_BUSY', message: SERVICE_BUSY_MESSAGE }),
+    );
   }
 
   private withTrace(body: ApiErrorBody): ApiErrorBody {

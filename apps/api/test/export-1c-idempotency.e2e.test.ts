@@ -30,7 +30,8 @@ describe('E2E: 1C export create idempotency + CORS exposed headers', () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
     app = moduleRef.createNestApplication();
     configureApp(app, ['http://localhost:3000']);
-    await app.init();
+    // Loopback-only listen: supertest's default `::` bind can collide with a foreign 127.0.0.1 listener (e.g. VS Code helper) => random 4xx.
+    await app.listen(0, '127.0.0.1');
     const tenant = await systemPrisma.tenant.create({ data: { slug: `test-1c-idem-${Date.now()}`, name: '1C Idem' } });
     companyId = (await systemPrisma.company.create({ data: { tenantId: tenant.id, name: '1C Idem Co' } })).id;
     const phone = uniquePhone();
@@ -74,7 +75,7 @@ describe('E2E: 1C export create idempotency + CORS exposed headers', () => {
 
   it('CORS exposes X-Content-SHA256 and Content-Disposition, keeps credentials', async () => {
     const res = await http().get('/export/1c').set('Origin', 'http://localhost:3000').set('Authorization', `Bearer ${token}`).expect(200);
-    expect(res.headers['access-control-expose-headers']).toBe('X-Content-SHA256,Content-Disposition');
+    expect(res.headers['access-control-expose-headers']).toBe('X-Content-SHA256,Content-Disposition,Retry-After');
     expect(res.headers['access-control-allow-credentials']).toBe('true');
     expect(res.headers['access-control-allow-origin']).toBe('http://localhost:3000');
   });

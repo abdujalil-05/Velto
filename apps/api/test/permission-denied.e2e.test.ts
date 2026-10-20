@@ -27,7 +27,8 @@ describe('E2E §16.3: permission denied => 403 + audit event (+ traceId), no cro
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
     app = moduleRef.createNestApplication();
     configureApp(app, ['http://localhost:3000']);
-    await app.init();
+    // Loopback-only listen: supertest's default `::` bind can collide with a foreign 127.0.0.1 listener (e.g. VS Code helper) => random 4xx.
+    await app.listen(0, '127.0.0.1');
 
     const mk = async (label: string) => {
       const t = await systemPrisma.tenant.create({ data: { slug: `test-pd-${label}-${Date.now()}`, name: `PD ${label}` } });

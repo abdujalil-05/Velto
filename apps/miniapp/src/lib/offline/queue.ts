@@ -314,6 +314,26 @@ export async function markRetry(clientId: string, error?: QueueError, random?: (
   });
 }
 
+/** Degraded-mode default wait when the server sent no Retry-After, and the ceiling for one wait. */
+const DEFER_DEFAULT_MS = 60_000;
+const DEFER_MAX_MS = BACKOFF_MAX_MS;
+
+/**
+ * F7 (TZ 12.5): the server refused temporarily (503 maintenance / 429). The
+ * document stays PENDING with an unchanged attempt count (the markSyncing
+ * attempt is given back), so it can never reach SYNC_MAX_ATTEMPTS, be
+ * quarantined or rejected. Next try = Retry-After (+0..25% jitter), else 60 s.
+ */
+export async function deferRetry(clientIds: string[], error: QueueError, retryAfterMs?: number, random: () => number = Math.random): Promise<number> {
+  const wait = Math.min(DEFER_MAX_MS, Math.max(retryAfterMs ?? DEFER_DEFAULT_MS, 1_000));
+  const delay = Math.min(DEFER_MAX_MS, Math.round(wait * (1 + random() * 0.25)));
+  const nextAttemptAt = new Date(Date.now() + delay).toISOString();
+  for (const id of clientIds) {
+    await update(id, (e) => (e.status === 'SYNCING' ? { ...e, status: 'PENDING', attemptCount: Math.max(0, e.attemptCount - 1), lastError: error, nextAttemptAt } : e));
+  }
+  return delay;
+}
+
 /** Today's entries of one type that exist for the agent (everything except FAILED) — offline source of Home/Route/Report "today" figures. */
 export async function todayByType(type: SyncDocType): Promise<QueueEntry[]> {
   const todayPrefix = new Date().toISOString().slice(0, 10);
@@ -603,6 +623,7 @@ export const queueRepository = {
   markFailed,
   markConflict,
   markRetry,
+  deferRetry,
   todayByType,
   pruneOld,
   countByStatus,

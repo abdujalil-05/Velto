@@ -305,6 +305,7 @@ model Outlet {
   visits      Visit[]
 
   @@index([companyId, customerId])
+  @@index([customerId]) // FK-check on Customer delete (F7)
   @@index([companyId, latitude, longitude])
   @@index([companyId, changeSeq])
 }
@@ -479,6 +480,7 @@ model StockLevel {
 
   @@id([productId, warehouseId])
   @@index([changeSeq])
+  @@index([warehouseId, changeSeq]) // F7: per-tenant stableSeq via warehouse predicate
 }
 
 model StockMovement {
@@ -739,7 +741,9 @@ model SalesOrder {
   @@unique([companyId, number])
   @@unique([companyId, clientId])
   @@index([companyId, customerId])
+  @@index([customerId]) // FK-check on Customer delete (F7)
   @@index([companyId, agentId, createdAt])
+  @@index([companyId, createdAt])
   @@index([companyId, outletId])
   @@index([companyId, warehouseId])
   @@index([companyId, courierId])
@@ -814,6 +818,7 @@ model Invoice {
 
   @@unique([companyId, number])
   @@index([companyId, customerId])
+  @@index([customerId]) // FK-check on Customer delete (F7)
   @@index([openingBatchId])
 }
 
@@ -909,6 +914,7 @@ model Payment {
   @@unique([companyId, number])
   @@unique([companyId, clientId])
   @@index([companyId, customerId])
+  @@index([customerId]) // FK-check on Customer delete (F7)
   @@index([companyId, status])
   @@index([collectedBy])
   @@index([handoverActorId])
@@ -1136,6 +1142,7 @@ model AuditLog {
 // Append-only — o'chirish/o'zgartirish imkonsiz (DB trigger orqali
 // ta'minlanadi, ko'ring: prisma/migrations/*_audit_append_only).
 
+/// DEPRECATED (ADR-047): kod ishlatmaydi, DROP keyingi relizda expand-contract.
 model OutboxEvent {
   id          String    @id @default(uuid()) @db.Uuid
   companyId   String    @db.Uuid
@@ -1407,6 +1414,7 @@ model ReconciliationFinding {
   fixedBy   User?             @relation("ReconciliationFindingFixedBy", fields: [fixedById], references: [id], onDelete: Restrict)
 
   @@index([companyId, status, kind])
+  @@index([customerId]) // FK-check on Customer delete (F7)
   @@index([runId])
   @@index([lastRunId])
 }

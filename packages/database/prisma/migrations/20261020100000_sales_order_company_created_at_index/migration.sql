@@ -1,0 +1,26 @@
+-- F7 load finding: dashboard/report windows filter "SalesOrder" by
+-- "createdAt" range + "status" IN (...) (apps/api analytics report-sql.ts
+-- countedOrderTotalsSql / topProductsInWindow). The only createdAt index led
+-- with agentId, so every window was a full seq scan of the table.
+--
+-- Measured on velto_load (100k orders, EXPLAIN ANALYZE as velto_app under
+-- RLS, median of 7): "today" window 18 ms -> 1.6 ms, 30-day turnoverPerDay
+-- 138 ms -> 104 ms (the rest is the SalesOrderLine RLS subquery, not fixable
+-- by an index). (companyId, status, createdAt) was measured too and is worse
+-- (3 ms today: status IN list splits the range scan); status stays a filter.
+-- Candidates rejected as no gain (full-table aggregations by design):
+-- Invoice(companyId, status, createdAt), Payment(companyId, status,
+-- createdAt), Payment(id, companyId), PaymentAllocation(paymentId) INCLUDE.
+--
+-- Strictly additive; no data or policy change. Write cost: one more btree
+-- entry per SalesOrder insert (appending timestamp, microseconds).
+--
+-- Locking: Prisma runs migrations in a transaction, so CONCURRENTLY is not
+-- possible here; plain CREATE INDEX blocks writes to "SalesOrder" while it
+-- builds (~0.1-0.3 s at 100k rows, pilot volume is smaller). For a large
+-- production table instead run, before `migrate deploy`, outside a tx:
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS "SalesOrder_companyId_createdAt_idx"
+--     ON "SalesOrder" ("companyId", "createdAt");
+-- and this migration's IF NOT EXISTS makes it a no-op.
+
+CREATE INDEX IF NOT EXISTS "SalesOrder_companyId_createdAt_idx" ON "SalesOrder"("companyId", "createdAt");

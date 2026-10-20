@@ -61,6 +61,17 @@ export class CustomersService {
   }
 
   /**
+   * FOR KEY SHARE (what a child-row FK check takes anyway), then a fresh
+   * deletedAt read — for writers that only reference the customer
+   * (SalesService.create): conflicts with FOR UPDATE holders (ledger writers,
+   * remove()) but not with each other. Must precede any DocumentCounter lock.
+   */
+  async lockKeyShareActiveOrThrow(tx: TenantClient, customerId: string) {
+    await tx.$queryRaw(Prisma.sql`SELECT id FROM "Customer" WHERE id = ${customerId}::uuid FOR KEY SHARE`);
+    return this.findActiveOrThrow(tx, customerId);
+  }
+
+  /**
    * SEC-023 (15.3): "agent faqat o'z mijozini ko'radi" — a SALES_AGENT's
    * visible customers are those reachable through their own routes, their
    * own orders, or their own visits. Other roles (SALES_DIRECTOR, OWNER,

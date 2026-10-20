@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AuditLogService } from '../../common/audit/audit-log.service';
 import { CustomersModule } from '../customers/customers.module';
 import { FieldModule } from '../field/field.module';
 import { FinanceModule } from '../finance/finance.module';
@@ -9,6 +10,6 @@ import { SyncService } from './sync.service';
 @Module({
   imports: [SalesModule, FinanceModule, FieldModule, CustomersModule],
   controllers: [SyncController],
-  providers: [SyncService],
+  providers: [SyncService, AuditLogService],
 })
 export class SyncModule {}

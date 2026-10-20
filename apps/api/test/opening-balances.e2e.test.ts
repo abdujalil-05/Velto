@@ -7,6 +7,7 @@ import request from 'supertest';
 import { Prisma, prisma, systemPrisma } from '@velto/database';
 import { permissionKeysForRole } from '../../../packages/database/src/rbac-catalog';
 import { AppModule } from '../src/app.module';
+import { expectWithinBudget } from '../src/common/testing/perf';
 import { configureApp } from '../src/bootstrap';
 import { StorageService } from '../src/common/storage/storage.service';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
@@ -92,7 +93,8 @@ describe('E2E opening balances (ADR-041..043)', () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).overrideProvider(StorageService).useValue(new InMemoryStorage()).compile();
     app = moduleRef.createNestApplication();
     configureApp(app, ['http://localhost:3000']);
-    await app.init();
+    // Loopback-only listen: supertest's default `::` bind can collide with a foreign 127.0.0.1 listener (e.g. VS Code helper) => random 4xx.
+    await app.listen(0, '127.0.0.1');
     companyA = await seedCompany('A');
     companyB = await seedCompany('B');
     ownerA = await seedUser(companyA, 'OWNER');
@@ -181,7 +183,7 @@ describe('E2E opening balances (ADR-041..043)', () => {
     const msC = Math.round(performance.now() - t0);
     expect(postC.status, JSON.stringify(postC.body).slice(0, 300)).toBe(201);
     console.log(`[F6 perf] opening post 1000 customers: ${msC} ms`);
-    expect(msC).toBeLessThan(60_000);
+    expectWithinBudget("opening e2e customers", msC, 60_000);
 
     const sum = await tenantPrisma.run(companyA, (tx) => tx.customer.aggregate({ where: { code: { startsWith: `PF${tag}-` } }, _sum: { cachedBalance: true } }));
     expect(sum._sum.cachedBalance!.toFixed(2)).toBe(new Prisma.Decimal(prevC.body.batch.debtTotal).minus(prevC.body.batch.creditTotal).toFixed(2));
@@ -202,7 +204,7 @@ describe('E2E opening balances (ADR-041..043)', () => {
     const msS = Math.round(performance.now() - t1);
     expect(postS.status, JSON.stringify(postS.body).slice(0, 300)).toBe(201);
     console.log(`[F6 perf] opening post 2000 pairs: ${msS} ms`);
-    expect(msS).toBeLessThan(60_000);
+    expectWithinBudget("opening e2e stock", msS, 60_000);
 
     const levels = await tenantPrisma.run(companyA, (tx) => tx.stockLevel.findMany({ where: { product: { sku: { startsWith: `PS${tag}-` } } } }));
     expect(levels).toHaveLength(2000);

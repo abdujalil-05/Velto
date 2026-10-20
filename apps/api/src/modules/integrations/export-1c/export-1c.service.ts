@@ -1,5 +1,5 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import type { Queue } from 'bullmq';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { paginate } from '../../../common/pagination/pagination.dto';
@@ -9,7 +9,7 @@ import { ExportJobNotFoundException, ExportPeriodNotClosedException, InvalidExpo
 import type { CreateExportDto } from './dto/create-export.dto';
 import type { ListExportsQueryDto } from './dto/list-exports.query';
 import { AuditLogService, toAuditJson } from '../../../common/audit/audit-log.service';
-import { addTracedJob } from '../../../common/queue/trace-job';
+import { addTracedJob, enqueueBestEffort } from '../../../common/queue/trace-job';
 import { lockExport1cExclusive } from '../../../common/locks/export1c-lock';
 import { companyDay } from '../../field/company-day';
 import { Export1cLimitsService } from './export-1c-limits.service';
@@ -18,6 +18,7 @@ import { EXPORT_1C_JOB_OPTS, EXPORT_1C_QUEUE, type Export1cJobData } from './exp
 /** 11.1: "Buxgalter /export/1c'da davrni tanlaydi -> fayl BullMQ orqali fon rejimida generatsiya qilinadi -> yuklab olinadi." */
 @Injectable()
 export class Export1cService {
+  private readonly logger = new Logger(Export1cService.name);
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     @InjectQueue(EXPORT_1C_QUEUE) private readonly queue: Queue<Export1cJobData>,
@@ -64,7 +65,7 @@ export class Export1cService {
     // here immediately would let the worker dequeue and query for this
     // ExportJob row before the surrounding TenantPrismaService.run()
     // transaction (TenantContextInterceptor wraps the whole request) commits.
-    TenantContext.afterCommit(() => addTracedJob(this.queue, 'export', { exportJobId: job.id, companyId: user.companyId }, { ...EXPORT_1C_JOB_OPTS, jobId: `export-${job.id}` }));
+    TenantContext.afterCommit(() => enqueueBestEffort(this.logger, `export ${job.id}`, () => addTracedJob(this.queue, 'export', { exportJobId: job.id, companyId: user.companyId }, { ...EXPORT_1C_JOB_OPTS, jobId: `export-${job.id}` })));
     return job;
   }
 

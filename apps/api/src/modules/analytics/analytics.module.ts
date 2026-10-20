@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { FinanceModule } from '../finance/finance.module';
+import { ReportConcurrencyModule } from '../../common/concurrency/report-concurrency.module';
 import { AuditLogService } from '../../common/audit/audit-log.service';
 import { AgentPerformanceReportService } from './agent-performance.service';
 import { DashboardService } from './dashboard.service';
@@ -9,7 +10,7 @@ import { ReportsController } from './reports.controller';
 import { SalesReportService } from './sales-report.service';
 
 @Module({
-  imports: [FinanceModule],
+  imports: [FinanceModule, ReportConcurrencyModule],
   controllers: [ReportsController],
   providers: [DashboardService, SalesReportService, AgentPerformanceReportService, OverviewReportService, ReportExportService, AuditLogService],
   exports: [ReportExportService],

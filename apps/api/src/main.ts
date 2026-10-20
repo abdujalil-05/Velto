@@ -37,7 +37,7 @@ async function bootstrap() {
   const port = process.env.API_PORT ?? 3001;
   const host = process.env.API_HOST ?? '0.0.0.0';
   await app.listen(port, host);
-  Logger.log(`Velto API listening on ${host}:${port}`, 'Bootstrap');
+  Logger.log(`Velto API listening on ${host}:${port} (version=${process.env.APP_VERSION ?? 'dev'} commit=${process.env.GIT_SHA ?? 'dev'})`, 'Bootstrap');
 }
 
 bootstrap();

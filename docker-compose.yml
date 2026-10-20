@@ -36,6 +36,8 @@ services:
       retries: 10
 
   minio:
+    # TODO pin tag/digest (cannot verify offline): Docker Hub minio/minio returned "denied/not found" to anonymous
+    # manifest lookups on 2026-10-19 (upstream stopped publishing public images?). Pick a verified tag/registry, then pin.
     image: minio/minio:latest
     restart: unless-stopped
     command: server /data --console-address ":9001"

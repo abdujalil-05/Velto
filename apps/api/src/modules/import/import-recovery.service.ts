@@ -2,6 +2,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import type { Queue } from 'bullmq';
 import { Prisma, systemPrisma } from '@velto/database';
+import { fetchAllById } from '../../common/pagination/fetch-all-by-id';
 import { addTracedJob } from '../../common/queue/trace-job';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { IMPORT_COMMIT_FAILED } from './import-exceptions';
@@ -36,7 +37,7 @@ export class ImportRecoveryService implements OnModuleInit, OnModuleDestroy {
 
   /** Returns the number of jobs re-enqueued or failed. */
   async sweep(): Promise<number> {
-    const stuck = await systemPrisma.importJob.findMany({ where: { status: 'PROCESSING' }, select: { id: true, companyId: true, createdBy: true }, take: 100 });
+    const stuck = await fetchAllById((page) => systemPrisma.importJob.findMany({ where: { status: 'PROCESSING' }, select: { id: true, companyId: true, createdBy: true }, orderBy: { id: 'asc' }, ...page }));
     let touched = 0;
     for (const j of stuck) {
       const queued = await this.queue.getJob(`import-${j.id}`);

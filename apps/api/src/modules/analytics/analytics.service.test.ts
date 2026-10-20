@@ -1,7 +1,9 @@
+import { ReportConcurrencyLimiter } from '../../common/concurrency/report-concurrency.limiter';
 import { randomUUID } from 'node:crypto';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { InvoiceStatus, OrderStatus, PaymentMethod, PaymentStatus, prisma, systemPrisma, VisitOutcome } from '@velto/database';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
+import { TenantContext, handlerScopeStore } from '../../common/tenant/tenant-context';
 import ExcelJS from 'exceljs';
 import { AgingReportService } from '../finance/reports/aging-report.service';
 import { buildReportCsv, buildReportXlsx, xlsxHeaderRow } from './report-export';
@@ -18,7 +20,10 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
   const salesReport = new SalesReportService(tenantPrisma);
   const agentPerformance = new AgentPerformanceReportService(tenantPrisma);
   const overview = new OverviewReportService(tenantPrisma);
-  const dashboard = new DashboardService(tenantPrisma, new AgingReportService(tenantPrisma));
+  const dashboard = new DashboardService(tenantPrisma, new AgingReportService(tenantPrisma), new ReportConcurrencyLimiter());
+
+  // Dashboard route is @TenantTx({ scope: 'handler' }): no outer tx.
+  const getDash = (companyId: string) => TenantContext.run(handlerScopeStore(companyId), () => dashboard.getDashboard());
 
   afterAll(async () => {
     await prisma.$disconnect();
@@ -168,7 +173,7 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
       const ov = await tenantPrisma.run(companyId, () => overview.getOverview({}));
       expect(ov.turnover.toString()).toBe(expected);
 
-      const dash = await tenantPrisma.run(companyId, () => dashboard.getDashboard());
+      const dash = await getDash(companyId);
       expect(dash.today.turnover.toString()).toBe(expected);
       expect(dash.agentsToday.find((a) => a.agentId === fx.agentId)?.turnover.toString()).toBe(expected);
       const todayKey = localDateString(new Date());
@@ -277,12 +282,160 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
     });
   });
 
+  describe('DashboardService cache', () => {
+    const withTtl = async (ttl: string | undefined, fn: () => Promise<void>) => {
+      const prev = process.env.DASHBOARD_CACHE_TTL_S;
+      if (ttl === undefined) delete process.env.DASHBOARD_CACHE_TTL_S;
+      else process.env.DASHBOARD_CACHE_TTL_S = ttl;
+      dashboard.clearCache();
+      try {
+        await fn();
+      } finally {
+        if (prev === undefined) delete process.env.DASHBOARD_CACHE_TTL_S;
+        else process.env.DASHBOARD_CACHE_TTL_S = prev;
+        dashboard.clearCache();
+      }
+    };
+
+    it('miss then hit within TTL (same generatedAt), recomputes after TTL expiry', async () => {
+      const companyId = await createCompany('dash-cache');
+      await withTtl('30', async () => {
+        const a = await getDash(companyId);
+        const b = await getDash(companyId);
+        expect([a.cached, b.cached]).toEqual([false, true]);
+        expect(b.generatedAt).toBe(a.generatedAt);
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(Date.now() + 31_000);
+          const c = await getDash(companyId);
+          expect(c.cached).toBe(false);
+          expect(c.generatedAt).not.toBe(a.generatedAt);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+
+    it('hit and in-flight waiters take no permit even when the semaphore is saturated; only the compute takes one', async () => {
+      const companyId = await createCompany('dash-permit');
+      const lim = new ReportConcurrencyLimiter({ maxConcurrency: 1, tenantMaxConcurrency: 1, queueMax: 0, tenantQueueMax: 0, queueTimeoutMs: 100 });
+      const dash = new DashboardService(tenantPrisma, new AgingReportService(tenantPrisma), lim);
+      const get = () => TenantContext.run(handlerScopeStore(companyId), () => dash.getDashboard());
+      const acquire = vi.spyOn(lim, 'acquire');
+      await withTtl('30', async () => {
+        const first = get(); // compute takes the single permit
+        const waiters = Array.from({ length: 5 }, () => get()); // join the in-flight compute
+        const results = await Promise.all([first, ...waiters]);
+        expect(acquire).toHaveBeenCalledTimes(1);
+        expect(new Set(results.map((r) => r.generatedAt)).size).toBe(1);
+        expect(lim.stats.active).toBe(0);
+
+        const hold = await lim.acquire(undefined, 'other-tenant'); // saturate with another report call
+        acquire.mockClear();
+        const hits = await Promise.all(Array.from({ length: 5 }, () => get()));
+        expect(hits.every((h) => h.cached)).toBe(true);
+        expect(acquire).not.toHaveBeenCalled();
+        hold();
+      });
+    });
+
+    it('a saturated semaphore fails a real compute fast with SERVICE_BUSY and caches nothing', async () => {
+      const companyId = await createCompany('dash-busy');
+      const lim = new ReportConcurrencyLimiter({ maxConcurrency: 1, tenantMaxConcurrency: 1, queueMax: 0, tenantQueueMax: 0, queueTimeoutMs: 100 });
+      const dash = new DashboardService(tenantPrisma, new AgingReportService(tenantPrisma), lim);
+      const get = () => TenantContext.run(handlerScopeStore(companyId), () => dash.getDashboard());
+      await withTtl('30', async () => {
+        const hold = await lim.acquire(undefined, 'other-tenant');
+        await expect(get()).rejects.toMatchObject({ response: { code: 'SERVICE_BUSY' } });
+        hold();
+        expect((await get()).cached).toBe(false);
+      });
+    });
+
+    it('a queued compute holds no pool connection (permit wait happens before the tx opens)', async () => {
+      const companyId = await createCompany('dash-queued');
+      const lim = new ReportConcurrencyLimiter({ maxConcurrency: 1, tenantMaxConcurrency: 1, queueMax: 5, tenantQueueMax: 5, queueTimeoutMs: 2000 });
+      const dash = new DashboardService(tenantPrisma, new AgingReportService(tenantPrisma), lim);
+      const get = () => TenantContext.run(handlerScopeStore(companyId), () => dash.getDashboard());
+      await withTtl('30', async () => {
+        const hold = await lim.acquire(undefined, 'other-tenant');
+        const runSpy = vi.spyOn(tenantPrisma, 'run');
+        const p = get();
+        await new Promise((r) => setTimeout(r, 150));
+        // only the timezone read ran; the compute tx has not opened while queued
+        expect(runSpy).toHaveBeenCalledTimes(1);
+        expect(lim.stats.queued).toBe(1);
+        hold();
+        await p;
+        runSpy.mockRestore();
+      });
+    });
+
+    it('waiters do not depend on the first caller: shared compute runs in its own tx', async () => {
+      const companyId = await createCompany('dash-own-tx');
+      await withTtl('30', async () => {
+        const first = getDash(companyId); // no outer tx exists at all; compute opens its own
+        const waiter = getDash(companyId);
+        const [a, b] = await Promise.all([first, waiter]);
+        expect(b.generatedAt).toBe(a.generatedAt);
+      });
+    });
+
+    it('TTL 0 disables the cache', async () => {
+      const companyId = await createCompany('dash-nocache');
+      await withTtl('0', async () => {
+        const a = await getDash(companyId);
+        const b = await getDash(companyId);
+        expect([a.cached, b.cached]).toEqual([false, false]);
+      });
+    });
+
+    it('is keyed by company: tenant B never sees tenant A data', async () => {
+      const a = await createCompany('dash-iso-a');
+      const b = await createCompany('dash-iso-b');
+      const fx = await seedBaseFixtures(a);
+      await seedPaidAndReversed(a, fx);
+      await withTtl('30', async () => {
+        const ra = await getDash(a);
+        const rb = await getDash(b);
+        expect(ra.today.collected.toString()).toBe('100000');
+        expect(rb.cached).toBe(false);
+        expect(rb.today.collected.toString()).toBe('0');
+        expect(rb.agentsToday).toEqual([]);
+        const rb2 = await getDash(b);
+        expect(rb2.today.collected.toString()).toBe('0');
+      });
+    });
+
+    it('concurrent misses share one computation', async () => {
+      const companyId = await createCompany('dash-stampede');
+      await withTtl('30', async () => {
+        const spy = vi.spyOn(dashboard as unknown as { compute: () => Promise<unknown> }, 'compute');
+        const results = await Promise.all(
+          Array.from({ length: 8 }, () => getDash(companyId)),
+        );
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(new Set(results.map((r) => r.generatedAt)).size).toBe(1);
+        spy.mockRestore();
+      });
+    });
+
+    it('exports / report services never use the cache', async () => {
+      const companyId = await createCompany('dash-exp');
+      await withTtl('30', async () => {
+        await getDash(companyId);
+        const o1 = await tenantPrisma.run(companyId, () => overview.getOverview({}));
+        expect(o1).not.toHaveProperty('cached');
+      });
+    });
+  });
+
   describe('DashboardService', () => {
     it('excludes REVERSED payments from collected and overdue debt', async () => {
       const companyId = await createCompany('dashboard-rev');
       const fx = await seedBaseFixtures(companyId);
       await seedPaidAndReversed(companyId, fx);
-      const result = await tenantPrisma.run(companyId, () => dashboard.getDashboard());
+      const result = await getDash(companyId);
       expect(result.today.collected.toString()).toBe('100000');
       expect(result.today.overdueDebt.toString()).toBe('400000');
     });
@@ -307,7 +460,7 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
         }),
       );
 
-      const result = await tenantPrisma.run(companyId, () => dashboard.getDashboard());
+      const result = await getDash(companyId);
       expect(result.today.overdueDebt.toString()).toBe('120000');
       expect(result.today.overdueDebtChangePct).toBe(0);
     });

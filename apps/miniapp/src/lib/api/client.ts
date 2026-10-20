@@ -11,15 +11,39 @@ export class ApiError extends Error {
   readonly code: string;
   readonly localizedMessage: LocalizedMessage;
   readonly details?: unknown;
+  /** Server `Retry-After` (503 MAINTENANCE_READ_ONLY / 429 RATE_LIMITED), in ms; undefined when absent or unparsable. */
+  readonly retryAfterMs?: number;
 
-  constructor(status: number, body: ApiErrorBody) {
+  constructor(status: number, body: ApiErrorBody, retryAfterMs?: number) {
     super(body.message?.en ?? `Request failed with status ${status}`);
     this.name = 'ApiError';
     this.status = status;
     this.code = body.code ?? `HTTP_${status}`;
     this.localizedMessage = body.message;
     this.details = body.details;
+    this.retryAfterMs = retryAfterMs;
   }
+}
+
+/** F7 degraded mode (TZ 12.5): the server is up but temporarily refuses work. Documents must wait, never fail. */
+export type DegradedKind = 'maintenance' | 'rateLimited' | 'busy';
+export const DEGRADED_ERROR_CODES = { MAINTENANCE_READ_ONLY: 'maintenance', SERVICE_UNAVAILABLE: 'maintenance', RATE_LIMITED: 'rateLimited', SERVICE_BUSY: 'busy' } as const;
+
+/** 503 MAINTENANCE_READ_ONLY / 503 SERVICE_UNAVAILABLE / 503 SERVICE_BUSY (pool exhausted, Retry-After 5) / 429 RATE_LIMITED. Any other 5xx stays an ordinary retry. */
+export function degradedKind(error: unknown): DegradedKind | null {
+  if (!(error instanceof ApiError)) return null;
+  if (error.status === 429) return 'rateLimited';
+  if (error.status === 503 && error.code in DEGRADED_ERROR_CODES) return DEGRADED_ERROR_CODES[error.code as keyof typeof DEGRADED_ERROR_CODES];
+  return null;
+}
+
+/** `Retry-After`: delta-seconds or HTTP-date -> ms (>= 0), else undefined. */
+export function parseRetryAfter(value: string | null, now: number = Date.now()): number | undefined {
+  if (!value) return undefined;
+  const v = value.trim();
+  if (/^\d+$/.test(v)) return Number(v) * 1000;
+  const at = Date.parse(v);
+  return Number.isNaN(at) ? undefined : Math.max(0, at - now);
 }
 
 /** Reads the trilingual message for the given app locale, falling back to English. */
@@ -120,7 +144,7 @@ export async function apiFetch<T = void>(path: string, options: ApiFetchOptions 
   const data = isJson ? await res.json() : undefined;
 
   if (!res.ok) {
-    throw new ApiError(res.status, (data as ApiErrorBody) ?? { code: `HTTP_${res.status}`, message: { uz: '', ru: '', en: '' } });
+    throw new ApiError(res.status, (data as ApiErrorBody) ?? { code: `HTTP_${res.status}`, message: { uz: '', ru: '', en: '' } }, parseRetryAfter(res.headers.get('retry-after')));
   }
 
   return data as T;

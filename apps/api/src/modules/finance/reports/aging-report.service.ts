@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { InvoiceStatus, PaymentStatus, Prisma } from '@velto/database';
+import { Prisma } from '@velto/database';
 import { paginate } from '../../../common/pagination/pagination.dto';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import { companyDay } from '../../field/company-day';
@@ -75,65 +75,57 @@ export class AgingReportService {
     return { asOf, timeZone, rows: await this.computeRows(asOf, timeZone) };
   }
 
+  /**
+   * Aging computed in the DB (F7: loading every invoice + allocation into
+   * Node took ~55 s on 83k invoices). Same rules as before: CANCELLED excluded;
+   * invoices issued after asOf excluded; an allocation counts when made on/before
+   * asOf (company-timezone calendar day) and its payment was not reversed on/before asOf;
+   * due day = company-timezone day of createdAt + paymentTermDays; days past due <= 0 = current.
+   */
   private async computeRows(asOf: string, timeZone: string): Promise<AgingRow[]> {
     const tx = this.tenantPrisma.client;
+    const local = (col: Prisma.Sql) => Prisma.sql`((${col} AT TIME ZONE 'UTC') AT TIME ZONE ${timeZone})::date`;
+    const asOfDate = Prisma.sql`${asOf}::date`;
 
-    // PAID invoices are included on purpose: as of a past date they may still
-    // have been open, and a later payment reversal can re-open them. CANCELLED
-    // has no cancellation timestamp, so it is excluded for every asOf.
-    const invoices = await tx.invoice.findMany({
-      where: { status: { not: InvoiceStatus.CANCELLED } },
-      include: {
-        allocations: {
-          include: { payment: { select: { status: true, reversal: { select: { createdAt: true } } } } },
-        },
-        customer: { select: { id: true, name: true, paymentTermDays: true } },
+    const rows = await tx.$queryRaw<
+      { customerId: string; name: string; current: Prisma.Decimal; d1to7: Prisma.Decimal; d8to30: Prisma.Decimal; d31to60: Prisma.Decimal; d60plus: Prisma.Decimal; total: Prisma.Decimal }[]
+    >`
+      SELECT x."customerId", x."name",
+        COALESCE(SUM(x."outstanding") FILTER (WHERE x."days" <= 0), 0) AS "current",
+        COALESCE(SUM(x."outstanding") FILTER (WHERE x."days" BETWEEN 1 AND 7), 0) AS "d1to7",
+        COALESCE(SUM(x."outstanding") FILTER (WHERE x."days" BETWEEN 8 AND 30), 0) AS "d8to30",
+        COALESCE(SUM(x."outstanding") FILTER (WHERE x."days" BETWEEN 31 AND 60), 0) AS "d31to60",
+        COALESCE(SUM(x."outstanding") FILTER (WHERE x."days" > 60), 0) AS "d60plus",
+        SUM(x."outstanding") AS "total"
+      FROM (
+        SELECT i."customerId", c."name",
+          i."total" - COALESCE(SUM(a."amount") FILTER (WHERE a."id" IS NOT NULL
+            AND ${local(Prisma.sql`a."createdAt"`)} <= ${asOfDate}
+            AND NOT (p."status" = 'REVERSED' AND (r."id" IS NULL OR ${local(Prisma.sql`r."createdAt"`)} <= ${asOfDate}))), 0) AS "outstanding",
+          (${asOfDate} - (${local(Prisma.sql`i."createdAt"`)} + c."paymentTermDays")) AS "days"
+        FROM "Invoice" i
+        JOIN "Customer" c ON c."id" = i."customerId"
+        LEFT JOIN "PaymentAllocation" a ON a."invoiceId" = i."id"
+        LEFT JOIN "Payment" p ON p."id" = a."paymentId"
+        LEFT JOIN "PaymentReversal" r ON r."reversesPaymentId" = p."id"
+        WHERE i."status" <> 'CANCELLED' AND ${local(Prisma.sql`i."createdAt"`)} <= ${asOfDate}
+        GROUP BY i."id", c."id"
+      ) x
+      WHERE x."outstanding" > 0
+      GROUP BY x."customerId", x."name"
+      ORDER BY SUM(x."outstanding") DESC, x."name", x."customerId"`;
+
+    return rows.map((r) => ({
+      customerId: r.customerId,
+      customerName: r.name,
+      buckets: {
+        current: new Prisma.Decimal(r.current),
+        d1to7: new Prisma.Decimal(r.d1to7),
+        d8to30: new Prisma.Decimal(r.d8to30),
+        d31to60: new Prisma.Decimal(r.d31to60),
+        d60plus: new Prisma.Decimal(r.d60plus),
       },
-    });
-
-    const byCustomer = new Map<string, AgingRow>();
-
-    for (const invoice of invoices) {
-      if (companyDate(invoice.createdAt, timeZone) > asOf) continue; // not issued yet on asOf
-
-      // §6.5 "valid allocations": made on/before asOf and not reversed on/before asOf.
-      const allocated = invoice.allocations.reduce((sum, a) => {
-        if (companyDate(a.createdAt, timeZone) > asOf) return sum;
-        const p = a.payment;
-        if (p.status === PaymentStatus.REVERSED) {
-          // Reversed with no reversal row cannot happen (DB trigger); treat as reversed (safest: debt shown).
-          if (!p.reversal || companyDate(p.reversal.createdAt, timeZone) <= asOf) return sum;
-        }
-        return sum.plus(a.amount);
-      }, new Prisma.Decimal(0));
-      const outstanding = invoice.total.minus(allocated);
-      // Decimal.isPositive() is true for zero too — explicit > 0 excludes settled invoices.
-      if (!outstanding.greaterThan(0)) continue;
-
-      let entry = byCustomer.get(invoice.customerId);
-      if (!entry) {
-        entry = {
-          customerId: invoice.customerId,
-          customerName: invoice.customer.name,
-          buckets: {
-            current: new Prisma.Decimal(0),
-            d1to7: new Prisma.Decimal(0),
-            d8to30: new Prisma.Decimal(0),
-            d31to60: new Prisma.Decimal(0),
-            d60plus: new Prisma.Decimal(0),
-          },
-          total: new Prisma.Decimal(0),
-        };
-        byCustomer.set(invoice.customerId, entry);
-      }
-
-      const bucket = bucketFor(daysPastDue(invoice.createdAt, invoice.customer.paymentTermDays, asOf, timeZone));
-      entry.buckets[bucket] = entry.buckets[bucket].plus(outstanding);
-      entry.total = entry.total.plus(outstanding);
-    }
-
-    return [...byCustomer.values()].sort(
-      (a, b) => b.total.comparedTo(a.total) || a.customerName.localeCompare(b.customerName) || a.customerId.localeCompare(b.customerId),
-    );
+      total: new Prisma.Decimal(r.total),
+    }));
   }
 }

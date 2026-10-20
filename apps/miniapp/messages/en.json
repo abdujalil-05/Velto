@@ -204,7 +204,10 @@
       "delete": "Delete",
       "working": "Working…",
       "offlineQueueWarning": "This is saved on the device immediately and will be sent to the server on the next sync — even if you're offline. It can't be undone afterwards."
-    }
+    },
+    "syncMaintenance": "Maintenance — records saved",
+    "syncRateLimited": "Will send shortly",
+    "syncBusy": "Server busy, will be sent shortly"
   },
   "Queue": {
     "title": "Queue / Conflicts",
@@ -283,7 +286,16 @@
     "quarantineRelease": "Allow sending",
     "quarantineReleaseTitle": "Allow sending?",
     "quarantineReleaseDescription": "{count} document(s) will be sent to the server under your account.",
-    "quarantineReleaseConfirm": "Send"
+    "quarantineReleaseConfirm": "Send",
+    "maintenance": "System maintenance in progress, your records are saved",
+    "rateLimited": "Too many requests, will be sent shortly",
+    "maintenanceTitle": "System maintenance in progress",
+    "maintenanceBody": "Your records are saved on this device and will not be lost. They will be sent automatically when maintenance ends.",
+    "rateLimitedTitle": "Too many requests",
+    "rateLimitedBody": "Your records are saved on this device. They will be sent automatically shortly.",
+    "busy": "Server busy, will be sent shortly",
+    "busyTitle": "Server busy",
+    "busyBody": "Your records are saved on this device. The server is busy; they will be sent automatically shortly."
   },
   "Revoked": {
     "title": "Access revoked",

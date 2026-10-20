@@ -1,5 +1,5 @@
 import type { GpsStatus } from '@/lib/gps-payload';
-import { ApiError } from '@/lib/api/client';
+import { ApiError, degradedKind, type DegradedKind } from '@/lib/api/client';
 import { pullSync, pushSync, type SyncPushResultItem } from '@/lib/api/sync';
 import { applyPull, getCursor, markPullComplete } from './repository';
 import { queueRepository, type QueueEntry, type QueueError } from './queue';
@@ -48,7 +48,9 @@ export interface PushOutcome {
   /** Server GPS verdicts of just-synced visits (only entries where the server sent one). */
   visitGps: { clientId: string; gpsStatus: GpsStatus; distanceM: string | null }[];
   /** AUTH: 401 survived a token refresh -> paused (nothing marked failed). NETWORK: request failed / 5xx -> stopped for backoff. */
-  paused: 'AUTH' | 'NETWORK' | null;
+  paused: 'AUTH' | 'NETWORK' | 'DEGRADED' | null;
+  /** Set with paused 'DEGRADED': 503 maintenance / 429 — documents wait (PENDING, attempt not counted). */
+  degraded?: DegradedKind;
   /** Ms until the earliest backed-off item becomes due (for the scheduler). */
   nextRetryInMs?: number;
 }
@@ -76,7 +78,7 @@ function toQueueError(error: SyncPushResultItem['error'], fallbackCode: string):
  * with visit-before-order per outlet, in batches. Per-item outcomes:
  * ACCEPTED/DUPLICATE -> SYNCED(+serverId); REJECTED -> FAILED; CONFLICT ->
  * CONFLICT (details kept); RETRY / missing result -> PENDING+backoff (FAILED
- * SYNC_MAX_ATTEMPTS at the cap). Request-level: 401 -> pause; 403 -> batch
+ * SYNC_MAX_ATTEMPTS at the cap). Request-level: 401 -> pause; 503 MAINTENANCE_READ_ONLY / 429 -> PENDING until Retry-After, attempt not counted (F7); 403 -> batch
  * FAILED; other errors -> PENDING+backoff. Items sent without an ACK stay
  * unsent-able and are re-sent later with the SAME clientId (server dedupes).
  */
@@ -161,6 +163,14 @@ async function handleRequestError(err: unknown, batch: QueueEntry[], outcome: Pu
       }
       outcome.rejected += ids.length;
       return false;
+    }
+    const degraded = degradedKind(err);
+    if (degraded) {
+      // TZ 12.5: nothing is lost, failed or counted — wait out Retry-After, same clientId.
+      await queueRepository.deferRetry(ids, { code: err.code, message: err.localizedMessage?.uz || err.message, messages: err.localizedMessage }, err.retryAfterMs);
+      outcome.paused = 'DEGRADED';
+      outcome.degraded = degraded;
+      return true;
     }
     if (err.code === 'SYNC_BATCH_TOO_LARGE' && batchLimit > 1) {
       batchLimit = Math.max(1, Math.floor(batchLimit / 2));

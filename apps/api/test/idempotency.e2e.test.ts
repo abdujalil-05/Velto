@@ -51,7 +51,8 @@ describe('E2E: Idempotency-Key on confirm / deliver / cash close (F1.3, 16.3)', 
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
     app = moduleRef.createNestApplication();
     configureApp(app, ['http://localhost:3000']);
-    await app.init();
+    // Loopback-only listen: supertest's default `::` bind can collide with a foreign 127.0.0.1 listener (e.g. VS Code helper) => random 4xx.
+    await app.listen(0, '127.0.0.1');
 
     const tenant = await systemPrisma.tenant.create({ data: { slug: `test-idem-${Date.now()}`, name: 'Idem Tenant' } });
     const company = await systemPrisma.company.create({ data: { tenantId: tenant.id, name: 'Idem Co' } });

@@ -84,6 +84,7 @@ describe('E2E opening balances + platform (F-ONB, F-ORD-002, trial, TenantTx)', 
     app = moduleRef.createNestApplication();
     configureApp(app, ['http://localhost:3000']);
     await app.init();
+    await app.listen(0, '127.0.0.1'); // own stable port: supertest's per-request ephemeral listen can race other workers under load
     const tenant = await systemPrisma.tenant.create({ data: { slug: `test-obp-${Date.now()}-${tag}`, name: 'ObPlatform' } });
     tenantA = tenant.id;
     companyA = (await systemPrisma.company.create({ data: { tenantId: tenant.id, name: 'ObPlatform' } })).id;

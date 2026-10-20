@@ -121,6 +121,10 @@ export class NotificationsService {
     await this.sendTelegram(telegramId, lines.join('\n'));
   }
 
+  /**
+   * ADR-047: Telegram sends are best-effort, called directly (not via outbox/queue), failures swallowed and
+   * nothing is persisted. They have no effect on money or stock; a lost message is acceptable.
+   */
   private async sendTelegram(telegramId: bigint, text: string): Promise<void> {
     const token = this.configService.get<string>('TELEGRAM_BOT_TOKEN', '');
     if (!token) return;

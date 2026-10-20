@@ -68,7 +68,8 @@ describe('E2E F3: visits via /sync/push + /visits, isolation, GPS settings', () 
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
     app = moduleRef.createNestApplication();
     configureApp(app, ['http://localhost:3000']);
-    await app.init();
+    // Loopback-only listen: supertest's default `::` bind can collide with a foreign 127.0.0.1 listener (e.g. VS Code helper) => random 4xx.
+    await app.listen(0, '127.0.0.1');
 
     const a = await seedCompany('A', ['SALES_AGENT', 'ACCOUNTANT', 'OWNER']);
     companyId = a.cid;

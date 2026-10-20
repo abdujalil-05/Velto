@@ -20,6 +20,7 @@ import { ReconciliationService } from '../reconciliation/reconciliation.service'
 import { StockService } from '../stock/stock.service';
 import { OPENING_REF_TYPE, OPENING_TX_OPTIONS } from './opening-balances.constants';
 import { OpeningBalancesService } from './opening-balances.service';
+import { expectWithinBudget } from '../../common/testing/perf';
 
 const CUST_HEADERS = ['customerCode', 'debt', 'credit', 'docRef', 'docDate'];
 const STOCK_HEADERS = ['sku', 'warehouseName', 'qty'];
@@ -328,7 +329,7 @@ describe('Opening balances invariants (integration)', () => {
     await post(p.batch.id, { debt: p.batch.debtTotal.toFixed(2), credit: p.batch.creditTotal.toFixed(2) });
     const ms = Date.now() - started;
     console.info(`[opening load] customer post 5000 rows: ${ms} ms`);
-    expect(ms).toBeLessThan(20_000);
+    expectWithinBudget("opening post 5000 rows", ms, 20_000);
 
     const [invoices, pays] = await run((tx) =>
       Promise.all([
@@ -350,7 +351,7 @@ describe('Opening balances invariants (integration)', () => {
     await voidBatch(p.batch.id);
     const vMs = Date.now() - vStarted;
     console.info(`[opening load] customer void 5000 rows: ${vMs} ms`);
-    expect(vMs).toBeLessThan(20_000);
+    expectWithinBudget("opening void 5000 rows", vMs, 20_000);
     const [openInv, livePay, reversals] = await run((tx) =>
       Promise.all([
         tx.invoice.count({ where: { openingBatchId: p.batch.id, status: { not: InvoiceStatus.CANCELLED } } }),
@@ -379,7 +380,7 @@ describe('Opening balances invariants (integration)', () => {
     await post(p.batch.id, { qty: p.batch.qtyTotal.toFixed(3) });
     const ms = Date.now() - started;
     console.info(`[opening load] stock post 5000 rows: ${ms} ms`);
-    expect(ms).toBeLessThan(20_000);
+    expectWithinBudget("opening post 5000 rows", ms, 20_000);
 
     const driftSql = Prisma.sql`
       SELECT count(*) AS n FROM "StockLevel" sl
@@ -396,7 +397,7 @@ describe('Opening balances invariants (integration)', () => {
     await voidBatch(p.batch.id);
     const vMs = Date.now() - vStarted;
     console.info(`[opening load] stock void 5000 rows: ${vMs} ms`);
-    expect(vMs).toBeLessThan(20_000);
+    expectWithinBudget("opening void 5000 rows", vMs, 20_000);
     expect(await run((tx) => tx.stockMovement.count({ where: { refType: OPENING_REF_TYPE, refId: p.batch.id, reversesMovementId: { not: null } } }))).toBe(5000);
     const nonZero = await run((tx) =>
       tx.stockLevel.count({ where: { product: { sku: { startsWith: `LS${tag}-` } }, OR: [{ onHand: { not: 0 } }, { reserved: { not: 0 } }] } }),

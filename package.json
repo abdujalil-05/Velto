@@ -12,6 +12,7 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
+    "test:perf": "turbo run test:perf",
     "db:generate": "pnpm --filter @velto/database generate",
     "db:migrate": "pnpm --filter @velto/database migrate:dev",
     "db:seed": "pnpm --filter @velto/database seed"

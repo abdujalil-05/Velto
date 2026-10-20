@@ -1,9 +1,12 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { withTenant, type TenantClient, type TenantTxOptions } from '@velto/database';
+import { getTraceId } from '../trace/trace-context';
 import { TenantContext } from './tenant-context';
 
 @Injectable()
 export class TenantPrismaService {
+  private readonly logger = new Logger(TenantPrismaService.name);
+
   /**
    * Runs `fn` inside a tenant-scoped RLS transaction and exposes it via
    * TenantContext for the duration. Callbacks registered via
@@ -17,16 +20,36 @@ export class TenantPrismaService {
     companyId: string,
     fn: (tx: TenantClient) => Promise<T>,
     options?: TenantTxOptions,
+    internal?: { allowNested?: boolean },
   ): Promise<T> {
+    if (TenantContext.peek()?.txActive && !internal?.allowNested) {
+      // Holding an outer tx while waiting for a 2nd pool connection can
+      // self-deadlock the pool (N outer txs all waiting => P2024).
+      const msg = 'nested tenantPrisma.run: a tenant transaction is already open on this call chain';
+      if (process.env.NODE_ENV !== 'production') throw new Error(msg);
+      this.logger.error(`${msg} (traceId=${getTraceId() ?? 'n/a'})`);
+    }
     const afterCommit: Array<() => unknown> = [];
     const result = await withTenant(
       companyId,
-      (tx) => TenantContext.run({ companyId, tx, afterCommit }, () => fn(tx)),
+      (tx) => TenantContext.run({ companyId, tx, afterCommit, txActive: true }, () => fn(tx)),
       options,
     );
+    // One failing callback must not starve the others; the first error is rethrown once all have run.
+    let firstError: unknown;
+    let failed = false;
     for (const cb of afterCommit) {
-      await cb();
+      try {
+        await cb();
+      } catch (e) {
+        this.logger.error(`afterCommit callback failed: ${e instanceof Error ? e.name : 'error'}`);
+        if (!failed) {
+          failed = true;
+          firstError = e;
+        }
+      }
     }
+    if (failed) throw firstError;
     return result;
   }
 
