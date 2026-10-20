@@ -3,6 +3,7 @@ import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { Idempotent } from '../../common/idempotency/idempotent.decorator';
+import { TenantTx } from '../../common/tenant/tenant-tx-options.decorator';
 import { ListReconciliationFindingsQueryDto } from './dto/list-findings.query';
 import { ListReconciliationRunsQueryDto } from './dto/list-runs.query';
 import { ReconciliationAdminService } from './reconciliation-admin.service';
@@ -28,8 +29,8 @@ export class ReconciliationController {
   }
 
   @Post('run')
-  @Idempotent()
   @RequirePermission('reconciliation.fix')
+  @TenantTx({ scope: 'handler' })
   run(@CurrentUser() user: AuthenticatedUser) {
     return this.admin.runManual(user);
   }

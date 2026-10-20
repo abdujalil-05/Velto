@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { assertClientIdReplayAllowed } from '../../common/idempotency/client-id-replay';
 import { OrderStatus, Prisma, withSavepoint, type TenantClient } from '@velto/database';
@@ -6,6 +7,7 @@ import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { DocumentNumberingService } from '../../common/document-numbering/document-numbering.service';
 import { paginate, resolveSort } from '../../common/pagination/pagination.dto';
 import { TenantContext } from '../../common/tenant/tenant-context';
+import { setWriterLockTimeout } from '../../common/tenant/lock-timeout';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { endOfDay, startOfDay } from '../analytics/report-utils';
 import { ProductNotFoundException } from '../catalog/catalog-exceptions';
@@ -233,6 +235,8 @@ export class SalesService {
    * credit-limit-driven approval tier (that whole workflow was removed).
    */
   async create(dto: CreateOrderDto, user: AuthenticatedUser) {
+    // POST /orders: lock wait > 2 s -> 55P03 -> 503 SERVICE_BUSY (sync push sets its own per document).
+    await setWriterLockTimeout(this.tenantPrisma.client);
     return (await this.createWithOutcome(dto, user)).order;
   }
 
@@ -362,7 +366,11 @@ export class SalesService {
       throw new PriceChangedException({ lines: priceChanges, expectedTotal: expectedTotal.toFixed(2), serverTotal: serverTotal.toFixed(2) });
     }
 
-    const number = await this.docNumbering.next(tx, user.companyId, 'SO');
+    // F7 late counter: INSERT under a unique placeholder number (invisible to
+    // other txs until COMMIT), reserve, and only then take the hot SO counter
+    // row lock — held now just for one UPDATE + audit, not the INSERT/re-read/
+    // reservation. Rolled back with the tx => no gap; TMP- never leaves this tx.
+    const placeholderNumber = `TMP-${randomUUID()}`;
     let order;
     try {
       // Wrapped in a SAVEPOINT: a unique-violation below aborts the whole
@@ -373,7 +381,7 @@ export class SalesService {
         tx.salesOrder.create({
           data: {
             companyId: user.companyId,
-            number,
+            number: placeholderNumber,
             customerId: dto.customerId,
             outletId,
             agentId,
@@ -409,8 +417,16 @@ export class SalesService {
       // decrements `reserved`) — reserve here so that invariant holds
       // regardless of which path got the order to SHIPPED.
       await this.reserveOrderStock(tx, order, user);
-      await this.scheduleCourierAssignedNotification(tx, courierId, order.number, user.companyId);
     }
+
+    // Counter LAST (global lock order, DocumentNumberingService step 5): after
+    // every row lock above. Only the own (uncommitted) SalesOrder row is
+    // touched after it; FK columns are unchanged, so no new KEY SHARE.
+    const number = await this.docNumbering.next(tx, user.companyId, 'SO');
+    const renumbered = await tx.salesOrder.update({ where: { id: order.id }, data: { number }, select: { number: true, updatedAt: true } });
+    order = { ...order, ...renumbered };
+
+    if (courierId) await this.scheduleCourierAssignedNotification(tx, courierId, order.number, user.companyId);
 
     await this.auditLog.log(tx, {
       companyId: user.companyId,

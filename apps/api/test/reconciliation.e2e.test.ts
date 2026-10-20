@@ -8,13 +8,14 @@ import { prisma, systemPrisma } from '@velto/database';
 import { permissionKeysForRole } from '../../../packages/database/src/rbac-catalog';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
+import { TenantContext } from '../src/common/tenant/tenant-context';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
 import { ReconciliationBusyException } from '../src/modules/reconciliation/reconciliation-exceptions';
 import { ReconciliationAlertService } from '../src/modules/reconciliation/reconciliation-alert.service';
 import { ReconciliationAdminService } from '../src/modules/reconciliation/reconciliation-admin.service';
 import type { AuthenticatedUser } from '../src/common/auth/auth.types';
 import { ReconciliationScheduleProcessor } from '../src/modules/reconciliation/reconciliation-schedule.processor';
-import type { DetectResult, ReconciliationService } from '../src/modules/reconciliation/reconciliation.service';
+import { ReconciliationService, type DetectResult } from '../src/modules/reconciliation/reconciliation.service';
 import { uniquePhone } from './unique-phone';
 
 /** F2.5: reconciliation API RBAC, manual run, fix, daily alert dedupe, scheduler isolation. */
@@ -158,6 +159,24 @@ describe('E2E F2.5: reconciliation', () => {
     const user = { id: tokens.OWNER!.userId, companyId } as AuthenticatedUser;
     await expect(admin.runManual(user)).resolves.toBe(result);
   });
+
+  it('POST /reconciliation/run holds no request tx during the scan (handler scope; survives a scan longer than the 5 s default tx timeout)', async () => {
+    const recon = app.get(ReconciliationService);
+    const real = recon.runDetection.bind(recon);
+    let txActiveDuring: boolean | undefined;
+    recon.runDetection = (async (...args: Parameters<ReconciliationService['runDetection']>) => {
+      txActiveDuring = TenantContext.peek()?.txActive;
+      await new Promise((r) => setTimeout(r, 5_500));
+      return real(...args);
+    }) as ReconciliationService['runDetection'];
+    try {
+      const res = await request(app.getHttpServer()).post('/reconciliation/run').set('Authorization', auth('OWNER')).expect(201);
+      expect(res.body.runId).toBeTruthy();
+    } finally {
+      recon.runDetection = real;
+    }
+    expect(txActiveDuring).toBe(false);
+  }, 30_000);
 
   it('scheduler sweep: one company failing does not stop the others', async () => {
     // The sweep lists ALL companies itself; other test files create/delete companies concurrently,

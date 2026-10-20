@@ -9,6 +9,7 @@ import { loadAuthenticatedUser } from '../../common/auth/load-authenticated-user
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { GENERIC_MESSAGES } from '../../common/filters/http-exception.filter';
 import { TenantContext } from '../../common/tenant/tenant-context';
+import { setWriterLockTimeout } from '../../common/tenant/lock-timeout';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { CustomersService } from '../customers/customers.service';
 import { CreatePaymentDto } from '../finance/dto/create-payment.dto';
@@ -237,15 +238,17 @@ export class SyncService {
   private async stableSeq(cutoffMs: number): Promise<bigint> {
     const tx = this.tenantPrisma.client;
     const cutoff = new Date(cutoffMs);
+    const companyId = this.tenantPrisma.companyId;
+    // Explicit tenant predicates (in addition to RLS) so the planner picks per-tenant index paths on child tables.
     const where = { updatedAt: { lte: cutoff } };
     const args = { orderBy: { changeSeq: 'desc' as const }, select: { changeSeq: true } };
     const found = await Promise.all([
       tx.product.findFirst({ where, ...args }),
-      tx.productPackaging.findFirst({ where, ...args }),
+      tx.productPackaging.findFirst({ where: { ...where, product: { companyId } }, ...args }),
       tx.priceListItem.findFirst({ where, ...args }),
       tx.customer.findFirst({ where, ...args }),
       tx.outlet.findFirst({ where, ...args }),
-      tx.stockLevel.findFirst({ where, ...args }),
+      tx.stockLevel.findFirst({ where: { ...where, warehouse: { companyId } }, ...args }),
       tx.productCategory.findFirst({ where, ...args }),
       tx.syncTombstone.findFirst({ where: { deletedAt: { lte: cutoff } }, ...args }),
     ]);
@@ -313,6 +316,8 @@ export class SyncService {
         TenantContext.afterCommit(() => {
           committed = true;
         });
+        // F7: a lock wait > 2 s fails as 55P03 -> toFailureResult() RETRY, not the 5 s tx timeout.
+        await setWriterLockTimeout(tx);
         const actor = await loadAuthenticatedUser(tx, user.id, user.companyId);
         if (!actor) {
           revoked = 'INACTIVE';

@@ -62,17 +62,12 @@ export class ReconciliationAdminService {
   }
 
   /**
-   * runDetection opens its OWN REPEATABLE READ tx on a separate pool
-   * connection (TenantPrismaService.run -> withTenant), so it neither nests
-   * in nor is weakened by the interceptor's READ COMMITTED request tx. The
-   * request tx has only done permission SELECTs (no locks), so it cannot
-   * deadlock with the run's advisory lock. Alert is a third, short tx.
-   *
-   * The request tx stays open while the run needs more connections, so parallel
-   * manual runs would self-block the pool (P2024). The route cannot use
-   * @TenantTx({scope:'handler'}) (@Idempotent needs the request tx), so at most
-   * one manual run per company is admitted at a time; a concurrent one gets the
-   * same 409 RECONCILIATION_BUSY the advisory try-lock already produces.
+   * Route runs under @TenantTx({scope:'handler'}): no request tx is held while
+   * the scan runs, so runDetection (its own REPEATABLE READ tx) and the alert
+   * (a short second tx) never wait on a pool connection the request holds.
+   * (@Idempotent is not used: it needs the request tx.) At most one manual run
+   * per company at a time; a concurrent one gets the same 409
+   * RECONCILIATION_BUSY the advisory try-lock already produces.
    */
   async runManual(user: AuthenticatedUser) {
     if (this.manualInFlight.has(user.companyId)) throw new ReconciliationBusyException();

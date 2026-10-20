@@ -305,6 +305,7 @@ model Outlet {
   visits      Visit[]
 
   @@index([companyId, customerId])
+  @@index([customerId]) // FK-check on Customer delete (F7)
   @@index([companyId, latitude, longitude])
   @@index([companyId, changeSeq])
 }
@@ -479,6 +480,7 @@ model StockLevel {
 
   @@id([productId, warehouseId])
   @@index([changeSeq])
+  @@index([warehouseId, changeSeq]) // F7: per-tenant stableSeq via warehouse predicate
 }
 
 model StockMovement {
@@ -739,6 +741,7 @@ model SalesOrder {
   @@unique([companyId, number])
   @@unique([companyId, clientId])
   @@index([companyId, customerId])
+  @@index([customerId]) // FK-check on Customer delete (F7)
   @@index([companyId, agentId, createdAt])
   @@index([companyId, createdAt])
   @@index([companyId, outletId])
@@ -815,6 +818,7 @@ model Invoice {
 
   @@unique([companyId, number])
   @@index([companyId, customerId])
+  @@index([customerId]) // FK-check on Customer delete (F7)
   @@index([openingBatchId])
 }
 
@@ -910,6 +914,7 @@ model Payment {
   @@unique([companyId, number])
   @@unique([companyId, clientId])
   @@index([companyId, customerId])
+  @@index([customerId]) // FK-check on Customer delete (F7)
   @@index([companyId, status])
   @@index([collectedBy])
   @@index([handoverActorId])
@@ -1409,6 +1414,7 @@ model ReconciliationFinding {
   fixedBy   User?             @relation("ReconciliationFindingFixedBy", fields: [fixedById], references: [id], onDelete: Restrict)
 
   @@index([companyId, status, kind])
+  @@index([customerId]) // FK-check on Customer delete (F7)
   @@index([runId])
   @@index([lastRunId])
 }

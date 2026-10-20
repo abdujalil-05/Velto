@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { ArgumentsHost } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { prisma, systemPrisma } from '@velto/database';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { AuditLogService } from '../../common/audit/audit-log.service';
+import { AllExceptionsFilter } from '../../common/filters/http-exception.filter';
 import { DocumentNumberingService } from '../../common/document-numbering/document-numbering.service';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { grantRole } from '../../common/testing/grant-role';
@@ -26,11 +28,15 @@ import { SyncService } from './sync.service';
  * docType asc. This drives all writer paths concurrently on ONE customer and
  * the shared counters and requires zero deadlocks / zero RETRY.
  * (B): 20-document push budget (TZ 12.5, <3 s) under PERF=1.
+ * (C) F7 late SO counter: order create INSERTs under a 'TMP-<uuid>' placeholder,
+ * reserves, then takes the SO counter last; numbers stay gapless and TMP- never
+ * escapes. Per-document lock_timeout 2 s -> 55P03 -> sync RETRY / HTTP 503.
  */
 describe('Writer lock order: sync push x orders x deliver x payments (real Postgres + RLS)', () => {
   let companyId: string;
   let agent: AuthenticatedUser;
   let director: AuthenticatedUser;
+  let courierId: string;
   let warehouseId: string;
   const productIds: string[] = [];
   const packagingIds: string[] = [];
@@ -59,6 +65,12 @@ describe('Writer lock order: sync push x orders x deliver x payments (real Postg
     };
     agent = await mk(`+99890${Date.now() % 10000000}`.slice(0, 13), ['SALES_AGENT'], ['orders.create', 'payments.create', 'field.create']);
     director = await mk(`+99891${Date.now() % 10000000}`.slice(0, 13), ['SALES_DIRECTOR'], ['orders.create', 'orders.confirm', 'orders.deliver', 'payments.create']);
+
+    const courier = await systemPrisma.user.create({
+      data: { companyId, firstName: 'C', lastName: 'Courier', phone: `+99892${Date.now() % 10000000}`.slice(0, 13), telegramId: BigInt(Date.now()) },
+    });
+    await grantRole(companyId, courier.id, 'COURIER', []);
+    courierId = courier.id;
 
     await run(async () => {
       const tx = tenantPrisma.client;
@@ -117,6 +129,9 @@ describe('Writer lock order: sync push x orders x deliver x payments (real Postg
         run(() => sales.create(orderPayload(0), director)),
         run(() => sales.create(orderPayload(0, true), director)),
         run(() => sales.create(orderPayload(1), director)),
+        // courier known up front: INSERT -> StockLevel reservation -> SO counter (late).
+        run(() => sales.create({ ...orderPayload(0), courierId }, director)),
+        run(() => sales.create({ ...orderPayload(2, true), courierId }, director)),
         // POST /payments (office -> POSTED, FIFO over customer 0's invoices).
         run(() => payments.create({ customerId: customerIds[0]!, amount: '700', method: 'CASH' } as never, director)),
         run(() => payments.create({ customerId: customerIds[0]!, amount: '300', method: 'CASH' } as never, director)),
@@ -174,5 +189,137 @@ describe('Writer lock order: sync push x orders x deliver x payments (real Postg
       console.info(`[PERF] sync push 20 ${kind}: ${Math.round(performance.now() - t0)} ms`);
       expect(res.results.map((r) => r.status).filter((s) => s !== 'ACCEPTED')).toEqual([]);
     }
+  }, 30_000);
+
+  const SO_RE = /^SO-\d{4}-\d{6}$/;
+  const soSeq = (n: string) => Number(n.split('-')[2]);
+  const gate = () => {
+    let open!: () => void;
+    const p = new Promise<void>((r) => (open = r));
+    return { p, open };
+  };
+  const expectSoGapless = async () => {
+    const counter = await run(() => tenantPrisma.client.documentCounter.findFirst({ where: { docType: 'SO' } }));
+    const rows = await run(() => tenantPrisma.client.salesOrder.findMany({ select: { number: true } }));
+    expect(rows.filter((r) => !SO_RE.test(r.number))).toEqual([]);
+    expect(rows.map((r) => soSeq(r.number)).sort((a, b) => a - b)).toEqual(Array.from({ length: counter!.lastNumber }, (_, i) => i + 1));
+  };
+
+  it('SO late counter: 24 parallel creates (courier / plain / sync) + rollbacks after the counter -> unique gapless numbers, no TMP- in responses, audit, notifications, replays', async () => {
+    const notified: string[] = [];
+    const spy = vi.spyOn(notifications, 'notifyCourierOrderAssigned').mockImplementation(async (_t, n) => {
+      notified.push(n.orderNumber);
+    });
+    try {
+      const replayClientId = randomUUID();
+      const ops = Array.from({ length: 24 }, (_, i): Promise<unknown> => {
+        const dto = { ...orderPayload(i % 3, i % 2 === 1), ...(i % 2 === 0 ? { courierId } : {}) };
+        if (i % 6 === 4) {
+          // Rolled back AFTER the counter was taken (create returned): its increment must roll back too.
+          return run(async () => {
+            await sales.create(dto, director);
+            throw new Error('ROLLBACK_AFTER_COUNTER');
+          });
+        }
+        if (i % 4 === 3) return sync.push([orderDoc(i % 3, true)], agent);
+        if (i === 0) return run(() => sales.create({ ...dto, clientId: replayClientId }, director));
+        return run(() => sales.create(dto, director));
+      });
+      const settled = await Promise.allSettled(ops);
+
+      const errors = settled.filter((s): s is PromiseRejectedResult => s.status === 'rejected').map((s) => (s.reason as Error).message.slice(0, 200));
+      expect(errors.filter((m) => m !== 'ROLLBACK_AFTER_COUNTER')).toEqual([]);
+      expect(errors).toHaveLength(4);
+
+      const values = settled.flatMap((s) => (s.status === 'fulfilled' ? [s.value] : []));
+      const created = values.filter((v): v is { number: string } => typeof (v as { number?: unknown }).number === 'string');
+      expect(created.filter((o) => !SO_RE.test(o.number))).toEqual([]);
+      expect(new Set(created.map((o) => o.number)).size).toBe(created.length);
+      const pushed = values.flatMap((v) => (v as { results?: Array<{ status: string }> }).results ?? []);
+      expect(pushed.map((r) => r.status).filter((st) => st !== 'ACCEPTED')).toEqual([]);
+
+      // Idempotent replay (fast path) returns the final number, never the placeholder.
+      const first = created.find((o) => (o as { clientId?: string | null }).clientId === replayClientId)!;
+      const replay = await run(() => sales.createWithOutcome({ ...orderPayload(0), clientId: replayClientId }, director));
+      expect(replay.created).toBe(false);
+      expect(replay.order.number).toBe(first.number);
+
+      const audits = await run(() => tenantPrisma.client.auditLog.findMany({ where: { action: 'order.create' }, select: { newValue: true } }));
+      expect(audits.map((a) => String((a.newValue as { number?: unknown }).number)).filter((n) => !SO_RE.test(n))).toEqual([]);
+      // 12 courier creates (even i), 4 rolled back after the counter (no notification), 8 notified with final numbers.
+      expect(notified).toHaveLength(8);
+      expect(notified.filter((n) => !SO_RE.test(n))).toEqual([]);
+      await expectSoGapless();
+    } finally {
+      spy.mockRestore();
+    }
+  }, 60_000);
+
+  it('SO counter is taken after the reservation: a courier create blocked on StockLevel does not block a plain create', async () => {
+    const held = gate();
+    const release = gate();
+    const holder = run(async () => {
+      await tenantPrisma.client.$queryRaw`SELECT 1 FROM "StockLevel" WHERE "productId" = ${productIds[0]}::uuid AND "warehouseId" = ${warehouseId}::uuid FOR UPDATE`;
+      held.open();
+      await release.p;
+    });
+    await held.p;
+    const blocked = run(() => sales.create({ ...orderPayload(1), courierId }, director));
+    await new Promise((r) => setTimeout(r, 300)); // courier create is now parked on StockLevel
+    try {
+      const t0 = performance.now();
+      // Old order (counter before INSERT/reserve) parks this behind the blocked create -> 55P03 after 2 s.
+      const plain = await run(() => sales.create(orderPayload(2), director));
+      expect(performance.now() - t0).toBeLessThan(1500);
+      expect(plain.number).toMatch(SO_RE);
+      release.open();
+      await holder;
+      const courierOrder = await blocked;
+      expect(soSeq(courierOrder.number)).toBe(soSeq(plain.number) + 1);
+    } finally {
+      release.open();
+      await Promise.allSettled([holder, blocked]);
+    }
+    await expectSoGapless();
+  }, 30_000);
+
+  it('lock wait > 2 s fails fast as 55P03: sync push -> RETRY, POST /orders -> 503 SERVICE_BUSY, nothing written', async () => {
+    const held = gate();
+    const release = gate();
+    const holder = tenantPrisma.run(
+      companyId,
+      async () => {
+        await tenantPrisma.client.$queryRaw`SELECT id FROM "Customer" WHERE id = ${customerIds[0]}::uuid FOR UPDATE`;
+        held.open();
+        await release.p;
+      },
+      { timeout: 15_000 },
+    );
+    await held.p;
+    const doc = orderDoc(0);
+    const t0 = performance.now();
+    try {
+      const [pushRes, createRes] = await Promise.allSettled([sync.push([doc], agent), run(() => sales.create(orderPayload(0), director))]);
+      expect(performance.now() - t0).toBeLessThan(4500); // before the 5 s tx timeout
+
+      expect(pushRes.status).toBe('fulfilled');
+      const item = (pushRes as PromiseFulfilledResult<{ results: Array<{ status: string; error?: { code: string } }> }>).value.results[0]!;
+      expect(item.status).toBe('RETRY');
+      expect(item.error?.code).toBe('SYNC_RETRY');
+
+      expect(createRes.status).toBe('rejected');
+      const json = vi.fn();
+      const status = vi.fn(() => ({ json }));
+      const setHeader = vi.fn();
+      const host = { switchToHttp: () => ({ getResponse: () => ({ status, setHeader }) }) } as unknown as ArgumentsHost;
+      new AllExceptionsFilter().catch((createRes as PromiseRejectedResult).reason, host);
+      expect(status).toHaveBeenCalledWith(503);
+      expect(json.mock.calls[0]![0].code).toBe('SERVICE_BUSY');
+    } finally {
+      release.open();
+      await holder;
+    }
+    expect(await run(() => tenantPrisma.client.salesOrder.count({ where: { clientId: doc.clientId } }))).toBe(0);
+    await expectSoGapless();
   }, 30_000);
 });

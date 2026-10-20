@@ -21,10 +21,17 @@ export type DocumentType = 'SO' | 'INV' | 'PAY' | 'PO' | 'OB';
  *   4. StockLevel (productId, warehouseId) asc — deliver/confirm/reserve
  *   5. DocumentCounter, several types only in docType asc (INV < OB < PAY < PO < SO)
  *   6. INSERTs (FK KEY SHARE on rows already locked in 3 or never FOR UPDATE'd)
- * Two documented exceptions, both acyclic: after PAY, Invoice FOR UPDATE of a
- * customer whose lock is held (step 3 guards them); after SO, a courier
- * order's StockLevel reservation (no StockLevel holder ever waits for SO/PAY —
- * deliver takes INV only). Regression: sync/lock-order-deadlock.test.ts.
+ * SO (F7 late counter, SalesService.createWithOutcome): Customer KEY SHARE ->
+ * SalesOrder+lines INSERT under a 'TMP-<uuid>' placeholder (its FK KEY SHAREs
+ * on Outlet/Warehouse/User/Product/Packaging now PRECEDE the counter) ->
+ * courier order's StockLevel reservation (step 4) -> SO counter -> one UPDATE
+ * of the own uncommitted SalesOrder.number (no FK column change => no new
+ * KEY SHARE) -> audit INSERT (KEY SHARE User/Company, as before). No writer
+ * takes FOR UPDATE on Product/Warehouse/Outlet/User/Company while holding a
+ * counter, so the earlier KEY SHAREs cannot close a cycle.
+ * One documented exception, acyclic: after PAY, Invoice FOR UPDATE of a
+ * customer whose lock is held (step 3 guards them).
+ * Regression: sync/lock-order-deadlock.test.ts.
  */
 @Injectable()
 export class DocumentNumberingService {

@@ -256,6 +256,8 @@ describe('AllExceptionsFilter', () => {
       ['P2010', 'Raw query failed. Code: `40001`. Message: `could not serialize access due to concurrent update`'],
       ['40P01', 'deadlock detected'],
       ['40001', 'serialization failure'],
+      ['55P03', 'lock not available'],
+      ['P2010', 'Raw query failed. Code: `55P03`. Message: `ERROR: canceling statement due to lock timeout`'],
     ])('maps tx conflict %s (%s) to 503 SERVICE_BUSY Retry-After 1, warn only, no Sentry', (code, message) => {
       const filter = new AllExceptionsFilter();
       const { host, status, json, setHeader } = mockHost();
@@ -292,6 +294,18 @@ describe('AllExceptionsFilter', () => {
         expect(setHeader).not.toHaveBeenCalled();
         expect(Sentry.captureException).toHaveBeenCalledTimes(1);
       }
+    });
+
+    it('maps a plain Error "canceling statement due to lock timeout" (55P03, driver adapter) to 503', () => {
+      const filter = new AllExceptionsFilter();
+      const { host, status, json, setHeader } = mockHost();
+
+      filter.catch(new Error('ERROR: canceling statement due to lock timeout'), host);
+
+      expect(status).toHaveBeenCalledWith(HttpStatus.SERVICE_UNAVAILABLE);
+      expect(json.mock.calls[0]![0].code).toBe('SERVICE_BUSY');
+      expect(setHeader).toHaveBeenCalledWith('Retry-After', '1');
+      expect(Sentry.captureException).not.toHaveBeenCalled();
     });
 
     it('maps PrismaClientUnknownRequestError carrying 40001 in its text to 503', () => {

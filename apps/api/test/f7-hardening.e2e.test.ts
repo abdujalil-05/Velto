@@ -11,6 +11,7 @@ import { configureApp } from '../src/bootstrap';
 import { REDIS_CLIENT } from '../src/common/redis/redis.module';
 import { StorageService } from '../src/common/storage/storage.service';
 import { uniquePhone } from './unique-phone';
+import { ALL_SCOPE, encodeCursor } from '../src/modules/sync/sync-cursor';
 
 /** F7: D2 health, D3 READ_ONLY_MODE, D4 sync throttle (SEC-015), Redis-down auth fail-closed (ADR-050). */
 const password = 'CorrectHorseBattery9'; // nosemgrep: ajinabraham.njsscan.generic.hardcoded_secrets.node_password
@@ -195,11 +196,19 @@ describe('F7 D4: sync throttle (SEC-015) + Redis-down auth', () => {
   });
 
   it('pull: 61st request -> 429; other user unaffected', async () => {
-    const pull = (k: string) => request(app.getHttpServer()).get('/sync/pull?limit=100').set('Authorization', `Bearer ${tokens[k]}`);
+    // Throttle test, not a snapshot test: an incremental cursor at the current global tail keeps each pull O(1).
+    // A full resync scans StockLevel_changeSeq_idx across ALL tenants (RLS filters after the index scan) ~110ms on a 675k-row dev DB.
+    const [{ m }] = await systemPrisma.$queryRaw<Array<{ m: bigint | null }>>`SELECT GREATEST(
+      COALESCE((SELECT max("changeSeq") FROM "StockLevel"), 0), COALESCE((SELECT max("changeSeq") FROM "Product"), 0),
+      COALESCE((SELECT max("changeSeq") FROM "Customer"), 0), COALESCE((SELECT max("changeSeq") FROM "Outlet"), 0),
+      COALESCE((SELECT max("changeSeq") FROM "PriceListItem"), 0)) AS m`;
+    const cursor = encodeCursor({ s: m ?? 0n, f: ALL_SCOPE });
+    const pull = (k: string) => request(app.getHttpServer()).get(`/sync/pull?limit=100&cursor=${cursor}`).set('Authorization', `Bearer ${tokens[k]}`);
     for (let i = 0; i < 60; i++) expect((await pull('a')).status).toBe(200);
     expect((await pull('a')).status).toBe(429);
     expect((await pull('b')).status).toBe(200);
-  });
+    // 61 pulls ~3.7s measured after the explicit per-tenant predicates in stableSeq(); 30s = margin.
+  }, 30_000);
 
   it('Redis down: login and password-reset -> 503 SERVICE_UNAVAILABLE; existing sessions (refresh) still work', async () => {
     const login = await request(app.getHttpServer()).post('/auth/login').send({ phone: phoneB, password }).expect(201);

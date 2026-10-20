@@ -147,18 +147,23 @@ function isPrismaUnknownRequestError(exception: object): boolean {
  * message are trusted ONLY on Prisma errors (known/unknown request error): an
  * arbitrary Error whose text merely contains "40001" must stay a 500 + Sentry.
  * The long phrases are specific enough to match any Error. Returns the state for logging.
+ * F7: lock_not_available (55P03, the per-request `SET LOCAL lock_timeout`, see
+ * common/tenant/lock-timeout.ts) is the same class: the statement fails before
+ * the lock is granted and the request tx is rolled back -> 503, retry-safe.
  */
 function txConflictState(exception: unknown): string | undefined {
   if (!(exception instanceof Error)) return undefined;
   const prismaErr = isPrismaKnownRequestError(exception) || isPrismaUnknownRequestError(exception);
   if (isPrismaKnownRequestError(exception) && (exception as { code?: unknown }).code === 'P2034') return 'P2034';
   const state = sqlState(exception);
-  if (state === '40P01' || state === '40001') return state;
+  if (state === '40P01' || state === '40001' || state === '55P03') return state;
   if (/deadlock detected/i.test(exception.message)) return '40P01';
   if (/could not serialize access/i.test(exception.message)) return '40001';
+  if (/canceling statement due to lock timeout/i.test(exception.message)) return '55P03';
   if (prismaErr) {
     if (/\b40P01\b/.test(exception.message)) return '40P01';
     if (/\b40001\b/.test(exception.message)) return '40001';
+    if (/\b55P03\b/.test(exception.message)) return '55P03';
   }
   return undefined;
 }
