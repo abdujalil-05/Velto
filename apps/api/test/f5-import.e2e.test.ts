@@ -79,7 +79,8 @@ describe('E2E F5 import (create-only, preview/confirm, scale, RBAC, isolation)',
       .compile();
     app = moduleRef.createNestApplication();
     configureApp(app, ['http://localhost:3000']);
-    await app.init();
+    // Loopback-only listen: supertest's default `::` bind can collide with a foreign 127.0.0.1 listener (e.g. VS Code helper) => random 4xx.
+    await app.listen(0, '127.0.0.1');
   });
 
   // Every test gets its own tenants/users so a failure cannot cascade into the others.

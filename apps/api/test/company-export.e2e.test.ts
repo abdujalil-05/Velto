@@ -137,7 +137,8 @@ describe('E2E ADR-045: company export', () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).overrideProvider(StorageService).useValue(storageDouble).compile();
     app = moduleRef.createNestApplication();
     configureApp(app, ['http://localhost:3000']);
-    await app.init();
+    // Loopback-only listen: supertest's default `::` bind can collide with a foreign 127.0.0.1 listener (e.g. VS Code helper) => random 4xx.
+    await app.listen(0, '127.0.0.1');
     companyA = await seedCompany('a');
     companyB = await seedCompany('b');
     companyC = await seedCompany('c');

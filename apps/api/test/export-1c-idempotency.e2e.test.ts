@@ -30,7 +30,8 @@ describe('E2E: 1C export create idempotency + CORS exposed headers', () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
     app = moduleRef.createNestApplication();
     configureApp(app, ['http://localhost:3000']);
-    await app.init();
+    // Loopback-only listen: supertest's default `::` bind can collide with a foreign 127.0.0.1 listener (e.g. VS Code helper) => random 4xx.
+    await app.listen(0, '127.0.0.1');
     const tenant = await systemPrisma.tenant.create({ data: { slug: `test-1c-idem-${Date.now()}`, name: '1C Idem' } });
     companyId = (await systemPrisma.company.create({ data: { tenantId: tenant.id, name: '1C Idem Co' } })).id;
     const phone = uniquePhone();

@@ -93,7 +93,8 @@ describe('E2E opening balances (ADR-041..043)', () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).overrideProvider(StorageService).useValue(new InMemoryStorage()).compile();
     app = moduleRef.createNestApplication();
     configureApp(app, ['http://localhost:3000']);
-    await app.init();
+    // Loopback-only listen: supertest's default `::` bind can collide with a foreign 127.0.0.1 listener (e.g. VS Code helper) => random 4xx.
+    await app.listen(0, '127.0.0.1');
     companyA = await seedCompany('A');
     companyB = await seedCompany('B');
     ownerA = await seedUser(companyA, 'OWNER');

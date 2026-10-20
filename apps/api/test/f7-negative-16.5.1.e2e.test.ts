@@ -72,7 +72,8 @@ describe('E2E §16.5.1 negative checklist', () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).overrideProvider(StorageService).useValue(storageDouble).compile();
     app = moduleRef.createNestApplication();
     configureApp(app, ['http://localhost:3000']);
-    await app.init();
+    // Loopback-only listen: supertest's default `::` bind can collide with a foreign 127.0.0.1 listener (e.g. VS Code helper) => random 4xx.
+    await app.listen(0, '127.0.0.1');
     sales = app.get(SalesService);
 
     const tenant = await systemPrisma.tenant.create({ data: { slug: `test-f7neg-${Date.now()}-${rid()}`, name: 'F7Neg' } });
