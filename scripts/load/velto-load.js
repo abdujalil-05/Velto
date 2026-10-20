@@ -28,25 +28,36 @@ export const cOk = new Counter('r_ok');
 export const tSync = new Trend('sync_push20_ms', true);
 export const tDash = new Trend('dash_dur', true);
 
-// Allocation: ~10-20% write chains, ~20% agents (sync), 1 cashier, rest reads.
-const nWrite = MODE === 'read' || MODE === 'sync' ? 0 : Math.max(1, Math.round(VUS * (VUS >= 100 ? 0.15 : 0.2)));
-const nAgent = MODE === 'read' || MODE === 'write' ? 0 : Math.max(1, Math.min(30, Math.round(VUS * (MODE === 'syncheavy' ? 0.5 : 0.2)))); // syncheavy = (C) sync-push dominant, capped by 30 agent users
-const nCash = MODE === 'mixed' || MODE === 'syncheavy' ? 1 : 0;
-const nRead = MODE === 'write' || MODE === 'sync' ? 0 : Math.max(1, VUS - nWrite - nAgent - nCash);
-if (nWrite + nRead > FX.owners.length) fail(`not enough owner users (${FX.owners.length}) for ${nWrite + nRead} VUs`);
-if (nAgent > FX.agents.length) fail('not enough agent users');
+// Allocation per tenant: ~10-20% write chains, ~20% agents (sync), 1 cashier, rest reads.
+// Multi-tenant: fixtures.json may be {tenants:[fx,...]} (prepare-multi-load-data.sh); total VUS are spread
+// evenly across the first TENANTS tenants (each ~VUS/N), every VU belongs to exactly one tenant.
+const TENANT_FX = (FX.tenants || [FX]).slice(0, Number(__ENV.TENANTS || 99));
+const NT = TENANT_FX.length;
+const T = TENANT_FX.map((fx, i) => {
+  const vus = Math.floor(VUS / NT) + (i < VUS % NT ? 1 : 0);
+  const nWrite = MODE === 'read' || MODE === 'sync' ? 0 : Math.max(1, Math.round(vus * (vus >= 100 ? 0.15 : 0.2)));
+  const nAgent = MODE === 'read' || MODE === 'write' ? 0 : Math.max(1, Math.min(30, Math.round(vus * (MODE === 'syncheavy' ? 0.5 : 0.2)))); // syncheavy = (C) sync-push dominant, capped by agent users
+  const nCash = MODE === 'mixed' || MODE === 'syncheavy' ? 1 : 0;
+  const nRead = MODE === 'write' || MODE === 'sync' ? 0 : Math.max(1, vus - nWrite - nAgent - nCash);
+  if (nWrite + nRead > fx.owners.length) fail(`tenant ${i}: not enough owner users (${fx.owners.length}) for ${nWrite + nRead} VUs`);
+  if (nAgent > fx.agents.length) fail(`tenant ${i}: not enough agent users`);
+  return { fx, nWrite, nAgent, nCash, nRead, total: nWrite + nAgent + nCash + nRead };
+});
+T.reduce((off, t) => { t.offset = off; return off + t.total; }, 0);
 
 // One scenario, VU role chosen by VU id (k6 interleaves VU ids across scenarios, so per-scenario
-// index maths is unsafe): ids [0,nAgent) agent, then cashier, then write, then read. Each VU keeps
-// its own user (idx within its role) => one userId per VU.
-const scenarios = { load: { executor: 'constant-vus', vus: nWrite + nAgent + nCash + nRead, duration: DURATION, exec: 'dispatch' } };
+// index maths is unsafe): VU ids are split into contiguous per-tenant blocks; inside a block ids
+// [0,nAgent) agent, then cashier, then write, then read. Each VU keeps its own user => one userId per VU.
+const scenarios = { load: { executor: 'constant-vus', vus: T.reduce((a, t) => a + t.total, 0), duration: DURATION, exec: 'dispatch' } };
 
 export function dispatch(tokens) {
-  const id = __VU - 1;
-  if (id < nAgent) return agentFlow(tokens, id);
-  if (id < nAgent + nCash) return cashierFlow(tokens, id - nAgent);
-  if (id < nAgent + nCash + nWrite) return writeFlow(tokens, id - nAgent - nCash);
-  return readFlow(tokens, id - nAgent - nCash - nWrite);
+  const gid = __VU - 1;
+  const ti = T.findIndex((t) => gid >= t.offset && gid < t.offset + t.total);
+  const t = T[ti], id = gid - t.offset, tk = tokens[ti];
+  if (id < t.nAgent) return agentFlow(tk, id, t);
+  if (id < t.nAgent + t.nCash) return cashierFlow(tk, id - t.nAgent);
+  if (id < t.nAgent + t.nCash + t.nWrite) return writeFlow(tk, id - t.nAgent - t.nCash, t);
+  return readFlow(tk, id - t.nAgent - t.nCash - t.nWrite, t);
 }
 
 export const options = {
@@ -69,13 +80,15 @@ function login(phone) {
 
 export function setup() {
   if (!PASSWORD) fail('LOAD_PASSWORD env is required');
-  const tokens = { owners: [], agents: [], cashiers: [] };
-  const need = { owners: nWrite + nRead, agents: nAgent, cashiers: nCash };
-  for (const k of Object.keys(need)) for (let i = 0; i < need[k]; i++) tokens[k].push(login(FX[k][i]));
-  for (const t of tokens.cashiers) { // shift for handover accept; "already open" is fine
-    http.post(`${BASE}/cash-sessions/open`, JSON.stringify({ openAmount: 0 }), { headers: { ...JSON_H, Authorization: `Bearer ${t}` }, tags: { kind: 'setup' } });
-  }
-  return tokens;
+  return T.map((t) => {
+    const tokens = { owners: [], agents: [], cashiers: [] };
+    const need = { owners: t.nWrite + t.nRead, agents: t.nAgent, cashiers: t.nCash };
+    for (const k of Object.keys(need)) for (let i = 0; i < need[k]; i++) tokens[k].push(login(t.fx[k][i]));
+    for (const c of tokens.cashiers) { // shift for handover accept; "already open" is fine
+      http.post(`${BASE}/cash-sessions/open`, JSON.stringify({ openAmount: 0 }), { headers: { ...JSON_H, Authorization: `Bearer ${c}` }, tags: { kind: 'setup' } });
+    }
+    return tokens;
+  });
 }
 
 function call(method, path, token, kind, name, body, extra = {}) {
@@ -91,15 +104,16 @@ function call(method, path, token, kind, name, body, extra = {}) {
 }
 
 const pick = (a) => a[Math.floor(Math.random() * a.length)];
-const orderBody = (qtyMax = 3) => ({
-  customerId: pick(FX.customers), warehouseId: FX.warehouseId, clientId: uuidv4(),
+const orderBody = (FXT, qtyMax = 3) => ({
+  customerId: pick(FXT.customers), warehouseId: FXT.warehouseId, clientId: uuidv4(),
   lines: Array.from({ length: 1 + Math.floor(Math.random() * 5) }, () => {
-    const p = pick(FX.products); return { productId: p.p, packagingId: p.k, qty: 1 + Math.floor(Math.random() * qtyMax) };
+    const p = pick(FXT.products); return { productId: p.p, packagingId: p.k, qty: 1 + Math.floor(Math.random() * qtyMax) };
   }),
 });
 
-function readFlow(tokens, idx) {
-  const t = tokens.owners[nWrite + idx]; // owners[0..nWrite) belong to write VUs
+function readFlow(tokens, idx, T0) {
+  const FX = T0.fx;
+  const t = tokens.owners[T0.nWrite + idx]; // owners[0..nWrite) belong to write VUs
   const c = pick(FX.customers);
   const reqs = [
     ['products', `/products?pageSize=50&page=${1 + Math.floor(Math.random() * 20)}`], ['customers', `/customers?pageSize=50&page=${1 + Math.floor(Math.random() * 20)}`], ['price-lists', `/price-lists`],
@@ -116,9 +130,9 @@ function readFlow(tokens, idx) {
   sleep(0.4 + Math.random() * 0.4);
 }
 
-function writeFlow(tokens, idx) {
+function writeFlow(tokens, idx, T0) {
   const t = tokens.owners[idx];
-  const cr = call('POST', '/orders', t, 'write', 'order-create', orderBody());
+  const cr = call('POST', '/orders', t, 'write', 'order-create', orderBody(T0.fx));
   if (cr.status === 201) {
     const id = cr.json('id');
     const cf = call('POST', `/orders/${id}/confirm`, t, 'write', 'order-confirm', null, { idem: true });
@@ -129,12 +143,13 @@ function writeFlow(tokens, idx) {
   sleep(2 + Math.random() * 2);
 }
 
-function agentFlow(tokens, idx) {
+function agentFlow(tokens, idx, T0) {
+  const FX = T0.fx;
   const t = tokens.agents[idx];
   const docs = [];
   for (let i = 0; i < 20; i++) {
     if (i % 7 === 6) docs.push({ type: 'payment', clientId: uuidv4(), payload: { customerId: pick(FX.customers), amount: 10000 + i * 1000, method: 'CASH', clientId: undefined } });
-    else docs.push({ type: 'order', clientId: uuidv4(), payload: orderBody(2) });
+    else docs.push({ type: 'order', clientId: uuidv4(), payload: orderBody(FX, 2) });
   }
   for (const d of docs) if (d.type === 'payment') d.payload.clientId = d.clientId; else d.payload.clientId = d.clientId;
   const r = call('POST', '/sync/push', t, 'sync', 'sync-push-20', { documents: docs });
