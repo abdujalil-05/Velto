@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PaymentSource, PaymentStatus, Prisma, type TenantClient } from '@velto/database';
 import { DEFAULT_DASHBOARD_CACHE_TTL_S } from '../../common/config/env.schema';
+import { ReportConcurrencyLimiter } from '../../common/concurrency/report-concurrency.limiter';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { REPORT_TX_OPTIONS } from './report-tx.constants';
 import { paymentPostedWithin } from '../finance/ledger-filters';
@@ -24,6 +25,7 @@ export class DashboardService {
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     private readonly agingReport: AgingReportService,
+    private readonly limiter: ReportConcurrencyLimiter,
   ) {}
 
   /**
@@ -33,7 +35,7 @@ export class DashboardService {
    * misses share one in-flight computation (no stampede); failures are not
    * cached. In-process Map: valid for a single API process (PM2 instances=1,
    * ADR-051) — several processes would each hold their own copy (needs Redis).
-   * Called after the permission check (TenantContextInterceptor), so a cached
+   * The report permit is taken only inside the single compute (never for hits/waiters). Called after the permission check (TenantContextInterceptor), so a cached
    * body is never served to an unauthorised caller. The route is
    * @TenantTx({ scope: 'handler' }): no request tx is open here, and the shared
    * compute runs in its OWN short tenant tx, so waiters never hold a pool
@@ -44,6 +46,16 @@ export class DashboardService {
     const companyId = this.tenantPrisma.companyId;
     if (ttlMs === 0) return { ...(await this.compute(companyId)), generatedAt: new Date().toISOString(), cached: false };
     const now = Date.now();
+    // Hit fast path: last-seen timezone, no DB, no permit. A stale tz can only
+    // serve an entry that is at most one TTL old.
+    const knownTz = this.timeZones.get(companyId);
+    if (knownTz) {
+      const hit = this.cache.get(this.cacheKey(companyId, now, knownTz));
+      if (hit && hit.expiresAt > now) {
+        const value = await hit.value;
+        return { ...value.data, generatedAt: value.generatedAt, cached: true };
+      }
+    }
     const timeZone = await this.tenantPrisma.run(companyId, (tx) => companyTimeZone(tx));
     this.timeZones.set(companyId, timeZone);
     const key = this.cacheKey(companyId, now, timeZone);
@@ -68,22 +80,6 @@ export class DashboardService {
     }
   }
 
-  /**
-   * Guard probe (no DB): true when this company has a live cache entry (done or
-   * in flight), so the request does no new report computation and needs no
-   * semaphore permit. The response is still served only after the permission
-   * check in TenantContextInterceptor. Matches the full current key (company
-   * day + last-seen timezone), so a stale previous-day entry never bypasses
-   * the semaphore. Skipping is safe: handler-scope waiters hold no connection.
-   */
-  hasLiveEntry(companyId: string): boolean {
-    const timeZone = this.timeZones.get(companyId);
-    if (!timeZone) return false;
-    const now = Date.now();
-    const e = this.cache.get(this.cacheKey(companyId, now, timeZone));
-    return !!e && e.expiresAt > now;
-  }
-
   private cacheKey(companyId: string, now: number, timeZone: string): string {
     return `${companyId}|${companyDay(new Date(now), timeZone).date}|${timeZone}`;
   }
@@ -97,9 +93,19 @@ export class DashboardService {
   private readonly cache = new Map<string, CacheEntry>();
   private readonly timeZones = new Map<string, string>();
 
-  /** Own short tenant tx: independent of any request tx (shared by waiters). */
-  private compute(companyId: string) {
-    return this.tenantPrisma.run(companyId, () => this.computeInTx(), REPORT_TX_OPTIONS);
+  /**
+   * Only the single compute that runs the heavy SQL takes a report permit
+   * (per-tenant quota applies here); hits and waiters on an in-flight compute
+   * never reach this. Own short tenant tx, opened after the permit is held, so
+   * a queued compute holds no pool connection.
+   */
+  private async compute(companyId: string) {
+    const release = await this.limiter.acquire(undefined, companyId);
+    try {
+      return await this.tenantPrisma.run(companyId, () => this.computeInTx(), REPORT_TX_OPTIONS);
+    } finally {
+      release();
+    }
   }
 
   private async computeInTx() {

@@ -3,7 +3,6 @@ import type { ExecutionContext } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import { ReportConcurrencyGuard } from './report-concurrency.guard';
 import { ReportBusyException, ReportConcurrencyLimiter } from './report-concurrency.limiter';
-import { DashboardReportGuard } from '../../modules/analytics/dashboard-report.guard';
 import { ReportsController } from '../../modules/analytics/reports.controller';
 import { AgingReportController } from '../../modules/finance/reports/aging-report.controller';
 
@@ -224,28 +223,15 @@ describe('ReportConcurrencyLimiter per-tenant quota', () => {
   });
 });
 
-describe('DashboardReportGuard', () => {
-  it('cache hit takes no permit; miss does', async () => {
-    const lim = new ReportConcurrencyLimiter({ ...opts, maxConcurrency: 1 });
-    let live = true;
-    const guard = new DashboardReportGuard(lim, noPermReflector, noTenant, { hasLiveEntry: () => live } as never);
-    await guard.canActivate(fakeCtx().ctx);
-    expect(lim.stats.active).toBe(0);
-    live = false;
-    await guard.canActivate(fakeCtx().ctx);
-    expect(lim.stats.active).toBe(1);
-  });
-});
-
 describe('guard wiring', () => {
   const guardsOf = (fn: object) => (Reflect.getMetadata('__guards__', fn) ?? []) as unknown[];
   it('every report read and export route (incl. exports) is under the semaphore', () => {
     for (const [ctrl, skip] of [[ReportsController, 'constructor'], [AgingReportController, 'constructor']] as const) {
-      const names = Object.getOwnPropertyNames(ctrl.prototype).filter((n) => n !== skip);
+      const names = Object.getOwnPropertyNames(ctrl.prototype).filter((n) => n !== skip && n !== 'getDashboard');
       expect(names.length).toBeGreaterThan(0);
       for (const n of names) expect(guardsOf((ctrl.prototype as never)[n]).length, n).toBe(1);
     }
     expect(guardsOf(ReportsController.prototype.exportSales)[0]).toBe(ReportConcurrencyGuard);
-    expect(guardsOf(ReportsController.prototype.getDashboard)[0]).toBe(DashboardReportGuard);
+    expect(guardsOf(ReportsController.prototype.getDashboard).length).toBe(0); // permit is taken inside the single compute
   });
 });

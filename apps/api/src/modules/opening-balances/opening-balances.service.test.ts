@@ -1,3 +1,4 @@
+import { ReportConcurrencyLimiter } from '../../common/concurrency/report-concurrency.limiter';
 import { randomUUID } from 'node:crypto';
 import type { Job } from 'bullmq';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -297,7 +298,7 @@ describe('OpeningBalancesService (integration)', () => {
 
   it('OPENING docs are not exported to 1C, not counted as collected (dashboard, payments period filter, cash session)', async () => {
     const [c1, c2] = await makeCustomers(`EX${tag}`, 2);
-    const dashboardSvc = new DashboardService(tenantPrisma, new AgingReportService(tenantPrisma));
+    const dashboardSvc = new DashboardService(tenantPrisma, new AgingReportService(tenantPrisma), new ReportConcurrencyLimiter());
     const collectedBefore = (await TenantContext.run(handlerScopeStore(companyId), () => dashboardSvc.getDashboard())).today.collected;
     const cash = new CashSessionsService(tenantPrisma, auditLog);
     await run(() => cash.open({ openAmount: 0 } as never, owner));

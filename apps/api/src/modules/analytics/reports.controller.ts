@@ -1,11 +1,12 @@
-import { Controller, Get, Header, Query, StreamableFile, UseGuards } from '@nestjs/common';
+import { Controller, Get, Header, Query, Res, StreamableFile, UseGuards } from '@nestjs/common';
+import type { Response } from 'express';
 import { Throttle } from '@nestjs/throttler';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { TenantTx } from '../../common/tenant/tenant-tx-options.decorator';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { ReportConcurrencyGuard } from '../../common/concurrency/report-concurrency.guard';
-import { DashboardReportGuard } from './dashboard-report.guard';
+import { REPORT_RETRY_AFTER_SECONDS, ReportBusyException } from '../../common/concurrency/report-concurrency.limiter';
 import { AgentPerformanceReportService } from './agent-performance.service';
 import { DashboardService } from './dashboard.service';
 import { DateRangeQueryDto } from './dto/date-range.query';
@@ -30,11 +31,15 @@ export class ReportsController {
   // 9.3: the home dashboard, not one of the 4 "/reports" tabs — kept on this
   // controller anyway (7.2 lists it as GET /reports/dashboard).
   @Get('dashboard')
-  @UseGuards(DashboardReportGuard)
   @TenantTx({ scope: 'handler' })
   @RequirePermission('reports.read')
-  getDashboard() {
-    return this.dashboard.getDashboard();
+  async getDashboard(@Res({ passthrough: true }) res: Response) {
+    try {
+      return await this.dashboard.getDashboard();
+    } catch (e) {
+      if (e instanceof ReportBusyException) res.setHeader('Retry-After', String(REPORT_RETRY_AFTER_SECONDS));
+      throw e;
+    }
   }
 
   @Get('sales')

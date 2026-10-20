@@ -1,3 +1,4 @@
+import { ReportConcurrencyLimiter } from '../../common/concurrency/report-concurrency.limiter';
 import { randomUUID } from 'node:crypto';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { InvoiceStatus, OrderStatus, PaymentMethod, PaymentStatus, prisma, systemPrisma, VisitOutcome } from '@velto/database';
@@ -19,7 +20,7 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
   const salesReport = new SalesReportService(tenantPrisma);
   const agentPerformance = new AgentPerformanceReportService(tenantPrisma);
   const overview = new OverviewReportService(tenantPrisma);
-  const dashboard = new DashboardService(tenantPrisma, new AgingReportService(tenantPrisma));
+  const dashboard = new DashboardService(tenantPrisma, new AgingReportService(tenantPrisma), new ReportConcurrencyLimiter());
 
   // Dashboard route is @TenantTx({ scope: 'handler' }): no outer tx.
   const getDash = (companyId: string) => TenantContext.run(handlerScopeStore(companyId), () => dashboard.getDashboard());
@@ -315,19 +316,58 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
       });
     });
 
-    it('hasLiveEntry matches the full current key: stale previous-day entry does not count', async () => {
-      const companyId = await createCompany('dash-stale');
-      await withTtl('999999', async () => {
-        expect(dashboard.hasLiveEntry(companyId)).toBe(false);
-        await getDash(companyId);
-        expect(dashboard.hasLiveEntry(companyId)).toBe(true);
-        vi.useFakeTimers({ toFake: ['Date'] });
-        try {
-          vi.setSystemTime(Date.now() + 48 * 3_600_000);
-          expect(dashboard.hasLiveEntry(companyId)).toBe(false);
-        } finally {
-          vi.useRealTimers();
-        }
+    it('hit and in-flight waiters take no permit even when the semaphore is saturated; only the compute takes one', async () => {
+      const companyId = await createCompany('dash-permit');
+      const lim = new ReportConcurrencyLimiter({ maxConcurrency: 1, tenantMaxConcurrency: 1, queueMax: 0, tenantQueueMax: 0, queueTimeoutMs: 100 });
+      const dash = new DashboardService(tenantPrisma, new AgingReportService(tenantPrisma), lim);
+      const get = () => TenantContext.run(handlerScopeStore(companyId), () => dash.getDashboard());
+      const acquire = vi.spyOn(lim, 'acquire');
+      await withTtl('30', async () => {
+        const first = get(); // compute takes the single permit
+        const waiters = Array.from({ length: 5 }, () => get()); // join the in-flight compute
+        const results = await Promise.all([first, ...waiters]);
+        expect(acquire).toHaveBeenCalledTimes(1);
+        expect(new Set(results.map((r) => r.generatedAt)).size).toBe(1);
+        expect(lim.stats.active).toBe(0);
+
+        const hold = await lim.acquire(undefined, 'other-tenant'); // saturate with another report call
+        acquire.mockClear();
+        const hits = await Promise.all(Array.from({ length: 5 }, () => get()));
+        expect(hits.every((h) => h.cached)).toBe(true);
+        expect(acquire).not.toHaveBeenCalled();
+        hold();
+      });
+    });
+
+    it('a saturated semaphore fails a real compute fast with SERVICE_BUSY and caches nothing', async () => {
+      const companyId = await createCompany('dash-busy');
+      const lim = new ReportConcurrencyLimiter({ maxConcurrency: 1, tenantMaxConcurrency: 1, queueMax: 0, tenantQueueMax: 0, queueTimeoutMs: 100 });
+      const dash = new DashboardService(tenantPrisma, new AgingReportService(tenantPrisma), lim);
+      const get = () => TenantContext.run(handlerScopeStore(companyId), () => dash.getDashboard());
+      await withTtl('30', async () => {
+        const hold = await lim.acquire(undefined, 'other-tenant');
+        await expect(get()).rejects.toMatchObject({ response: { code: 'SERVICE_BUSY' } });
+        hold();
+        expect((await get()).cached).toBe(false);
+      });
+    });
+
+    it('a queued compute holds no pool connection (permit wait happens before the tx opens)', async () => {
+      const companyId = await createCompany('dash-queued');
+      const lim = new ReportConcurrencyLimiter({ maxConcurrency: 1, tenantMaxConcurrency: 1, queueMax: 5, tenantQueueMax: 5, queueTimeoutMs: 2000 });
+      const dash = new DashboardService(tenantPrisma, new AgingReportService(tenantPrisma), lim);
+      const get = () => TenantContext.run(handlerScopeStore(companyId), () => dash.getDashboard());
+      await withTtl('30', async () => {
+        const hold = await lim.acquire(undefined, 'other-tenant');
+        const runSpy = vi.spyOn(tenantPrisma, 'run');
+        const p = get();
+        await new Promise((r) => setTimeout(r, 150));
+        // only the timezone read ran; the compute tx has not opened while queued
+        expect(runSpy).toHaveBeenCalledTimes(1);
+        expect(lim.stats.queued).toBe(1);
+        hold();
+        await p;
+        runSpy.mockRestore();
       });
     });
 
