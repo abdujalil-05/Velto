@@ -6,12 +6,18 @@ import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { REPORT_TX_OPTIONS } from './report-tx.constants';
 import { paymentPostedWithin } from '../finance/ledger-filters';
 import { companyDay } from '../field/company-day';
-import { AgingReportService } from '../finance/reports/aging-report.service';
+import { AgingReportService, type AgingRow } from '../finance/reports/aging-report.service';
 import { DAY_MS, companyTimeZone, eachCompanyDay, pctChange } from './report-utils';
 import { invoiceDebtAsOfMany, turnoverPerAgent, turnoverPerDay } from './report-sql';
 
-type DashboardResult = Awaited<ReturnType<DashboardService['computeInTx']>>;
-type CacheEntry = { expiresAt: number; value: Promise<{ data: DashboardResult; generatedAt: string }> };
+type DashboardResult = Awaited<ReturnType<DashboardService['computeQueries']>>;
+type Completed = { data: DashboardResult; generatedAt: string; at: number };
+/** Per key: the last COMPLETED value (served) and at most one refresh in flight (single-flight). */
+type CacheEntry = { completed?: Completed; inflight?: Promise<Completed> };
+
+const TOP_DEBTORS = 10;
+/** Each dashboard query runs in its own short READ COMMITTED tenant tx so they use separate connections and overlap. */
+const DASHBOARD_QUERY_TX = { ...REPORT_TX_OPTIONS, isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted };
 
 function dashboardCacheTtlMs(): number {
   const raw = process.env.DASHBOARD_CACHE_TTL_S;
@@ -29,55 +35,93 @@ export class DashboardService {
   ) {}
 
   /**
-   * Dashboard JSON with a short per-company cache (screen only: exports and
-   * the aging/sales/overview services never go through here and always
-   * recompute, ADR-027). Key = companyId + company day + timezone. Concurrent
-   * misses share one in-flight computation (no stampede); failures are not
-   * cached. In-process Map: valid for a single API process (PM2 instances=1,
-   * ADR-051) — several processes would each hold their own copy (needs Redis).
-   * The report permit is taken only inside the single compute (never for hits/waiters). Called after the permission check (TenantContextInterceptor), so a cached
-   * body is never served to an unauthorised caller. The route is
-   * @TenantTx({ scope: 'handler' }): no request tx is open here, and the shared
-   * compute runs in its OWN short tenant tx, so waiters never hold a pool
-   * connection nor depend on another request's tx.
+   * Dashboard JSON with a short per-company stale-while-revalidate cache
+   * (screen only: exports and the aging/sales/overview services never go
+   * through here and always recompute, ADR-027). Key = companyId + company
+   * day + timezone.
+   * - A completed value younger than TTL is a hit (`cached: true`), no DB, no permit.
+   * - Expired: the first caller starts ONE refresh (single-flight) and waits
+   *   for it (`cached: false`); while that refresh is in flight other callers
+   *   get the last completed value (`cached: true`) as long as it is younger
+   *   than 2×TTL (max staleness = TTL + one compute; an idle tenant's older
+   *   value is never served — callers join the refresh instead).
+   * - No completed value (first call, new company day): callers wait for the
+   *   in-flight compute and get `cached: false`.
+   * - A failed refresh keeps the old value; the error reaches only the callers
+   *   awaiting that refresh.
+   * In-process Map bounded by active companies (entries without a refresh in
+   * flight and older than 2×TTL are dropped): valid for a single API process
+   * (PM2 instances=1, ADR-051). The report permit is taken only by the
+   * compute. Called after the permission check (TenantContextInterceptor), so
+   * a cached body is never served to an unauthorised caller. The route is
+   * @TenantTx({ scope: 'handler' }): no request tx is open here, so the
+   * compute opens its own short tenant txs and waiters hold no connection.
    */
   async getDashboard(): Promise<DashboardResult & { generatedAt: string; cached: boolean }> {
     const ttlMs = dashboardCacheTtlMs();
     const companyId = this.tenantPrisma.companyId;
-    if (ttlMs === 0) return { ...(await this.compute(companyId)), generatedAt: new Date().toISOString(), cached: false };
-    const now = Date.now();
+    if (ttlMs === 0) {
+      const value = await this.compute(companyId, await this.readTimeZone(companyId));
+      return { ...value.data, generatedAt: value.generatedAt, cached: false };
+    }
     // Hit fast path: last-seen timezone, no DB, no permit. A stale tz can only
     // serve an entry that is at most one TTL old.
     const knownTz = this.timeZones.get(companyId);
     if (knownTz) {
-      const hit = this.cache.get(this.cacheKey(companyId, now, knownTz));
-      if (hit && hit.expiresAt > now) {
-        const value = await hit.value;
-        return { ...value.data, generatedAt: value.generatedAt, cached: true };
-      }
+      const now = Date.now();
+      const served = this.serveCompleted(this.cache.get(this.cacheKey(companyId, now, knownTz)), now, ttlMs);
+      if (served) return served;
     }
+    const now = Date.now();
+    const timeZone = await this.readTimeZone(companyId);
+    const key = this.cacheKey(companyId, now, timeZone);
+    let entry = this.cache.get(key);
+    const served = this.serveCompleted(entry, now, ttlMs);
+    if (served) return served;
+    if (!entry) {
+      entry = {};
+      this.cache.set(key, entry);
+    }
+    const value = await (entry.inflight ?? this.refresh(entry, companyId, timeZone, now, ttlMs));
+    return { ...value.data, generatedAt: value.generatedAt, cached: false };
+  }
+
+  private serveCompleted(entry: CacheEntry | undefined, now: number, ttlMs: number) {
+    const done = entry?.completed;
+    if (!done) return null;
+    const age = now - done.at;
+    if (age < ttlMs || (entry.inflight && age < 2 * ttlMs)) {
+      return { ...done.data, generatedAt: done.generatedAt, cached: true };
+    }
+    return null;
+  }
+
+  /** Starts the single refresh for `entry`; only success replaces the completed value. */
+  private refresh(entry: CacheEntry, companyId: string, timeZone: string, now: number, ttlMs: number): Promise<Completed> {
+    const inflight = this.compute(companyId, timeZone).then(
+      (value) => {
+        entry.completed = value;
+        entry.inflight = undefined;
+        return value;
+      },
+      (err: unknown) => {
+        entry.inflight = undefined;
+        if (!entry.completed) this.cache.delete(this.cacheKey(companyId, now, timeZone));
+        throw err;
+      },
+    );
+    entry.inflight = inflight;
+    // Drop idle entries opportunistically so the Map stays bounded by active companies.
+    for (const [k, e] of this.cache) {
+      if (!e.inflight && (!e.completed || now - e.completed.at >= 2 * ttlMs)) this.cache.delete(k);
+    }
+    return inflight;
+  }
+
+  private async readTimeZone(companyId: string): Promise<string> {
     const timeZone = await this.tenantPrisma.run(companyId, (tx) => companyTimeZone(tx));
     this.timeZones.set(companyId, timeZone);
-    const key = this.cacheKey(companyId, now, timeZone);
-    const hit = this.cache.get(key);
-    if (hit && hit.expiresAt > now) {
-      const value = await hit.value;
-      return { ...value.data, generatedAt: value.generatedAt, cached: true };
-    }
-    const entry: CacheEntry = {
-      expiresAt: now + ttlMs,
-      value: this.compute(companyId).then((data) => ({ data, generatedAt: new Date().toISOString() })),
-    };
-    this.cache.set(key, entry);
-    // Drop expired entries opportunistically so the Map stays bounded by active companies.
-    for (const [k, e] of this.cache) if (e.expiresAt <= now) this.cache.delete(k);
-    try {
-      const value = await entry.value;
-      return { ...value.data, generatedAt: value.generatedAt, cached: false };
-    } catch (err) {
-      if (this.cache.get(key) === entry) this.cache.delete(key);
-      throw err;
-    }
+    return timeZone;
   }
 
   private cacheKey(companyId: string, now: number, timeZone: string): string {
@@ -94,24 +138,30 @@ export class DashboardService {
   private readonly timeZones = new Map<string, string>();
 
   /**
-   * Only the single compute that runs the heavy SQL takes a report permit
-   * (per-tenant quota applies here); hits and waiters on an in-flight compute
-   * never reach this. Own short tenant tx, opened after the permit is held, so
-   * a queued compute holds no pool connection.
+   * Only the single compute takes a report permit (per-tenant quota applies
+   * here); hits and waiters never reach this. The query txs open after the
+   * permit is held, so a queued compute holds no pool connection.
    */
-  private async compute(companyId: string) {
+  private async compute(companyId: string, timeZone: string): Promise<Completed> {
     const release = await this.limiter.acquire(undefined, companyId);
     try {
-      return await this.tenantPrisma.run(companyId, () => this.computeInTx(), REPORT_TX_OPTIONS);
+      const data = await this.computeQueries(companyId, timeZone);
+      const at = Date.now();
+      return { data, generatedAt: new Date(at).toISOString(), at };
     } finally {
       release();
     }
   }
 
-  private async computeInTx() {
-    const tx = this.tenantPrisma.client;
+  /**
+   * The independent queries run concurrently, each in its own short tenant tx
+   * (one pool connection each, 6 per compute at peak), so wall time ≈ the
+   * slowest query instead of their sum. Every query still runs under RLS via
+   * TenantPrismaService.run. Settled (not Promise.all) so the permit is held
+   * until every tx has finished, even when one fails.
+   */
+  private async computeQueries(companyId: string, timeZone: string) {
     const now = new Date();
-    const timeZone = await companyTimeZone(tx);
     const today = companyDay(now, timeZone);
     const yesterday = companyDay(new Date(today.start.getTime() - 1), timeZone);
     const todayStart = today.start;
@@ -119,23 +169,28 @@ export class DashboardService {
     const yesterdayStart = yesterday.start;
     const yesterdayEnd = new Date(yesterday.end.getTime() - 1);
     const trendStart = companyDay(new Date(todayStart.getTime() - 29 * DAY_MS + 12 * 3_600_000), timeZone).start;
+    const inTx = <T>(fn: (tx: TenantClient) => Promise<T>) => this.tenantPrisma.run(companyId, fn, DASHBOARD_QUERY_TX);
 
-    const [
-      todayCollected,
-      yesterdayCollected,
-      overdueDebt,
-      dailyOrders,
-      agentsToday,
-      topDebtors,
-    ] = await Promise.all([
-      this.paymentsTotal(tx, todayStart, todayEnd),
-      this.paymentsTotal(tx, yesterdayStart, yesterdayEnd),
+    const settled = await Promise.allSettled([
+      inTx((tx) => this.paymentsTotal(tx, todayStart, todayEnd)),
+      inTx((tx) => this.paymentsTotal(tx, yesterdayStart, yesterdayEnd)),
       // One scan for both snapshots (now / end of yesterday). Yesterday is a best-effort reconstruction: invoices cancelled since are excluded.
-      invoiceDebtAsOfMany(tx, [now, yesterdayEnd]),
-      turnoverPerDay(tx, trendStart, todayEnd, timeZone),
-      this.agentsToday(tx, todayStart, todayEnd, today.isoWeekday),
-      this.agingReport.getAging({ page: 1, pageSize: 10 }),
-    ]);
+      inTx((tx) => invoiceDebtAsOfMany(tx, [now, yesterdayEnd])),
+      inTx((tx) => turnoverPerDay(tx, trendStart, todayEnd, timeZone)),
+      inTx((tx) => this.agentsToday(tx, todayStart, todayEnd, today.isoWeekday)),
+      inTx(() => this.agingReport.topDebtors(today.date, timeZone, TOP_DEBTORS)),
+    ] as const);
+    for (const r of settled) if (r.status === 'rejected') throw r.reason;
+    const [todayCollected, yesterdayCollected, overdueDebt, dailyOrders, agentsToday, topDebtors] = settled.map(
+      (r) => (r as PromiseFulfilledResult<unknown>).value,
+    ) as unknown as [
+      Prisma.Decimal,
+      Prisma.Decimal,
+      Awaited<ReturnType<typeof invoiceDebtAsOfMany>>,
+      Awaited<ReturnType<typeof turnoverPerDay>>,
+      Awaited<ReturnType<DashboardService['agentsToday']>>,
+      AgingRow[],
+    ];
 
     const overdueNow = overdueDebt[0]!.overdue;
     const overdueYesterday = overdueDebt[1]!.overdue;
@@ -162,7 +217,7 @@ export class DashboardService {
       },
       turnoverLast30Days,
       agentsToday,
-      topDebtors: topDebtors.data,
+      topDebtors,
     };
   }
 

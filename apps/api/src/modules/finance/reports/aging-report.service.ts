@@ -56,8 +56,7 @@ export class AgingReportService {
 
   /**
    * 3.1 / 9.2 "/receivables": debt aged into 5 buckets as of `asOf`, one row
-   * per customer with an outstanding balance, sorted by total descending
-   * (reused for the dashboard's "top 10 qarzdor" list via pageSize=10).
+   * per customer with an outstanding balance, sorted by total descending.
    */
   async getAging(query: { page: number; pageSize: number; asOf?: string }) {
     const timeZone = await companyTimeZone(this.tenantPrisma.client);
@@ -66,6 +65,15 @@ export class AgingReportService {
     const start = (query.page - 1) * query.pageSize;
     const data = rows.slice(start, start + query.pageSize);
     return { ...paginate(data, rows.length, query.page, query.pageSize), asOf, timeZone };
+  }
+
+  /**
+   * 9.3 dashboard "top 10 qarzdor": the same rows/order as `/receivables`
+   * (total desc, name, customerId) but cut in SQL, so only `limit` rows reach Node.
+   * Caller supplies asOf/timeZone it already resolved (no extra round trip).
+   */
+  async topDebtors(asOf: string, timeZone: string, limit: number): Promise<AgingRow[]> {
+    return this.computeRows(asOf, timeZone, limit);
   }
 
   /** 9.1 "Excel eksport" needs every indebted customer, not just one page — same rows/asOf as the screen. */
@@ -81,8 +89,10 @@ export class AgingReportService {
    * invoices issued after asOf excluded; an allocation counts when made on/before
    * asOf (company-timezone calendar day) and its payment was not reversed on/before asOf;
    * due day = company-timezone day of createdAt + paymentTermDays; days past due <= 0 = current.
+   * Single builder for /receivables, export and the dashboard; `limit` only
+   * appends LIMIT to the same ORDER BY (identical ordering and tie-break).
    */
-  private async computeRows(asOf: string, timeZone: string): Promise<AgingRow[]> {
+  private async computeRows(asOf: string, timeZone: string, limit?: number): Promise<AgingRow[]> {
     const tx = this.tenantPrisma.client;
     const local = (col: Prisma.Sql) => Prisma.sql`((${col} AT TIME ZONE 'UTC') AT TIME ZONE ${timeZone})::date`;
     const asOfDate = Prisma.sql`${asOf}::date`;
@@ -113,7 +123,8 @@ export class AgingReportService {
       ) x
       WHERE x."outstanding" > 0
       GROUP BY x."customerId", x."name"
-      ORDER BY SUM(x."outstanding") DESC, x."name", x."customerId"`;
+      ORDER BY SUM(x."outstanding") DESC, x."name", x."customerId"
+      ${limit === undefined ? Prisma.empty : Prisma.sql`LIMIT ${limit}`}`;
 
     return rows.map((r) => ({
       customerId: r.customerId,
