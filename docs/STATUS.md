@@ -168,10 +168,12 @@ MVP kodining katta qismi yozilgan: F0–F2 asosan, F3 ✅, F4 kod tomoni ✅, F5
 ## Keyingi qadamlar (ustuvorlik bilan)
 
 Batafsil: `docs/PLAN.md` (F8.x gap-tahlil tartibi).
-1. F7.6 dashboard: kod ✅ (branch `feat/f7-6-dashboard-perf`); qoldi — S20/M50 B yuk qayta o'lchovi (dashboard hit <300 ms, miss ≤2 s isbotlanmagan).
+1. F7.6 dashboard: kod ✅, yuk o'lchovi 2026-10-22 (host og'ir bosimda, hamma run SHUBHALI): hit p95 113-379 ms (M50 cold 379 dan tashqari <300 — O'TDI), miss p95 4.9-11.3 s — O'TMADI (bo'sh tizimda miss 0.65-0.96 s). Gumon: miss hisobot semaforida navbat kutadi (`dashboard.service.ts:146`), bitta compute 6 pool ulanishi oladi (`:163-183`). Qoldi: miss tuzatishi + sokin hostda 3 takror qayta o'lchov; M50 cold dagi 1 ta write 5xx sababi noma'lum.
 2. F7 qoldig'i: shubhali r2 run'larni sokin hostda qayta o'lchash, hisobot semafori kvotasi, GA sign-off (inson imzosi), v0.9/v1.0 gate'lar
 
 ## Oxirgi sessiya
+
+- 2026-10-22: F7.6 yuk qayta o'lchovi (S20/M50/M100 B, `docs/perf/F7-load-report.md`): dashboard hit 0.11-0.38 s (avval 2.1-9.8 s), miss 4.9-11.3 s (maqsad ≤2 s, o'tmadi). Integrity 0, deadlock 0. Host bosimi tufayli natijalar shubhali.
 
 - 2026-10-22: F7.6 dashboard tezligi (kod): SWR kesh (hit miss'ni kutmaydi), 6 so'rov parallel qisqa tx'larda, top-10 qarzdor SQL LIMIT (aging bilan umumiy builder), Payment indekslari (mig. 20261022100000), golden-equality test. Reviewer PASS (3 LOW tuzatildi/qayd), security-auditor PASS, checks: 1061/1061 (database 113, api 828, miniapp 120), lint/typecheck/build toza. Yuk ostida qayta o'lchanmagan. Branch push qilinmagan.
 

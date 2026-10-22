@@ -12,6 +12,32 @@
 ## Stsenariy (`scripts/load/velto-load.js`, `run.sh`, `prepare-load-data.sh`, `start-api.sh`)
 Aralash profil: ~20% agent (sync push 20 hujjat + 2 pull), ~15-20% yozuv zanjiri (buyurtma yaratish -> tasdiqlash -> yetkazish), 1 kassir (handover accept), qolgani o'qish (mahsulot/mijoz/narx/qoldiq/buyurtma/balans, + dashboard/sales/overview hisobotlari). `REPORTS=0` hisobotlarsiz variant (sababni ajratish uchun). 90-120 s. 429 va 5xx va ulanish xatolari alohida sanaladi.
 
+## F7.6 qayta o'lchov (2026-10-22, kod: 2bb2cc4)
+**Lokal, SLA emas.** Kod: dashboard stale-while-revalidate kesh, 6 ta parallel qisqa per-query tenant tx, top-10 qarzdor SQL LIMIT, Payment indekslari (migratsiya 20261022100000, `velto_load` da qo'llangan — `migrate deploy`: "No pending"). `velto_load` (3 tenant, 40k buyurtma/tenant), API dist qayta qurilgan, `LOAD_PASSWORD` runtime'da tasodifiy (diskka yozilmagan). Konfiguratsiya B (`REPORTS=1`), mixed, har run 120 s, cold = yangi API jarayoni, warm = keyingi run. Klon foydalanuvchilar `prepare-multi-load-data.sh` bilan qayta yaratildi (LOAD_AGENT_CLONES=20). Xom natijalar: `scripts/load/results/F76_*` (git'da emas).
+
+**Host bosimi (SHUBHALI — barcha run'lar og'ir bosim ostida):** load average 6.6-27.7 (asosan 14-18), swap 4.2-5.9 GB / 5-7 GB, bo'sh RAM ~0.5-1.5 GB; boshqa loyihaning (RuschaAi) vitest jarayonlari ~60% CPU dan olib turdi. Shuning uchun mutlaq raqamlar (ayniqsa write/sync/miss) yuqoriga siljigan; hit p95 esa shunga qaramay past. Run'lar oldingi hisobotdagi mezon bo'yicha shubhali deb belgilanadi, lekin hit/miss farqi aniq.
+
+| Run | read p95 | write p95 | sync-push-20 p95 | dashboard HIT p95 (n) | dashboard MISS p95 (n) | 5xx | 503 | Tx closed | 55P03 | deadlock | verify |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| S20 B cold | 238 | 414 | 3031 | 113 (75) | 4917 (6) | 0 | 0 | 0 | 0 | 0 | 0 topilma |
+| S20 B warm | 242 | 378 | 4592 | 113 (78) | 6195 (4) | 0 | 2 | 0 | 0 | 0 | 0 |
+| M50 B cold (3 tenant) | 673 | 1000 | 6958 | 379 (170) | 7620 (14) | 1 (write) | 11 | 1 | 0 | 0 | 0 |
+| M50 B warm | 316 | 606 | 4488 | 139 (192) | 11315 (11) | 0 | 7 | 0 | 0 | 0 | 0 |
+| M100 B cold (3 tenant) | 399 | 779 | 7187 | 162 (288) | 11088 (32) | 0 | 247 (dashboard 13) | 0 | 0 | 0 | 0 |
+
+**Maqsadlar (TZ §12.1, ADR-053):**
+- Dashboard **hit** p95 < 300 ms: S20 113/113 **O'TDI**; M50 warm 139 **O'TDI**, M50 cold 379 **O'TMADI (oz)** (cold boshlanishida, host bosimi); M100 cold 162 **O'TDI**. Oldingi (ffe847e): hit 2.1-9.8 s -> endi 0.11-0.38 s (~20-60x yaxshi). Hit yo'li semaforsiz va DB'siz ishlayapti; payload 9.75 KB, yuk ostida emas.
+- Dashboard **miss** p95 <= 2 s: **O'TMADI** — 4.9-11.3 s (n=4-32). Oldingi 5.5-13.6 s; sezilarli yaxshilanish yo'q (n kichik, host bosimi bilan aralash).
+- Boshqa: S20 (haqiqiy distribyutor) read/write NFR ichida (238-242 / 378-414 < 300/700 — read p95 S20 da oldingi 57-76 ms dan ancha yuqori — host bosimi); M50 warm o'tdi; M50 cold read 673/write 1000 limitdan tashqari (bosim); sync-push-20 3-7 s (DocumentCounter, doira tashqarisi). M100 B da 503 faqat hisobot yo'llari (247), dashboard 13.
+- Integrity: verify-integrity har run'dan keyin 0 topilma; deadlocks 0; 55P03 0; 'Transaction already closed' jami 1 (M50 cold, 1 ta 5xx write bilan bog'liq bo'lishi mumkin — log keyingi cold restart'da qayta yozilgani uchun tasdiqlanmadi).
+
+**Miss diagnozi (dalil bilan):**
+1. Bo'sh tizimda (yuksiz, yangi API, 1 so'rov, tenant `load`): miss **0.65 s** (cold), TTL dan keyin **0.96 s**; hit 8-34 ms. Demak so'rovlar o'zi (SQL LIMIT, indekslar, parallel tx) ichki <= 2 s ga sig'adi; 5-13 s yuk/kutish natijasi, hisoblash narxi emas.
+2. Yuk ostida miss uzayishi manbalari (kod bo'yicha; mustaqil ravishda alohida o'lchanmagan): (a) `dashboard.service.ts:146` `limiter.acquire` — miss hisobot semaforidan (1+5 per-tenant) o'tadi, sales/overview og'ir hisobotlari bilan bir navbatda; (b) `dashboard.service.ts:163-183` — bitta compute 6 ta pool ulanishini bir vaqtda oladi, 50-100 VU yozuv/sync bilan (pool default `num_cpus*2+1`, `start-api.sh` `LOAD_POOL` bo'sh) pool kutish ehtimoli; (c) host CPU/swap bosimi (load avg 14-28) event loop va Postgres'ni sekinlashtiradi. (a)/(b)/(c) ulushi alohida aniqlanmadi (pool-wait metrikasi va event-loop lag o'lchovi yo'q).
+3. Tavsiya (kod o'zgartirilmadi): miss uchun alohida yengil permit (yoki semafordan chiqarish — dashboard 6 qisqa query, og'ir hisobot emas); compute'ni so'rovdan emas, fon yangilashga (SWR refresh) ko'chirish va birinchi yuklanishda warm-up; pool o'lchamini va pool-wait/event-loop lag metrikalarini qo'shib, sokin hostda 3 takror qayta o'lchash.
+
+**O'lchanmagan:** M100 r2/warm; miss uchun pool-wait/event-loop/semafor navbat vaqti; sokin host; M50 cold 1 ta 5xx sababi; 3 takror yo'q.
+
 ## Ko'p tenantli qayta o'lchov (2026-10-20, kod: ffe847e, F7 merge) — QISMAN, tebranish yuqori
 **Lokal, SLA emas.** `velto_load` qayta yaratildi (migrate deploy, velto_owner), 3 tenant (`load`, `load2`, `load3`, har biri 40 000 buyurtma, 2k SKU, 1k mijoz), API dist qayta qurildi. Yangi: `scripts/load/prepare-multi-load-data.sh` (tenant boshiga noyob telefonli klonlar: 40 OWNER/20 AGENT/2 CASHIER) va `velto-load.js` da `fixtures.tenants` + `TENANTS=n` (umumiy VU teng bo'linadi, har VU bitta tenantda). Parol runtime'da tasodifiy (hujjat/diskka yozilmagan; Docker qayta ishga tushgani uchun 4 marta almashtirilgan). Har run 120 s, cold = yangi API jarayoni, warm = keyingi run. verify-integrity va deadlocks har run'dan keyin tekshirildi.
 **MUHIM cheklovlar (halol):** (1) Host 8 GB, swap 9/10 GB, load average 24-32 (tashqi jarayonlar) — Docker daemon 2 marta o'zi to'xtadi; shu davrdagi run'lar (X_*, BAD_*, BAD2_* prefiksli fayllar `scripts/load/results/`, hisobga olinmadi) yaroqsiz. (2) Yaroqli 30 run ichida ham M50_C_r2, M100_A_r2, M100_B_r2 host bosimi davriga to'g'ri kelgan (rps 50 -> 13-28, r1 bilan 5-10x farq) — SHUBHALI, quyida `*` bilan. Ishonchli: S20 (6), M50_A_r1, M50_B_r1, M100_C_r1/r2, M50_A_r2, M50_B_r2, M100_A_r1, M100_B_r1, M50_C_r1. (3) Har konfiguratsiya 2 takror, lekin r1/r2 turli sharoitda. (4) Stok kamayishi sababli product ro'yxati keyingi prepare'da (>200 mavjud) qayta tanlangan. (5) Lock-ulushi namunasi (pg_locks) bu seriyada o'lchanmadi.
