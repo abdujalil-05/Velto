@@ -916,6 +916,10 @@ model Payment {
   @@index([companyId, customerId])
   @@index([customerId]) // FK-check on Customer delete (F7)
   @@index([companyId, status])
+  // ADR-029 posted-at period filter (paymentPostedWithin: handoverAt range OR
+  // handoverAt IS NULL AND createdAt range) -> BitmapOr of these two (F7.6).
+  @@index([companyId, handoverAt])
+  @@index([companyId, createdAt])
   @@index([collectedBy])
   @@index([handoverActorId])
   @@index([handoverCashSessionId])
