@@ -121,7 +121,7 @@ describe('DashboardService SWR cache', () => {
     expect(compute).toHaveBeenCalledTimes(2);
   });
 
-  it('a failed background refresh is logged, keeps the stale value and the next call retries', async () => {
+  it('a failed background refresh is logged, keeps the stale value and starts no compute within the backoff', async () => {
     const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     compute.mockResolvedValueOnce({ v: 1 });
     const first = await get();
@@ -130,11 +130,31 @@ describe('DashboardService SWR cache', () => {
     expect(await get()).toMatchObject({ v: 1, cached: true, generatedAt: first.generatedAt });
     await flush();
     expect(warn).toHaveBeenCalledTimes(1);
+    expect(await get()).toMatchObject({ v: 1, cached: true, generatedAt: first.generatedAt });
+    await flush();
+    expect(compute).toHaveBeenCalledTimes(2);
+  });
+
+  it('after the backoff a background refresh runs again (stale served) and its success clears the failure mark', async () => {
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    compute.mockResolvedValueOnce({ v: 1 });
+    const first = await get();
+    advance(TTL_S + 1);
+    compute.mockRejectedValueOnce(new Error('boom'));
+    await get();
+    await flush();
+    advance(TTL_S / 4);
     compute.mockResolvedValueOnce({ v: 3 });
     expect(await get()).toMatchObject({ v: 1, cached: true, generatedAt: first.generatedAt });
     await flush();
-    expect(await get()).toMatchObject({ v: 3, cached: true });
     expect(compute).toHaveBeenCalledTimes(3);
+    expect(await get()).toMatchObject({ v: 3, cached: true });
+    advance(TTL_S + 1);
+    compute.mockResolvedValueOnce({ v: 4 });
+    expect(await get()).toMatchObject({ v: 3, cached: true });
+    await flush();
+    expect(await get()).toMatchObject({ v: 4, cached: true });
+    expect(compute).toHaveBeenCalledTimes(4);
   });
 
   it('a failed first compute leaves no entry: the next call recomputes', async () => {

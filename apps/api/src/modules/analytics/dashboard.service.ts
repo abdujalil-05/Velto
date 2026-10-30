@@ -14,9 +14,11 @@ import { invoiceDebtAsOfMany, turnoverPerAgent, turnoverPerDay } from './report-
 type DashboardResult = Awaited<ReturnType<DashboardService['computeQueries']>>;
 type Completed = { data: DashboardResult; generatedAt: string; at: number };
 /** Per key: the last COMPLETED value (served) and at most one refresh in flight (single-flight). */
-type CacheEntry = { completed?: Completed; inflight?: Promise<Completed> };
+type CacheEntry = { completed?: Completed; inflight?: Promise<Completed>; refreshFailedAt?: number };
 
 const TOP_DEBTORS = 10;
+/** After a failed background refresh the next one waits ttlMs / this (shorter than the stale window). */
+const REFRESH_BACKOFF_DIVISOR = 4;
 /** Each dashboard query runs in its own short READ COMMITTED tenant tx so they use separate connections and overlap. */
 const DASHBOARD_QUERY_TX = { ...REPORT_TX_OPTIONS, isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted };
 
@@ -98,7 +100,7 @@ export class DashboardService {
     if (!entry || !done) return null;
     const age = now - done.at;
     if (age >= 2 * ttlMs) return null;
-    if (age >= ttlMs && !entry.inflight) {
+    if (age >= ttlMs && !entry.inflight && (entry.refreshFailedAt === undefined || now - entry.refreshFailedAt >= ttlMs / REFRESH_BACKOFF_DIVISOR)) {
       TenantContext.detached(() => this.refresh(entry, key, companyId, timeZone, now, ttlMs)).catch((err: unknown) => {
         this.logger.warn(`dashboard background refresh failed: ${err instanceof Error ? err.name : 'error'}`);
       });
@@ -111,12 +113,14 @@ export class DashboardService {
     const inflight = this.compute(companyId, timeZone, entry.completed ? 'refresh' : 'cold').then(
       (value) => {
         entry.completed = value;
+        entry.refreshFailedAt = undefined;
         entry.inflight = undefined;
         return value;
       },
       (err: unknown) => {
         entry.inflight = undefined;
-        if (!entry.completed) this.cache.delete(key);
+        if (entry.completed) entry.refreshFailedAt = Date.now();
+        else this.cache.delete(key);
         throw err;
       },
     );
