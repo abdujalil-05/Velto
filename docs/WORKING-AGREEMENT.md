@@ -61,6 +61,11 @@ Agentlar token tejash qoidasi va o'zbekcha qisqa hisobot formati o'z fayllarida 
 
 ## 7. Token tejash (2026-10-30 qaror, majburiy)
 
+**Kod qidirish va o'qish — Codex orqali (foydalanuvchi qarori, 2026-10-30):**
+- Asosiy sessiya ham, Bash'li agentlar ham: `codex exec --ephemeral --sandbox read-only "<savol>. Reply only file:line pointers and one-line notes, max 10 lines, no code." 2>/dev/null | tail -12`.
+- Har doim `read-only`; Codex hech narsa yozmaydi. `scout` o'rniga shu ishlatiladi.
+- Claude `Read` faqat tahrir qilinadigan aniq qator diapazoni uchun (Edit shuni talab qiladi). Codex ishlamasa, Grep/Glob.
+
 **Asosiy sessiya:**
 - Yangi sessiyada faqat `docs/STATUS.md` (≤60 qator) o'qiladi. `STATUS-ARCHIVE.md`, `PLAN.md`, TZ, kod — to'liq o'qilmaydi, faqat grep/diapazon. Bir faylni qayta o'qish yo'q.
 - STATUS yangilanishi: joriy holat almashtiriladi, ko'chirib yig'ilmaydi; tugagan ish bir qator yoki arxivga.

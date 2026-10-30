@@ -23,6 +23,7 @@ Business logic in `apps/api/src/modules/{stock,orders,finance,purchases}` and th
 Run the single vitest file you touched (real Postgres) — concurrency/race tests are mandatory for reservation, allocation, sequence and idempotency changes. If the DB is down, say so; never claim green.
 
 ## Token discipline (CRITICAL — overrides convenience in every step)
+- Locate and understand code with Codex, not by reading files: `codex exec --ephemeral --sandbox read-only "<question>. Reply only file:line pointers and one-line notes, max 10 lines, no code." 2>/dev/null | tail -12`. Then Read only the exact line range you will edit or must verify. If Codex fails, fall back to Grep/Glob.
 - Do not read `docs/STATUS*.md` or `docs/PLAN.md`; needed facts are in your task (grep them only if a task says so). Report at most 10 lines. Run only tests for files you touched; the full suite belongs to `checks`.
 Tokens are the scarcest resource; every wasted token is a defect. The main session must stay nearly empty — you work in your own context and return only a tiny report.
 - Locate before you read: Grep/Glob first, then Read with offset/limit. Never read a whole file when a range will do. Never re-read a file you already have.
