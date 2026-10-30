@@ -90,6 +90,12 @@ export const envSchema = z.object({
   // Per-tenant share of the report semaphore (noisy-neighbour guard); must be <= REPORT_MAX_CONCURRENCY (checked below).
   REPORT_TENANT_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(DEFAULT_REPORT_TENANT_MAX_CONCURRENCY),
   REPORT_TENANT_QUEUE_MAX: z.coerce.number().int().min(0).max(1000).default(DEFAULT_REPORT_TENANT_QUEUE_MAX),
+  // Dashboard's own limiter lane (separate from the heavy-report semaphore); tenant cap must be <= DASHBOARD_MAX_CONCURRENCY (checked below).
+  DASHBOARD_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(DEFAULT_REPORT_MAX_CONCURRENCY),
+  DASHBOARD_TENANT_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(DEFAULT_REPORT_TENANT_MAX_CONCURRENCY),
+  DASHBOARD_QUEUE_MAX: z.coerce.number().int().min(0).max(1000).default(DEFAULT_REPORT_QUEUE_MAX),
+  DASHBOARD_QUEUE_TIMEOUT_MS: z.coerce.number().int().min(1).max(120_000).default(DEFAULT_REPORT_QUEUE_TIMEOUT_MS),
+  DASHBOARD_TENANT_QUEUE_MAX: z.coerce.number().int().min(0).max(1000).default(DEFAULT_REPORT_TENANT_QUEUE_MAX),
   // /health/ready result cache (ms); concurrent probes share one in-flight check. 0 = no cache (still single-flight).
   HEALTH_READY_CACHE_MS: z.coerce.number().int().min(0).max(30_000).default(DEFAULT_HEALTH_READY_CACHE_MS),
   S3_ENDPOINT: z.string().min(1),
@@ -119,10 +125,21 @@ export const envSchema = z.object({
     .optional()
     .default('false')
     .transform((v) => v === 'true'),
-}).refine((e) => e.REPORT_TENANT_MAX_CONCURRENCY <= e.REPORT_MAX_CONCURRENCY, {
-  path: ['REPORT_TENANT_MAX_CONCURRENCY'],
-  message: 'must be <= REPORT_MAX_CONCURRENCY',
-});
+})
+  .refine((e) => e.REPORT_TENANT_MAX_CONCURRENCY <= e.REPORT_MAX_CONCURRENCY, {
+    path: ['REPORT_TENANT_MAX_CONCURRENCY'],
+    message: 'must be <= REPORT_MAX_CONCURRENCY',
+  })
+  .refine((e) => e.DASHBOARD_TENANT_MAX_CONCURRENCY <= e.DASHBOARD_MAX_CONCURRENCY, {
+    path: ['DASHBOARD_TENANT_MAX_CONCURRENCY'],
+    message: 'must be <= DASHBOARD_MAX_CONCURRENCY',
+  })
+  // A compute holds up to 6 connections; both lanes at capacity plus a 6-connection reserve must fit the app pool
+  // (PRISMA_POOL_SIZE already defaults to DEFAULT_APP_POOL_SIZE, kept in sync by env.schema.test.ts).
+  .refine((e) => e.PRISMA_POOL_SIZE >= 6 * (e.REPORT_MAX_CONCURRENCY + e.DASHBOARD_MAX_CONCURRENCY) + 6, {
+    path: ['PRISMA_POOL_SIZE'],
+    message: 'must be >= 6 x (REPORT_MAX_CONCURRENCY + DASHBOARD_MAX_CONCURRENCY) + 6',
+  });
 
 export type Env = z.infer<typeof envSchema>;
 

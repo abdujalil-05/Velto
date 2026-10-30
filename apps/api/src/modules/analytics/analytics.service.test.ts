@@ -297,7 +297,7 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
       }
     };
 
-    it('miss then hit within TTL (same generatedAt), recomputes after TTL expiry', async () => {
+    it('miss then hit within TTL (same generatedAt), serves stale after TTL and refreshes in background', async () => {
       const companyId = await createCompany('dash-cache');
       await withTtl('30', async () => {
         const a = await getDash(companyId);
@@ -308,8 +308,10 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
         try {
           vi.setSystemTime(Date.now() + 31_000);
           const c = await getDash(companyId);
-          expect(c.cached).toBe(false);
-          expect(c.generatedAt).not.toBe(a.generatedAt);
+          // stale-while-revalidate: stale value now, fresh one after the background refresh
+          expect(c.cached).toBe(true);
+          expect(c.generatedAt).toBe(a.generatedAt);
+          await vi.waitFor(async () => expect((await getDash(companyId)).generatedAt).not.toBe(a.generatedAt));
         } finally {
           vi.useRealTimers();
         }

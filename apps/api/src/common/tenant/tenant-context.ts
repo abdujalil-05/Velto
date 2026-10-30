@@ -43,6 +43,11 @@ export const TenantContext = {
     return als.run(store, fn);
   },
 
+  /** Runs `fn` outside any request context (background work must not inherit the request's tenant tx). */
+  detached<T>(fn: () => T): T {
+    return als.exit(fn);
+  },
+
   /** The active store if any (no throw). */
   peek(): TenantStore | undefined {
     return als.getStore();

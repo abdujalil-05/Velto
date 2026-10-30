@@ -76,6 +76,15 @@ describe('report tenant quota env', () => {
     const env = validateEnv(base);
     expect([env.REPORT_TENANT_MAX_CONCURRENCY, env.REPORT_TENANT_QUEUE_MAX, env.HEALTH_READY_CACHE_MS]).toEqual([1, 5, 1000]);
     expect(() => validateEnv({ ...base, REPORT_MAX_CONCURRENCY: '2', REPORT_TENANT_MAX_CONCURRENCY: '3' })).toThrow(/REPORT_TENANT_MAX_CONCURRENCY/);
-    expect(() => validateEnv({ ...base, REPORT_MAX_CONCURRENCY: '3', REPORT_TENANT_MAX_CONCURRENCY: '3' })).not.toThrow();
+    expect(() => validateEnv({ ...base, PRISMA_POOL_SIZE: '36', REPORT_MAX_CONCURRENCY: '3', REPORT_TENANT_MAX_CONCURRENCY: '3' })).not.toThrow();
+  });
+});
+
+describe('prisma pool vs limiter lanes', () => {
+  it('requires PRISMA_POOL_SIZE >= 6 x (report + dashboard concurrency) + 6', () => {
+    expect(() => validateEnv(base)).not.toThrow(); // default pool 30 == 6 x (2 + 2) + 6
+    expect(() => validateEnv({ ...base, PRISMA_POOL_SIZE: '30', REPORT_MAX_CONCURRENCY: '3' })).toThrow(/PRISMA_POOL_SIZE/);
+    expect(() => validateEnv({ ...base, PRISMA_POOL_SIZE: '36', REPORT_MAX_CONCURRENCY: '3' })).not.toThrow();
+    expect(() => validateEnv({ ...base, PRISMA_POOL_SIZE: '29' })).toThrow(/PRISMA_POOL_SIZE/);
   });
 });

@@ -37,14 +37,15 @@ function envInt(name: string, fallback: number, min: number): number {
   return Number.isInteger(n) && n >= min ? n : fallback;
 }
 
-export function reportLimiterOptionsFromEnv(): ReportLimiterOptions {
-  const maxConcurrency = envInt('REPORT_MAX_CONCURRENCY', DEFAULT_REPORT_MAX_CONCURRENCY, 1);
+/** Reads `<prefix>_MAX_CONCURRENCY` etc. (prefix `REPORT` for heavy reports, `DASHBOARD` for the dashboard lane). */
+export function reportLimiterOptionsFromEnv(prefix = 'REPORT'): ReportLimiterOptions {
+  const maxConcurrency = envInt(`${prefix}_MAX_CONCURRENCY`, DEFAULT_REPORT_MAX_CONCURRENCY, 1);
   return {
     maxConcurrency,
-    tenantMaxConcurrency: envInt('REPORT_TENANT_MAX_CONCURRENCY', DEFAULT_REPORT_TENANT_MAX_CONCURRENCY, 1),
-    tenantQueueMax: envInt('REPORT_TENANT_QUEUE_MAX', DEFAULT_REPORT_TENANT_QUEUE_MAX, 0),
-    queueMax: envInt('REPORT_QUEUE_MAX', DEFAULT_REPORT_QUEUE_MAX, 0),
-    queueTimeoutMs: envInt('REPORT_QUEUE_TIMEOUT_MS', DEFAULT_REPORT_QUEUE_TIMEOUT_MS, 1),
+    tenantMaxConcurrency: envInt(`${prefix}_TENANT_MAX_CONCURRENCY`, DEFAULT_REPORT_TENANT_MAX_CONCURRENCY, 1),
+    tenantQueueMax: envInt(`${prefix}_TENANT_QUEUE_MAX`, DEFAULT_REPORT_TENANT_QUEUE_MAX, 0),
+    queueMax: envInt(`${prefix}_QUEUE_MAX`, DEFAULT_REPORT_QUEUE_MAX, 0),
+    queueTimeoutMs: envInt(`${prefix}_QUEUE_TIMEOUT_MS`, DEFAULT_REPORT_QUEUE_TIMEOUT_MS, 1),
   };
 }
 
