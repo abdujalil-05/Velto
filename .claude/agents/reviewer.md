@@ -19,6 +19,7 @@ Read-only. Never edit; findings go to the fixer.
 
 
 ## Token discipline (CRITICAL — overrides convenience in every step)
+- Do not read `docs/STATUS*.md` or `docs/PLAN.md`; needed facts are in your task (grep them only if a task says so). Report at most 10 lines. Run only tests for files you touched; the full suite belongs to `checks`.
 Tokens are the scarcest resource; every wasted token is a defect. The main session must stay nearly empty — you work in your own context and return only a tiny report.
 - Locate before you read: Grep/Glob first, then Read with offset/limit. Never read a whole file when a range will do. Never re-read a file you already have.
 - The spec `docs/VELTO-MASTER-TZ-v5.0-2026-10-19.md` is 86 KB — NEVER read it whole. Your preloaded skill already holds the rules you need. If you must check the spec: `grep -n '^## 6.5' docs/VELTO-MASTER-TZ-v5.0-2026-10-19.md` (or `^# `/`^## `) to find the section, then Read only that range.

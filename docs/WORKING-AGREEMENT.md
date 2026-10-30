@@ -44,7 +44,7 @@ Agentlar token tejash qoidasi va o'zbekcha qisqa hisobot formati o'z fayllarida 
 ## 5. Holat va kontekst
 
 - Har task/qism tugagach `docs/STATUS.md` yangilanadi (task ID, holat, dalil, tekshirilmagan narsalar). Reja — `docs/PLAN.md`.
-- **Kontekstni men o'zim tozalay olmayman** (`/clear` foydalanuvchi buyrug'i; Claude Code uzun kontekstni o'zi qisqartiradi). Shuning uchun: STATUS har doim yangi bo'ladi, har faza oxirida men "`/clear` qilsangiz bo'ladi" deb xabar beraman. Yangi sessiyada tartib: `CLAUDE.md` → `docs/STATUS.md` → kerak bo'lsa `docs/PLAN.md` (TZ ni to'liq o'qimaymiz).
+- **Kontekstni men o'zim tozalay olmayman** (`/clear` foydalanuvchi buyrug'i; Claude Code uzun kontekstni o'zi qisqartiradi). Shuning uchun: STATUS har doim yangi bo'ladi, har faza oxirida men "`/clear` qilsangiz bo'ladi" deb xabar beraman. Yangi sessiyada tartib: `CLAUDE.md` → `docs/STATUS.md`; qolgani §7 bo'yicha.
 - Asosiy sessiya kodni o'qimaydi; kerak bo'lsa `scout`/agent orqali. Faqat qisqa hisobotlar kontekstga tushadi.
 
 ## 6. Git
@@ -59,11 +59,20 @@ Agentlar token tejash qoidasi va o'zbekcha qisqa hisobot formati o'z fayllarida 
 - **Hozir deploy va production mavzusi yopiq.** Faqat localhost'da ishlaymiz; production'ga chiqish — MVP tugagandan keyin (faza F7). `devops`, `deploy/`, ssh/pm2, production rol modeli bo'yicha ishlar shu paytgacha boshlanmaydi (tayyor runbook `deploy/README.md` da turadi).
 - `main` ga merge qilish shart emas: ish feature branch'larda (stacked) yuritiladi va push qilinadi. Merge — foydalanuvchi so'raganda.
 
-## 7. Token tejash
+## 7. Token tejash (2026-10-30 qaror, majburiy)
 
-- Katta fayllarni to'liq o'qimaymiz (TZ — faqat kerakli bo'lim; `grep -n '^#'`).
-- Arzon ishlar haiku agentlarda; murakkab (pul, RLS, xavfsizlik, arxitektura) — opus.
-- Takroriy tekshiruv va ortiqcha hisobot yo'q; hisobotlar qisqa chegaralangan.
+**Asosiy sessiya:**
+- Yangi sessiyada faqat `docs/STATUS.md` (≤60 qator) o'qiladi. `STATUS-ARCHIVE.md`, `PLAN.md`, TZ, kod — to'liq o'qilmaydi, faqat grep/diapazon. Bir faylni qayta o'qish yo'q.
+- STATUS yangilanishi: joriy holat almashtiriladi, ko'chirib yig'ilmaydi; tugagan ish bir qator yoki arxivga.
+- Topshiriq ≤15 qator; agentning o'zi topa oladigan narsa yozilmaydi. Foydalanuvchiga javob qisqa, agent hisoboti takrorlanmaydi.
+- Bitta task tugagach `/clear` tavsiya qilinadi.
+
+**Agentlar (eng katta xarajat shu yerda):**
+- Faqat zarur agent. `architect` — faqat ko'p modulli yoki pul/xavfsizlik qarorida; kichik ishda §3 zanjiri qisqartiriladi.
+- Bir vaqtda faqat zarur parallel; bir xil tekshiruv ikki marta yo'q.
+- `reviewer` va `security-auditor` faqat task diff'ini ko'radi, bir marta. `checks` — task oxirida bir marta; oraliqda faqat tegilgan test fayli.
+- Hisobot ≤10 qator; agentlar `docs/STATUS*`/`PLAN.md` ni o'qimaydi, kerakli fakt topshiriqda beriladi.
+- Yuk testi va to'liq test to'plami qimmat: yuk testi faqat sokin hostda va foydalanuvchi tasdig'i bilan.
 
 ## 8. Foydalanuvchidan tasdiq kerak bo'lgan hollar
 

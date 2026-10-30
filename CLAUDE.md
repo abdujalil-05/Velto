@@ -10,7 +10,7 @@ sales, finance, 1C integration). The full functional/technical spec is [`docs/VE
 **legacy** numbering (`6.10`, `SEC-020..024`, `9.1`); legacy → v4.0: `6.10`/`SEC-001..005` → §10.4, offline `10.x` → §8,
 security `15.x`/`SEC-xxx` → §11, business rules `8.x` → §6.3–6.6. Legacy file: `git show e56389d:VELTO-TZ.md`.
 
-**Fresh session order:** this file → [`docs/STATUS.md`](./docs/STATUS.md) (progress, what's left) → [`docs/PLAN.md`](./docs/PLAN.md) (phases) only if needed. **Binding working rules:** [`docs/WORKING-AGREEMENT.md`](./docs/WORKING-AGREEMENT.md) — main session never writes code (delegates to subagents), facts-only, SOLID/DRY, STATUS updated after every task, feature branches only.
+**Fresh session order:** this file → [`docs/STATUS.md`](./docs/STATUS.md) (≤60 lines, current state only). History/ADRs: `docs/STATUS-ARCHIVE.md`, [`docs/PLAN.md`](./docs/PLAN.md) — grep only, never read whole. Token budget rules: WORKING-AGREEMENT §7. **Binding working rules:** [`docs/WORKING-AGREEMENT.md`](./docs/WORKING-AGREEMENT.md) — main session never writes code (delegates to subagents), facts-only, SOLID/DRY, STATUS updated after every task, feature branches only.
 
 Turborepo + pnpm monorepo, started from scratch (no shared code/history with any other Velto project).
 
