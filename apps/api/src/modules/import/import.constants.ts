@@ -7,6 +7,19 @@ export type ImportType = 'customers' | 'products';
 /** ImportJob rows of these types belong to /import; opening-balance previews (opening-balances module) also use ImportJob and are kept out of /import. */
 export const IMPORT_TYPES: ImportType[] = ['customers', 'products'];
 
+/**
+ * ADR-064b: ImportJob.attemptCount = durable automatic recovery enqueues by the sweep (job missing / terminal-orphan in BullMQ).
+ * The initial confirm() dispatch is NOT counted (attempts 0 = user-initiated); BullMQ-internal retries never touch it; never auto-reset.
+ * Capped exponential backoff from updatedAt: base * 2^attemptCount, capped.
+ */
+export const DEFAULT_IMPORT_RECOVERY_MAX_ATTEMPTS = 5;
+export const IMPORT_RECOVERY_BACKOFF_BASE_S = 300;
+export const IMPORT_RECOVERY_BACKOFF_CAP_S = 3600;
+export function importRecoveryMaxAttempts(): number {
+  const n = Number(process.env.IMPORT_RECOVERY_MAX_ATTEMPTS);
+  return Number.isInteger(n) && n >= 1 ? n : DEFAULT_IMPORT_RECOVERY_MAX_ATTEMPTS;
+}
+
 export interface ImportJobData extends TraceableJobData {
   importJobId: string;
   companyId: string;

@@ -70,3 +70,13 @@ export const IMPORT_COMMIT_FAILED = {
     en: 'The import failed. Please retry or contact support',
   },
 };
+
+/** ADR-064b: stored in ImportJob.errorLog when automatic recovery attempts are exhausted. */
+export const IMPORT_RECOVERY_EXHAUSTED = {
+  code: 'IMPORT_RECOVERY_EXHAUSTED',
+  message: {
+    uz: "Import avtomatik qayta urinishlardan keyin ham yakunlanmadi. Qo'llab-quvvatlashga murojaat qiling",
+    ru: 'Импорт не завершён после автоматических повторных попыток. Обратитесь в поддержку',
+    en: 'The import did not finish after automatic recovery attempts. Please contact support',
+  },
+};

@@ -10,7 +10,7 @@ import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { ImportAlreadyConfirmedException, ImportJobNotFoundException, ImportQueueUnavailableException, InvalidImportFileException } from './import-exceptions';
 import type { ImportJobData, ImportJobReport } from './import.constants';
 import { ImportService } from './import.service';
-import { ImportRecoveryService } from './import-recovery.service';
+import { ScopedImportRecoveryService as ImportRecoveryService } from './scoped-import-recovery';
 import type { CustomerImportRow } from './parsers/customers-parser';
 import { buildTestWorkbook } from './parsers/test-workbook';
 
@@ -123,7 +123,7 @@ describe('ImportService (integration, real Postgres + RLS)', () => {
     await tenantPrisma.run(companyId, (tx) => tx.importJob.update({ where: { id: created.id }, data: { status: 'PROCESSING' } }));
     const add = vi.fn().mockResolvedValue(undefined);
     const recovery = new ImportRecoveryService(tenantPrisma, { add, getJob: vi.fn().mockResolvedValue(undefined) } as unknown as Queue<ImportJobData>);
-    await recovery.sweep();
+    await recovery.sweep(new Date(Date.now() + 86_400_000), companyId);
     expect(add).toHaveBeenCalledWith('commit', expect.objectContaining({ importJobId: created.id, companyId }), expect.objectContaining({ jobId: `import-${created.id}` }));
     // do not leave PROCESSING residue in the shared dev DB
     await tenantPrisma.run(companyId, (tx) => tx.importJob.updateMany({ where: { id: created.id, status: 'PROCESSING' }, data: { status: 'FAILED' } }));

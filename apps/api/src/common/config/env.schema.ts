@@ -101,6 +101,7 @@ export const envSchema = z.object({
   DASHBOARD_TENANT_QUEUE_MAX: z.coerce.number().int().min(0).max(1000).default(DEFAULT_REPORT_TENANT_QUEUE_MAX),
   // /health/ready result cache (ms); concurrent probes share one in-flight check. 0 = no cache (still single-flight).
   HEALTH_READY_CACHE_MS: z.coerce.number().int().min(0).max(30_000).default(DEFAULT_HEALTH_READY_CACHE_MS),
+  IMPORT_RECOVERY_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(50).default(5),
   S3_ENDPOINT: z.string().min(1),
   S3_REGION: z.string().default('us-east-1'),
   S3_ACCESS_KEY: z.string().min(1),

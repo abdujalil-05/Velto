@@ -139,7 +139,7 @@ describe('ADR-064 outbox (integration, real Postgres + RLS)', () => {
         if (id === missingJob.id) return undefined;
         return { getState: async () => state[id] ?? 'active' }; // foreign rows from other suites: leave alone
       });
-      const touched = await new ImportRecoveryService(tenantPrisma, q).sweep();
+      const touched = await new ImportRecoveryService(tenantPrisma, q).sweep(new Date(Date.now() + 3_600_000));
       expect(touched).toBeGreaterThanOrEqual(2);
 
       const f = await dbImport(failedJob.id);
@@ -194,7 +194,7 @@ describe('ADR-064 outbox (integration, real Postgres + RLS)', () => {
         if (id === aMissing.id || id === bMissing.id) return undefined;
         return { getState: async () => (id === bFailed.id ? 'failed' : 'active') };
       });
-      await new ImportRecoveryService(tenantPrisma, q).sweep();
+      await new ImportRecoveryService(tenantPrisma, q).sweep(new Date(Date.now() + 3_600_000));
       const data = (id: string) => q.add.mock.calls.find((c) => (c[2] as { jobId: string }).jobId === `import-${id}`)?.[1];
       expect(data(aMissing.id)).toMatchObject({ companyId: A.companyId, userId: A.user.id });
       expect(data(bMissing.id)).toMatchObject({ companyId: B.companyId, userId: B.user.id });
