@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import argon2 from 'argon2';
@@ -8,6 +8,7 @@ import { AuditLogService } from '../../common/audit/audit-log.service';
 import type { AccessTokenPayload } from '../../common/auth/auth.types';
 import {
   AccountBlockedException,
+  AuthChallengeInvalidException,
   InvalidCredentialsException,
   SessionExpiredException,
   TelegramAuthUnavailableException,
@@ -16,6 +17,8 @@ import {
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import type { LoginDto } from './dto/login.dto';
 import type { TelegramAuthDto } from './dto/telegram-auth.dto';
+import { AuthChallengeStore } from './auth-challenge.store';
+import type { SelectCompanyDto } from './dto/select-company.dto';
 import { LoginRateLimiterService } from './login-rate-limiter.service';
 import { verifyTelegramInitData } from './telegram-init-data';
 
@@ -47,6 +50,25 @@ interface MinimalUser {
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
+}
+
+const SELECT_MAX_PER_WINDOW = 10;
+const SELECT_WINDOW_SECONDS = 5 * 60;
+
+export interface CompanySelectionRequired {
+  requiresCompanySelection: true;
+  challengeId: string;
+  companies: { id: string; name: string }[];
+}
+
+// Fixed number of argon2 verifies per login attempt (see login()).
+const MIN_VERIFY_SLOTS = 3;
+
+// Verified when no real hash exists so response time doesn't reveal account existence (ADR-057).
+let dummyHashPromise: Promise<string> | undefined;
+function getDummyHash(): Promise<string> {
+  dummyHashPromise ??= argon2.hash(randomBytes(16).toString('hex'), { type: argon2.argon2id });
+  return dummyHashPromise;
 }
 
 const TELEGRAM_API = 'https://api.telegram.org';
@@ -83,60 +105,115 @@ export function parseDurationMs(input: string): number {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger('AuthService');
+
   constructor(
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly tenantPrisma: TenantPrismaService,
     private readonly rateLimiter: LoginRateLimiterService,
     private readonly auditLog: AuditLogService,
+    private readonly challenges: AuthChallengeStore,
   ) {}
 
   /**
-   * 15.2: "login'da companyId so'ralmaydi". Since User.phone is only unique
-   * per-company (schema 6.2), the same phone could in theory belong to a
-   * user in more than one tenant — resolved here by trying the password
-   * against every candidate rather than asking the client to pick a tenant.
+   * 15.2 + ADR-057: "login'da companyId so'ralmaydi". User.phone is unique only
+   * per company, so the password is verified against EVERY active candidate
+   * for the phone (a dummy argon2 hash stands in when there is none or the
+   * hash is null, so latency doesn't reveal existence). Accounts whose company
+   * is inactive are silently dropped: they neither block another active
+   * account nor reveal themselves (same generic error as a wrong password).
+   * One match => tokens; several => no tokens, an opaque challenge plus only
+   * the matching companies (id = opaque option id, name).
    */
-  async login(dto: LoginDto, meta: RequestMeta): Promise<TokenPair> {
+  async login(dto: LoginDto, meta: RequestMeta): Promise<TokenPair | CompanySelectionRequired> {
     await this.rateLimiter.assertNotBlocked(dto.phone);
 
-    const candidates = await systemPrisma.user.findMany({ where: { phone: dto.phone, isActive: true } });
+    const candidates = await systemPrisma.user.findMany({
+      where: { phone: dto.phone, isActive: true },
+      include: { company: { select: { id: true, name: true, isActive: true } } },
+    });
 
-    // Verified in parallel rather than sequentially-with-early-exit: a
-    // ketma-ket loop leaks how many tenants share dto.phone through response
-    // time (N candidates ~ N sequential argon2.verify calls). Running them
-    // concurrently ties latency to the slowest single verify instead of the
-    // count, closing most of that channel.
-    const results = await Promise.all(
-      candidates.map(async (candidate) => {
-        const ok = candidate.passwordHash && (await argon2.verify(candidate.passwordHash, dto.password));
-        return ok ? candidate : undefined;
-      }),
-    );
-    const authenticated = results.find((candidate) => candidate !== undefined);
-
-    if (!authenticated) {
-      await this.rateLimiter.recordFailure(dto.phone);
-      // SEC-054: "kirish ... rad etilishi ham yoziladi" — only logged against
-      // real accounts (candidates.length > 0 means the phone matched at
-      // least one active user, just with a wrong password); an unrecognized
-      // phone has no tenant to scope an AuditLog row to, and the phone-keyed
-      // rate limiter above already covers brute-forcing nonexistent numbers.
-      await this.logFailedLogin(candidates, meta);
-      throw new InvalidCredentialsException();
+    // Sequential (parallel verifies beyond the libuv pool size queue and leak N),
+    // padded with dummy-hash verifies up to MIN_VERIFY_SLOTS so timing is flat for
+    // 0..MIN_VERIFY_SLOTS candidates; beyond the cap each extra candidate must still be verified.
+    const dummyHash = await getDummyHash();
+    const verifications: (typeof candidates[number] | undefined)[] = [];
+    for (let i = 0; i < Math.max(candidates.length, MIN_VERIFY_SLOTS); i++) {
+      const candidate = candidates[i];
+      const ok = await argon2.verify(candidate?.passwordHash ?? dummyHash, dto.password);
+      verifications.push(candidate?.passwordHash && ok ? candidate : undefined);
     }
+    const matches = verifications.filter(
+      (c): c is NonNullable<typeof c> => c !== undefined && c.company.isActive,
+    );
 
-    const company = await systemPrisma.company.findUnique({ where: { id: authenticated.companyId } });
-    if (!company?.isActive) {
-      await this.logFailedLogin([authenticated], meta);
-      throw new AccountBlockedException();
+    if (matches.length === 0) {
+      await this.rateLimiter.recordFailure(dto.phone);
+      // SEC-054: only real accounts can be audited (unknown phone has no tenant).
+      // Not awaited: N audit transactions would leak the candidate count by latency.
+      void this.logFailedLogin(candidates, meta).catch((err) =>
+        this.logger.error(`Failed-login audit failed: ${err instanceof Error ? err.message : String(err)}`),
+      );
+      throw new InvalidCredentialsException();
     }
 
     await this.rateLimiter.recordSuccess(dto.phone);
 
-    return this.tenantPrisma.run(authenticated.companyId, (tx) =>
-      this.issueTokensInTx(tx, authenticated, meta, undefined, 'auth.login'),
-    );
+    if (matches.length === 1) {
+      const [user] = matches;
+      return this.completeLogin(user, meta, 'auth.login');
+    }
+
+    const options = matches.map((m) => ({ optionId: randomBytes(16).toString('base64url'), userId: m.id, companyId: m.companyId }));
+    const challengeId = await this.challenges.issue({ kind: 'login_company', stage: 'select_company', phone: dto.phone, options });
+    for (const m of matches) {
+      await this.tenantPrisma.run(m.companyId, (tx) =>
+        this.auditLog.log(tx, {
+          companyId: m.companyId,
+          userId: m.id,
+          action: 'auth.login_company_selection_issued',
+          entity: 'User',
+          entityId: m.id,
+          ip: meta.ip,
+        }),
+      );
+    }
+    return {
+      requiresCompanySelection: true,
+      challengeId,
+      companies: matches.map((m, i) => ({ id: options[i].optionId, name: m.company.name })),
+    };
+  }
+
+  /**
+   * ADR-057: second step of a multi-company login. The option must belong to
+   * the challenge (server-side); the challenge is consumed (GETDEL) whatever
+   * the outcome. User and company are re-checked as still active.
+   */
+  async selectCompany(dto: SelectCompanyDto, meta: RequestMeta): Promise<TokenPair> {
+    await this.challenges.hit('select-ip', meta.ip ?? 'unknown', SELECT_MAX_PER_WINDOW, SELECT_WINDOW_SECONDS);
+    const challenge = await this.challenges.consume(dto.challengeId, 'login_company');
+    const option = challenge.options.find((o) => o.optionId === dto.optionId);
+    if (!option) throw new AuthChallengeInvalidException();
+
+    const user = await systemPrisma.user.findUnique({
+      where: { id: option.userId },
+      include: { company: { select: { isActive: true } } },
+    });
+    if (!user || user.companyId !== option.companyId || !user.isActive || !user.company.isActive) {
+      if (user) await this.logFailedLogin([user], meta);
+      throw new AuthChallengeInvalidException();
+    }
+    // ADR-058 slot: the MFA check for OWNER/SALES_DIRECTOR/CASHIER belongs here,
+    // between company selection and token issuance (issue a 'mfa' stage challenge
+    // via this.challenges instead of calling completeLogin directly).
+    return this.completeLogin(user, meta, 'auth.login');
+  }
+
+  /** The single place where a fully-authenticated user gets a session. */
+  private completeLogin(user: MinimalUser, meta: RequestMeta, auditAction: string): Promise<TokenPair> {
+    return this.tenantPrisma.run(user.companyId, (tx) => this.issueTokensInTx(tx, user, meta, undefined, auditAction));
   }
 
   async telegramLogin(dto: TelegramAuthDto, meta: RequestMeta): Promise<TokenPair> {

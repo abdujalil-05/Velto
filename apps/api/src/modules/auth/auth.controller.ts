@@ -11,6 +11,8 @@ import { LoginDto } from './dto/login.dto';
 import { LogoutDto } from './dto/logout.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
+import { SelectCompanyDto } from './dto/select-company.dto';
+import { SelectResetAccountDto } from './dto/select-reset-account.dto';
 import { TelegramAuthDto } from './dto/telegram-auth.dto';
 import { PasswordResetService } from './password-reset.service';
 import { AllowDuringMaintenance } from '../../common/maintenance/allow-during-maintenance.decorator';
@@ -53,6 +55,18 @@ export class AuthController {
   @Post('login')
   async login(@Body() dto: LoginDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const result = await this.authService.login(dto, requestMeta(req));
+    if ('requiresCompanySelection' in result) return result;
+    this.setRefreshCookie(res, result.refreshToken);
+    return this.withoutRefreshToken(result);
+  }
+
+  // ADR-057: second step when a correct password matched several companies.
+  @Public()
+  @AllowDuringMaintenance()
+  @HttpCode(HttpStatus.OK)
+  @Post('login/select-company')
+  async selectCompany(@Body() dto: SelectCompanyDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const result = await this.authService.selectCompany(dto, requestMeta(req));
     this.setRefreshCookie(res, result.refreshToken);
     return this.withoutRefreshToken(result);
   }
@@ -120,8 +134,22 @@ export class AuthController {
   @Public()
   @HttpCode(HttpStatus.NO_CONTENT)
   @Post('password-reset/confirm')
-  async confirmPasswordReset(@Body() dto: ConfirmPasswordResetDto) {
-    await this.passwordResetService.confirm(dto.phone, dto.code, dto.newPassword);
+  async confirmPasswordReset(@Body() dto: ConfirmPasswordResetDto, @Res({ passthrough: true }) res: Response) {
+    // 204 when the phone has exactly one account (password changed); 200 + body when
+    // several accounts need a choice (nothing changed yet — see password-reset/select-account).
+    const result = await this.passwordResetService.confirm(dto.phone, dto.code, dto.newPassword);
+    if (result) {
+      res.status(HttpStatus.OK);
+      return result;
+    }
+  }
+
+  // ADR-057a: after OTP proof, the client picks one account via the single-use handle.
+  @Public()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Post('password-reset/select-account')
+  async selectResetAccount(@Body() dto: SelectResetAccountDto, @Req() req: Request) {
+    await this.passwordResetService.selectAccount(dto, requestMeta(req).ip);
   }
 
   // Public: identity for this endpoint is the refresh token (cookie or body),

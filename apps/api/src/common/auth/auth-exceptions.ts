@@ -121,3 +121,29 @@ export class TelegramAuthUnavailableException extends AppException {
     });
   }
 }
+
+/** ADR-057/057a: missing, expired, replayed or forged company-selection / account-selection handle. One generic answer for all. */
+export class AuthChallengeInvalidException extends AppException {
+  constructor() {
+    super(HttpStatus.UNAUTHORIZED, 'AUTH_CHALLENGE_INVALID', {
+      uz: "Tanlov muddati tugagan yoki yaroqsiz. Qaytadan urinib ko'ring",
+      ru: 'Выбор недействителен или истёк. Повторите попытку',
+      en: 'The selection is invalid or has expired. Please try again',
+    });
+  }
+}
+
+export class AuthChallengeRateLimitedException extends AppException {
+  constructor(retryAfterSeconds: number) {
+    super(
+      HttpStatus.TOO_MANY_REQUESTS,
+      'AUTH_CHALLENGE_RATE_LIMITED',
+      {
+        uz: "Juda ko'p urinish. Birozdan keyin qayta urinib ko'ring",
+        ru: 'Слишком много попыток. Повторите позже',
+        en: 'Too many attempts. Please try again later',
+      },
+      { retryAfterSeconds },
+    );
+  }
+}

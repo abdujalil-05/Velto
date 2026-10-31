@@ -14,7 +14,8 @@ import {
   TelegramReplayRejectedException,
 } from '../../common/auth/auth-exceptions';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
-import { AuthService } from './auth.service';
+import { AuthChallengeStore } from './auth-challenge.store';
+import { AuthService, type TokenPair } from './auth.service';
 import { LoginRateLimiterService } from './login-rate-limiter.service';
 
 // +998 followed by 9 digits, matching UZ_PHONE_RE in login.dto.ts. Random per
@@ -40,7 +41,7 @@ describe('AuthService (integration, real Postgres + Redis)', () => {
   const rateLimiter = new LoginRateLimiterService(redis);
   const jwt = new JwtService({ secret: 'test-secret', signOptions: { expiresIn: '15m' } });
   const config = new ConfigService();
-  const auth = new AuthService(jwt, config, tenantPrisma, rateLimiter, auditLog);
+  const auth = new AuthService(jwt, config, tenantPrisma, rateLimiter, auditLog, new AuthChallengeStore(redis));
 
   beforeAll(async () => {
     const tenant = await systemPrisma.tenant.create({
@@ -75,7 +76,7 @@ describe('AuthService (integration, real Postgres + Redis)', () => {
   }
 
   it('a correct password issues tokens and audits "auth.login"', async () => {
-    const result = await auth.login({ phone, password }, { ip: '10.0.0.1' });
+    const result = (await auth.login({ phone, password }, { ip: '10.0.0.1' })) as TokenPair;
     expect(result.accessToken).toBeTruthy();
     expect(result.refreshToken).toBeTruthy();
     expect(await lastAuditAction(companyId)).toBe('auth.login');
@@ -85,7 +86,20 @@ describe('AuthService (integration, real Postgres + Redis)', () => {
     await expect(auth.login({ phone, password: 'wrong-password' }, { ip: '10.0.0.2' })).rejects.toBeInstanceOf(
       InvalidCredentialsException,
     );
-    expect(await lastAuditAction(companyId)).toBe('auth.login_failed');
+    await vi.waitFor(async () => expect(await lastAuditAction(companyId)).toBe('auth.login_failed'));
+  });
+
+  it('login failure does not await the failed-login audit', async () => {
+    const slow = vi
+      .spyOn(AuditLogService.prototype, 'log')
+      .mockImplementation(() => new Promise((resolve) => setTimeout(resolve, 1500)) as never);
+    const t0 = Date.now();
+    await expect(auth.login({ phone, password: 'wrong-password' }, { ip: '10.0.0.9' })).rejects.toBeInstanceOf(
+      InvalidCredentialsException,
+    );
+    const elapsed = Date.now() - t0;
+    slow.mockRestore();
+    expect(elapsed).toBeLessThan(1400);
   });
 
   it('an unrecognized phone is rejected without touching AuditLog (no tenant to scope it to)', async () => {
@@ -114,10 +128,11 @@ describe('AuthService (integration, real Postgres + Redis)', () => {
       },
     });
 
+    // ADR-057: an inactive company is indistinguishable from a wrong password.
     await expect(auth.login({ phone: blockedPhone, password }, { ip: '10.0.0.4' })).rejects.toBeInstanceOf(
-      AccountBlockedException,
+      InvalidCredentialsException,
     );
-    expect(await lastAuditAction(blockedCompany.id)).toBe('auth.login_failed');
+    await vi.waitFor(async () => expect(await lastAuditAction(blockedCompany.id)).toBe('auth.login_failed'));
   });
 
   it('SEC-010..019: blocks outright once the failure count reaches the 10-attempt threshold', async () => {
@@ -156,6 +171,7 @@ describe('AuthService.linkTelegramContact (integration, real Postgres + RLS)', (
     tenantPrisma,
     new LoginRateLimiterService(new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379')),
     auditLog,
+    new AuthChallengeStore(new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379')),
   );
 
   // Random rather than sequential (like uniquePhone() above) — test data
@@ -330,7 +346,7 @@ describe('AuthService refresh tokens (§16.3: refresh reuse => family revoked)',
   const auditLog = new AuditLogService();
   const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
   const jwt = new JwtService({ secret: 'test-secret', signOptions: { expiresIn: '15m' } });
-  const auth = new AuthService(jwt, new ConfigService(), tenantPrisma, new LoginRateLimiterService(redis), auditLog);
+  const auth = new AuthService(jwt, new ConfigService(), tenantPrisma, new LoginRateLimiterService(redis), auditLog, new AuthChallengeStore(redis));
 
   beforeAll(async () => {
     const tenant = await systemPrisma.tenant.create({ data: { slug: `test-rt-${Date.now()}`, name: 'RT Tenant' } });
@@ -353,7 +369,7 @@ describe('AuthService refresh tokens (§16.3: refresh reuse => family revoked)',
     await systemPrisma.$disconnect();
   });
 
-  const login = () => auth.login({ phone, password }, { ip: '10.1.0.1' });
+  const login = () => auth.login({ phone, password }, { ip: '10.1.0.1' }) as Promise<TokenPair>;
 
   async function auditActions(): Promise<string[]> {
     const rows = await tenantPrisma.run(companyId, (tx) =>
@@ -421,7 +437,7 @@ describe('AuthService refresh tokens (§16.3: refresh reuse => family revoked)',
       const user = await systemPrisma.user.create({
         data: { companyId: co.id, firstName: 'B', lastName: 'U', phone: p, passwordHash: await argon2.hash(password, { type: argon2.argon2id }) },
       });
-      const tokens = await auth.login({ phone: p, password }, { ip: '10.1.0.2' });
+      const tokens = (await auth.login({ phone: p, password }, { ip: '10.1.0.2' })) as TokenPair;
       return { co, user, tokens };
     }
     const reuseAudits = (cid: string) =>
@@ -499,6 +515,7 @@ describe('AuthService.telegramLogin (§16.3: initData valid/invalid/expired/repl
     tenantPrisma,
     new LoginRateLimiterService(redis),
     new AuditLogService(),
+    new AuthChallengeStore(redis),
   );
   const telegramId = BigInt(Math.floor(5_000_000_000 + Math.random() * 1_000_000_000));
   const inactiveUserTgId = telegramId + 1n;
@@ -678,6 +695,7 @@ describe('AuthService.telegramLogin (§16.3: initData valid/invalid/expired/repl
       tenantPrisma,
       downLimiter as unknown as LoginRateLimiterService,
       new AuditLogService(),
+      new AuthChallengeStore(redis),
     );
     await expect(failClosed.telegramLogin({ initData: sign(fresh()) } as never, {})).rejects.toBeInstanceOf(
       TelegramAuthUnavailableException,
