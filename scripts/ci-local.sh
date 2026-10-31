@@ -14,6 +14,7 @@ DB="${CI_LOCAL_DB:-velto_ci_local}"; HOST="${CI_LOCAL_HOST:-localhost}"; PORT="$
 case "$HOST" in localhost|127.0.0.1) ;; *) echo "refusing non-local CI_LOCAL_HOST" >&2; exit 1;; esac
 AU="${CI_LOCAL_ADMIN_USER:-velto}"; AP="${CI_LOCAL_ADMIN_PASSWORD:-velto}"
 
+export VELTO_TEST_DB_ALLOW="$DB" # test guard (scripts/assert-test-db.mjs): approves this dedicated DB on 5433
 export DATABASE_ADMIN_URL="postgresql://$AU:$AP@$HOST:$PORT/$DB"
 export DATABASE_URL="postgresql://velto_app:velto_app@$HOST:$PORT/$DB?schema=public"
 export DATABASE_MIGRATE_URL="postgresql://velto_owner:velto_owner@$HOST:$PORT/$DB?schema=public"
