@@ -302,7 +302,7 @@ describe('E2E F5.3: 1C export hardening', () => {
         });
       const stale = await make(16 * 60_000);
       const fresh = await make(14 * 60_000);
-      const sweeper = new Export1cRecoveryService(tenantPrisma, { add: vi.fn().mockResolvedValue(undefined) } as never);
+      const sweeper = new Export1cRecoveryService(tenantPrisma, { getJob: async () => undefined, add: vi.fn().mockResolvedValue(undefined) } as never);
       expect(await sweeper.sweep()).toBeGreaterThanOrEqual(1);
       const s = await dbJob(companyP, stale);
       expect(s.status).toBe('FAILED');
@@ -322,7 +322,7 @@ describe('E2E F5.3: 1C export hardening', () => {
       const orphan = await make(20 * 60_000);
       const fresh = await make(5 * 60_000);
       const add = vi.fn().mockResolvedValue(undefined);
-      await new Export1cRecoveryService(tenantPrisma, { add } as never).sweep();
+      await new Export1cRecoveryService(tenantPrisma, { getJob: async () => undefined, add } as never).sweep();
       const ids = add.mock.calls.map((c) => c[2]?.jobId);
       expect(ids).toContain(`export-${orphan}`);
       expect(ids).not.toContain(`export-${fresh}`);
@@ -332,7 +332,7 @@ describe('E2E F5.3: 1C export hardening', () => {
       const prevAbandoned = process.env.ABANDONED_QUEUED_MS;
       process.env.ABANDONED_QUEUED_MS = String(3_600_000); // ADR-047 default is 24h; pin 1h so the 2h-old job is abandoned
       try {
-        await new Export1cRecoveryService(tenantPrisma, { add: vi.fn().mockRejectedValue(new Error('redis down')) } as never).sweep();
+        await new Export1cRecoveryService(tenantPrisma, { getJob: async () => undefined, add: vi.fn().mockRejectedValue(new Error('redis down')) } as never).sweep();
       } finally {
         if (prevAbandoned === undefined) delete process.env.ABANDONED_QUEUED_MS;
         else process.env.ABANDONED_QUEUED_MS = prevAbandoned;

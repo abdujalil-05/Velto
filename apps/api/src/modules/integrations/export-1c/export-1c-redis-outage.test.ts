@@ -17,7 +17,7 @@ describe('1C export under a Redis outage (real Postgres, queue test double)', ()
   const tenantPrisma = new TenantPrismaService();
   let companyId: string;
   let user: AuthenticatedUser;
-  const hangingQueue = { add: vi.fn(() => new Promise(() => undefined)) } as unknown as Queue<Export1cJobData>;
+  const hangingQueue = { add: vi.fn(() => new Promise(() => undefined)), getJob: vi.fn(() => new Promise(() => undefined)) } as unknown as Queue<Export1cJobData>;
   const noLimit = { assertCanCreate: async () => undefined } as unknown as Export1cLimitsService;
 
   beforeAll(async () => {
@@ -52,7 +52,7 @@ describe('1C export under a Redis outage (real Postgres, queue test double)', ()
     await systemPrisma.exportJob.update({ where: { id: job.id }, data: { updatedAt: new Date(Date.now() - 3600_000) } });
 
     const seen = new Map<string, number>(); // BullMQ semantics: same jobId is a no-op
-    const redisBack = { add: vi.fn(async (_n: string, _d: unknown, o: { jobId: string }) => void seen.set(o.jobId, (seen.get(o.jobId) ?? 0) + 1)) } as unknown as Queue<Export1cJobData>;
+    const redisBack = { getJob: vi.fn(async () => undefined), add: vi.fn(async (_n: string, _d: unknown, o: { jobId: string }) => void seen.set(o.jobId, (seen.get(o.jobId) ?? 0) + 1)) } as unknown as Queue<Export1cJobData>;
     const recovery = new Export1cRecoveryService(tenantPrisma, redisBack);
     await recovery.sweep();
     await recovery.sweep();

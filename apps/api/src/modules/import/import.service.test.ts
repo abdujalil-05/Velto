@@ -22,7 +22,7 @@ describe('ImportService (integration, real Postgres + RLS)', () => {
   const upload = vi.fn().mockResolvedValue('https://storage.test/imports/file.xlsx');
   const fakeStorage = { upload } as unknown as StorageService;
   const queueAdd = vi.fn().mockResolvedValue(undefined);
-  const fakeQueue = { add: queueAdd } as unknown as Queue<ImportJobData>;
+  const fakeQueue = { add: queueAdd, getJob: vi.fn().mockResolvedValue(undefined) } as unknown as Queue<ImportJobData>;
   const importService = new ImportService(tenantPrisma, fakeStorage, fakeQueue, new AuditLogService());
 
   beforeAll(async () => {

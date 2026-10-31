@@ -3,7 +3,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import type { Queue } from 'bullmq';
 import { Prisma, systemPrisma } from '@velto/database';
 import { fetchAllById } from '../../common/pagination/fetch-all-by-id';
-import { addTracedJob } from '../../common/queue/trace-job';
+import { addTracedJobReplacingTerminal } from '../../common/queue/trace-job';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { IMPORT_COMMIT_FAILED } from './import-exceptions';
 import { IMPORT_JOB_OPTS, IMPORT_QUEUE, type ImportJobData } from './import.constants';
@@ -40,16 +40,21 @@ export class ImportRecoveryService implements OnModuleInit, OnModuleDestroy {
     const stuck = await fetchAllById((page) => systemPrisma.importJob.findMany({ where: { status: 'PROCESSING' }, select: { id: true, companyId: true, createdBy: true }, orderBy: { id: 'asc' }, ...page }));
     let touched = 0;
     for (const j of stuck) {
-      const queued = await this.queue.getJob(`import-${j.id}`);
-      const state = queued ? await queued.getState() : 'missing';
-      if (state === 'missing') {
-        await addTracedJob(this.queue, 'commit', { importJobId: j.id, companyId: j.companyId, userId: j.createdBy ?? undefined }, { ...IMPORT_JOB_OPTS, jobId: `import-${j.id}` });
-        touched++;
-      } else if (state === 'failed') {
-        await this.tenantPrisma.run(j.companyId, (tx) =>
-          tx.importJob.updateMany({ where: { id: j.id, status: 'PROCESSING' }, data: { status: 'FAILED', errorLog: { ...IMPORT_COMMIT_FAILED } as unknown as Prisma.InputJsonValue } }),
-        );
-        touched++;
+      try {
+        const queued = await this.queue.getJob(`import-${j.id}`);
+        const state = queued ? await queued.getState() : 'missing';
+        // 'completed' with a PROCESSING row = orphan (late no-op run / zombie): replace the dedup-blocking entry.
+        if (state === 'missing' || state === 'completed') {
+          await addTracedJobReplacingTerminal(this.queue, 'commit', { importJobId: j.id, companyId: j.companyId, userId: j.createdBy ?? undefined }, { ...IMPORT_JOB_OPTS, jobId: `import-${j.id}` });
+          touched++;
+        } else if (state === 'failed') {
+          await this.tenantPrisma.run(j.companyId, (tx) =>
+            tx.importJob.updateMany({ where: { id: j.id, status: 'PROCESSING' }, data: { status: 'FAILED', errorLog: { ...IMPORT_COMMIT_FAILED } as unknown as Prisma.InputJsonValue } }),
+          );
+          touched++;
+        }
+      } catch (e) {
+        this.logger.warn(`sweep skipped job ${j.id} (company ${j.companyId}): ${e instanceof Error ? e.name : 'error'}`);
       }
     }
     return touched;

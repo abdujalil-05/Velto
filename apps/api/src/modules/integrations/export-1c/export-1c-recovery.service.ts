@@ -2,8 +2,9 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, Optional, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import type { Queue } from 'bullmq';
 import { Prisma, systemPrisma } from '@velto/database';
+import { AuditLogService } from '../../../common/audit/audit-log.service';
 import { fetchAllById } from '../../../common/pagination/fetch-all-by-id';
-import { addTracedJob } from '../../../common/queue/trace-job';
+import { addTracedJobReplacingTerminal } from '../../../common/queue/trace-job';
 import { COMPANY_EXPORT_JOB_OPTS, COMPANY_EXPORT_QUEUE, COMPANY_EXPORT_TYPE, type CompanyExportJobData } from '../../company-export/company-export.constants';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import {
@@ -24,6 +25,7 @@ import {
 export class Export1cRecoveryService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(Export1cRecoveryService.name);
   private timer?: NodeJS.Timeout;
+  private readonly audit = new AuditLogService();
 
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
@@ -70,27 +72,35 @@ export class Export1cRecoveryService implements OnModuleInit, OnModuleDestroy {
     const where = { type, status: 'QUEUED' as const, updatedAt: { lt: cutoff } };
     const orphans = await fetchAllById((page) => systemPrisma.exportJob.findMany({ where, select: { id: true, companyId: true, updatedAt: true }, orderBy: { id: 'asc' }, ...page }));
     let failed = 0;
-    let queueDown = false; // after one enqueue failure/timeout skip further attempts this pass (avoids N x timeout)
     for (const j of orphans) {
+      // Past the abandoned cutoff fail the row regardless of enqueue outcome (a failed BullMQ entry would otherwise hold the active limit forever).
+      if (j.updatedAt < abandonedCutoff) {
+        failed += await this.failAbandoned(j.id, j.companyId, abandonedCutoff);
+        continue;
+      }
       try {
-        if (queueDown) throw new Error('queue unavailable');
-        await addTracedJob(queue, 'export', { exportJobId: j.id, companyId: j.companyId }, { ...opts, jobId: `export-${j.id}` });
+        await addTracedJobReplacingTerminal(queue, 'export', { exportJobId: j.id, companyId: j.companyId }, { ...opts, jobId: `export-${j.id}` });
       } catch (e) {
-        if (!queueDown) this.logger.error(`re-enqueue failed: ${e instanceof Error ? e.name : 'error'}`);
-        queueDown = true;
-        if (j.updatedAt >= abandonedCutoff) continue;
-        // QUEUED -> FAILED is not a legal trigger transition; go through PROCESSING.
-        failed += await this.tenantPrisma.run(j.companyId, async (tx) => {
-          const claimed = await tx.exportJob.updateMany({ where: { id: j.id, status: 'QUEUED', updatedAt: { lt: abandonedCutoff } }, data: { status: 'PROCESSING' } });
-          if (claimed.count !== 1) return 0;
-          const res = await tx.exportJob.updateMany({
-            where: { id: j.id, status: 'PROCESSING' },
-            data: { status: 'FAILED', errorLog: { message: "Eksport uzoq vaqt QUEUED holatida qoldi (navbatga qo'yib bo'lmadi)" } as Prisma.InputJsonValue },
-          });
-          return res.count;
-        });
+        // Per-job failure: log and continue; the next sweep retries.
+        this.logger.warn(`re-enqueue failed for export ${j.id} (company ${j.companyId}): ${e instanceof Error ? e.name : 'error'}`);
       }
     }
     return failed;
+  }
+
+  private failAbandoned(id: string, companyId: string, abandonedCutoff: Date): Promise<number> {
+    // QUEUED -> FAILED is not a legal trigger transition; go through PROCESSING.
+    return this.tenantPrisma.run(companyId, async (tx) => {
+      const claimed = await tx.exportJob.updateMany({ where: { id, status: 'QUEUED', updatedAt: { lt: abandonedCutoff } }, data: { status: 'PROCESSING' } });
+      if (claimed.count !== 1) return 0;
+      const res = await tx.exportJob.updateMany({
+        where: { id, status: 'PROCESSING' },
+        data: { status: 'FAILED', errorLog: { message: "Eksport uzoq vaqt QUEUED holatida qoldi (navbatga qo'yib bo'lmadi)" } as Prisma.InputJsonValue },
+      });
+      if (res.count === 1) {
+        await this.audit.log(tx, { companyId, action: 'export.failed_abandoned', entity: 'ExportJob', entityId: id, oldValue: { status: 'QUEUED' }, newValue: { status: 'FAILED', reason: 'abandoned_queued' } });
+      }
+      return res.count;
+    });
   }
 }

@@ -15,6 +15,19 @@ export function addTracedJob<T extends TraceableJobData>(queue: Queue<T>, name: 
   return withEnqueueTimeout(pending);
 }
 
+/**
+ * Dedup-by-jobId leaves a terminal (completed/failed) BullMQ entry blocking a re-add while the domain row is still
+ * non-terminal (orphan). Remove that entry first, then add. Callers' processors are CAS/cursor-protected, so a re-run is safe.
+ */
+export async function addTracedJobReplacingTerminal<T extends TraceableJobData>(queue: Queue<T>, name: string, data: Omit<T, 'traceId'>, opts: JobsOptions & { jobId: string }) {
+  const existing = await withEnqueueTimeout(Promise.resolve(queue.getJob(opts.jobId)));
+  if (existing) {
+    const state = await withEnqueueTimeout(Promise.resolve(existing.getState()));
+    if (state === 'completed' || state === 'failed') await withEnqueueTimeout(Promise.resolve(existing.remove()));
+  }
+  return addTracedJob(queue, name, data, opts);
+}
+
 /** NFR-REL-006: per-enqueue timeout (env QUEUE_ENQUEUE_TIMEOUT_MS, default 3000). */
 export function enqueueTimeoutMs(): number {
   const n = Number(process.env.QUEUE_ENQUEUE_TIMEOUT_MS);

@@ -12,7 +12,7 @@ import { TenantContext } from '../../common/tenant/tenant-context';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import type { ListImportsQueryDto } from './dto/list-imports.query';
 import { ImportAlreadyConfirmedException, ImportJobNotFoundException, ImportQueueUnavailableException, InvalidImportFileException } from './import-exceptions';
-import { addTracedJob } from '../../common/queue/trace-job';
+import { addTracedJobReplacingTerminal } from '../../common/queue/trace-job';
 import { localizeRowErrors } from './row-messages';
 import { IMPORT_JOB_OPTS, IMPORT_QUEUE, IMPORT_TYPES, type ImportJobData, type ImportJobReport, type ImportType } from './import.constants';
 import { parseCustomersWorkbook, type CustomerImportRow } from './parsers/customers-parser';
@@ -133,7 +133,7 @@ export class ImportService {
     // makes a duplicate enqueue a no-op in BullMQ.
     TenantContext.afterCommit(async () => {
       try {
-        await addTracedJob(this.queue, 'commit', { importJobId: id, companyId: user.companyId, userId: user.id }, { ...IMPORT_JOB_OPTS, jobId: `import-${id}` });
+        await addTracedJobReplacingTerminal(this.queue, 'commit', { importJobId: id, companyId: user.companyId, userId: user.id }, { ...IMPORT_JOB_OPTS, jobId: `import-${id}` });
       } catch (err) {
         this.logger.error(`import ${id}: enqueue failed (${err instanceof Error ? err.name : 'error'}) trace=${getTraceId() ?? '-'}`);
         // Revert so the user can confirm again instead of a stuck PROCESSING job.

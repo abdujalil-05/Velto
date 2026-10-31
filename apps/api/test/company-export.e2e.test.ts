@@ -275,7 +275,7 @@ describe('E2E ADR-045: company export', () => {
       const stale = new Date(Date.now() - 20 * 60_000);
       await tenantPrisma.run(company, (tx) => tx.exportJob.update({ where: { id: job.id }, data: { status: 'PROCESSING', updatedAt: stale } }));
       await companyExportHeartbeat(tenantPrisma, company, job.id);
-      const recovery = new Export1cRecoveryService(tenantPrisma, { add: async () => ({}) } as never);
+      const recovery = new Export1cRecoveryService(tenantPrisma, { getJob: async () => undefined, add: async () => ({}) } as never);
       await recovery.sweep();
       expect((await dbJob(company, job.id)).status).toBe('PROCESSING');
       await tenantPrisma.run(company, (tx) => tx.exportJob.updateMany({ where: { id: job.id }, data: { updatedAt: stale } }));
