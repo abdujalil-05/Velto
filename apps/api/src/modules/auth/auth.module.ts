@@ -2,11 +2,14 @@ import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { AuditLogService } from '../../common/audit/audit-log.service';
+import { SecretBox } from '../../common/crypto/secret-box';
 import { SmsModule } from '../../common/sms/sms.module';
 import { AuthChallengeStore } from './auth-challenge.store';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { LoginRateLimiterService } from './login-rate-limiter.service';
+import { MfaController } from './mfa.controller';
+import { MfaService } from './mfa.service';
 import { PasswordResetService } from './password-reset.service';
 
 @Module({
@@ -20,8 +23,8 @@ import { PasswordResetService } from './password-reset.service';
     }),
     SmsModule,
   ],
-  controllers: [AuthController],
-  providers: [AuthService, AuthChallengeStore, LoginRateLimiterService, AuditLogService, PasswordResetService],
+  controllers: [AuthController, MfaController],
+  providers: [AuthService, AuthChallengeStore, LoginRateLimiterService, AuditLogService, PasswordResetService, SecretBox, MfaService],
   // Re-exported so AppModule's global JwtAuthGuard (APP_GUARD) can inject JwtService.
   exports: [JwtModule],
 })

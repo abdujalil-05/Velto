@@ -18,6 +18,7 @@ import type { Export1cJobData } from '../src/modules/integrations/export-1c/expo
 import { Export1cProcessor } from '../src/modules/integrations/export-1c/export-1c.processor';
 import { Export1cRecoveryService } from '../src/modules/integrations/export-1c/export-1c-recovery.service';
 import { uniquePhone } from './unique-phone';
+import { loginWithMfa } from './mfa-login';
 
 /**
  * F5.3 hardening: TZ §5.4.2 I-01 (stable Ид across re-export), §16.5.1 negative tests, SEC-001/009,
@@ -78,7 +79,7 @@ describe('E2E F5.3: 1C export hardening', () => {
       }
       await tx.userRole.create({ data: { userId: user.id, roleId: role.id } });
     });
-    const res = await http().post('/auth/login').send({ phone, password }).expect(201);
+    const res = { body: await loginWithMfa(app, phone, password) };
     tokens[key] = res.body.accessToken;
   }
 

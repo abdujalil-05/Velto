@@ -109,6 +109,17 @@ Bu hostda nomlar: ilova `velto_app`, system `velto_app_system`, egasi — yangi
 `velto_app_owner` (pastdagi runbook). `.env.production.local` ga
 `DATABASE_MIGRATE_URL` qo'shiladi (chmod 600).
 
+## MFA_ENCRYPTION_KEY (majburiy secret, ADR-058)
+
+TOTP secret'larni AES-256-GCM bilan shifrlaydi; base64 formatda AYNAN 32 bayt.
+Yo'q yoki noto'g'ri bo'lsa `velto-api` boot'da yiqiladi (env.schema.ts).
+Faqat `.env.production.local` (chmod 600) da; gitga, logga, CI'ga doimiy qiymat qo'yilmaydi.
+
+- Yaratish: `openssl rand -base64 32`
+- Zaxira: kalitni parol menejerida saqlang (backup'dan alohida) — yo'qolsa barcha TOTP secret'lar o'qilmaydi, foydalanuvchilar MFA'ni qayta ro'yxatdan o'tkazadi.
+- Rotatsiya: kalitni almashtirishdan oldin ma'lumotlarni `keyVersion` bo'yicha qayta shifrlash kerak (eski kalit bilan ochib, yangisi bilan yozish, `keyVersion` ni oshirish). Kalitni to'g'ridan-to'g'ri almashtirish mavjud yozuvlarni buzadi. Avval staging'da sinang.
+- CI har run'da vaqtinchalik tasodifiy kalit yaratadi (`ci.yml`).
+
 ## Rol modelini production'ga o'tkazish (bir martalik runbook)
 
 ⚠️ `provision-roles.sql` ni production'da AYNAN shu holida ishlatmang: u

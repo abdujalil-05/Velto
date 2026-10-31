@@ -9,6 +9,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
 import { uniquePhone } from './unique-phone';
+import { loginWithMfa } from './mfa-login';
 
 /** F2.4 / SEC-023: a courier-only session delivers only its own orders, and only in full (partial `lines` => 403). */
 describe('E2E: courier delivery — own order, full only', () => {
@@ -56,7 +57,7 @@ describe('E2E: courier delivery — own order, full only', () => {
         await tx.$executeRaw`SELECT set_config('app.current_company_id', ${companyId}, true)`;
         await tx.userRole.create({ data: { userId: user.id, roleId: roleIds[roleCode]! } });
       });
-      const res = await http().post('/auth/login').send({ phone, password }).expect(201);
+      const res = { body: await loginWithMfa(app, phone, password) };
       tokens[key] = { token: res.body.accessToken, userId: user.id };
     }
     await tenantPrisma.run(companyId, async (tx) => {

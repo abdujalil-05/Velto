@@ -14,6 +14,7 @@ import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service'
 import { localDateString } from '../src/modules/analytics/report-utils';
 import { buildTestWorkbook } from '../src/modules/import/parsers/test-workbook';
 import { uniquePhone } from './unique-phone';
+import { loginWithMfa } from './mfa-login';
 
 const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const CUST_HEADERS = ['customerCode', 'debt', 'credit', 'docRef', 'docDate'];
@@ -62,7 +63,7 @@ describe('E2E opening balances (ADR-041..043)', () => {
       for (const permissionId of permissionIds) await tx.rolePermission.create({ data: { roleId: role.id, permissionId } });
       await tx.userRole.create({ data: { userId: user.id, roleId: role.id } });
     });
-    const res = await http().post('/auth/login').send({ phone, password }).expect(201);
+    const res = { body: await loginWithMfa(app, phone, password) };
     return { token: res.body.accessToken as string, id: user.id };
   }
 

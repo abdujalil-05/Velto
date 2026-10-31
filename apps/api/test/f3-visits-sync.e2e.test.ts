@@ -10,6 +10,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
 import { uniquePhone } from './unique-phone';
+import { loginWithMfa } from './mfa-login';
 
 /** F3: offline visit push (§8/10.3), tenant isolation (SEC-001..005, SEC-023), server-only GPS status, GPS settings. */
 describe('E2E F3: visits via /sync/push + /visits, isolation, GPS settings', () => {
@@ -60,7 +61,7 @@ describe('E2E F3: visits via /sync/push + /visits, isolation, GPS settings', () 
       await tx.$executeRaw`SELECT set_config('app.current_company_id', ${cid}, true)`;
       await tx.userRole.create({ data: { userId: user.id, roleId } });
     });
-    const res = await http().post('/auth/login').send({ phone, password }).expect(201);
+    const res = { body: await loginWithMfa(app, phone, password) };
     tokens[key] = { token: res.body.accessToken, userId: user.id };
   }
 

@@ -13,6 +13,7 @@ import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service'
 import { TenantTx } from '../src/common/tenant/tenant-tx-options.decorator';
 import type { AuthenticatedUser } from '../src/common/auth/auth.types';
 import { uniquePhone } from './unique-phone';
+import { loginWithMfa } from './mfa-login';
 
 const caught = async (fn: () => unknown) => {
   try {
@@ -107,7 +108,7 @@ describe('E2E F7: @TenantTx({ scope: "handler" })', () => {
       await tx.$executeRaw`SELECT set_config('app.current_company_id', ${companyId}, true)`;
       await tx.userRole.create({ data: { userId: user.id, roleId } });
     });
-    const res = await request(app.getHttpServer()).post('/auth/login').send({ phone, password }).expect(201);
+    const res = { body: await loginWithMfa(app, phone, password) };
     return { id: user.id, token: res.body.accessToken as string };
   }
   async function mkRole(companyId: string, code: string, withRead: boolean) {

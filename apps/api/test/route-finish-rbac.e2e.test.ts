@@ -11,6 +11,7 @@ import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
 import { companyDay } from '../src/modules/field/company-day';
 import { uniquePhone } from './unique-phone';
+import { loginWithMfa } from './mfa-login';
 
 /** F3 / SEC-023: POST /routes/:id/finish needs `routes.finish`; an agent only on their own route; courier routes never. */
 describe('E2E F3: route finish RBAC + open stops', () => {
@@ -57,7 +58,7 @@ describe('E2E F3: route finish RBAC + open stops', () => {
         await tx.$executeRaw`SELECT set_config('app.current_company_id', ${companyId}, true)`;
         await tx.userRole.create({ data: { userId: user.id, roleId: roleIds[roleCode]! } });
       });
-      const res = await request(app.getHttpServer()).post('/auth/login').send({ phone, password }).expect(201);
+      const res = { body: await loginWithMfa(app, phone, password) };
       tokens[key] = { token: res.body.accessToken, userId: user.id };
     }
     outletId = await tenantPrisma.run(companyId, async (tx) => {

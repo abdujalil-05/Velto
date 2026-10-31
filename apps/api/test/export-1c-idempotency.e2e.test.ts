@@ -10,6 +10,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
 import { uniquePhone } from './unique-phone';
+import { loginWithMfa } from './mfa-login';
 
 /** ADR-031/012: POST /export/1c is @Idempotent; CORS exposes the download headers (ADR-030). Real Postgres + RLS. */
 describe('E2E: 1C export create idempotency + CORS exposed headers', () => {
@@ -49,7 +50,7 @@ describe('E2E: 1C export create idempotency + CORS exposed headers', () => {
       for (const permissionId of permissionIds) await tx.rolePermission.create({ data: { roleId: role.id, permissionId } });
       await tx.userRole.create({ data: { userId: user.id, roleId: role.id } });
     });
-    token = (await http().post('/auth/login').send({ phone, password }).expect(201)).body.accessToken;
+    token = ({ body: await loginWithMfa(app, phone, password) }).body.accessToken;
   });
 
   afterAll(async () => {

@@ -147,3 +147,72 @@ export class AuthChallengeRateLimitedException extends AppException {
     );
   }
 }
+
+/** ADR-058: the session (access or refresh token) is not backed by the user's current confirmed MFA. Client must log in again. */
+export class MfaRequiredException extends AppException {
+  constructor() {
+    super(HttpStatus.UNAUTHORIZED, 'MFA_REQUIRED', {
+      uz: 'Ikki bosqichli tasdiqlash talab etiladi. Qaytadan kiring',
+      ru: 'Требуется двухфакторная аутентификация. Войдите снова',
+      en: 'Two-factor authentication is required. Please log in again',
+    });
+  }
+}
+
+export class MfaCodeInvalidException extends AppException {
+  constructor() {
+    super(HttpStatus.UNAUTHORIZED, 'MFA_CODE_INVALID', {
+      uz: "Tasdiqlash kodi noto'g'ri",
+      ru: 'Неверный код подтверждения',
+      en: 'Invalid verification code',
+    });
+  }
+}
+
+/** Expired, already used, wrong-scope or attempt-exhausted MFA challenge. One generic answer for all. */
+export class MfaChallengeInvalidException extends AppException {
+  constructor() {
+    super(HttpStatus.UNAUTHORIZED, 'MFA_CHALLENGE_INVALID', {
+      uz: "Tasdiqlash sessiyasi tugagan yoki yaroqsiz. Qaytadan kiring",
+      ru: 'Сессия подтверждения недействительна или истекла. Войдите снова',
+      en: 'The verification session is invalid or has expired. Please log in again',
+    });
+  }
+}
+
+export class MfaRateLimitedException extends AppException {
+  constructor(retryAfterSeconds: number) {
+    super(
+      HttpStatus.TOO_MANY_REQUESTS,
+      'MFA_RATE_LIMITED',
+      {
+        uz: "Juda ko'p urinish. Birozdan keyin qayta urinib ko'ring",
+        ru: 'Слишком много попыток. Повторите позже',
+        en: 'Too many attempts. Please try again later',
+      },
+      { retryAfterSeconds },
+    );
+  }
+}
+
+/** ADR-058: Telegram initData is never a second factor — privileged roles must use the web login with TOTP. */
+export class MfaWebLoginRequiredException extends AppException {
+  constructor() {
+    super(HttpStatus.FORBIDDEN, 'MFA_WEB_LOGIN_REQUIRED', {
+      uz: "Bu rol uchun faqat veb-ilova orqali, ikki bosqichli tasdiqlash bilan kirish mumkin",
+      ru: 'Для этой роли вход возможен только через веб-приложение с двухфакторной аутентификацией',
+      en: 'This role can only sign in through the web app with two-factor authentication',
+    });
+  }
+}
+
+/** Redis (challenge store / throttles) is down: MFA can never be skipped, so the whole step fails closed. */
+export class MfaServiceUnavailableException extends AppException {
+  constructor() {
+    super(HttpStatus.SERVICE_UNAVAILABLE, 'MFA_SERVICE_UNAVAILABLE', {
+      uz: "Tasdiqlash xizmati vaqtincha mavjud emas. Birozdan keyin qayta urinib ko'ring",
+      ru: 'Сервис подтверждения временно недоступен. Повторите попытку позже',
+      en: 'Verification service temporarily unavailable. Please try again shortly',
+    });
+  }
+}

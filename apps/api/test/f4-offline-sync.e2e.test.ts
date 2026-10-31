@@ -12,6 +12,7 @@ import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
 import { SalesService } from '../src/modules/sales/sales.service';
 import { uniquePhone } from './unique-phone';
+import { loginWithMfa } from './mfa-login';
 
 /**
  * F4.3/F4.4 (TZ §8.5, §16.2): offline sync QA over HTTP on real Postgres + RLS.
@@ -85,7 +86,7 @@ describe('E2E F4 offline sync (TZ 8.5 / 16.2)', () => {
       await tx.$executeRaw`SELECT set_config('app.current_company_id', ${c}, true)`;
       await tx.userRole.create({ data: { userId: user.id, roleId } });
     });
-    const res = await http().post('/auth/login').send({ phone, password }).expect(201);
+    const res = { body: await loginWithMfa(app, phone, password) };
     tokens[key] = { token: res.body.accessToken, userId: user.id };
   }
 

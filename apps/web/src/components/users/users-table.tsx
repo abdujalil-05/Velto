@@ -1,7 +1,7 @@
 'use client';
 
 import { useLocale, useTranslations } from 'next-intl';
-import { Pencil, Power, Trash2 } from 'lucide-react';
+import { KeyRound, Pencil, Power, Trash2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { formatDateTime } from '@/lib/format';
@@ -16,6 +16,9 @@ interface UsersTableProps {
   onEdit: (user: User) => void;
   onToggleActive: (user: User) => void;
   onDelete?: (user: User) => void;
+  /** `users.mfa_reset` (ADR-058). */
+  canResetMfa?: boolean;
+  onResetMfa?: (user: User) => void;
   togglingId?: string;
 }
 
@@ -27,12 +30,14 @@ export function UsersTable({
   onEdit,
   onToggleActive,
   onDelete,
+  canResetMfa = false,
+  onResetMfa,
   togglingId,
 }: UsersTableProps) {
   const t = useTranslations('Users');
   const tRoles = useTranslations('AppShell.roles');
   const locale = useLocale();
-  const showActions = canUpdate || canDelete;
+  const showActions = canUpdate || canDelete || canResetMfa;
 
   return (
     <div className="overflow-x-auto">
@@ -90,6 +95,11 @@ export function UsersTable({
                           <Power className={user.isActive ? 'h-4 w-4 text-destructive' : 'h-4 w-4 text-success'} />
                         </Button>
                       </>
+                    )}
+                    {canResetMfa && onResetMfa && user.id !== currentUserId && (
+                      <Button variant="ghost" size="sm" onClick={() => onResetMfa(user)} aria-label={t('mfaReset.action')} title={t('mfaReset.action')}>
+                        <KeyRound className="h-4 w-4" />
+                      </Button>
                     )}
                     {canDelete && onDelete && (
                       // Distinct from deactivate: this revokes roles and either

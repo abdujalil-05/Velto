@@ -10,6 +10,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
 import { uniquePhone } from './unique-phone';
+import { loginWithMfa } from './mfa-login';
 
 /**
  * F1.4 / SEC-020..024, SEC-054, §16.3: an ACCOUNTANT (real catalog grant) is
@@ -57,7 +58,7 @@ describe('E2E F1.4: ACCOUNTANT restrictions', () => {
       for (const permissionId of permissionIds) await tx.rolePermission.create({ data: { roleId: role.id, permissionId } });
       await tx.userRole.create({ data: { userId: user.id, roleId: role.id } });
     });
-    const res = await request(app.getHttpServer()).post('/auth/login').send({ phone, password }).expect(201);
+    const res = { body: await loginWithMfa(app, phone, password) };
     token = res.body.accessToken;
   });
 

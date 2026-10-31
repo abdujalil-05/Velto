@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { LogOut, Menu, X } from 'lucide-react';
+import { LogOut, Menu, ShieldCheck, X } from 'lucide-react';
 import { Link, usePathname } from '@/i18n/navigation';
 import { Button } from '@/components/ui/button';
 import { LanguageSwitcher } from '@/components/language-switcher';
@@ -58,6 +58,15 @@ export function Topbar() {
             </div>
           </div>
         )}
+
+        <Link
+          href="/security"
+          className="rounded-md p-2 text-muted-foreground hover:bg-accent"
+          aria-label={tShell('security')}
+          title={tShell('security')}
+        >
+          <ShieldCheck className="h-4 w-4" />
+        </Link>
 
         <Button variant="ghost" size="icon" onClick={() => logout()} aria-label={tShell('logout')} title={tShell('logout')}>
           <LogOut className="h-4 w-4" />

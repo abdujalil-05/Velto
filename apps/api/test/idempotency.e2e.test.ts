@@ -8,6 +8,7 @@ import { prisma, systemPrisma } from '@velto/database';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { uniquePhone } from './unique-phone';
+import { loginWithMfa } from './mfa-login';
 
 /**
  * F1.3 / TZ 16.3 "mutations idempotent under parallel calls": @Idempotent()
@@ -87,7 +88,7 @@ describe('E2E: Idempotency-Key on confirm / deliver / cash close (F1.3, 16.3)', 
       const c = await tx.customer.create({ data: { companyId, code: 'IDEM-C', name: 'Idem C' } });
       customerId = c.id;
     });
-    const login = await http().post('/auth/login').send({ phone, password }).expect(201);
+    const login = { body: await loginWithMfa(app, phone, password) };
     token = login.body.accessToken;
   });
 

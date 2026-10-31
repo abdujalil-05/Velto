@@ -17,6 +17,7 @@ const base = {
   DATABASE_SYSTEM_URL: 'postgresql://x',
   REDIS_URL: 'redis://x',
   JWT_ACCESS_SECRET: 'x'.repeat(32),
+  MFA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
   S3_ENDPOINT: 'http://x',
   S3_ACCESS_KEY: 'a',
   S3_SECRET_KEY: 'b',

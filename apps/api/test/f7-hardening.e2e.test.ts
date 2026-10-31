@@ -12,6 +12,7 @@ import { REDIS_CLIENT } from '../src/common/redis/redis.module';
 import { StorageService } from '../src/common/storage/storage.service';
 import { uniquePhone } from './unique-phone';
 import { ALL_SCOPE, encodeCursor } from '../src/modules/sync/sync-cursor';
+import { loginWithMfa } from './mfa-login';
 
 /** F7: D2 health, D3 READ_ONLY_MODE, D4 sync throttle (SEC-015), Redis-down auth fail-closed (ADR-050). */
 const password = 'CorrectHorseBattery9'; // nosemgrep: ajinabraham.njsscan.generic.hardcoded_secrets.node_password
@@ -108,8 +109,8 @@ describe('F7 D3: READ_ONLY_MODE', () => {
     const app = await buildApp({ readOnly: true });
     try {
       const http = () => request(app.getHttpServer());
-      const login = await http().post('/auth/login').send({ phone, password }).expect(201);
-      const auth = { Authorization: `Bearer ${login.body.accessToken}` };
+      const login = await loginWithMfa(app, phone, password);
+      const auth = { Authorization: `Bearer ${login.accessToken}` };
 
       const writes = [
         () =>
@@ -129,7 +130,7 @@ describe('F7 D3: READ_ONLY_MODE', () => {
       }
       await http().get('/auth/me').set(auth).expect(200);
       await http().get('/health/live').expect(200);
-      const refreshed = await http().post('/auth/refresh').set('Cookie', login.headers['set-cookie']).send({}).expect(201);
+      const refreshed = await http().post('/auth/refresh').set('Cookie', login.cookies!).send({}).expect(201);
       expect(refreshed.body.accessToken).toBeDefined();
       await http().post('/auth/logout').set('Cookie', refreshed.headers['set-cookie']).send({}).expect(204);
       // password reset writes -> blocked
@@ -155,6 +156,7 @@ describe('F7 D4: sync throttle (SEC-015) + Redis-down auth', () => {
   let phoneA: string;
   let phoneB: string;
   const tokens: Record<string, string> = {};
+  const secrets: Record<string, string> = {};
 
   beforeAll(async () => {
     app = await buildApp();
@@ -163,7 +165,9 @@ describe('F7 D4: sync throttle (SEC-015) + Redis-down auth', () => {
     phoneA = (await seedUser(cid, 'a')).phone;
     phoneB = (await seedUser(cid, 'b')).phone;
     for (const [k, phone] of [['a', phoneA], ['b', phoneB]] as const) {
-      tokens[k] = (await request(app.getHttpServer()).post('/auth/login').send({ phone, password }).expect(201)).body.accessToken;
+      const session = await loginWithMfa(app, phone, password);
+      tokens[k] = session.accessToken;
+      secrets[k] = session.secret!;
     }
   });
   afterAll(async () => {
@@ -211,7 +215,7 @@ describe('F7 D4: sync throttle (SEC-015) + Redis-down auth', () => {
   }, 30_000);
 
   it('Redis down: login and password-reset -> 503 SERVICE_UNAVAILABLE; existing sessions (refresh) still work', async () => {
-    const login = await request(app.getHttpServer()).post('/auth/login').send({ phone: phoneB, password }).expect(201);
+    const login = await loginWithMfa(app, phoneB, password, secrets.b);
     const down = await buildApp({ redis: deadRedis });
     try {
       const http = () => request(down.getHttpServer());
@@ -224,7 +228,7 @@ describe('F7 D4: sync throttle (SEC-015) + Redis-down auth', () => {
         expect(res.body.code).toBe('SERVICE_UNAVAILABLE');
         expect(JSON.stringify(res.body)).not.toMatch(/topsecret|ECONNREFUSED/);
       }
-      await http().post('/auth/refresh').set('Cookie', login.headers['set-cookie']).send({}).expect(201);
+      await http().post('/auth/refresh').set('Cookie', login.cookies!).send({}).expect(201);
     } finally {
       await down.close();
     }

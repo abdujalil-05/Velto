@@ -92,7 +92,40 @@
     "continue": "Davom etish",
     "backToPassword": "Parol bosqichiga qaytish",
     "challengeInvalid": "Tanlov muddati tugagan yoki allaqachon ishlatilgan. Telefon raqam va parolni qayta kiriting.",
-    "challengeRateLimited": "Biroz kutib, qayta urinib ko'ring."
+    "challengeRateLimited": "Biroz kutib, qayta urinib ko'ring.",
+    "mfa": {
+      "sessionRequired": "Ikki bosqichli autentifikatsiya talab qilinadi. Qaytadan kiring.",
+      "loading": "Yuklanmoqda",
+      "retry": "Qayta urinish",
+      "continue": "Davom etish",
+      "challengeExpired": "Tekshiruv muddati tugagan yoki allaqachon ishlatilgan. Telefon va parolni qaytadan kiriting.",
+      "webLoginRequired": "Bu akkaunt veb-ilova orqali kirishi kerak. Telefon va parolni qaytadan kiriting.",
+      "codeInvalid": "Kod noto'g'ri. Kodni tekshirib, qayta urinib ko'ring.",
+      "rateLimited": "Urinishlar juda ko'p. Bir necha daqiqa kutib, qayta urinib ko'ring.",
+      "serviceUnavailable": "Tekshiruv vaqtincha mavjud emas. Birozdan so'ng qayta urinib ko'ring.",
+      "codeFormat": "6 xonali kodni kiriting",
+      "recoveryRequired": "Zaxira kodni kiriting",
+      "verifyTitle": "Ikki bosqichli tekshiruv",
+      "verifyHint": "Autentifikator ilovasidagi 6 xonali kodni kiriting.",
+      "codeLabel": "Autentifikatsiya kodi",
+      "verify": "Tasdiqlash",
+      "useRecovery": "Zaxira koddan foydalanish",
+      "useAuthenticator": "Ilova kodidan foydalanish",
+      "recoveryPrompt": "Saqlangan zaxira kodlardan birini kiriting. Har biri bir marta ishlaydi.",
+      "recoveryLabel": "Zaxira kod",
+      "enrollTitle": "Ikki bosqichli autentifikatsiyani sozlash",
+      "enrollHint": "QR kodni autentifikator ilovasida skanerlang va ko'rsatilgan 6 xonali kodni kiriting.",
+      "qrAlt": "Autentifikator ilovasi uchun QR kod",
+      "manualKey": "Yoki kalitni qo'lda kiriting",
+      "copy": "Nusxalash",
+      "copied": "Nusxalandi",
+      "confirmCodeLabel": "6 xonali kod",
+      "confirmEnroll": "Tasdiqlash va davom etish",
+      "recoveryTitle": "Zaxira kodlarni saqlang",
+      "recoveryHint": "Autentifikatorni yo'qotsangiz, har bir kod bir marta ishlaydi. Ular faqat hozir ko'rsatiladi.",
+      "download": ".txt yuklab olish",
+      "savedCheck": "Kodlarni xavfsiz joyga saqladim"
+    }
   },
   "NotFound": {
     "title": "Bunday sahifa mavjud emas",
@@ -116,7 +149,8 @@
       "light": "Yorug' rejim (bosib qorong'iga o'tish)",
       "dark": "Qorong'i rejim (bosib tizimga o'tish)",
       "system": "Tizim rejimi (bosib yorug'ga o'tish)"
-    }
+    },
+    "security": "Xavfsizlik"
   },
   "Dashboard": {
     "title": "Bosh sahifa",
@@ -644,6 +678,15 @@
       "created": "Foydalanuvchi qo'shildi",
       "updated": "O'zgarishlar saqlandi",
       "retry": "Qayta urinish"
+    },
+    "mfaReset": {
+      "action": "MFA ni tiklash",
+      "title": "Ikki bosqichli autentifikatsiyani tiklash",
+      "description": "{name}ning barcha seanslari tugatiladi va keyingi kirishda autentifikatorni qaytadan sozlashi kerak.",
+      "reason": "Sabab (majburiy)",
+      "cancel": "Bekor qilish",
+      "confirm": "MFA ni tiklash",
+      "success": "{name} uchun MFA tiklandi"
     }
   },
   "Onboarding": {
@@ -1866,6 +1909,24 @@
       "match": "Nazorat summasi mos keldi",
       "mismatch": "Nazorat summasi mos kelmadi - faylni ishlatmang",
       "unavailable": "Nazorat summasini tekshirib bo'lmadi"
+    }
+  },
+  "Security": {
+    "title": "Xavfsizlik",
+    "password": "Parol",
+    "currentCode": "Joriy 6 xonali kod",
+    "reenroll": {
+      "title": "Autentifikatorni almashtirish",
+      "description": "Ikki bosqichli autentifikatsiyani yangi qurilmada sozlang. Parol va joriy kod kerak.",
+      "submit": "Davom etish",
+      "done": "Tayyor",
+      "success": "Autentifikator yangilandi"
+    },
+    "regenerate": {
+      "title": "Yangi zaxira kodlar",
+      "description": "Yangi zaxira kodlar to'plamini yarating. Eskilari ishlamay qoladi.",
+      "submit": "Kodlarni yaratish",
+      "done": "Tayyor"
     }
   }
 }

@@ -65,6 +65,12 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - name: Generate ephemeral MFA_ENCRYPTION_KEY
+        run: |
+          key="$(openssl rand -base64 32)"
+          echo "::add-mask::$key"
+          echo "MFA_ENCRYPTION_KEY=$key" >> "$GITHUB_ENV"
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 

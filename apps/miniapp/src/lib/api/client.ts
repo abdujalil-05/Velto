@@ -57,6 +57,8 @@ export function errorMessage(error: unknown, locale: string): string {
 /** `revoked`: the server itself rejected the refresh token (401/403). A network error / 5xx is NOT a revoke (offline must never wipe). */
 export interface UnauthorizedInfo {
   revoked: boolean;
+  /** 401 MFA_REQUIRED: the session lacks the MFA its role needs; refreshing cannot fix it (ADR-058). */
+  mfaRequired?: boolean;
 }
 type UnauthorizedHandler = (info: UnauthorizedInfo) => void;
 const unauthorizedHandlers = new Set<UnauthorizedHandler>();
@@ -109,6 +111,11 @@ export interface ApiFetchOptions extends Omit<RequestInit, 'body'> {
   skipAuth?: boolean;
 }
 
+async function isMfaRequired(res: Response): Promise<boolean> {
+  const body = (await res.clone().json().catch(() => null)) as { code?: string } | null;
+  return body?.code === 'MFA_REQUIRED';
+}
+
 export async function apiFetch<T = void>(path: string, options: ApiFetchOptions = {}): Promise<T> {
   const { body, skipAuth, headers, ...rest } = options;
   const isFormData = body instanceof FormData;
@@ -126,7 +133,11 @@ export async function apiFetch<T = void>(path: string, options: ApiFetchOptions 
 
   let res = await send(skipAuth ? null : getAccessToken());
 
-  if (res.status === 401 && !skipAuth) {
+  if (res.status === 401 && !skipAuth && (await isMfaRequired(res))) {
+    // No refresh loop: drop the session tokens only (offline queue untouched) and let the UI show the web-login screen.
+    clearTokens();
+    unauthorizedHandlers.forEach((handler) => handler({ revoked: false, mfaRequired: true }));
+  } else if (res.status === 401 && !skipAuth) {
     const refreshed = await refreshAccessToken();
     if ('token' in refreshed) {
       res = await send(refreshed.token);

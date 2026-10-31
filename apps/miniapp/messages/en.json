@@ -1,6 +1,7 @@
 {
   "Auth": {
     "openViaTelegram": "Open this app via Telegram.",
+    "mfaWebRequired": "Your role requires two-factor sign-in; use the web app.",
     "needsPhoneLink": "Share your phone number to link your account.",
     "sharePhone": "Share my phone number",
     "linkTimeout": "Linking failed. Check the message from the Telegram bot or contact your administrator, then try again.",

@@ -12,6 +12,7 @@ import { configureApp } from '../src/bootstrap';
 import { StorageService } from '../src/common/storage/storage.service';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
 import { uniquePhone } from './unique-phone';
+import { loginWithMfa } from './mfa-login';
 
 /** F5.3 / ADR-030: 1C export download (private stream) + manual ACK + throttles. Real Postgres + RLS, StorageService test double. */
 describe('E2E F5.3: 1C export download / ACK / limits', () => {
@@ -60,7 +61,7 @@ describe('E2E F5.3: 1C export download / ACK / limits', () => {
         await tx.userRole.create({ data: { userId: user.id, roleId: role.id } });
       });
     }
-    const res = await http().post('/auth/login').send({ phone, password }).expect(201);
+    const res = { body: await loginWithMfa(app, phone, password) };
     tokens[key] = { token: res.body.accessToken, userId: user.id };
   }
 

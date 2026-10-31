@@ -8,6 +8,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
 import { uniquePhone } from './unique-phone';
+import { loginWithMfa } from './mfa-login';
 
 /**
  * §16.3 / SEC-020..024, SEC-054: "ruxsat rad etilsa 403 + audit event",
@@ -52,7 +53,7 @@ describe('E2E §16.3: permission denied => 403 + audit event (+ traceId), no cro
       await tx.customer.create({ data: { companyId: companyB, code: 'PD-B-1', name: secretCustomerName } });
     });
 
-    const res = await request(app.getHttpServer()).post('/auth/login').send({ phone, password }).expect(201);
+    const res = { body: await loginWithMfa(app, phone, password) };
     accessToken = res.body.accessToken;
   });
 

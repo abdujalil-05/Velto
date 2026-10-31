@@ -9,6 +9,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
 import { uniquePhone } from './unique-phone';
+import { loginWithMfa } from './mfa-login';
 
 /** F4: BigInt changeSeq must serialize (decimal string) through the real HTTP stack, in /sync/pull and in plain CRUD responses. */
 describe('E2E F4: BigInt changeSeq serialization + /sync/pull shape', () => {
@@ -45,7 +46,7 @@ describe('E2E F4: BigInt changeSeq serialization + /sync/pull shape', () => {
       await tx.product.create({ data: { companyId: cid, sku: 'E2E-1', name: 'E2E', baseUnit: 'dona', vatRate: 12 } });
       await tx.customer.create({ data: { companyId: cid, code: 'E2E-C', name: 'E2E C' } });
     });
-    const res = await request(app.getHttpServer()).post('/auth/login').send({ phone, password }).expect(201);
+    const res = { body: await loginWithMfa(app, phone, password) };
     token = res.body.accessToken;
   });
 

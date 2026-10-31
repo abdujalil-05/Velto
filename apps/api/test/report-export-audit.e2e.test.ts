@@ -10,6 +10,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
 import { uniquePhone } from './unique-phone';
+import { loginWithMfa } from './mfa-login';
 
 /** TZ §11.4: every report export route writes exactly one `report.export` audit event; denied roles get 403 and none. */
 describe('E2E: report export audit', () => {
@@ -37,7 +38,7 @@ describe('E2E: report export audit', () => {
       for (const permissionId of permissionIds) await tx.rolePermission.create({ data: { roleId: role.id, permissionId } });
       await tx.userRole.create({ data: { userId: user.id, roleId: role.id } });
     });
-    const res = await request(app.getHttpServer()).post('/auth/login').send({ phone, password }).expect(201);
+    const res = { body: await loginWithMfa(app, phone, password) };
     tokens[roleCode] = res.body.accessToken;
     userIds[roleCode] = user.id;
   }

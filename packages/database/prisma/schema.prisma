@@ -97,6 +97,8 @@ model Company {
   reconciliationFindings ReconciliationFinding[]
   syncTombstones         SyncTombstone[]
   openingBalanceBatches  OpeningBalanceBatch[]
+  userMfas               UserMfa[]
+  userMfaRecoveryCodes   UserMfaRecoveryCode[]
 
   @@index([tenantId])
 }
@@ -145,6 +147,8 @@ model User {
   openingBatchesCreated       OpeningBalanceBatch[]   @relation("OpeningBatchCreatedBy")
   openingBatchesPosted        OpeningBalanceBatch[]   @relation("OpeningBatchPostedBy")
   openingBatchesVoided        OpeningBalanceBatch[]   @relation("OpeningBatchVoidedBy")
+  mfa                         UserMfa?
+  mfaRecoveryCodes            UserMfaRecoveryCode[]
 
   @@unique([companyId, phone])
   // Scoped per-company like every other natural key here: a global unique on
@@ -217,13 +221,59 @@ model RefreshToken {
   revokedAt DateTime?
   userAgent String?
   ip        String?
+  /// ADR-058: confirmed UserMfa.id this session was issued under (null =
+  /// pre-MFA / MFA-exempt session). DB trigger: must be the same user's
+  /// confirmed UserMfa. SET NULL when the MFA row is reset.
+  mfaId     String?   @db.Uuid
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
-  user User @relation(fields: [userId], references: [id])
+  user User     @relation(fields: [userId], references: [id])
+  mfa  UserMfa? @relation(fields: [mfaId], references: [id], onDelete: SetNull)
 
   @@index([userId])
   @@index([familyId])
+  @@index([mfaId])
+}
+
+/// ADR-058: TOTP enrollment, one per user. Secret is stored only encrypted
+/// (AES-GCM ciphertext/iv/tag, key selected by keyVersion). confirmedAt null
+/// = pending enrollment. lastUsedStep = last accepted TOTP time step (replay
+/// guard), -1 = never used.
+model UserMfa {
+  id               String    @id @default(uuid()) @db.Uuid
+  companyId        String    @db.Uuid
+  userId           String    @unique @db.Uuid
+  secretCiphertext Bytes
+  secretIv         Bytes
+  secretTag        Bytes
+  keyVersion       Int
+  confirmedAt      DateTime?
+  lastUsedStep     BigInt    @default(-1)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  company       Company        @relation(fields: [companyId], references: [id])
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
+
+  @@index([companyId])
+}
+
+/// ADR-058: single-use MFA recovery codes (argon2id hash only, never plain).
+model UserMfaRecoveryCode {
+  id        String    @id @default(uuid()) @db.Uuid
+  companyId String    @db.Uuid
+  userId    String    @db.Uuid
+  codeHash  String
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, usedAt])
+  @@index([companyId])
 }
 
 // ---------------------------------------------------------------------------

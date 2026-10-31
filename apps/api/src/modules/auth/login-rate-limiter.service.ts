@@ -66,6 +66,21 @@ export class LoginRateLimiterService {
     return Number(count);
   }
 
+  /**
+   * Atomically reserves one attempt BEFORE the secret is checked (INCR+EXPIRE in one Lua script),
+   * so parallel guesses cannot exceed BLOCK_AFTER. Over the cap => TooManyLoginAttemptsException.
+   * A success clears the counter via recordSuccess.
+   */
+  reserveAttempt(phone: string): Promise<void> {
+    return failClosedOnRedis(async () => {
+      const key = this.key(phone);
+      const count = Number(
+        await this.redis.eval("local c = redis.call('INCR', KEYS[1]) if c == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end return c", 1, key, WINDOW_SECONDS),
+      );
+      if (count > BLOCK_AFTER) throw new TooManyLoginAttemptsException(Math.max(await this.redis.ttl(key), 1));
+    });
+  }
+
   recordSuccess(phone: string): Promise<void> {
     return failClosedOnRedis(async () => {
       await this.redis.del(this.key(phone));

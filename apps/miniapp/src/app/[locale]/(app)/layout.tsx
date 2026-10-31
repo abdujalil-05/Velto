@@ -33,6 +33,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   // the fallback's job is to hand the agent that link rather than to explain
   // a login they cannot perform here. This used to be a single line of muted
   // text on an otherwise empty page, which on a phone reads as a blank screen.
+  if (status === 'mfa-web-required') {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-4 p-6 text-center">
+        <p className="max-w-xs text-sm text-muted-foreground">{t('mfaWebRequired')}</p>
+      </div>
+    );
+  }
   if (status === 'unauthenticated' && revoked) return <RevokedNotice />;
   if (status === 'no-telegram-context' || status === 'unauthenticated') {
     return <TelegramFallback reason={status} />;

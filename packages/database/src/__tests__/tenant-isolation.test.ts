@@ -393,6 +393,94 @@ describe('tenant isolation (RLS)', () => {
     ).rejects.toThrow();
   });
 
+  it('ADR-058 UserMfa / UserMfaRecoveryCode are scoped per tenant; cross-tenant writes and foreign RefreshToken.mfaId rejected', async () => {
+    const HASH = '$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$aGFzaA';
+    const mfaData = (companyId: string, userId: string, confirmed: boolean) => ({
+      companyId,
+      userId,
+      secretCiphertext: Buffer.from('ct'),
+      secretIv: Buffer.alloc(12),
+      secretTag: Buffer.alloc(16),
+      keyVersion: 1,
+      confirmedAt: confirmed ? new Date() : null,
+    });
+    const tokenData = (userId: string, mfaId: string) => ({
+      userId,
+      tokenHash: randomUUID(),
+      familyId: randomUUID(),
+      expiresAt: new Date(Date.now() + 60_000),
+      mfaId,
+    });
+    const users = { userId: { in: [recipientId, courierAId, userBId] } };
+    try {
+      const mfaA = await withTenant(companyAId, async (tx) => {
+        const mfa = await tx.userMfa.create({ data: mfaData(companyAId, recipientId, true) });
+        await tx.userMfaRecoveryCode.create({ data: { companyId: companyAId, userId: recipientId, codeHash: HASH } });
+        return mfa;
+      });
+      const pendingA = await withTenant(companyAId, (tx) =>
+        tx.userMfa.create({ data: mfaData(companyAId, courierAId, false) }),
+      );
+      await withTenant(companyBId, async (tx) => {
+        await tx.userMfa.create({ data: mfaData(companyBId, userBId, true) });
+        await tx.userMfaRecoveryCode.create({ data: { companyId: companyBId, userId: userBId, codeHash: HASH } });
+      });
+
+      // Reads: each tenant sees only its own rows.
+      const seen = (companyId: string) =>
+        withTenant(companyId, async (tx) => ({
+          mfa: (await tx.userMfa.findMany()).map((m) => m.userId).sort(),
+          codes: (await tx.userMfaRecoveryCode.findMany()).map((c) => c.userId),
+        }));
+      expect(await seen(companyAId)).toEqual({ mfa: [recipientId, courierAId].sort(), codes: [recipientId] });
+      expect(await seen(companyBId)).toEqual({ mfa: [userBId], codes: [userBId] });
+
+      // No tenant context: zero rows or the '' ::uuid cast error — both fail closed.
+      for (const read of [() => prisma.userMfa.findMany(), () => prisma.userMfaRecoveryCode.findMany()]) {
+        try {
+          expect(await read()).toHaveLength(0);
+        } catch (err) {
+          expect(String(err)).toMatch(/uuid/i);
+        }
+      }
+
+      // Writes: B cannot claim A's companyId, nor store A's user under its own.
+      await expect(
+        withTenant(companyBId, (tx) => tx.userMfaRecoveryCode.create({ data: { companyId: companyAId, userId: recipientId, codeHash: HASH } })),
+      ).rejects.toThrow();
+      await expect(
+        withTenant(companyBId, (tx) => tx.userMfaRecoveryCode.create({ data: { companyId: companyBId, userId: recipientId, codeHash: HASH } })),
+      ).rejects.toThrow();
+      await expect(
+        withTenant(companyBId, (tx) => tx.userMfa.create({ data: mfaData(companyBId, courierAId, true) })),
+      ).rejects.toThrow();
+      // Plain recovery codes are refused (argon2id hash only).
+      await expect(
+        withTenant(companyAId, (tx) => tx.userMfaRecoveryCode.create({ data: { companyId: companyAId, userId: recipientId, codeHash: 'ABCD-1234' } })),
+      ).rejects.toThrow();
+
+      // B cannot UPDATE/DELETE A's rows (invisible, never matched).
+      const tampered = await withTenant(companyBId, async (tx) => ({
+        upd: (await tx.userMfa.updateMany({ where: { id: mfaA.id }, data: { lastUsedStep: 99n } })).count,
+        delMfa: (await tx.userMfa.deleteMany({ where: { id: mfaA.id } })).count,
+        delCodes: (await tx.userMfaRecoveryCode.deleteMany({ where: { userId: recipientId } })).count,
+      }));
+      expect(tampered).toEqual({ upd: 0, delMfa: 0, delCodes: 0 });
+      expect(await systemPrisma.userMfa.findUniqueOrThrow({ where: { id: mfaA.id } })).toMatchObject({ lastUsedStep: -1n });
+
+      // RefreshToken.mfaId: own confirmed MFA ok; another user's / another
+      // tenant's / pending MFA rejected — even via velto_system.
+      await withTenant(companyAId, (tx) => tx.refreshToken.create({ data: tokenData(recipientId, mfaA.id) }));
+      await expect(systemPrisma.refreshToken.create({ data: tokenData(userBId, mfaA.id) })).rejects.toThrow(/confirmed MFA/);
+      await expect(systemPrisma.refreshToken.create({ data: tokenData(courierAId, mfaA.id) })).rejects.toThrow(/confirmed MFA/);
+      await expect(systemPrisma.refreshToken.create({ data: tokenData(courierAId, pendingA.id) })).rejects.toThrow(/confirmed MFA/);
+    } finally {
+      await systemPrisma.refreshToken.deleteMany({ where: users });
+      await systemPrisma.userMfaRecoveryCode.deleteMany({ where: users });
+      await systemPrisma.userMfa.deleteMany({ where: users });
+    }
+  });
+
   it('a direct-companyId table (RouteRun, 9.4 route finish) is scoped per tenant', async () => {
     const seenFromA = await withTenant(companyAId, (tx) => tx.routeRun.findMany());
     const seenFromB = await withTenant(companyBId, (tx) => tx.routeRun.findMany());

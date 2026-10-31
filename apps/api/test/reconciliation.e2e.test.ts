@@ -17,6 +17,7 @@ import type { AuthenticatedUser } from '../src/common/auth/auth.types';
 import { ReconciliationScheduleProcessor } from '../src/modules/reconciliation/reconciliation-schedule.processor';
 import { ReconciliationService, type DetectResult } from '../src/modules/reconciliation/reconciliation.service';
 import { uniquePhone } from './unique-phone';
+import { loginWithMfa } from './mfa-login';
 
 /** F2.5: reconciliation API RBAC, manual run, fix, daily alert dedupe, scheduler isolation. */
 describe('E2E F2.5: reconciliation', () => {
@@ -67,7 +68,7 @@ describe('E2E F2.5: reconciliation', () => {
         for (const permissionId of permissionIds) await tx.rolePermission.create({ data: { roleId: role.id, permissionId } });
         await tx.userRole.create({ data: { userId: user.id, roleId: role.id } });
       });
-      const res = await request(app.getHttpServer()).post('/auth/login').send({ phone, password }).expect(201);
+      const res = { body: await loginWithMfa(app, phone, password) };
       tokens[roleCode] = { token: res.body.accessToken, userId: user.id };
     }
 

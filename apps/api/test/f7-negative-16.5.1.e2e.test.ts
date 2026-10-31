@@ -13,6 +13,7 @@ import { StorageService } from '../src/common/storage/storage.service';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
 import { SalesService } from '../src/modules/sales/sales.service';
 import { uniquePhone } from './unique-phone';
+import { loginWithMfa } from './mfa-login';
 
 /**
  * TZ v5.0 §16.5.1 worked negative checklist (code-testable items), real Postgres + RLS:
@@ -50,7 +51,7 @@ describe('E2E §16.5.1 negative checklist', () => {
       await tx.$executeRaw`SELECT set_config('app.current_company_id', ${cid}, true)`;
       await tx.userRole.create({ data: { userId: user.id, roleId: roleIds[roleCode]! } });
     });
-    const res = await http().post('/auth/login').send({ phone, password }).expect(201);
+    const res = { body: await loginWithMfa(app, phone, password) };
     tokens[key] = { token: res.body.accessToken, userId: user.id };
   }
   const removeRoles = (userId: string) =>

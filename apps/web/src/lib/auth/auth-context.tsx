@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { apiFetch, onUnauthorized } from '@/lib/api/client';
+import { isMfaChallenge, type MfaChallenge } from '@/lib/api/mfa';
 import { isCompanySelection, loginRequest, selectCompanyRequest, type CompanySelectionRequired } from '@/lib/api/auth';
 import type { AuthenticatedUser, TokenPair } from '@/lib/api/types';
 import { clearTokens, getAccessToken, setAccessToken } from './tokens';
@@ -12,8 +13,11 @@ interface AuthContextValue {
   user: AuthenticatedUser | null;
   status: AuthStatus;
   /** Resolves to a company challenge (no session yet) or null when logged in. */
-  login: (phone: string, password: string) => Promise<CompanySelectionRequired | null>;
-  selectCompany: (challengeId: string, optionId: string) => Promise<void>;
+  login: (phone: string, password: string) => Promise<CompanySelectionRequired | MfaChallenge | null>;
+  /** Resolves to an MFA challenge (no session yet) or null when logged in. */
+  selectCompany: (challengeId: string, optionId: string) => Promise<MfaChallenge | null>;
+  /** Starts the session from tokens returned by an MFA endpoint (ADR-058). */
+  completeMfa: (tokens: TokenPair) => Promise<void>;
   logout: () => Promise<void>;
   hasPermission: (code: string) => boolean;
   hasAnyRole: (...codes: string[]) => boolean;
@@ -77,7 +81,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = useCallback(
     async (phone: string, password: string) => {
       const res = await loginRequest(phone, password);
-      if (isCompanySelection(res)) return res;
+      if (isCompanySelection(res) || isMfaChallenge(res)) return res;
       // Never treat a response without an access token as logged in.
       if (!res || typeof res.accessToken !== 'string' || !res.accessToken) {
         throw new Error('Invalid login response');
@@ -91,10 +95,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const selectCompany = useCallback(
     async (challengeId: string, optionId: string) => {
       const res = await selectCompanyRequest(challengeId, optionId);
+      if (isMfaChallenge(res)) return res;
       if (!res || typeof res.accessToken !== 'string' || !res.accessToken) {
         throw new Error('Invalid login response');
       }
       await startSession(res);
+      return null;
+    },
+    [startSession],
+  );
+
+  const completeMfa = useCallback(
+    async (tokens: TokenPair) => {
+      if (!tokens || typeof tokens.accessToken !== 'string' || !tokens.accessToken) {
+        throw new Error('Invalid login response');
+      }
+      await startSession(tokens);
     },
     [startSession],
   );
@@ -114,7 +130,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <AuthContext.Provider value={{ user, status, login, selectCompany, logout, hasPermission, hasAnyRole }}>
+    <AuthContext.Provider value={{ user, status, login, selectCompany, completeMfa, logout, hasPermission, hasAnyRole }}>
       {children}
     </AuthContext.Provider>
   );

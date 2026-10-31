@@ -25,6 +25,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { PaginationBar } from '@/components/shared/pagination-bar';
 import { ExportCsvButton } from '@/components/shared/export-csv-button';
+import { ResetMfaDialog } from '@/components/users/reset-mfa-dialog';
 import { UsersTable } from '@/components/users/users-table';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { cn } from '@/lib/utils';
@@ -61,6 +62,7 @@ export default function UsersPage() {
   const canCreate = hasPermission('users.create');
   const canUpdate = hasPermission('users.update');
   const canDelete = hasPermission('users.delete');
+  const canResetMfa = hasPermission('users.mfa_reset');
   const router = useRouter();
 
   /** "Sales orders: 3, Payments: 2" — the human-readable side of `references`. */
@@ -90,6 +92,7 @@ export default function UsersPage() {
   const deleteMutation = useDeleteUserMutation();
   const [pendingDelete, setPendingDelete] = useState<User | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [pendingMfaReset, setPendingMfaReset] = useState<User | null>(null);
 
   // Deactivation cuts the user off from the system — always confirm.
   // Re-activation is harmless, so it fires straight away.
@@ -267,6 +270,8 @@ export default function UsersPage() {
               canUpdate={canUpdate}
               canDelete={canDelete}
               currentUserId={currentUser?.id}
+              canResetMfa={canResetMfa}
+              onResetMfa={setPendingMfaReset}
               onEdit={(u) => router.push(`/users/${u.id}/edit`)}
               onToggleActive={toggleActive}
               onDelete={(u) => {
@@ -279,6 +284,8 @@ export default function UsersPage() {
           </CardContent>
         </Card>
       )}
+
+      <ResetMfaDialog user={pendingMfaReset} onClose={() => setPendingMfaReset(null)} />
 
       <ConfirmDialog
         open={pendingDeactivate !== null}

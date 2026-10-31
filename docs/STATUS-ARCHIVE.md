@@ -202,3 +202,4 @@ Batafsil: `docs/PLAN.md` (F8.x gap-tahlil tartibi).
 - 2026-10-19: F8.1 (PENDING_HANDOVER) tugadi, ADR-029 qo'shimchasi yozildi; branch `feat/f8-1-payment-handover`, push qilinmagan.
 - 2026-10-19: Master TZ v5.0 ga review qarorlari kiritildi (ADR-028..033), STATUS/PLAN yangilandi. Faqat hujjat o'zgargan, kod yo'q. Branch `docs/tz-v5`, push qilinmagan.
 - Commit xabarlari `feat(finance): ...` / `docs: ...` shaklida.
+- **2026-10-31 — ADR-058b:** MFA challenge Redis'da (AuthChallengeStore, fail-closed, pending secret shifrlangan holda challenge bilan); sessiya JWT `mfa` claim + RefreshToken.mfaId orqali bog'lanadi, har so'rovda joriy DB rollari bilan tekshiriladi; Telegram imtiyozli rollar uchun bloklangan; reset faqat `users.mfa_reset` (OWNER) yoki platforma skripti, SMS yo'q; `mfaExempt` yo'q; QR `qrcode@1.5.4` API'da (foydalanuvchi tasdig'i).

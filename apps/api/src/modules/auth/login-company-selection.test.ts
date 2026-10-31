@@ -114,7 +114,7 @@ describe('ADR-057 login company selection (real Postgres + Redis)', () => {
     const b = await mkUser(coB.id, phone);
     const r = await multi(phone);
     const optB = r.companies.find((c) => c.name === 'SelB')!;
-    const tokens = await auth.selectCompany({ challengeId: r.challengeId, optionId: optB.id }, { ip: rndIp() });
+    const tokens = (await auth.selectCompany({ challengeId: r.challengeId, optionId: optB.id }, { ip: rndIp() })) as TokenPair;
     expect(tokens.user.id).toBe(b.id);
     await expect(auth.selectCompany({ challengeId: r.challengeId, optionId: optB.id }, { ip: rndIp() })).rejects.toBeInstanceOf(
       AuthChallengeInvalidException,

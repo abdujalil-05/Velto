@@ -10,6 +10,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
 import { uniquePhone } from './unique-phone';
+import { loginWithMfa } from './mfa-login';
 
 /**
  * F2.1 / SEC-054: payment and stock-movement reversal are denied to ACCOUNTANT
@@ -49,7 +50,7 @@ describe('E2E F2.1: reversal endpoints RBAC', () => {
         for (const permissionId of permissionIds) await tx.rolePermission.create({ data: { roleId: role.id, permissionId } });
         await tx.userRole.create({ data: { userId: user.id, roleId: role.id } });
       });
-      const res = await request(app.getHttpServer()).post('/auth/login').send({ phone, password }).expect(201);
+      const res = { body: await loginWithMfa(app, phone, password) };
       tokens[roleCode] = { token: res.body.accessToken, userId: user.id };
     }
   });

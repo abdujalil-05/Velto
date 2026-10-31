@@ -156,3 +156,13 @@ export class TelegramNotLinkedException extends AppException {
     });
   }
 }
+
+export class CannotResetOwnMfaException extends AppException {
+  constructor() {
+    super(HttpStatus.BAD_REQUEST, 'USER_CANNOT_RESET_OWN_MFA', {
+      uz: "O'zingizning ikki bosqichli tasdiqlashingizni tiklay olmaysiz",
+      ru: 'Вы не можете сбросить собственную двухфакторную аутентификацию',
+      en: 'You cannot reset your own two-factor authentication',
+    });
+  }
+}

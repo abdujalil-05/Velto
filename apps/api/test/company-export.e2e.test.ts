@@ -17,6 +17,7 @@ import { Export1cRecoveryService } from '../src/modules/integrations/export-1c/e
 import { CompanyExportProcessor, companyExportHeartbeat } from '../src/modules/company-export/company-export.processor';
 import type { CompanyExportJobData } from '../src/modules/company-export/company-export.constants';
 import { uniquePhone } from './unique-phone';
+import { loginWithMfa } from './mfa-login';
 
 /** ADR-045: company data export (DSR/offboarding). Real Postgres + RLS + Redis worker, StorageService test double. */
 describe('E2E ADR-045: company export', () => {
@@ -80,7 +81,7 @@ describe('E2E ADR-045: company export', () => {
         await tx.userRole.create({ data: { userId: user.id, roleId: role.id } });
       });
     }
-    const res = await http().post('/auth/login').send({ phone, password }).expect(201);
+    const res = { body: await loginWithMfa(app, phone, password) };
     tokens[key] = { token: res.body.accessToken, userId: user.id };
   }
 

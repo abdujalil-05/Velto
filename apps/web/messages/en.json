@@ -92,7 +92,40 @@
     "continue": "Continue",
     "backToPassword": "Back to password",
     "challengeInvalid": "This selection expired or was already used. Enter your phone and password again.",
-    "challengeRateLimited": "Please wait a moment and try again."
+    "challengeRateLimited": "Please wait a moment and try again.",
+    "mfa": {
+      "sessionRequired": "Two-factor authentication is required. Please sign in again.",
+      "loading": "Loading",
+      "retry": "Try again",
+      "continue": "Continue",
+      "challengeExpired": "This verification expired or was already used. Enter your phone and password again.",
+      "webLoginRequired": "This account must sign in through the web app. Enter your phone and password again.",
+      "codeInvalid": "The code is incorrect. Check the code and try again.",
+      "rateLimited": "Too many attempts. Wait a few minutes and try again.",
+      "serviceUnavailable": "Verification is temporarily unavailable. Try again shortly.",
+      "codeFormat": "Enter the 6-digit code",
+      "recoveryRequired": "Enter a recovery code",
+      "verifyTitle": "Two-factor verification",
+      "verifyHint": "Enter the 6-digit code from your authenticator app.",
+      "codeLabel": "Authentication code",
+      "verify": "Verify",
+      "useRecovery": "Use a recovery code",
+      "useAuthenticator": "Use authenticator code",
+      "recoveryPrompt": "Enter one of your saved recovery codes. Each works once.",
+      "recoveryLabel": "Recovery code",
+      "enrollTitle": "Set up two-factor authentication",
+      "enrollHint": "Scan the QR code with an authenticator app, then enter the 6-digit code it shows.",
+      "qrAlt": "QR code for the authenticator app",
+      "manualKey": "Or enter this key manually",
+      "copy": "Copy",
+      "copied": "Copied",
+      "confirmCodeLabel": "6-digit code",
+      "confirmEnroll": "Confirm and continue",
+      "recoveryTitle": "Save your recovery codes",
+      "recoveryHint": "Each code works once if you lose your authenticator. They are shown only now.",
+      "download": "Download .txt",
+      "savedCheck": "I saved these codes in a safe place"
+    }
   },
   "NotFound": {
     "title": "This page does not exist",
@@ -116,7 +149,8 @@
       "light": "Light mode (click for dark)",
       "dark": "Dark mode (click for system)",
       "system": "System mode (click for light)"
-    }
+    },
+    "security": "Security"
   },
   "Dashboard": {
     "title": "Dashboard",
@@ -644,6 +678,15 @@
       "created": "User added",
       "updated": "Changes saved",
       "retry": "Retry"
+    },
+    "mfaReset": {
+      "action": "Reset MFA",
+      "title": "Reset two-factor authentication",
+      "description": "{name} will lose all sessions and must set up an authenticator again at the next sign-in.",
+      "reason": "Reason (required)",
+      "cancel": "Cancel",
+      "confirm": "Reset MFA",
+      "success": "MFA reset for {name}"
     }
   },
   "Onboarding": {
@@ -1866,6 +1909,24 @@
       "match": "Checksum verified",
       "mismatch": "Checksum mismatch - do not use this file",
       "unavailable": "Checksum could not be verified"
+    }
+  },
+  "Security": {
+    "title": "Security",
+    "password": "Password",
+    "currentCode": "Current 6-digit code",
+    "reenroll": {
+      "title": "Change authenticator",
+      "description": "Set up two-factor authentication on a new device. Requires your password and a current code.",
+      "submit": "Continue",
+      "done": "Done",
+      "success": "Authenticator updated"
+    },
+    "regenerate": {
+      "title": "New recovery codes",
+      "description": "Generate a new set of recovery codes. Old codes stop working.",
+      "submit": "Generate codes",
+      "done": "Done"
     }
   }
 }

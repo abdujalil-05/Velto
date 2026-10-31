@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { decodeEncryptionKey } from '../crypto/secret-box';
 
 /** Single source of the defaults; trace-job.ts / export-1c.constants.ts fall back to these. */
 export const DEFAULT_QUEUE_ENQUEUE_TIMEOUT_MS = 3000;
@@ -27,6 +28,8 @@ export const envSchema = z.object({
   JWT_ACCESS_SECRET: z.string().min(32),
   JWT_ACCESS_TTL: z.string().default('15m'),
   JWT_REFRESH_TTL: z.string().default('30d'),
+  // ADR-058: AES-256-GCM key (base64 of exactly 32 bytes) sealing TOTP secrets. Required, no default.
+  MFA_ENCRYPTION_KEY: z.string().refine((v) => decodeEncryptionKey(v) !== null, 'must be base64 of exactly 32 bytes'),
   TELEGRAM_BOT_TOKEN: z.string().default(''),
   // Telegram initData replay policy — rationale next to LoginRateLimiterService.recordTelegramInitDataUse.
   TELEGRAM_INITDATA_MAX_AGE_SECONDS: z.coerce.number().int().positive().default(600),

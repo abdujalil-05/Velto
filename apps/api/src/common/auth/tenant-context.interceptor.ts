@@ -13,7 +13,8 @@ import { TenantContext, handlerScopeStore } from '../tenant/tenant-context';
 import { TENANT_TX_OPTIONS_KEY, type TenantTxRouteOptions } from '../tenant/tenant-tx-options.decorator';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { REQUIRE_PERMISSION_KEY } from '../decorators/require-permission.decorator';
-import { PermissionDeniedException } from './auth-exceptions';
+import { MfaRequiredException, PermissionDeniedException } from './auth-exceptions';
+import { isMfaSessionValid } from './mfa-policy';
 import { loadAuthenticatedUser } from './load-authenticated-user';
 import type { AccessTokenPayload, AuthenticatedUser } from './auth.types';
 
@@ -68,12 +69,19 @@ export class TenantContextInterceptor implements NestInterceptor {
     const { scope, ...txOptions } = routeOptions ?? {};
     const handlerScope = scope === 'handler';
     let denied: AuthenticatedUser | undefined;
+    let mfaDenied: AuthenticatedUser | undefined;
 
     const result = await this.tenantPrisma.run(payload.companyId, async (tx) => {
       // Deactivated user or company -> 401 (client then tries /auth/refresh -> 403 AUTH_ACCOUNT_BLOCKED).
-      const actor = await loadAuthenticatedUser(tx, payload.sub, payload.companyId);
-      if (!actor) {
+      const loaded = await loadAuthenticatedUser(tx, payload.sub, payload.companyId);
+      if (!loaded) {
         throw new UnauthorizedException();
+      }
+      const { confirmedMfaId, ...actor } = loaded;
+      // ADR-058: privileged roles need a session backed by the current confirmed MFA (checked against DB roles, not the JWT).
+      if (!isMfaSessionValid(actor.roles, confirmedMfaId, payload.mfa)) {
+        mfaDenied = actor;
+        return undefined;
       }
       const { permissions } = actor;
 
@@ -90,6 +98,20 @@ export class TenantContextInterceptor implements NestInterceptor {
       return firstValueFrom(next.handle());
     }, handlerScope || Object.keys(txOptions).length === 0 ? undefined : txOptions);
 
+    if (mfaDenied) {
+      const m = mfaDenied;
+      await this.tenantPrisma.run(payload.companyId, (auditTx) =>
+        this.auditLog.log(auditTx, {
+          companyId: payload.companyId,
+          userId: m.id,
+          action: 'auth.mfa.denied',
+          entity: 'User',
+          entityId: m.id,
+          newValue: { method: request.method, path: request.url },
+        }),
+      );
+      throw new MfaRequiredException();
+    }
     if (denied) {
       const d = denied;
       // SEC-020..024 / SEC-054: "ruxsat rad etilsa 403 + audit" — logged

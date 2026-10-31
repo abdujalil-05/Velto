@@ -1,10 +1,11 @@
-import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { CreateUserDto } from './dto/create-user.dto';
 import { DeleteUserQueryDto } from './dto/delete-user.query';
 import { ListUsersQueryDto } from './dto/list-users.query';
+import { ResetMfaDto } from './dto/reset-mfa.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UsersService } from './users.service';
 
@@ -40,6 +41,14 @@ export class UsersController {
   @RequirePermission('users.update')
   deactivate(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.users.deactivate(id, user);
+  }
+
+  /** ADR-058: clears another user's TOTP + recovery codes and revokes their sessions; they must re-enroll on next login. */
+  @Post(':id/mfa/reset')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('users.mfa_reset')
+  resetMfa(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ResetMfaDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.users.resetMfa(id, dto, user);
   }
 
   /** Returns 200 with `{ mode: 'soft' | 'hard', references }` — a soft delete is a successful outcome, not a partial failure. */

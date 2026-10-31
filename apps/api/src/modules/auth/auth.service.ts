@@ -6,10 +6,13 @@ import argon2 from 'argon2';
 import { systemPrisma, type TenantClient } from '@velto/database';
 import { AuditLogService } from '../../common/audit/audit-log.service';
 import type { AccessTokenPayload } from '../../common/auth/auth.types';
+import { isMfaSessionValid, requiresMfa } from '../../common/auth/mfa-policy';
 import {
   AccountBlockedException,
   AuthChallengeInvalidException,
   InvalidCredentialsException,
+  MfaRequiredException,
+  MfaWebLoginRequiredException,
   SessionExpiredException,
   TelegramAuthUnavailableException,
   TelegramReplayRejectedException,
@@ -17,7 +20,7 @@ import {
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import type { LoginDto } from './dto/login.dto';
 import type { TelegramAuthDto } from './dto/telegram-auth.dto';
-import { AuthChallengeStore } from './auth-challenge.store';
+import { AuthChallengeStore, CHALLENGE_TTL_SECONDS } from './auth-challenge.store';
 import type { SelectCompanyDto } from './dto/select-company.dto';
 import { LoginRateLimiterService } from './login-rate-limiter.service';
 import { verifyTelegramInitData } from './telegram-init-data';
@@ -59,6 +62,13 @@ export interface CompanySelectionRequired {
   requiresCompanySelection: true;
   challengeId: string;
   companies: { id: string; name: string }[];
+}
+
+/** ADR-058: returned instead of tokens when the user's roles require TOTP. `mfa` says which step the client must run. */
+export interface MfaStepRequired {
+  mfa: 'verify' | 'enroll';
+  mfaChallenge: string;
+  expiresIn: number;
 }
 
 // Fixed number of argon2 verifies per login attempt (see login()).
@@ -126,7 +136,7 @@ export class AuthService {
    * One match => tokens; several => no tokens, an opaque challenge plus only
    * the matching companies (id = opaque option id, name).
    */
-  async login(dto: LoginDto, meta: RequestMeta): Promise<TokenPair | CompanySelectionRequired> {
+  async login(dto: LoginDto, meta: RequestMeta): Promise<TokenPair | MfaStepRequired | CompanySelectionRequired> {
     await this.rateLimiter.assertNotBlocked(dto.phone);
 
     const candidates = await systemPrisma.user.findMany({
@@ -191,7 +201,7 @@ export class AuthService {
    * the challenge (server-side); the challenge is consumed (GETDEL) whatever
    * the outcome. User and company are re-checked as still active.
    */
-  async selectCompany(dto: SelectCompanyDto, meta: RequestMeta): Promise<TokenPair> {
+  async selectCompany(dto: SelectCompanyDto, meta: RequestMeta): Promise<TokenPair | MfaStepRequired> {
     await this.challenges.hit('select-ip', meta.ip ?? 'unknown', SELECT_MAX_PER_WINDOW, SELECT_WINDOW_SECONDS);
     const challenge = await this.challenges.consume(dto.challengeId, 'login_company');
     const option = challenge.options.find((o) => o.optionId === dto.optionId);
@@ -205,15 +215,36 @@ export class AuthService {
       if (user) await this.logFailedLogin([user], meta);
       throw new AuthChallengeInvalidException();
     }
-    // ADR-058 slot: the MFA check for OWNER/SALES_DIRECTOR/CASHIER belongs here,
-    // between company selection and token issuance (issue a 'mfa' stage challenge
-    // via this.challenges instead of calling completeLogin directly).
     return this.completeLogin(user, meta, 'auth.login');
   }
 
-  /** The single place where a fully-authenticated user gets a session. */
-  private completeLogin(user: MinimalUser, meta: RequestMeta, auditAction: string): Promise<TokenPair> {
-    return this.tenantPrisma.run(user.companyId, (tx) => this.issueTokensInTx(tx, user, meta, undefined, auditAction));
+  /**
+   * The single place where a password-authenticated user either gets a session or,
+   * if their CURRENT roles require MFA (ADR-058), an MFA challenge instead of any token.
+   */
+  private async completeLogin(user: MinimalUser, meta: RequestMeta, auditAction: string): Promise<TokenPair | MfaStepRequired> {
+    const outcome = await this.tenantPrisma.run<TokenPair | MfaStepRequired['mfa']>(user.companyId, async (tx) => {
+      const { roles, confirmedMfaId } = await this.loadMfaState(tx, user.id);
+      if (!requiresMfa(roles)) return this.issueTokensInTx(tx, user, meta, undefined, auditAction);
+      return confirmedMfaId ? 'verify' : 'enroll';
+    });
+    if (typeof outcome === 'object') return outcome;
+    const mfaChallenge = await this.challenges.issueMfa({
+      scope: outcome === 'verify' ? 'mfa_verify' : 'mfa_enroll',
+      userId: user.id,
+      companyId: user.companyId,
+      replacesMfaId: null,
+    });
+    return { mfa: outcome, mfaChallenge, expiresIn: CHALLENGE_TTL_SECONDS };
+  }
+
+  /** The user's current role codes and the id of their CONFIRMED UserMfa (null if none). */
+  private async loadMfaState(tx: TenantClient, userId: string): Promise<{ roles: string[]; confirmedMfaId: string | null }> {
+    const [userRoles, mfa] = await Promise.all([
+      tx.userRole.findMany({ where: { userId }, include: { role: { select: { code: true } } } }),
+      tx.userMfa.findFirst({ where: { userId, confirmedAt: { not: null } }, select: { id: true } }),
+    ]);
+    return { roles: userRoles.map((ur) => ur.role.code), confirmedMfaId: mfa?.id ?? null };
   }
 
   async telegramLogin(dto: TelegramAuthDto, meta: RequestMeta): Promise<TokenPair> {
@@ -259,6 +290,23 @@ export class AuthService {
     if (!company?.isActive) {
       await this.logFailedLogin([user], meta);
       throw new AccountBlockedException();
+    }
+
+    // ADR-058: initData is never a second factor — privileged roles must use the web login with TOTP.
+    const { roles: telegramRoles } = await this.tenantPrisma.run(user.companyId, (tx) => this.loadMfaState(tx, user.id));
+    if (requiresMfa(telegramRoles)) {
+      await this.tenantPrisma.run(user.companyId, (tx) =>
+        this.auditLog.log(tx, {
+          companyId: user.companyId,
+          userId: user.id,
+          action: 'auth.mfa.denied',
+          entity: 'User',
+          entityId: user.id,
+          newValue: { channel: 'telegram' },
+          ip: meta.ip,
+        }),
+      );
+      throw new MfaWebLoginRequiredException();
     }
 
     // Counted only after signature, freshness and user/company checks passed (garbage can't burn a cap).
@@ -447,10 +495,27 @@ export class AuthService {
       throw new SessionExpiredException();
     }
 
-    return this.tenantPrisma.run(existing.user.companyId, async (tx) => {
+    const rotated = await this.tenantPrisma.run(existing.user.companyId, async (tx) => {
+      // ADR-058: a privileged user's family survives only while it is backed by their current confirmed MFA.
+      const { roles, confirmedMfaId } = await this.loadMfaState(tx, existing.userId);
+      if (!isMfaSessionValid(roles, confirmedMfaId, existing.mfaId)) {
+        await tx.refreshToken.updateMany({ where: { familyId: existing.familyId, revokedAt: null }, data: { revokedAt: new Date() } });
+        await this.auditLog.log(tx, {
+          companyId: existing.user.companyId,
+          userId: existing.userId,
+          action: 'auth.mfa.denied',
+          entity: 'User',
+          entityId: existing.userId,
+          newValue: { channel: 'refresh' },
+          ip: meta.ip,
+        });
+        return undefined;
+      }
       await tx.refreshToken.update({ where: { id: existing.id }, data: { revokedAt: new Date() } });
-      return this.issueTokensInTx(tx, existing.user, meta, existing.familyId, 'auth.refresh');
+      return this.issueTokensInTx(tx, existing.user, meta, existing.familyId, 'auth.refresh', existing.mfaId);
     });
+    if (!rotated) throw new MfaRequiredException();
+    return rotated;
   }
 
   async logout(dto: { refreshToken: string; allDevices?: boolean }): Promise<void> {
@@ -488,17 +553,19 @@ export class AuthService {
     }
   }
 
-  private async issueTokensInTx(
+  /** `mfaId` = confirmed UserMfa this session is backed by (ADR-058): stored on the refresh token and signed into the access token. */
+  async issueTokensInTx(
     tx: TenantClient,
     user: MinimalUser,
     meta: RequestMeta,
     familyId: string = randomUUID(),
     auditAction: string,
+    mfaId: string | null = null,
   ): Promise<TokenPair> {
     const userRoles = await tx.userRole.findMany({ where: { userId: user.id }, include: { role: true } });
     const roles = userRoles.map((ur) => ur.role.code);
 
-    const payload: AccessTokenPayload = { sub: user.id, companyId: user.companyId, roles };
+    const payload: AccessTokenPayload = { sub: user.id, companyId: user.companyId, roles, ...(mfaId ? { mfa: mfaId } : {}) };
     const accessToken = await this.jwtService.signAsync(payload);
 
     const refreshTokenValue = randomBytes(32).toString('hex');
@@ -509,6 +576,7 @@ export class AuthService {
         userId: user.id,
         tokenHash: hashToken(refreshTokenValue),
         familyId,
+        mfaId,
         expiresAt: new Date(Date.now() + refreshTtlMs),
         userAgent: meta.userAgent,
         ip: meta.ip,

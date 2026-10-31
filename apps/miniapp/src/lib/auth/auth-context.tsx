@@ -23,7 +23,7 @@ import { resumeSession, telegramLogin } from './auth-flow';
 // linkPhone() below). Distinct from 'unauthenticated' (had a session, e.g.
 // logout or an expired/revoked refresh token) so the UI can tell these
 // apart from a normal logged-out state.
-type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated' | 'no-telegram-context' | 'needs-phone-link';
+type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated' | 'mfa-web-required' | 'no-telegram-context' | 'needs-phone-link';
 
 interface AuthContextValue {
   user: AuthenticatedUser | null;
@@ -57,11 +57,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Shared by the initial bootstrap and the post-link retry: attempts a
   // Telegram login with the current initData, returns whether it succeeded.
-  const tryTelegramLogin = useCallback(async (initData: string): Promise<'ok' | 'blocked' | 'failed'> => {
+  const tryTelegramLogin = useCallback(async (initData: string): Promise<'ok' | 'blocked' | 'mfa-web-required' | 'failed'> => {
     const res = await telegramLogin(initData, getTelegramWebApp()?.initDataUnsafe?.user?.id);
     if (res.kind === 'ok') {
       setUser(res.user);
       setStatus('authenticated');
+    } else if (res.kind === 'mfa-web-required') {
+      setStatus('mfa-web-required');
     } else if (res.kind === 'blocked') {
       setRevoked(res.revoked);
       if (!res.revoked) toast.error(tRevoked('wipedToast'));
@@ -100,6 +102,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (res.kind === 'ok') {
             setUser(res.user);
             setStatus('authenticated');
+          } else if (res.kind === 'mfa-web-required') {
+            setStatus('mfa-web-required');
           } else {
             setStatus('unauthenticated');
           }
@@ -114,7 +118,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       const outcome = await tryTelegramLogin(initData);
-      if (!cancelled && outcome === 'blocked') {
+      if (!cancelled && outcome === 'mfa-web-required') {
+        setStatus('mfa-web-required');
+      } else if (!cancelled && outcome === 'blocked') {
         setStatus('unauthenticated');
       } else if (!cancelled && outcome === 'failed') {
         // Valid Telegram context but no User.telegramId matched yet — the
@@ -148,7 +154,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       for (let attempt = 0; attempt < 9; attempt++) {
         await sleep(1000);
         const outcome = await tryTelegramLogin(initData);
-        if (outcome === 'ok' || outcome === 'blocked') return;
+        if (outcome !== 'failed') return;
       }
       // Webhook never linked the phone within the polling window (not
       // found, ambiguous across companies, or already linked elsewhere —
@@ -163,7 +169,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(
     () =>
-      onUnauthorized(({ revoked: serverRejected }) => {
+      onUnauthorized(({ revoked: serverRejected, mfaRequired }) => {
         // Wipe ONLY when the server confirmed the account/company is BLOCKED
         // (api client sets `revoked` solely on 403 AUTH_ACCOUNT_BLOCKED). An
         // ordinary expired/invalid refresh token or a network failure only ends
@@ -179,7 +185,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setOfflineSession(null);
         resetPreparedSession();
         setUser(null);
-        setStatus('unauthenticated');
+        setStatus(mfaRequired ? 'mfa-web-required' : 'unauthenticated');
       }),
     [tRevoked],
   );

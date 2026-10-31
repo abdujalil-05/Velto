@@ -10,6 +10,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
 import { uniquePhone } from './unique-phone';
+import { loginWithMfa } from './mfa-login';
 
 /**
  * F8.1 / ADR-029 / TZ §6.5, §6.7.2, §5.4.2 F-01 (HTTP level, real Postgres + RLS):
@@ -53,7 +54,7 @@ describe('E2E F8.1: payment handover (ADR-029)', () => {
         await tx.userRole.create({ data: { userId: user.id, roleId: role.id } });
       });
     }
-    const res = await http().post('/auth/login').send({ phone, password }).expect(201);
+    const res = { body: await loginWithMfa(app, phone, password) };
     tokens[key] = { token: res.body.accessToken, userId: user.id };
   }
 

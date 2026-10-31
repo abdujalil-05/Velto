@@ -11,6 +11,7 @@ import {
   CannotDeleteSelfException,
   CannotGrantOwnerRoleException,
   CannotSetOthersPasswordException,
+  CannotResetOwnMfaException,
   DuplicateUserPhoneException,
   InvalidRoleCodesException,
   LastOwnerException,
@@ -22,6 +23,7 @@ import {
 } from './users-exceptions';
 import type { CreateUserDto } from './dto/create-user.dto';
 import type { DeleteUserQueryDto } from './dto/delete-user.query';
+import type { ResetMfaDto } from './dto/reset-mfa.dto';
 import type { ListUsersQueryDto } from './dto/list-users.query';
 import type { UpdateUserDto } from './dto/update-user.dto';
 
@@ -301,6 +303,30 @@ export class UsersService {
     });
 
     return shaped;
+  }
+
+  /**
+   * ADR-058: same tenant (RLS => 404 across companies), never yourself. MFA is not disabled:
+   * the target's privileged login falls back to enrollment, and old access tokens die (no confirmed MFA).
+   */
+  async resetMfa(id: string, dto: ResetMfaDto, actor: AuthenticatedUser) {
+    if (id === actor.id) throw new CannotResetOwnMfaException();
+    const tx = this.tenantPrisma.client;
+    const target = await tx.user.findUnique({ where: { id }, select: { id: true } });
+    if (!target) throw new UserNotFoundException();
+
+    const codes = await tx.userMfaRecoveryCode.deleteMany({ where: { userId: id } });
+    const mfa = await tx.userMfa.deleteMany({ where: { userId: id } });
+    const sessions = await tx.refreshToken.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: new Date() } });
+    await this.auditLog.log(tx, {
+      companyId: actor.companyId,
+      userId: actor.id,
+      action: 'auth.mfa.reset',
+      entity: 'User',
+      entityId: id,
+      newValue: { reason: dto.reason, mfaDeleted: mfa.count, recoveryCodesDeleted: codes.count, sessionsRevoked: sessions.count },
+    });
+    return { reset: true, sessionsRevoked: sessions.count };
   }
 
   async activate(id: string, actor: AuthenticatedUser) {

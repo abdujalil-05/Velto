@@ -1,6 +1,7 @@
 import { useMutation } from '@tanstack/react-query';
 import { apiFetch } from './client';
 import type { TokenPair } from './types';
+import type { MfaChallenge } from './mfa';
 
 // ADR-057: ids are opaque single-use options; never persist them beyond component state.
 export interface CompanyChoice {
@@ -14,7 +15,7 @@ export interface CompanySelectionRequired {
   companies: CompanyChoice[];
 }
 
-export type LoginResponse = TokenPair | CompanySelectionRequired;
+export type LoginResponse = TokenPair | CompanySelectionRequired | MfaChallenge;
 
 export function isCompanySelection(r: LoginResponse): r is CompanySelectionRequired {
   return (r as CompanySelectionRequired).requiresCompanySelection === true;
@@ -25,7 +26,7 @@ export function loginRequest(phone: string, password: string) {
 }
 
 export function selectCompanyRequest(challengeId: string, optionId: string) {
-  return apiFetch<TokenPair>('/auth/login/select-company', {
+  return apiFetch<TokenPair | MfaChallenge>('/auth/login/select-company', {
     method: 'POST',
     body: { challengeId, optionId },
     skipAuth: true,

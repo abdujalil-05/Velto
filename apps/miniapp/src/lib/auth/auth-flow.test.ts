@@ -62,6 +62,33 @@ describe('auth flow revoke handling', () => {
   });
 });
 
+describe('ADR-058 MFA codes', () => {
+  beforeEach(() => {
+    clearTokens();
+    window.localStorage.clear();
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('403 MFA_WEB_LOGIN_REQUIRED on telegram login stores no token and does not retry', async () => {
+    const fetchMock = vi.fn(async () => json(403, { code: 'MFA_WEB_LOGIN_REQUIRED', message: { uz: '', ru: '', en: 'x' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect((await telegramLogin('init')).kind).toBe('mfa-web-required');
+    expect(getRefreshToken()).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('401 MFA_REQUIRED wipes tokens without a refresh call and keeps the offline session', async () => {
+    setOfflineSession(A);
+    setTokens('a', 'r');
+    const fetchMock = vi.fn(async () => json(401, { code: 'MFA_REQUIRED', message: { uz: '', ru: '', en: 'x' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    expect((await resumeSession()).kind).toBe('mfa-web-required');
+    expect(getRefreshToken()).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(getLastKnownOwner()).toEqual(A);
+  });
+});
+
 describe('canExportRevoked', () => {
   it('matches only the owner telegram id', () => {
     expect(canExportRevoked({ telegramId: '777' }, 777)).toBe(true);

@@ -5,7 +5,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { SessionExpiredException } from '../../common/auth/auth-exceptions';
-import { AuthService, parseDurationMs, type RequestMeta, type TelegramWebhookUpdate, type TokenPair } from './auth.service';
+import { AuthService, type TelegramWebhookUpdate } from './auth.service';
 import { ConfirmPasswordResetDto } from './dto/confirm-password-reset.dto';
 import { LoginDto } from './dto/login.dto';
 import { LogoutDto } from './dto/logout.dto';
@@ -15,21 +15,8 @@ import { SelectCompanyDto } from './dto/select-company.dto';
 import { SelectResetAccountDto } from './dto/select-reset-account.dto';
 import { TelegramAuthDto } from './dto/telegram-auth.dto';
 import { PasswordResetService } from './password-reset.service';
+import { REFRESH_COOKIE_NAME, requestMeta, setRefreshCookie, withoutRefreshToken } from './session-http';
 import { AllowDuringMaintenance } from '../../common/maintenance/allow-during-maintenance.decorator';
-
-function requestMeta(req: Request): RequestMeta {
-  return { ip: req.ip, userAgent: req.headers['user-agent'] };
-}
-
-// Scoped to /auth (not the whole API) so it's only ever sent back on the
-// refresh/logout calls that need it. apps/web is the only consumer: it never
-// stores the refresh token itself and relies entirely on this cookie. Telegram
-// Mini App users go through /auth/telegram instead, which never sets this
-// cookie — the app is iframed inside web.telegram.org (see
-// apps/miniapp/next.config.mjs's frame-ancestors), a cross-site embedding
-// where third-party cookie blocking would make a cookie-only flow unreliable.
-// It keeps using its existing body/localStorage refresh token untouched.
-const REFRESH_COOKIE_NAME = 'velto_refresh_token';
 
 @Controller('auth')
 export class AuthController {
@@ -39,25 +26,14 @@ export class AuthController {
     private readonly passwordResetService: PasswordResetService,
   ) {}
 
-  private setRefreshCookie(res: Response, refreshToken: string): void {
-    const refreshTtlMs = parseDurationMs(this.configService.get<string>('JWT_REFRESH_TTL', '30d'));
-    res.cookie(REFRESH_COOKIE_NAME, refreshToken, {
-      httpOnly: true,
-      secure: this.configService.get<string>('NODE_ENV', 'development') === 'production',
-      sameSite: 'lax',
-      path: '/auth',
-      maxAge: refreshTtlMs,
-    });
-  }
-
   @Public()
   @AllowDuringMaintenance()
   @Post('login')
   async login(@Body() dto: LoginDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const result = await this.authService.login(dto, requestMeta(req));
-    if ('requiresCompanySelection' in result) return result;
-    this.setRefreshCookie(res, result.refreshToken);
-    return this.withoutRefreshToken(result);
+    if ('requiresCompanySelection' in result || 'mfa' in result) return result;
+    setRefreshCookie(res, this.configService, result.refreshToken);
+    return withoutRefreshToken(result);
   }
 
   // ADR-057: second step when a correct password matched several companies.
@@ -67,8 +43,9 @@ export class AuthController {
   @Post('login/select-company')
   async selectCompany(@Body() dto: SelectCompanyDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const result = await this.authService.selectCompany(dto, requestMeta(req));
-    this.setRefreshCookie(res, result.refreshToken);
-    return this.withoutRefreshToken(result);
+    if ('mfa' in result) return result;
+    setRefreshCookie(res, this.configService, result.refreshToken);
+    return withoutRefreshToken(result);
   }
 
   @Public()
@@ -115,8 +92,8 @@ export class AuthController {
     // request that came in with dto.refreshToken instead (apps/miniapp)
     // still gets the body-based shape it has always relied on.
     if (tokenFromCookie) {
-      this.setRefreshCookie(res, result.refreshToken);
-      return this.withoutRefreshToken(result);
+      setRefreshCookie(res, this.configService, result.refreshToken);
+      return withoutRefreshToken(result);
     }
     return result;
   }
@@ -175,9 +152,5 @@ export class AuthController {
   @Get('me')
   me(@CurrentUser() user: AuthenticatedUser) {
     return user;
-  }
-
-  private withoutRefreshToken(result: TokenPair): Omit<TokenPair, 'refreshToken'> {
-    return { accessToken: result.accessToken, user: result.user };
   }
 }

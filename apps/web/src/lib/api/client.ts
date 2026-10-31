@@ -59,6 +59,39 @@ export function onUnauthorized(handler: UnauthorizedHandler): () => void {
   return () => unauthorizedHandlers.delete(handler);
 }
 
+/** Non-secret flag read once by the login page to explain why the session ended (ADR-058). */
+export const AUTH_NOTICE_KEY = 'velto.authNotice';
+
+export function consumeAuthNotice(): string | null {
+  try {
+    const v = window.sessionStorage.getItem(AUTH_NOTICE_KEY);
+    window.sessionStorage.removeItem(AUTH_NOTICE_KEY);
+    return v;
+  } catch {
+    return null;
+  }
+}
+
+/** MFA_REQUIRED is not an expired token: refreshing cannot fix it, so never enter the refresh path. */
+async function isMfaRequired(res: Response): Promise<boolean> {
+  try {
+    const body = (await res.clone().json()) as { code?: string };
+    return body?.code === 'MFA_REQUIRED';
+  } catch {
+    return false;
+  }
+}
+
+function endSessionForMfa() {
+  clearTokens();
+  try {
+    window.sessionStorage.setItem(AUTH_NOTICE_KEY, 'mfaRequired');
+  } catch {
+    // storage unavailable: the redirect still happens, only the message is lost
+  }
+  unauthorizedHandlers.forEach((handler) => handler());
+}
+
 let refreshInFlight: Promise<string | null> | null = null;
 
 async function refreshAccessToken(): Promise<string | null> {
@@ -119,6 +152,11 @@ export async function apiFetch<T = void>(path: string, options: ApiFetchOptions 
 
   let res = await send(skipAuth ? null : getAccessToken());
 
+  if (res.status === 401 && !skipAuth && (await isMfaRequired(res))) {
+    endSessionForMfa();
+    throw new ApiError(401, (await res.json().catch(() => undefined)) as ApiErrorBody);
+  }
+
   if (res.status === 401 && !skipAuth) {
     const refreshed = await refreshAccessToken();
     if (refreshed) {
@@ -156,6 +194,11 @@ export async function apiDownloadWithHash(path: string, fallbackFilename: string
     });
 
   let res = await send(getAccessToken());
+
+  if (res.status === 401 && (await isMfaRequired(res))) {
+    endSessionForMfa();
+    throw new ApiError(401, (await res.json().catch(() => undefined)) as ApiErrorBody);
+  }
 
   if (res.status === 401) {
     const refreshed = await refreshAccessToken();

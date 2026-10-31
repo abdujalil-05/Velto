@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ALL_PERMISSION_KEYS, PERMISSION_DEFS, SYSTEM_ROLES, permissionKeysForRole } from '../rbac-catalog';
+import { ALL_PERMISSION_KEYS, MFA_REQUIRED_ROLE_CODES, PERMISSION_DEFS, SYSTEM_ROLES, permissionKeysForRole } from '../rbac-catalog';
 
 /** F1.4 / SEC-020..024: fixed system roles; ACCOUNTANT is read/export-only, COURIER is minimal. */
 describe('rbac-catalog: F1.4 role grants', () => {
@@ -74,6 +74,14 @@ describe('rbac-catalog: F1.4 role grants', () => {
     for (const key of ['opening.read', 'opening.preview', 'opening.post', 'opening.void', 'company.export']) {
       expect(key.split('.'), key).toHaveLength(2);
     }
+  });
+
+  it('ADR-058: users.mfa_reset → OWNER only; MFA required for OWNER, SALES_DIRECTOR, CASHIER (existing roles)', () => {
+    const holders = SYSTEM_ROLES.filter((r) => permissionKeysForRole(r.code).includes('users.mfa_reset')).map((r) => r.code);
+    expect(holders).toEqual(['OWNER']);
+    expect([...MFA_REQUIRED_ROLE_CODES]).toEqual(['OWNER', 'SALES_DIRECTOR', 'CASHIER']);
+    const codes = SYSTEM_ROLES.map((r) => r.code);
+    for (const code of MFA_REQUIRED_ROLE_CODES) expect(codes).toContain(code);
   });
 
   it('F3: routes.finish → OWNER, SALES_DIRECTOR, SALES_AGENT only', () => {

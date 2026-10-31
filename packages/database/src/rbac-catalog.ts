@@ -78,7 +78,10 @@ export const PERMISSION_DEFS: { module: string; actions: string[] }[] = [
   { module: 'routes', actions: ['read', 'create', 'update', 'finish'] },
   { module: 'field', actions: ['read', 'create'] },
   { module: 'reports', actions: ['read', 'export'] },
-  { module: 'users', actions: ['read', 'create', 'update', 'delete'] },
+  // `mfa_reset` (ADR-058): clear another user's TOTP enrollment + recovery
+  // codes and revoke their sessions. OWNER only. Existing tenants: run
+  // backfill-mfa-reset-permission.ts (additive, idempotent).
+  { module: 'users', actions: ['read', 'create', 'update', 'delete', 'mfa_reset'] },
   { module: 'roles', actions: ['read'] },
   { module: 'audit', actions: ['read'] },
   { module: 'settings', actions: ['read', 'update'] },
@@ -102,6 +105,10 @@ export const PERMISSION_DEFS: { module: string; actions: string[] }[] = [
   // only. Deliberately not ACCOUNTANT even though the action is "export".
   { module: 'company', actions: ['export'] },
 ];
+
+// ADR-058: system roles that must enroll and pass TOTP MFA. Single source —
+// API guards and UI import this, never a local copy.
+export const MFA_REQUIRED_ROLE_CODES = ['OWNER', 'SALES_DIRECTOR', 'CASHIER'] as const;
 
 // Roles are fixed system roles with no custom-role authoring in MVP
 // (roles.service.ts) — a real tenant has no later way to grant these by hand,
