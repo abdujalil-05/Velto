@@ -3,7 +3,7 @@
 > Yangilangan: 2026-10-31. **Bu fayl ≤60 qator:** faqat joriy holat. Tugagan ish, ADR, eski qarz va tarix → `docs/STATUS-ARCHIVE.md` (faqat grep bilan).
 
 ## Fazalar
-F0–F6, F8.1, F5.3+, F4.5: ✅ kod tomoni. F7 chiniqtirish: ✅ kod, yuk mezonlari qisman. Oxirgi to'liq checks: 1067/1067 (2026-10-30). Hamma ish feature branch'larda; joriy: `feat/approved-decisions` (`feat/f7-6-dashboard-perf` ustida).
+F0–F6, F8.1, F5.3+, F4.5: ✅ kod tomoni. F7 chiniqtirish: ✅ kod, yuk mezonlari qisman. Oxirgi to'liq checks (2026-10-31, `19e5cae`): api 865/866 (1 flaky: `opening-balances.invariants.test.ts` 5000 qatorli post, `customers.service.ts:437` aggregate xatosi; alohida 12/12 o'tdi), database 116/116, miniapp 120/120; lint/typecheck/build toza; `pnpm audit` va Semgrep bajarilmadi. Hamma ish feature branch'larda; joriy: `feat/approved-decisions` (`feat/f7-6-dashboard-perf` ustida).
 
 ## F7.6 dashboard miss (TZ §12.1): kod yopildi, maqsad lokal isbotlanmadi
 Kod: ADR-056 (SWR, permit yo'lagi, pool boot tekshiruvi), refresh backoff ttl/4, P2028 expired tx -> 503 SERVICE_BUSY (deliver rollback va retry real testlangan), `PERF_METRICS` (default off). Reviewer, security-auditor PASS; api test 845/845, lint/typecheck/build toza.
@@ -13,10 +13,10 @@ Ma'lum LOW: `perf-metrics.ts:41` `start()`siz xotira o'sishi (faqat flag yoqilga
 
 ## Joriy task: ADR-057..064 (PO qarorlari yakuniy, kod YOZILMAGAN)
 Qarorlar: `STATUS-ARCHIVE.md`. Verdikt va tartib: `docs/parity/PLAN-ADR-057-064.md`. Real moliyaviy pilot gate'i BLOCKED (ADR-058).
-ADR-057/057a API ✅ (commit, push): auth test 58/58 (2 marta ketma-ket), tsc toza; reviewer va security-auditor PASS. Kontrakt o'zgardi (`requiresCompanySelection`, `requiresAccountSelection`, yangi `/auth/login/select-company`, `/auth/password-reset/select-account`): web ekranlarisiz `main` ga chiqmaydi. LOW: reset limitini sarflab egasini ~1 soat bloklash mumkin (egallash yo'q); N>3 akkaunt login vaqtida sezilarli; login 3x argon2 (sekinroq); IP yo'q so'rovlar umumiy `unknown` limitida.
+ADR-057/057a ✅ API + web (web reviewer PASS, 2 LOW UX: reset'da rate-limit matni yo'q, `forgot-password-dialog.tsx:114` izoh). API: auth test 58/58 (2 marta ketma-ket), tsc toza; reviewer va security-auditor PASS. Kontrakt o'zgardi (`requiresCompanySelection`, `requiresAccountSelection`, yangi `/auth/login/select-company`, `/auth/password-reset/select-account`): API va web birga chiqariladi. LOW: reset limitini sarflab egasini ~1 soat bloklash mumkin (egallash yo'q); N>3 akkaunt login vaqtida sezilarli; login 3x argon2 (sekinroq); IP yo'q so'rovlar umumiy `unknown` limitida.
 ADR-061 read-only audit skripti ✅ (`packages/database/src/audit-deleted-customers.ts`, test 3/3, reviewer PASS). velto_dev: 8 kompaniyada o'chirilgan mijozlarning 36 CONFIRMED buyurtmasi rezerv bilan; 4 kompaniyada `code` faol mijozda (restore to'qnashuvi); post-delete to'lov, qarz, avans, PENDING_HANDOVER 0. Dev ma'lumot pilotni isbotlamaydi: pilotda ham ishlatish kerak. `close()` (`sales.service.ts:613`) to'lovni tekshirmaydi, shuning uchun o'chirishning o'zi qarz/avans/handover'ni tekshiradi. LOW: `:77` join katta kompaniyada sekin.
 OCHIQ, tashqi: buxgalter sign-off (HALF_UP), real 1C import, qurilmalar matritsasi, stendda F7 yuk, GA sign-off.
 
 ## Keyingi qadamlar
-1. ADR-057 web (`web-dev`, keyin `i18n-sync`).
+1. ADR-058 MFA (`otplib@13.5.0`: avval moslik, audit, provenance tekshiruvi; keyin `db-rls` sxema, `api-dev`, Telegram aylanib o'tishini yopish, `web-dev`, `security-auditor`).
 2. F7 qoldig'i: stendda yuk o'lchovi (F7.6 maqsadi, shubhali r2 run'lar, ko'p tenantda hisobot semafori kvotasi), GA sign-off (inson imzosi), v0.9/v1.0 gate'lar (`docs/PLAN.md`).
