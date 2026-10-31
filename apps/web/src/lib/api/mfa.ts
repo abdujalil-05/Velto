@@ -62,13 +62,39 @@ export function useRegenerateRecoveryCodesMutation() {
   });
 }
 
+export interface MfaResetChallenge {
+  challengeId: string;
+  expiresIn: number;
+}
+
+export interface MfaResetResult {
+  reset: boolean;
+  sessionsRevoked: number;
+  enrollmentCode: { code: string; expiresAt: string } | null;
+}
+
+// Step-up (ADR-058): challenge first, then reset with password + TOTP. Result holds a one-time code: never cached.
+export function useMfaResetChallengeMutation() {
+  return useMutation({
+    gcTime: 0,
+    mutationFn: ({ id }: { id: string }) =>
+      apiFetch<MfaResetChallenge>(`/users/${id}/mfa/reset/challenge`, { method: 'POST' }),
+  });
+}
+
 export function useResetUserMfaMutation() {
   return useMutation({
-    mutationFn: ({ id, reason }: { id: string; reason: string }) =>
-      apiFetch<{ reset: boolean; sessionsRevoked: number }>(`/users/${id}/mfa/reset`, {
-        method: 'POST',
-        body: { reason },
-      }),
+    gcTime: 0,
+    mutationFn: ({
+      id,
+      ...body
+    }: {
+      id: string;
+      challengeId: string;
+      currentPassword: string;
+      totpCode: string;
+      reason: string;
+    }) => apiFetch<MfaResetResult>(`/users/${id}/mfa/reset`, { method: 'POST', body }),
   });
 }
 
@@ -76,7 +102,10 @@ export function useResetUserMfaMutation() {
 export function useIssueMfaEnrollmentCodeMutation() {
   return useMutation({
     gcTime: 0,
-    mutationFn: ({ id }: { id: string }) =>
-      apiFetch<{ code: string; expiresAt: string }>(`/users/${id}/mfa/enrollment-code`, { method: 'POST' }),
+    mutationFn: ({ id, currentPassword, totpCode }: { id: string; currentPassword: string; totpCode: string }) =>
+      apiFetch<{ code: string; expiresAt: string }>(`/users/${id}/mfa/enrollment-code`, {
+        method: 'POST',
+        body: { currentPassword, totpCode },
+      }),
   });
 }

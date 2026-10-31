@@ -33,6 +33,15 @@ export interface MfaBinding {
   replacesMfaId: string | null;
 }
 
+/** What a step-up challenge (re-proof before a sensitive admin action) is bound to. Any mismatch => MFA_CHALLENGE_INVALID. */
+export interface StepUpBinding {
+  actorId: string;
+  sid: string;
+  companyId: string;
+  targetUserId: string;
+  op: 'users.mfa_reset';
+}
+
 /**
  * Server-side state of a multi-step auth flow. `stage` is the extension
  * point for ADR-057 flows; MFA challenges (ADR-058) use the separate `*Mfa` methods below.
@@ -47,6 +56,22 @@ export interface ChallengePayload {
 
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
+}
+
+function stepUpMatches(raw: string, expected: StepUpBinding): boolean {
+  let stored: Partial<StepUpBinding>;
+  try {
+    stored = JSON.parse(raw) as Partial<StepUpBinding>;
+  } catch {
+    return false;
+  }
+  return (
+    stored.actorId === expected.actorId &&
+    stored.sid === expected.sid &&
+    stored.companyId === expected.companyId &&
+    stored.targetUserId === expected.targetUserId &&
+    stored.op === expected.op
+  );
 }
 
 /**
@@ -153,6 +178,45 @@ export class AuthChallengeStore {
 
   getMfaPending(id: string): Promise<string | null> {
     return this.mfaRedis(() => this.redis.get(`${this.mfaKey(id)}:pending`));
+  }
+
+  private stepUpKey(id: string): string {
+    return `auth:stepup:${sha256(id)}`;
+  }
+
+  /** Opaque 256-bit id; the binding lives only in Redis for CHALLENGE_TTL_SECONDS. */
+  async issueStepUp(binding: StepUpBinding): Promise<string> {
+    const id = randomBytes(32).toString('base64url');
+    await this.mfaRedis(() => this.redis.set(this.stepUpKey(id), JSON.stringify(binding), 'EX', CHALLENGE_TTL_SECONDS));
+    return id;
+  }
+
+  /**
+   * Atomically counts one attempt (INCR+EXPIRE+GET in one Lua script, so parallel requests cannot overshoot
+   * MFA_MAX_ATTEMPTS), then checks the binding. Unknown/expired/exhausted/mismatching => MfaChallengeInvalidException.
+   * Does not consume: call consumeStepUp after the proof succeeded.
+   */
+  async checkStepUp(id: string, expected: StepUpBinding): Promise<void> {
+    const key = this.stepUpKey(id);
+    const raw = await this.mfaRedis(() =>
+      this.redis.eval(
+        "local c = redis.call('INCR', KEYS[2]) if c == 1 then redis.call('EXPIRE', KEYS[2], ARGV[1]) end if c > tonumber(ARGV[2]) then redis.call('DEL', KEYS[1]) return false end return redis.call('GET', KEYS[1])",
+        2,
+        key,
+        `${key}:attempts`,
+        CHALLENGE_TTL_SECONDS,
+        MFA_MAX_ATTEMPTS,
+      ),
+    );
+    if (typeof raw !== 'string' || !stepUpMatches(raw, expected)) throw new MfaChallengeInvalidException();
+  }
+
+  /** Atomic single-use consumption (GETDEL): exactly one concurrent caller wins; everyone else gets MfaChallengeInvalidException. */
+  async consumeStepUp(id: string, expected: StepUpBinding): Promise<void> {
+    const key = this.stepUpKey(id);
+    const raw = await this.mfaRedis(() => this.redis.getdel(key));
+    if (!raw || !stepUpMatches(raw, expected)) throw new MfaChallengeInvalidException();
+    await this.mfaRedis(() => this.redis.del(`${key}:attempts`));
   }
 
   /** Fixed-window counter; throws once `max` hits are exceeded inside `windowSeconds`. */

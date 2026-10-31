@@ -565,7 +565,7 @@ export class AuthService {
     const userRoles = await tx.userRole.findMany({ where: { userId: user.id }, include: { role: true } });
     const roles = userRoles.map((ur) => ur.role.code);
 
-    const payload: AccessTokenPayload = { sub: user.id, companyId: user.companyId, roles, ...(mfaId ? { mfa: mfaId } : {}) };
+    const payload: AccessTokenPayload = { sub: user.id, companyId: user.companyId, roles, sid: familyId, ...(mfaId ? { mfa: mfaId } : {}) };
     const accessToken = await this.jwtService.signAsync(payload);
 
     const refreshTokenValue = randomBytes(32).toString('hex');

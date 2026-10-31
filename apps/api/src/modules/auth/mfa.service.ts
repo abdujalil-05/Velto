@@ -175,21 +175,40 @@ export class MfaService {
 
   /** Re-verifies password + current TOTP, then hands out an enroll challenge. The old MFA stays valid until the new one is confirmed. */
   async startReenroll(actor: AuthenticatedUser, dto: MfaReenrollDto, meta: RequestMeta): Promise<MfaStepRequired> {
+    const mfaId = await this.reverifyActor(actor, { password: dto.password, totpCode: dto.code }, meta, 'auth.mfa.reenroll');
+    const mfaChallenge = await this.challenges.issueMfa({ scope: 'mfa_enroll', userId: actor.id, companyId: actor.companyId, replacesMfaId: mfaId });
+    return { mfa: 'enroll', mfaChallenge, expiresIn: CHALLENGE_TTL_SECONDS };
+  }
+
+  /**
+   * Shared step-up proof for the authenticated actor: password + current TOTP (replay-guarded via lastUsedStep),
+   * or, with `allowRecovery`, a single-use recovery code instead of the TOTP. Counts attempts, audits failures
+   * (`auth.mfa.failed`), throws MfaCodeInvalidException. Opens its own transactions: call from a handler-scope route.
+   */
+  async reverifyActor(
+    actor: AuthenticatedUser,
+    proof: { password: string; totpCode: string },
+    meta: RequestMeta,
+    successAction: string,
+    opts: { allowRecovery?: boolean } = {},
+  ): Promise<string> {
     await this.assertUserNotLimited(actor.id);
     await this.reserveAttempt(actor.id);
+    const isTotp = /^\d{6}$/.test(proof.totpCode);
+    const recoveryId = !isTotp && opts.allowRecovery ? await this.matchRecoveryCode({ userId: actor.id, companyId: actor.companyId }, proof.totpCode) : undefined;
     const mfaId = await this.tenantPrisma.run(actor.companyId, async (tx) => {
       const user = await tx.user.findUnique({ where: { id: actor.id } });
       const mfa = await findConfirmedMfa(tx, actor.id);
       if (!user?.passwordHash || !mfa) return undefined;
-      if (!(await argon2.verify(user.passwordHash, dto.password))) return undefined;
-      if (!(await this.claimTotp(tx, mfa, actor, dto.code))) return undefined;
-      await this.audit(tx, actor, 'auth.mfa.reenroll', meta, { stage: 'requested' });
+      if (!(await argon2.verify(user.passwordHash, proof.password))) return undefined;
+      const accepted = isTotp ? await this.claimTotp(tx, mfa, actor, proof.totpCode) : await this.claimRecoveryCode(tx, actor.id, recoveryId);
+      if (!accepted) return undefined;
+      await this.audit(tx, actor, successAction, meta, { stage: 'requested' });
       return mfa.id;
     });
     if (!mfaId) return this.rejectCode({ userId: actor.id, companyId: actor.companyId }, undefined, meta);
     await this.rateLimiter.recordSuccess(this.limiterKey(actor.id));
-    const mfaChallenge = await this.challenges.issueMfa({ scope: 'mfa_enroll', userId: actor.id, companyId: actor.companyId, replacesMfaId: mfaId });
-    return { mfa: 'enroll', mfaChallenge, expiresIn: CHALLENGE_TTL_SECONDS };
+    return mfaId;
   }
 
   /** New set of recovery codes (needs a fresh TOTP); the previous set is deleted. */

@@ -167,6 +167,16 @@ export class CannotResetOwnMfaException extends AppException {
   }
 }
 
+export class CannotResetOwnerMfaException extends AppException {
+  constructor() {
+    super(HttpStatus.FORBIDDEN, 'CANNOT_RESET_OWNER_MFA', {
+      uz: "Egasining ikki bosqichli tasdiqlashini bu yerdan tiklab bo'lmaydi",
+      ru: 'Двухфакторную аутентификацию Владельца нельзя сбросить отсюда',
+      en: "An Owner's two-factor authentication cannot be reset here",
+    });
+  }
+}
+
 export class MfaEnrollmentCodeNotApplicableException extends AppException {
   constructor() {
     super(HttpStatus.BAD_REQUEST, 'USER_MFA_ENROLLMENT_CODE_NOT_APPLICABLE', {

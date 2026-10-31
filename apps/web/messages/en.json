@@ -689,7 +689,23 @@
       "reason": "Reason (required)",
       "cancel": "Cancel",
       "confirm": "Reset MFA",
-      "success": "MFA reset for {name}"
+      "success": "MFA reset for {name}",
+      "sessionsRevoked": "Sessions revoked: {count}",
+      "shownOnce": "One-time setup code for {name}. Share it through a secure channel; it will not be shown again.",
+      "copy": "Copy",
+      "expires": "Expires: {at}",
+      "noCode": "No setup code is needed: the user can set up an authenticator at the next sign-in.",
+      "close": "Close",
+      "retry": "Retry",
+      "password": "Your password",
+      "totp": "Current 6-digit TOTP code",
+      "totpFormat": "Enter exactly 6 digits.",
+      "proofHint": "For security, enter your own password and current 6-digit TOTP code. Recovery codes are not accepted.",
+      "preparing": "Preparing secure request...",
+      "challengeRenewed": "The request expired or was already used. A new one was prepared; enter your password and a fresh TOTP code and retry.",
+      "codeInvalid": "Password or TOTP code is incorrect.",
+      "rateLimited": "Too many attempts. Wait a few minutes and try again.",
+      "unavailable": "MFA service is temporarily unavailable. Try again later."
     },
     "mfaCode": {
       "action": "Issue MFA setup code",
@@ -700,7 +716,10 @@
       "expires": "Expires: {at}",
       "close": "Close",
       "issue": "Generate code",
-      "retry": "Retry"
+      "retry": "Retry",
+      "password": "Your password",
+      "totp": "Current TOTP code or recovery code",
+      "proofHint": "For security, enter your own password and current TOTP code (or one recovery code). The code is valid for 1 hour."
     }
   },
   "Onboarding": {

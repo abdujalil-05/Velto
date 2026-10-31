@@ -16,6 +16,8 @@ import {
   UserAlreadyInactiveException,
   UserHasReferencesException,
 } from './users-exceptions';
+import type { AuthChallengeStore } from '../auth/auth-challenge.store';
+import type { MfaService } from '../auth/mfa.service';
 import { UsersService } from './users.service';
 
 // Prod keeps Prisma's 5s tx default; remove() runs ~20 reference-count queries which under full-suite
@@ -28,7 +30,7 @@ describe('UsersService (integration, real Postgres + RLS)', () => {
 
   const tenantPrisma = new TenantPrismaService();
   const auditLog = new AuditLogService();
-  const users = new UsersService(tenantPrisma, auditLog);
+  const users = new UsersService(tenantPrisma, auditLog, {} as unknown as MfaService, {} as unknown as AuthChallengeStore) // MFA step-up is not exercised here;
 
   beforeAll(async () => {
     const tenant = await systemPrisma.tenant.create({

@@ -6,7 +6,7 @@ import argon2 from 'argon2';
 import { generate } from 'otplib';
 import request from 'supertest';
 import { prisma, systemPrisma } from '@velto/database';
-import { permissionKeysForRole } from '../../../packages/database/src/rbac-catalog';
+import { permissionKeysForRole, SYSTEM_ROLES } from '../../../packages/database/src/rbac-catalog';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service';
@@ -41,6 +41,12 @@ describe('E2E ADR-058: mandatory TOTP MFA', () => {
     });
     await addRole(companyId, user.id, roleCode, permissionIds);
     return { id: user.id, phone };
+  }
+
+  /** Step-up body for POST /users/:id/mfa/enrollment-code: rewinds the replay guard, then the current TOTP. */
+  async function proofOf(userId: string, secret: string) {
+    await systemPrisma.userMfa.update({ where: { userId }, data: { lastUsedStep: -1 } });
+    return { currentPassword: password, totpCode: await generate({ secret }) };
   }
 
   async function addRole(companyId: string, userId: string, roleCode: string, permissionIds: string[]) {
@@ -86,7 +92,7 @@ describe('E2E ADR-058: mandatory TOTP MFA', () => {
     await mfaPost('/auth/mfa/enroll/start').send({ mfaChallenge: login.body.mfaChallenge }).expect(401);
     const admin = await mkUser(coA, 'OWNER');
     const adminSession = await loginWithMfa(app, admin.phone, password);
-    const issued = await http().post(`/users/${owner.id}/mfa/enrollment-code`).set({ Authorization: `Bearer ${adminSession.accessToken}` }).expect(200);
+    const issued = await http().post(`/users/${owner.id}/mfa/enrollment-code`).set({ Authorization: `Bearer ${adminSession.accessToken}` }).send(await proofOf(admin.id, adminSession.secret!)).expect(200);
     expect(issued.body).toMatchObject({ code: expect.any(String), expiresAt: expect.any(String) });
     const enrollmentCode = issued.body.code as string;
     const start = await mfaPost('/auth/mfa/enroll/start').send({ mfaChallenge: login.body.mfaChallenge, enrollmentCode }).expect(200);
@@ -130,27 +136,76 @@ describe('E2E ADR-058: mandatory TOTP MFA', () => {
     expect(next.body.mfa).toBe('enroll');
   });
 
-  it('POST /users/:id/mfa/reset: permission, self, cross-tenant, effect on the target session', async () => {
+  it('POST /users/:id/mfa/reset: step-up (challenge + password + TOTP), target rules, effect on the target session', async () => {
     const admin = await mkUser(coA, 'OWNER');
+    const owner2 = await mkUser(coA, 'OWNER');
     const target = await mkUser(coA, 'CASHIER');
     const foreign = await mkUser(coB, 'OWNER');
     const adminSession = await loginWithMfa(app, admin.phone, password);
     const targetSession = await loginWithMfa(app, target.phone, password);
     const bearer = (t: string) => ({ Authorization: `Bearer ${t}` });
+    const auth = bearer(adminSession.accessToken);
     const url = (id: string) => `/users/${id}/mfa/reset`;
+    const challenge = async (id: string, token = adminSession.accessToken) => http().post(`${url(id)}/challenge`).set(bearer(token));
+    const body = async (challengeId: string, over: Record<string, unknown> = {}) => ({ challengeId, reason: 'lost device', ...(await proofOf(admin.id, adminSession.secret!)), ...over });
 
-    // CASHIER has no users.mfa_reset
-    await http().post(url(admin.id)).set(bearer(targetSession.accessToken)).send({ reason: 'nope nope' }).expect(403);
-    await http().post(url(admin.id)).set(bearer(adminSession.accessToken)).send({ reason: 'self reset' }).expect(400);
-    await http().post(url(foreign.id)).set(bearer(adminSession.accessToken)).send({ reason: 'cross tenant' }).expect(404);
-    await http().post(url(target.id)).set(bearer(adminSession.accessToken)).send({ reason: 'x' }).expect(400); // reason too short
+    // only OWNER holds users.mfa_reset (catalog)
+    expect(SYSTEM_ROLES.filter((r) => permissionKeysForRole(r.code).includes('users.mfa_reset')).map((r) => r.code)).toEqual(['OWNER']);
+    // CASHIER: no permission; unauthenticated: 401
+    await challenge(admin.id, targetSession.accessToken).then((r) => expect(r.status).toBe(403));
+    await http().post(url(admin.id)).set(bearer(targetSession.accessToken)).send({}).expect(403);
+    await http().post(`${url(target.id)}/challenge`).expect(401);
+    // target rules at challenge time
+    await challenge(admin.id).then((r) => expect(r.status).toBe(400));
+    const ownerRes = await challenge(owner2.id);
+    expect(ownerRes.status).toBe(403);
+    expect(ownerRes.body.code).toBe('CANNOT_RESET_OWNER_MFA');
+    expect(ownerRes.body.message).toMatchObject({ uz: expect.any(String), ru: expect.any(String), en: expect.any(String) });
+    await challenge(foreign.id).then((r) => expect(r.status).toBe(404));
+    // a session token without sid cannot start a step-up
+    const noSid = await app.get(JwtService, { strict: false }).signAsync({ sub: admin.id, companyId: coA, roles: ['OWNER'], mfa: (await systemPrisma.userMfa.findUniqueOrThrow({ where: { userId: admin.id } })).id });
+    await challenge(target.id, noSid).then((r) => expect(r.status).toBe(401));
 
-    await http().post(url(target.id)).set(bearer(adminSession.accessToken)).send({ reason: 'lost device' }).expect(200);
+    // stolen session, no proof: old shape / no challenge / password-only / TOTP-only / recovery code / unknown challenge
+    await http().post(url(target.id)).set(auth).send({ reason: 'lost device' }).expect(400);
+    const ch = await challenge(target.id);
+    expect(ch.status).toBe(201);
+    expect(ch.body).toMatchObject({ challengeId: expect.any(String), expiresIn: expect.any(Number) });
+    expect(ch.body.expiresIn).toBeLessThanOrEqual(300);
+    const id = ch.body.challengeId as string;
+    await http().post(url(target.id)).set(auth).send({ challengeId: id, reason: 'lost device', currentPassword: password }).expect(400);
+    await http().post(url(target.id)).set(auth).send({ challengeId: id, reason: 'lost device', totpCode: '123456' }).expect(400);
+    await http().post(url(target.id)).set(auth).send(await body(id, { totpCode: adminSession.recoveryCodes?.[0] ?? 'ABCD-EFGH-IJKL' })).expect(400);
+    await http().post(url(target.id)).set(auth).send(await body('x'.repeat(43))).then((r) => {
+      expect(r.status).toBe(401);
+      expect(r.body.code).toBe('MFA_CHALLENGE_INVALID');
+    });
+    const wrongPw = await http().post(url(target.id)).set(auth).send(await body(id, { currentPassword: 'wrong-password' }));
+    expect(wrongPw.status).toBe(401);
+    expect(wrongPw.body.code).toBe('MFA_CODE_INVALID');
+    const good = await body(id);
+    await http().post(url(target.id)).set(auth).send({ ...good, totpCode: good.totpCode === '000000' ? '111111' : '000000' }).expect(401);
+    await http().get('/auth/me').set(bearer(targetSession.accessToken)).expect(200); // still enrolled
+
+    // two parallel resets with the same challenge: exactly one executes
+    const proof = await body(id);
+    const [r1, r2] = await Promise.all([http().post(url(target.id)).set(auth).send(proof), http().post(url(target.id)).set(auth).send(proof)]);
+    expect([r1.status, r2.status].sort()).toEqual([200, 401]);
+    const ok = r1.status === 200 ? r1 : r2;
+    expect(ok.body).toMatchObject({ reset: true, sessionsRevoked: 1, enrollmentCode: { code: expect.any(String), expiresAt: expect.any(String) } });
+    // challenge reuse
+    await http().post(url(target.id)).set(auth).send(await body(id)).then((r) => expect(r.body.code).toBe('MFA_CHALLENGE_INVALID'));
+
+    // effect on the target: access + refresh tokens dead, audit has trace and no secrets
     const res = await http().get('/auth/me').set(bearer(targetSession.accessToken)).expect(401);
     expect(res.body.code).toBe('MFA_REQUIRED');
-    // MFA is not off: the target must enroll again
+    await http().post('/auth/refresh').set('Cookie', targetSession.cookies!).send({}).expect(401);
     const next = await http().post('/auth/login').set('X-Forwarded-For', randomIp()).send({ phone: target.phone, password }).expect(201);
     expect(next.body.mfa).toBe('enroll');
+    const audit = await systemPrisma.auditLog.findFirstOrThrow({ where: { entityId: target.id, action: 'auth.mfa.reset' } });
+    expect(audit).toMatchObject({ userId: admin.id, traceId: expect.any(String) });
+    expect(JSON.stringify(audit.newValue)).not.toContain(ok.body.enrollmentCode.code);
+    expect(JSON.stringify(audit.newValue)).not.toContain(password);
   });
 
   it('POST /users/:id/mfa/enrollment-code: RBAC, self, cross-tenant, already-enrolled, non-privileged', async () => {
@@ -163,19 +218,42 @@ describe('E2E ADR-058: mandatory TOTP MFA', () => {
     const cashierSession = await loginWithMfa(app, cashier.phone, password);
     const bearer = (t: string) => ({ Authorization: `Bearer ${t}` });
     const url = (id: string) => `/users/${id}/mfa/enrollment-code`;
-    await http().post(url(fresh.id)).set(bearer(cashierSession.accessToken)).expect(403);
-    await http().post(url(admin.id)).set(bearer(adminSession.accessToken)).expect(400);
-    await http().post(url(foreign.id)).set(bearer(adminSession.accessToken)).expect(404);
-    await http().post(url(cashier.id)).set(bearer(adminSession.accessToken)).expect(400); // already has confirmed MFA
-    const bad = await http().post(url(agent.id)).set(bearer(adminSession.accessToken)).expect(400);
+    const post = async (id: string, token = adminSession.accessToken) => http().post(url(id)).set(bearer(token)).send(await proofOf(admin.id, adminSession.secret!));
+    await http().post(url(fresh.id)).set(bearer(cashierSession.accessToken)).send({ currentPassword: password, totpCode: '123456' }).expect(403);
+    await post(admin.id).then((r) => expect(r.status).toBe(400));
+    await post(foreign.id).then((r) => expect(r.status).toBe(404));
+    await post(cashier.id).then((r) => expect(r.status).toBe(400)); // already has confirmed MFA
+    const bad = await post(agent.id);
+    expect(bad.status).toBe(400);
     expect(bad.body.code).toBe('USER_MFA_ENROLLMENT_CODE_NOT_APPLICABLE');
     await systemPrisma.user.update({ where: { id: agent.id }, data: { isActive: false } });
-    await http().post(url(agent.id)).set(bearer(adminSession.accessToken)).expect(404); // inactive target
-    const ok = await http().post(url(fresh.id)).set(bearer(adminSession.accessToken)).expect(200);
+    await post(agent.id).then((r) => expect(r.status).toBe(404)); // inactive target
+    const ok = await post(fresh.id);
+    expect(ok.status).toBe(200);
     const audits = await systemPrisma.auditLog.findMany({ where: { entityId: fresh.id, action: 'auth.mfa.enrollment_code_issued' } });
     expect(audits).toHaveLength(1);
     expect(audits[0].traceId).toBeTruthy();
     expect(JSON.stringify(audits[0].newValue)).not.toContain(ok.body.code);
+  });
+
+  it('POST /users/:id/mfa/enrollment-code: step-up proof required (400 on missing fields, 401 wrong password/TOTP, recovery code once)', async () => {
+    const admin = await mkUser(coA, 'OWNER');
+    const t1 = await mkUser(coA, 'OWNER');
+    const t2 = await mkUser(coA, 'OWNER');
+    const s = await loginWithMfa(app, admin.phone, password);
+    const auth = { Authorization: `Bearer ${s.accessToken}` };
+    const url = (id: string) => `/users/${id}/mfa/enrollment-code`;
+    await http().post(url(t1.id)).set(auth).expect(400);
+    await http().post(url(t1.id)).set(auth).send({ currentPassword: password }).expect(400);
+    const good = await proofOf(admin.id, s.secret!);
+    await http().post(url(t1.id)).set(auth).send({ ...good, currentPassword: 'wrong-password' }).expect(401);
+    await http().post(url(t1.id)).set(auth).send({ ...good, totpCode: good.totpCode === '000000' ? '111111' : '000000' }).expect(401);
+    expect(await systemPrisma.mfaEnrollmentCode.count({ where: { userId: t1.id } })).toBe(0);
+    expect(await systemPrisma.auditLog.count({ where: { entityId: admin.id, action: 'auth.mfa.failed' } })).toBeGreaterThan(0);
+    await http().post(url(t1.id)).set(auth).send(good).expect(200);
+    // replay of the same TOTP
+    await http().post(url(t2.id)).set(auth).send(good).expect(401);
+    expect(await systemPrisma.mfaEnrollmentCode.count({ where: { userId: t2.id } })).toBe(0);
   });
 
   it('self-service re-enroll over HTTP: wrong password rejected; correct returns an enroll challenge; confirm kills the old access token', async () => {

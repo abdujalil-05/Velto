@@ -48,7 +48,8 @@ export class SecretBox {
   /** Throws on a wrong AAD, tampered bytes or unknown key version. */
   open(sealed: SealedSecret, aad: string): string {
     if (sealed.keyVersion !== CURRENT_KEY_VERSION) throw new Error(`Unsupported secret key version ${sealed.keyVersion}`);
-    const decipher = createDecipheriv(ALGORITHM, this.key, sealed.iv);
+    if (sealed.tag.length !== 16) throw new Error('Invalid auth tag length');
+    const decipher = createDecipheriv(ALGORITHM, this.key, sealed.iv, { authTagLength: 16 });
     decipher.setAAD(Buffer.from(aad, 'utf8'));
     decipher.setAuthTag(sealed.tag);
     return Buffer.concat([decipher.update(sealed.ciphertext), decipher.final()]).toString('utf8');

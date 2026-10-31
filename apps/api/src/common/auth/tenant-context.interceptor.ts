@@ -93,7 +93,7 @@ export class TenantContextInterceptor implements NestInterceptor {
         return undefined;
       }
 
-      request.user = actor;
+      request.user = payload.sid ? { ...actor, sid: payload.sid } : actor;
       if (handlerScope) return undefined;
       return firstValueFrom(next.handle());
     }, handlerScope || Object.keys(txOptions).length === 0 ? undefined : txOptions);

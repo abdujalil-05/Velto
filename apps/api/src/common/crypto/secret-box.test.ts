@@ -20,7 +20,7 @@ describe('SecretBox (AES-256-GCM)', () => {
   });
 
   it('rejects another AAD (row copied to another user), tampering and an unknown key version', () => {
-    const s = box.seal('secret', 'co:user');
+    const s = box.seal(randomBytes(16).toString('hex'), 'co:user');
     expect(() => box.open(s, 'co:other')).toThrow();
     expect(() => box.open({ ...s, ciphertext: Buffer.from(s.ciphertext.map((x) => x ^ 1)) }, 'co:user')).toThrow();
     expect(() => box.open({ ...s, keyVersion: 99 }, 'co:user')).toThrow();

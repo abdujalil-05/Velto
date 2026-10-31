@@ -106,7 +106,7 @@ async function main() {
   console.log('Owner login:');
   console.log('  Telefon:', OWNER_PHONE);
   console.log('  Parol:  ', password);
-  console.log('  MFA enrollment kodi (bir marta, 72 soat):', enrollment.code);
+  console.log('  MFA enrollment kodi (bir marta, 1 soat):', enrollment.code);
 }
 
 main()

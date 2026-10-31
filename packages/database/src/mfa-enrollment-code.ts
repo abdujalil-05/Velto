@@ -8,7 +8,9 @@ import type { TenantClient } from './client';
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
 export const MFA_ENROLLMENT_CODE_LENGTH = 12;
-export const MFA_ENROLLMENT_CODE_TTL_MS = 72 * 60 * 60 * 1000;
+// PO decision: 1h (was 72h). Applied at issuance only; codes already issued keep
+// their stored expiresAt, which redemption checks (no data migration).
+export const MFA_ENROLLMENT_CODE_TTL_MS = 60 * 60 * 1000;
 export const MFA_ENROLLMENT_CODE_ISSUED_AUDIT_ACTION = 'auth.mfa.enrollment_code_issued';
 
 /** 12 Crockford-base32 chars (60 bits) from crypto.randomBytes; 256 % 32 === 0, so no modulo bias. */

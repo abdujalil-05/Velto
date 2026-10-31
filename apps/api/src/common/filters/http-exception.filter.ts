@@ -11,6 +11,7 @@ export const GENERIC_MESSAGES: Record<number, LocalizedMessage> = {
   [HttpStatus.FORBIDDEN]: { uz: 'Ruxsat berilmagan', ru: 'Доступ запрещён', en: 'Forbidden' },
   [HttpStatus.NOT_FOUND]: { uz: 'Topilmadi', ru: 'Не найдено', en: 'Not found' },
   [HttpStatus.CONFLICT]: { uz: "Ziddiyat yuz berdi", ru: 'Конфликт данных', en: 'Conflict' },
+  [HttpStatus.PAYLOAD_TOO_LARGE]: { uz: "So'rov hajmi juda katta", ru: 'Слишком большой запрос', en: 'Payload too large' },
   [HttpStatus.UNPROCESSABLE_ENTITY]: { uz: "Ma'lumot noto'g'ri", ru: 'Некорректные данные', en: 'Unprocessable entity' },
   [HttpStatus.TOO_MANY_REQUESTS]: { uz: "So'rovlar soni oshib ketdi", ru: 'Слишком много запросов', en: 'Too many requests' },
   [HttpStatus.INTERNAL_SERVER_ERROR]: { uz: 'Server xatoligi', ru: 'Ошибка сервера', en: 'Internal server error' },
@@ -179,6 +180,18 @@ function txConflictState(exception: unknown): string | undefined {
   return undefined;
 }
 
+/** 4xx status for a raw MulterError (by code) or an `expose`d body-parser http-error; else undefined. */
+function clientErrorStatus(exception: unknown): number | undefined {
+  if (!(exception instanceof Error)) return undefined;
+  const e = exception as Error & { code?: unknown; status?: unknown; statusCode?: unknown; expose?: unknown };
+  if (e.name === 'MulterError' && typeof e.code === 'string' && e.code.startsWith('LIMIT_')) {
+    return e.code === 'LIMIT_FILE_SIZE' ? HttpStatus.PAYLOAD_TOO_LARGE : HttpStatus.BAD_REQUEST;
+  }
+  const status = typeof e.status === 'number' ? e.status : e.statusCode;
+  if (e.expose === true && typeof status === 'number' && status >= 400 && status <= 499) return status;
+  return undefined;
+}
+
 /**
  * Normalizes every error response to `{ code, message, details }` (7.1),
  * with `message` always in uz/ru/en (9.1/14.6). Never leaks a stack trace
@@ -225,6 +238,16 @@ export class AllExceptionsFilter implements ExceptionFilter {
         `Tx conflict (sqlstate=${conflict}) traceId=${getTraceId() ?? '-'}: ${(exception as Error).message.slice(0, 300)}`,
       );
       this.sendServiceBusy(response, TX_CONFLICT_RETRY_AFTER_SECONDS);
+      return;
+    }
+
+    // Raw multer errors (multer 2.x wording differs from what Nest maps) are
+    // classified by `code`, never by message text. Client input, not Sentry.
+    // Likewise body-parser/zlib http-errors (`expose` 4xx): generic message only.
+    const clientStatus = clientErrorStatus(exception);
+    if (clientStatus) {
+      this.logger.warn(`Rejected client input (${clientStatus}) traceId=${getTraceId() ?? '-'}`);
+      response.status(clientStatus).json(this.withTrace(this.normalize(clientStatus, null)));
       return;
     }
 

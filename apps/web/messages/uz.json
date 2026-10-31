@@ -689,7 +689,23 @@
       "reason": "Sabab (majburiy)",
       "cancel": "Bekor qilish",
       "confirm": "MFA ni tiklash",
-      "success": "{name} uchun MFA tiklandi"
+      "success": "{name} uchun MFA tiklandi",
+      "sessionsRevoked": "Tugatilgan sessiyalar: {count}",
+      "shownOnce": "{name} uchun bir martalik sozlash kodi. Uni xavfsiz kanal orqali yuboring; qayta ko'rsatilmaydi.",
+      "copy": "Nusxalash",
+      "expires": "Amal qilish muddati: {at}",
+      "noCode": "Sozlash kodi kerak emas: foydalanuvchi keyingi kirishda autentifikatorni sozlay oladi.",
+      "close": "Yopish",
+      "retry": "Qayta urinish",
+      "password": "Sizning parolingiz",
+      "totp": "Joriy 6 xonali TOTP kodi",
+      "totpFormat": "Aynan 6 ta raqam kiriting.",
+      "proofHint": "Xavfsizlik uchun o'z parolingiz va joriy 6 xonali TOTP kodini kiriting. Tiklash kodlari qabul qilinmaydi.",
+      "preparing": "Xavfsiz so'rov tayyorlanmoqda...",
+      "challengeRenewed": "So'rov muddati tugagan yoki ishlatilgan. Yangisi tayyorlandi; parol va yangi TOTP kodini kiriting va qayta urining.",
+      "codeInvalid": "Parol yoki TOTP kodi noto'g'ri.",
+      "rateLimited": "Juda ko'p urinish. Bir necha daqiqa kutib, qayta urining.",
+      "unavailable": "MFA xizmati vaqtincha mavjud emas. Keyinroq urinib ko'ring."
     },
     "mfaCode": {
       "action": "MFA sozlash kodini berish",
@@ -700,7 +716,10 @@
       "expires": "Amal qilish muddati: {at}",
       "close": "Yopish",
       "issue": "Kod yaratish",
-      "retry": "Qayta urinish"
+      "retry": "Qayta urinish",
+      "password": "Parolingiz",
+      "totp": "Joriy TOTP kodi yoki tiklash kodi",
+      "proofHint": "Xavfsizlik uchun o'z parolingiz va joriy TOTP kodingiz (yoki bitta tiklash kodi)ni kiriting. Kod 1 soat amal qiladi."
     }
   },
   "Onboarding": {

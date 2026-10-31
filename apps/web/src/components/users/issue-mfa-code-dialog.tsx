@@ -7,6 +7,8 @@ import { errorMessage } from '@/lib/api/client';
 import { useIssueMfaEnrollmentCodeMutation } from '@/lib/api/mfa';
 import type { User } from '@/lib/api/users';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
@@ -23,11 +25,15 @@ export function IssueMfaCodeDialog({ user, onClose }: IssueMfaCodeDialogProps) {
   const [issued, setIssued] = useState<{ code: string; expiresAt: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [password, setPassword] = useState('');
+  const [totp, setTotp] = useState('');
 
   function close() {
     setIssued(null);
     setError(null);
     setCopied(false);
+    setPassword('');
+    setTotp('');
     mutation.reset();
     onClose();
   }
@@ -35,10 +41,14 @@ export function IssueMfaCodeDialog({ user, onClose }: IssueMfaCodeDialogProps) {
   async function issue() {
     if (!user) return;
     setError(null);
+    const proof = { currentPassword: password, totpCode: totp.trim() };
     try {
-      setIssued(await mutation.mutateAsync({ id: user.id }));
+      setIssued(await mutation.mutateAsync({ id: user.id, ...proof }));
     } catch (err) {
       setError(errorMessage(err, locale));
+    } finally {
+      setPassword('');
+      setTotp('');
     }
   }
 
@@ -74,7 +84,37 @@ export function IssueMfaCodeDialog({ user, onClose }: IssueMfaCodeDialogProps) {
             <p className="text-sm">{t('expires', { at: new Date(issued.expiresAt).toLocaleString(locale) })}</p>
           </div>
         ) : (
-          <p className="text-sm text-muted-foreground">{t('description', { name })}</p>
+          <form
+            className="space-y-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void issue();
+            }}
+          >
+            <p className="text-sm text-muted-foreground">{t('description', { name })}</p>
+            <p className="text-sm text-muted-foreground">{t('proofHint')}</p>
+            <div className="space-y-1">
+              <Label htmlFor="mfa-issue-password">{t('password')}</Label>
+              <Input
+                id="mfa-issue-password"
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="mfa-issue-totp">{t('totp')}</Label>
+              <Input
+                id="mfa-issue-totp"
+                type="text"
+                inputMode="text"
+                autoComplete="one-time-code"
+                value={totp}
+                onChange={(e) => setTotp(e.target.value)}
+              />
+            </div>
+          </form>
         )}
         {error && (
           <Alert variant="destructive" className="mt-4" role="alert">
@@ -86,7 +126,7 @@ export function IssueMfaCodeDialog({ user, onClose }: IssueMfaCodeDialogProps) {
             {t('close')}
           </Button>
           {!issued && (
-            <Button onClick={issue} disabled={mutation.isPending}>
+            <Button onClick={issue} disabled={mutation.isPending || !password || !totp.trim()}>
               {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {error ? t('retry') : t('issue')}
             </Button>

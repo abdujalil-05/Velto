@@ -2,7 +2,9 @@ import { Injectable } from '@nestjs/common';
 import argon2 from 'argon2';
 import { issueMfaEnrollmentCodeInTx, MFA_ENROLLMENT_CODE_ISSUED_AUDIT_ACTION, Prisma, type TenantClient } from '@velto/database';
 import { AuditLogService, toAuditJson } from '../../common/audit/audit-log.service';
+import { MfaChallengeInvalidException, MfaRequiredException } from '../../common/auth/auth-exceptions';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
+import { loadAuthenticatedUser } from '../../common/auth/load-authenticated-user';
 import { requiresMfa } from '../../common/auth/mfa-policy';
 import { paginate } from '../../common/pagination/pagination.dto';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
@@ -13,6 +15,7 @@ import {
   CannotGrantOwnerRoleException,
   CannotSetOthersPasswordException,
   CannotResetOwnMfaException,
+  CannotResetOwnerMfaException,
   MfaEnrollmentCodeNotApplicableException,
   DuplicateUserPhoneException,
   InvalidRoleCodesException,
@@ -25,6 +28,10 @@ import {
 } from './users-exceptions';
 import type { CreateUserDto } from './dto/create-user.dto';
 import type { DeleteUserQueryDto } from './dto/delete-user.query';
+import type { RequestMeta } from '../auth/auth.service';
+import { AuthChallengeStore, CHALLENGE_TTL_SECONDS, type StepUpBinding } from '../auth/auth-challenge.store';
+import { MfaService } from '../auth/mfa.service';
+import type { IssueMfaEnrollmentCodeDto } from './dto/issue-mfa-enrollment-code.dto';
 import type { ResetMfaDto } from './dto/reset-mfa.dto';
 import type { ListUsersQueryDto } from './dto/list-users.query';
 import type { UpdateUserDto } from './dto/update-user.dto';
@@ -65,6 +72,8 @@ export class UsersService {
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     private readonly auditLog: AuditLogService,
+    private readonly mfa: MfaService,
+    private readonly challenges: AuthChallengeStore,
   ) {}
 
   async list(query: ListUsersQueryDto) {
@@ -307,31 +316,95 @@ export class UsersService {
     return shaped;
   }
 
-  /**
-   * ADR-058: same tenant (RLS => 404 across companies), never yourself. MFA is not disabled:
-   * the target's privileged login falls back to enrollment, and old access tokens die (no confirmed MFA).
-   */
-  async resetMfa(id: string, dto: ResetMfaDto, actor: AuthenticatedUser) {
-    if (id === actor.id) throw new CannotResetOwnMfaException();
-    const tx = this.tenantPrisma.client;
-    const target = await tx.user.findUnique({ where: { id }, select: { id: true } });
-    if (!target) throw new UserNotFoundException();
-
-    const codes = await tx.userMfaRecoveryCode.deleteMany({ where: { userId: id } });
-    const mfa = await tx.userMfa.deleteMany({ where: { userId: id } });
-    const sessions = await tx.refreshToken.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: new Date() } });
-    await this.auditLog.log(tx, {
-      companyId: actor.companyId,
-      userId: actor.id,
-      action: 'auth.mfa.reset',
-      entity: 'User',
-      entityId: id,
-      newValue: { reason: dto.reason, mfaDeleted: mfa.count, recoveryCodesDeleted: codes.count, sessionsRevoked: sessions.count },
-    });
-    return { reset: true, sessionsRevoked: sessions.count };
+  /** ADR-058 step-up, stage 1 (handler-scope route): pre-checks the target, then hands out a challenge bound to this session + target. */
+  async createMfaResetChallenge(id: string, actor: AuthenticatedUser): Promise<{ challengeId: string; expiresIn: number }> {
+    const binding = this.stepUpBinding(id, actor);
+    await this.tenantPrisma.run(actor.companyId, (tx) => this.loadResetTarget(tx, id, actor));
+    const challengeId = await this.challenges.issueStepUp(binding);
+    return { challengeId, expiresIn: CHALLENGE_TTL_SECONDS };
   }
 
-  async issueMfaEnrollmentCode(id: string, actor: AuthenticatedUser) {
+  /**
+   * ADR-058 step-up, stage 2 (handler-scope route): clears the target's TOTP + recovery codes and revokes their sessions.
+   * Proof order: attempt counted + bindings checked, password + TOTP (no recovery code), challenge consumed (one winner),
+   * then ONE tenant tx re-validates actor and target and does everything. Redis down => MFA_SERVICE_UNAVAILABLE, nothing executed.
+   */
+  async resetMfa(id: string, dto: ResetMfaDto, actor: AuthenticatedUser, meta: RequestMeta) {
+    const binding = this.stepUpBinding(id, actor);
+    await this.challenges.checkStepUp(dto.challengeId, binding);
+    const mfaId = await this.mfa.reverifyActor(actor, { password: dto.currentPassword, totpCode: dto.totpCode }, meta, 'auth.mfa.reset_reauth');
+    await this.challenges.consumeStepUp(dto.challengeId, binding);
+
+    return this.tenantPrisma.run(actor.companyId, async (tx) => {
+      const current = await loadAuthenticatedUser(tx, actor.id, actor.companyId);
+      const sessionAlive = await tx.refreshToken.findFirst({
+        where: { userId: actor.id, familyId: binding.sid, revokedAt: null, expiresAt: { gt: new Date() } },
+        select: { id: true },
+      });
+      // Actor must still be active, hold the permission, and be backed by the same confirmed MFA that just gave the proof.
+      if (!current || !sessionAlive || current.confirmedMfaId !== mfaId || !current.permissions.includes('users.mfa_reset')) {
+        throw new MfaChallengeInvalidException();
+      }
+      const target = await this.loadResetTarget(tx, id, actor);
+
+      const codes = await tx.userMfaRecoveryCode.deleteMany({ where: { userId: id } });
+      const mfa = await tx.userMfa.deleteMany({ where: { userId: id } });
+      const sessions = await tx.refreshToken.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: new Date() } });
+      let enrollmentCode: { code: string; expiresAt: string } | null = null;
+      let enrollmentCodeId: string | null = null;
+      let invalidated = 0;
+      if (requiresMfa(target.roles.map((r) => r.role.code))) {
+        const issued = await issueMfaEnrollmentCodeInTx(tx, { companyId: actor.companyId, userId: id, createdById: actor.id, skipAudit: true });
+        enrollmentCode = { code: issued.code, expiresAt: issued.expiresAt.toISOString() };
+        enrollmentCodeId = issued.enrollmentCodeId;
+        invalidated = issued.invalidated;
+      } else {
+        invalidated = (await tx.mfaEnrollmentCode.updateMany({ where: { companyId: actor.companyId, userId: id, usedAt: null }, data: { usedAt: new Date() } })).count;
+      }
+      await this.auditLog.log(tx, {
+        companyId: actor.companyId,
+        userId: actor.id,
+        action: 'auth.mfa.reset',
+        entity: 'User',
+        entityId: id,
+        ip: meta.ip,
+        // Never the password, TOTP, enrollment code or its hash.
+        newValue: {
+          reason: dto.reason,
+          targetUserId: id,
+          mfaDeleted: mfa.count,
+          recoveryCodesDeleted: codes.count,
+          sessionsRevoked: sessions.count,
+          enrollmentCodeId,
+          enrollmentCodesInvalidated: invalidated,
+        },
+      });
+      return { reset: true, sessionsRevoked: sessions.count, enrollmentCode };
+    });
+  }
+
+  private stepUpBinding(targetUserId: string, actor: AuthenticatedUser): StepUpBinding {
+    if (targetUserId === actor.id) throw new CannotResetOwnMfaException();
+    if (!actor.sid) throw new MfaRequiredException(); // token predates step-up: re-login
+    return { actorId: actor.id, sid: actor.sid, companyId: actor.companyId, targetUserId, op: 'users.mfa_reset' };
+  }
+
+  /** Target rules: not yourself, same tenant (RLS => 404 across companies), never an OWNER (owner recovery = platform script). */
+  private async loadResetTarget(tx: TenantClient, id: string, actor: AuthenticatedUser) {
+    if (id === actor.id) throw new CannotResetOwnMfaException();
+    const target = await tx.user.findUnique({ where: { id }, select: { id: true, roles: { select: { role: { select: { code: true } } } } } });
+    if (!target) throw new UserNotFoundException();
+    if (target.roles.some((r) => r.role.code === 'OWNER')) throw new CannotResetOwnerMfaException();
+    return target;
+  }
+
+  /** Handler-scope route: the actor's step-up proof runs in its own transactions (failed attempts persist), then the issuing tx. */
+  async issueMfaEnrollmentCode(id: string, dto: IssueMfaEnrollmentCodeDto, actor: AuthenticatedUser, meta: RequestMeta) {
+    await this.mfa.reverifyActor(actor, { password: dto.currentPassword, totpCode: dto.totpCode }, meta, 'auth.mfa.enrollment_code_reauth', { allowRecovery: true });
+    return this.tenantPrisma.run(actor.companyId, () => this.issueVerified(id, actor));
+  }
+
+  private async issueVerified(id: string, actor: AuthenticatedUser) {
     if (id === actor.id) throw new CannotResetOwnMfaException();
     const tx = this.tenantPrisma.client;
     const target = await tx.user.findUnique({ where: { id }, select: { id: true, isActive: true, roles: { select: { role: { select: { code: true } } } } } });

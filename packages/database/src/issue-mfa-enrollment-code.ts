@@ -2,7 +2,7 @@
 // privileged user without a confirmed TOTP must present this out-of-band code
 // for their FIRST enrollment, so a stolen password alone cannot bind an
 // attacker's authenticator. Invalidates (marks used) the user's previous
-// unused codes, stores only the sha256, expires in 72h, writes an
+// unused codes, stores only the sha256, expires in 1h, writes an
 // `auth.mfa.enrollment_code_issued` AuditLog row (never the code itself) and
 // prints the code once to stdout.
 //
@@ -57,7 +57,7 @@ async function main(): Promise<void> {
   }
   const { code, ...rest } = await issueMfaEnrollmentCode(parseIssueMfaEnrollmentCodeArgs(process.argv.slice(2)));
   console.log(JSON.stringify(rest));
-  console.log(`MFA enrollment code (shown once, valid 72h): ${code}`);
+  console.log(`MFA enrollment code (shown once, valid 1h): ${code}`);
 }
 
 if (require.main === module) {

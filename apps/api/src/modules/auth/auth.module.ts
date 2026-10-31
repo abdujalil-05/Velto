@@ -26,6 +26,6 @@ import { PasswordResetService } from './password-reset.service';
   controllers: [AuthController, MfaController],
   providers: [AuthService, AuthChallengeStore, LoginRateLimiterService, AuditLogService, PasswordResetService, SecretBox, MfaService],
   // Re-exported so AppModule's global JwtAuthGuard (APP_GUARD) can inject JwtService.
-  exports: [JwtModule],
+  exports: [JwtModule, MfaService, AuthChallengeStore],
 })
 export class AuthModule {}
