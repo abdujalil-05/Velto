@@ -176,7 +176,7 @@ describe('audit-deleted-customers', () => {
         { ...refs(draft.id)[0], kind: 'ORDER', resolution: 'CANCEL' },
         { ...refs(submitted.id)[0], kind: 'ORDER', resolution: 'CANCEL' },
         { ...refs(confirmed.id)[0], kind: 'ORDER', resolution: 'CANCEL' },
-        { ...refs(shipped.id)[0], kind: 'ORDER', resolution: 'DELIVER_THEN_CLOSE' },
+        { ...refs(shipped.id)[0], kind: 'ORDER', resolution: 'MANUAL_RECONCILIATION_REQUIRED' },
         { ...refs(delivered.id)[0], kind: 'ORDER', resolution: 'DELIVER_THEN_CLOSE' },
         { customerId: collided.id, id: inactiveHolder.id, kind: 'CODE_CONFLICT', resolution: 'RESTORE_REQUIRED' },
       ]);
@@ -188,8 +188,10 @@ describe('audit-deleted-customers', () => {
         ordersByStatus: { DRAFT: 1, SUBMITTED: 1, CONFIRMED: 1, SHIPPED: 1, DELIVERED: 1 },
         remainingReservations: 1,
         codeReusedByActive: 1,
-        resolutions: { CANCEL: 3, DELIVER_THEN_CLOSE: 2, RESTORE_REQUIRED: 1 },
+        resolutions: { CANCEL: 3, DELIVER_THEN_CLOSE: 1, MANUAL_RECONCILIATION_REQUIRED: 1, RESTORE_REQUIRED: 1 },
       });
+      expect(summary.resolutionGuide.MANUAL_RECONCILIATION_REQUIRED).toMatch(/SHIPPED/);
+      expect(summary.resolutionGuide.MANUAL_RECONCILIATION_REQUIRED).toMatch(/orders\.cancel/);
       const summaryText = JSON.stringify(summary);
       expect(summaryText).not.toMatch(UUID);
       for (const pii of ['DIRTY', 'COLLIDE', 'ONLY-OTHER', 'Audit Co', actor.phone, 'SO-', 'PAY-', 'INV-']) {

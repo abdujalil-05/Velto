@@ -10,6 +10,8 @@
 //
 // Each order / code-conflict finding carries an ADR-061c resolution option
 // code for the PO; the audit only suggests it, it never applies anything.
+// SHIPPED maps to MANUAL_RECONCILIATION_REQUIRED (shipment is not proof of receipt).
+// Both outputs include `resolutionGuide`, a legend explaining each code.
 // `--summary` prints aggregated counts only: companies are anonymised to
 // ordinal labels and no UUIDs at all are emitted.
 //
@@ -29,19 +31,31 @@ export type CustomerRef = { customerId: string; id: string };
 /**
  * ADR-061c resolution option per finding:
  * - CANCEL: SalesService.cancel() — releases the reservation (CONFIRMED) or has none (DRAFT/SUBMITTED).
- * - DELIVER_THEN_CLOSE: goods already left the warehouse (SHIPPED) or arrived (DELIVERED);
- *   cancelling would release stock that is physically gone, so finish delivery and close.
+ * - DELIVER_THEN_CLOSE: goods arrived (DELIVERED); finish and close.
+ * - MANUAL_RECONCILIATION_REQUIRED: SHIPPED does not prove the customer received the goods
+ *   (PO decision), so nothing is suggested automatically; the PO reconciles by hand.
  * - RESTORE_REQUIRED: restoring the customer is blocked by a live customer's `code`;
  *   the PO renames one of them by hand first.
  */
-export type ResolutionCode = 'CANCEL' | 'DELIVER_THEN_CLOSE' | 'RESTORE_REQUIRED';
+export type ResolutionCode = 'CANCEL' | 'DELIVER_THEN_CLOSE' | 'MANUAL_RECONCILIATION_REQUIRED' | 'RESTORE_REQUIRED';
+
+/** Report-only legend printed with every output; the audit never changes any status. */
+export const RESOLUTION_GUIDE: Record<ResolutionCode, string> = {
+  CANCEL: 'DRAFT/SUBMITTED/CONFIRMED: cancel via the existing orders.cancel (releases the CONFIRMED reservation).',
+  DELIVER_THEN_CLOSE: 'DELIVERED: goods reached the customer; finish the order and close it.',
+  MANUAL_RECONCILIATION_REQUIRED:
+    'SHIPPED: shipment does not prove receipt; check per order. Delivery confirmed -> existing DELIVERED transition. ' +
+    'Goods still with the courier -> keep SHIPPED. Goods back in the warehouse -> existing orders.cancel releases the ' +
+    'reservation (SHIPPED has only RESERVE, no ISSUE). Unknown -> leave as is.',
+  RESTORE_REQUIRED: "Customer restore is blocked by a live customer's code; rename one of them by hand first.",
+};
 
 /** Typed over every status, so a new OrderStatus fails to compile until it is mapped. Terminal → null. */
 const ORDER_RESOLUTION: Record<OrderStatus, ResolutionCode | null> = {
   DRAFT: 'CANCEL',
   SUBMITTED: 'CANCEL',
   CONFIRMED: 'CANCEL',
-  SHIPPED: 'DELIVER_THEN_CLOSE',
+  SHIPPED: 'MANUAL_RECONCILIATION_REQUIRED',
   DELIVERED: 'DELIVER_THEN_CLOSE',
   CLOSED: null,
   CANCELLED: null,
@@ -272,6 +286,7 @@ export function anonymisedSummary({ companiesScanned, companies }: { companiesSc
   const [first, ...rest] = perCompany.map((entry) => entry.counts);
   return {
     companiesScanned,
+    resolutionGuide: RESOLUTION_GUIDE,
     companiesWithDeletedCustomers: companies.length,
     total: first ? rest.reduce(addCounts, first) : null,
     companies: perCompany,
@@ -282,7 +297,7 @@ async function main(): Promise<void> {
   const result = await auditDeletedCustomers();
   const output = process.argv.includes('--summary')
     ? anonymisedSummary(result)
-    : { companiesScanned: result.companiesScanned, companies: result.companies.map(summarize) };
+    : { companiesScanned: result.companiesScanned, resolutionGuide: RESOLUTION_GUIDE, companies: result.companies.map(summarize) };
   console.log(JSON.stringify(output, null, 2));
 }
 

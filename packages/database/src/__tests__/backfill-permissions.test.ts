@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { systemPrisma, type TenantClient } from '../client';
 import { backfillPermissions } from '../backfill-permissions';
-import { SYSTEM_ROLES, parsePermissionKey, permissionKeysForRole } from '../rbac-catalog';
+import { ALL_PERMISSION_KEYS, SYSTEM_ROLES, parsePermissionKey, permissionKeysForRole } from '../rbac-catalog';
 
 class Rollback extends Error {}
 
@@ -33,7 +33,13 @@ describe('backfill-permissions', () => {
         roleIdByCode.set(role.code, created.id);
       }
       const expectedLinks = SYSTEM_ROLES.reduce((sum, role) => sum + permissionKeysForRole(role.code).length, 0);
-      const rowCounts = async () => [await tx.permission.count(), await tx.rolePermission.count()];
+      // Permission is global and other test files commit unrelated rows concurrently
+      // (e.g. tenant-isolation's test.isolation): count only catalog keys and this company's links.
+      const catalogPermissions = ALL_PERMISSION_KEYS.map(parsePermissionKey);
+      const rowCounts = async () => [
+        await tx.permission.count({ where: { OR: catalogPermissions } }),
+        await tx.rolePermission.count({ where: { role: { companyId: company.id } } }),
+      ];
 
       const before = await rowCounts();
       const dry = await backfillPermissions(tx, { dryRun: true, companyIds });
