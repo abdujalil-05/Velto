@@ -27,6 +27,8 @@ describe('Import outbox orphans (real Postgres + RLS, BullMQ jobId-dedup double)
     const tenant = await systemPrisma.tenant.create({ data: { slug: `test-imp-orphan-${randomUUID().slice(0, 8)}`, name: 'Import Orphan Tenant' } });
     companyId = (await systemPrisma.company.create({ data: { tenantId: tenant.id, name: 'Import Orphan Co' } })).id;
     const u = await systemPrisma.user.create({ data: { companyId, firstName: 'O', lastName: 'W', phone: `+99891${Math.floor(1e6 + Math.random() * 9e6)}` } });
+    const ownerRole = await systemPrisma.role.create({ data: { companyId, name: 'Admin', code: 'OWNER', isSystem: true } });
+    await systemPrisma.userRole.create({ data: { userId: u.id, roleId: ownerRole.id } });
     user = { id: u.id, companyId, firstName: 'O', lastName: 'W', roles: ['OWNER'], permissions: ['settings.update'] };
   });
   afterAll(async () => {
@@ -170,7 +172,7 @@ describe('Import outbox orphans (real Postgres + RLS, BullMQ jobId-dedup double)
       expect(((r.errorLog as { rows?: unknown[] }).rows ?? []).length).toBe(2); // resumable payload kept
 
       // operator retry: refuses other states, dry-run is read-only, real run resumes to DONE without resetting attemptCount
-      const args = { companyId, jobId: id, reason: 'test', operator: 'test-operator', dryRun: true };
+      const args = { companyId, jobId: id, reason: 'test', operator: user.id, dryRun: true };
       await retryImportJob(args);
       expect((await row(id)).status).toBe('FAILED');
       await retryImportJob({ ...args, dryRun: false }, q.asQueue<ImportJobData>());
