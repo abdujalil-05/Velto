@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { Logger } from '@nestjs/common';
 import type { TenantClient } from '@velto/database';
 
 export interface TenantStore {
@@ -6,6 +7,8 @@ export interface TenantStore {
   /** Throws (fail-closed) for a handler-scope store, which has no open transaction. */
   readonly tx: TenantClient;
   afterCommit: Array<() => unknown>;
+  /** ADR-061: callbacks run (detached, best-effort) only after this tx ROLLED BACK — e.g. a rejection audit in its own tx. */
+  readonly afterRollback?: Array<() => unknown>;
   /** True only while a tenant transaction is open on this async chain. */
   readonly txActive?: boolean;
 }
@@ -84,5 +87,15 @@ export const TenantContext = {
    */
   afterCommit(cb: () => unknown): void {
     TenantContext.current.afterCommit.push(cb);
+  },
+
+  /** Registers `cb` to run after the current tenant tx rolls back (never on commit). Without a rollback list (handler-scope/manual store) it is skipped with a warning — never throws, so the domain error propagates. */
+  afterRollback(cb: () => unknown): void {
+    const list = TenantContext.current.afterRollback;
+    if (!list) {
+      new Logger('TenantContext').warn('afterRollback skipped: store has no rollback list (handler scope / no TenantPrismaService.run tx)');
+      return;
+    }
+    list.push(cb);
   },
 };

@@ -31,16 +31,31 @@ export class TenantPrismaService {
       this.logger.error(`${msg} (traceId=${getTraceId() ?? 'n/a'})`);
     }
     const afterCommit: Array<() => unknown> = [];
+    const afterRollback: Array<() => unknown> = [];
     const requestedAt = perfMetrics.enabled ? performance.now() : 0;
-    const result = await withTenant(
-      companyId,
-      (tx) => {
-        // Approximation of pool wait: request -> entering the callback also includes BEGIN + SET LOCAL.
-        if (requestedAt) perfMetrics.recordPoolWait(performance.now() - requestedAt);
-        return TenantContext.run({ companyId, tx, afterCommit, txActive: true }, () => fn(tx));
-      },
-      options,
-    );
+    let result: T;
+    try {
+      result = await withTenant(
+        companyId,
+        (tx) => {
+          // Approximation of pool wait: request -> entering the callback also includes BEGIN + SET LOCAL.
+          if (requestedAt) perfMetrics.recordPoolWait(performance.now() - requestedAt);
+          return TenantContext.run({ companyId, tx, afterCommit, afterRollback, txActive: true }, () => fn(tx));
+        },
+        options,
+      );
+    } catch (err) {
+      // Contract: afterRollback fires only when the OUTER request tx rolls back; errors caught inside the tx (savepoints) are not audited by it.
+      // ADR-061: the tx (and its connection/locks) is released here; callbacks may open their own tx. Never mask `err`.
+      for (const cb of afterRollback) {
+        try {
+          await TenantContext.detached(() => cb());
+        } catch (e) {
+          this.logger.error(`afterRollback callback failed: ${e instanceof Error ? e.message : 'error'}`);
+        }
+      }
+      throw err;
+    }
     // One failing callback must not starve the others; the first error is rethrown once all have run.
     let firstError: unknown;
     let failed = false;

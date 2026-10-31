@@ -341,4 +341,31 @@ describe('OpeningBalancesService (integration)', () => {
     const fromB = await previewCustomers([[c1, 9, undefined, 'T1', undefined]], companyB, ownerB);
     expect(fromB.invalidCount).toBe(1);
   });
+  it('ADR-061a: void is rejected when a batch customer is soft-deleted — ledger untouched, batch POSTED, rejection audited', async () => {
+    const [c1, c2] = await makeCustomers(`D61${tag}`, 2);
+    const p = await previewCustomers([
+      [c1, 70, undefined, 'D1', undefined],
+      [c2, undefined, 30, undefined, undefined],
+    ]);
+    await post(p.batch.id, { debt: '70', credit: '30' });
+    const gone = await customerByCode(c2);
+    await run((tx) => tx.customer.update({ where: { id: gone.id }, data: { deletedAt: new Date(), isActive: false } })); // legacy pre-061 delete
+    const snap = () =>
+      run(async (tx) => ({
+        inv: await tx.invoice.findMany({ where: { openingBatchId: p.batch.id }, orderBy: { id: 'asc' } }),
+        pay: await tx.payment.findMany({ where: { openingBatchId: p.batch.id }, orderBy: { id: 'asc' } }),
+        rev: await tx.paymentReversal.count({ where: { payment: { openingBatchId: p.batch.id } } }),
+        batch: (await tx.openingBalanceBatch.findUniqueOrThrow({ where: { id: p.batch.id } })).status,
+        cached: (await tx.customer.findMany({ where: { code: { in: [c1, c2] } }, orderBy: { code: 'asc' } })).map((c) => c.cachedBalance.toFixed(2)),
+      }));
+    const before = await snap();
+
+    const err = await voidBatch(p.batch.id).then(() => undefined, (e: { response?: unknown }) => e.response);
+    expect(err).toMatchObject({ code: 'CUSTOMER_DELETED', details: { customerIds: [gone.id] } });
+    expect(await snap()).toEqual(before);
+    expect(before.batch).toBe('POSTED');
+    const audit = await run((tx) => tx.auditLog.findMany({ where: { entityId: p.batch.id, action: { startsWith: 'opening.void' } } }));
+    expect(audit.map((a) => a.action)).toEqual(['opening.void_rejected']);
+    expect(audit[0]!.newValue).toMatchObject({ reason: 'CUSTOMER_DELETED' });
+  });
 });

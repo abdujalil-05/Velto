@@ -322,4 +322,39 @@ describe('Writer lock order: sync push x orders x deliver x payments (real Postg
     expect(await run(() => tenantPrisma.client.salesOrder.count({ where: { clientId: doc.clientId } }))).toBe(0);
     await expectSoGapless();
   }, 30_000);
+  // ADR-061c: remove() holds Customer FOR UPDATE; order create takes FOR KEY SHARE and payment create FOR UPDATE on the
+  // same row first. Either side may win, never both, never a deadlock.
+  const errCode = (r: PromiseSettledResult<unknown>) => (r.status === 'rejected' ? ((r.reason as { response?: { code?: string } }).response?.code ?? String(r.reason)) : 'OK');
+  const freshCustomer = async (label: string) =>
+    run(async () => {
+      const c = await tenantPrisma.client.customer.create({ data: { companyId, code: `LO-DEL-${label}-${randomUUID().slice(0, 6)}`, name: `LO del ${label}` } });
+      const o = await tenantPrisma.client.outlet.create({ data: { companyId, customerId: c.id, name: `LO del O ${label}` } });
+      return { customerId: c.id, outletId: o.id };
+    });
+
+  it('ADR-061c: concurrent delete vs order create — exactly one wins, no bypass, no deadlock', async () => {
+    for (let i = 0; i < 6; i++) {
+      const { customerId, outletId } = await freshCustomer(`o${i}`);
+      const lines = productIds.map((productId, k) => ({ productId, packagingId: packagingIds[k]!, qty: 1 }));
+      const ops = [run(() => customers.remove(customerId, director)), run(() => sales.create({ customerId, outletId, warehouseId, lines }, director))];
+      const [del, create] = await Promise.allSettled(i % 2 ? ops.reverse() : ops).then((r) => (i % 2 ? r.reverse() : r));
+      expect([errCode(del!), errCode(create!)].filter((c) => /deadlock|40P01|P2034/i.test(c))).toEqual([]);
+      if (errCode(del!) === 'OK') expect(errCode(create!)).toBe('CUSTOMER_NOT_FOUND');
+      else expect([errCode(del!), errCode(create!)]).toEqual(['CUSTOMER_HAS_OPEN_OBLIGATIONS', 'OK']);
+      const [row, orders] = await run(() => Promise.all([tenantPrisma.client.customer.findUniqueOrThrow({ where: { id: customerId } }), tenantPrisma.client.salesOrder.count({ where: { customerId } })]));
+      expect(row.deletedAt !== null && orders > 0).toBe(false); // never a deleted customer with an order
+    }
+  }, 60_000);
+
+  it('ADR-061c: concurrent delete vs payment post — exactly one wins, no bypass, no deadlock', async () => {
+    for (let i = 0; i < 6; i++) {
+      const { customerId } = await freshCustomer(`p${i}`);
+      const ops = [run(() => customers.remove(customerId, director)), run(() => payments.create({ customerId, amount: '500', method: 'CASH' } as never, director))];
+      const [del, pay] = await Promise.allSettled(i % 2 ? ops.reverse() : ops).then((r) => (i % 2 ? r.reverse() : r));
+      if (errCode(del!) === 'OK') expect(errCode(pay!)).toBe('CUSTOMER_NOT_FOUND');
+      else expect([errCode(del!), errCode(pay!)]).toEqual(['CUSTOMER_HAS_CREDIT_BALANCE', 'OK']);
+      const [row, paid] = await run(() => Promise.all([tenantPrisma.client.customer.findUniqueOrThrow({ where: { id: customerId } }), tenantPrisma.client.payment.count({ where: { customerId } })]));
+      expect(row.deletedAt !== null && paid > 0).toBe(false);
+    }
+  }, 60_000);
 });

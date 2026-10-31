@@ -26,6 +26,7 @@ import { readWorkbookRows, type SpreadsheetFormat, type WorkbookRow } from '../i
 import { StockReversalInsufficientException } from '../stock/stock-exceptions';
 import { StockService } from '../stock/stock.service';
 import type { ListOpeningBatchesQueryDto } from './dto/list-opening-batches.query';
+import { assertCustomersNotDeleted } from '../customers/customer-ledger-guard';
 import type { PostOpeningBatchDto } from './dto/post-opening-batch.dto';
 import {
   OpeningAsOfInFutureException,
@@ -475,6 +476,12 @@ export class OpeningBalancesService {
     const invoiceRefs = await tx.invoice.findMany({ where: { openingBatchId: batch.id }, select: { customerId: true } });
     const customerIds = sortedUnique([...payments.map((p) => p.customerId), ...invoiceRefs.map((i) => i.customerId)]);
     await tx.$queryRaw(Prisma.sql`SELECT id FROM "Customer" WHERE id = ANY(${customerIds}::uuid[]) ORDER BY id FOR UPDATE`);
+    // ADR-061a: same guard as payments allocate/reverse — no reversal on a soft-deleted customer's ledger.
+    await assertCustomersNotDeleted(tx, customerIds, {
+      tenantPrisma: this.tenantPrisma,
+      auditLog: this.auditLog,
+      entry: { companyId: user.companyId, userId: user.id, action: 'opening.void', entity: 'OpeningBalanceBatch', entityId: batch.id },
+    });
     const invoices = await tx.$queryRaw<{ id: string; status: InvoiceStatus }[]>(Prisma.sql`
       SELECT id::text AS id, status FROM "Invoice" WHERE "openingBatchId" = ${batch.id}::uuid ORDER BY id FOR UPDATE
     `);

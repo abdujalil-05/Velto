@@ -9,6 +9,7 @@ import { DocumentNumberingService } from '../../../common/document-numbering/doc
 import { paginate, resolveSort } from '../../../common/pagination/pagination.dto';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import { endOfDay, startOfDay } from '../../analytics/report-utils';
+import { assertCustomersNotDeleted } from '../../customers/customer-ledger-guard';
 import { CustomersService } from '../../customers/customers.service';
 import type { AllocatePaymentDto } from '../dto/allocate-payment.dto';
 import type { CreatePaymentDto } from '../dto/create-payment.dto';
@@ -382,6 +383,7 @@ export class PaymentsService {
     if (before.source === PaymentSource.OPENING) throw new PaymentOpeningNotReversibleException();
     if (before.status !== PaymentStatus.POSTED) throw new PaymentNotPostedException(before.status);
     await this.customers.lockForUpdate(tx, before.customerId);
+    await this.assertCustomerLive(tx, before.customerId, 'payment.allocate', paymentId, user);
 
     const advanceBefore = paymentAdvanceOf(before);
     const allocations = await this.allocateManual(
@@ -406,6 +408,15 @@ export class PaymentsService {
       newValue: toAuditJson({ mode: 'MANUAL_LATER', allocations, advance: result.advance }),
     });
     return result;
+  }
+
+  /** ADR-061a: under the customer lock; a soft-deleted customer's ledger is frozen (rejection audited, nothing written). */
+  private assertCustomerLive(tx: TenantClient, customerId: string, action: string, paymentId: string, user: AuthenticatedUser) {
+    return assertCustomersNotDeleted(tx, [customerId], {
+      tenantPrisma: this.tenantPrisma,
+      auditLog: this.auditLog,
+      entry: { companyId: user.companyId, userId: user.id, action, entity: 'Payment', entityId: paymentId },
+    });
   }
 
   /**
@@ -434,6 +445,7 @@ export class PaymentsService {
     // Same PAYMENT_NOT_POSTED code as allocate() for the same state.
     if (before.status !== PaymentStatus.POSTED) throw new PaymentNotPostedException(before.status);
     await this.customers.lockForUpdate(tx, before.customerId);
+    await this.assertCustomerLive(tx, before.customerId, 'payment.reverse', paymentId, user);
 
     await this.assertNotInClosedCashSession(tx, before);
     await this.assertNotExportedTo1c(tx, paymentPostedAt(before));

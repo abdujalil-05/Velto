@@ -21,7 +21,7 @@ export class StockController {
   }
 
   @Get('movements')
-  @RequirePermission('stock.read')
+  @RequirePermission('stock.movements.read')
   listMovements(@Query() query: ListMovementsQueryDto) {
     return this.stock.listMovements(query);
   }

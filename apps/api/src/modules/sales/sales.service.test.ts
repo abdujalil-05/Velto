@@ -8,7 +8,7 @@ import { DocumentNumberingService } from '../../common/document-numbering/docume
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { AppException } from '../../common/errors/app-exception';
 import { localDateString } from '../analytics/report-utils';
-import { CustomerHasOutstandingBalanceException, CustomerNotFoundException } from '../customers/customers-exceptions';
+import { CustomerHasOpenObligationsException, CustomerHasOutstandingBalanceException, CustomerNotFoundException } from '../customers/customers-exceptions';
 import { CustomersService } from '../customers/customers.service';
 import { PaymentsService } from '../finance/payments/payments.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -683,7 +683,8 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     it('deliver refuses a soft-deleted customer: no ISSUE, no invoice, order stays CONFIRMED', async () => {
       const customerId = await createCustomer();
       const order = await confirmedOrder(customerId);
-      await tenantPrisma.run(companyId, () => customers.remove(customerId, user));
+      // ADR-061c: remove() now refuses a customer with a CONFIRMED order — simulate a legacy (pre-061) soft delete.
+      await tenantPrisma.run(companyId, (tx) => tx.customer.update({ where: { id: customerId }, data: { deletedAt: new Date(), isActive: false } }));
 
       await expect(tenantPrisma.run(companyId, () => sales.deliver(order.id, user))).rejects.toBeInstanceOf(
         CustomerNotFoundException,
@@ -713,7 +714,7 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
       }
     });
 
-    it('deliver vs customers.remove ×4 rounds: exactly one wins, never an invoice for a deleted customer', async () => {
+    it('deliver vs customers.remove ×4 rounds: deliver always wins (ADR-061c: an open order blocks delete), never an invoice for a deleted customer', async () => {
       for (let round = 0; round < ROUNDS; round++) {
         const customerId = await createCustomer();
         const order = await confirmedOrder(customerId);
@@ -724,17 +725,13 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
         expectOnlyDomainErrors([deliverRes, removeRes]);
         const invoices = await tenantPrisma.run(companyId, (tx) => tx.invoice.count({ where: { orderId: order.id } }));
         const b = await balances(customerId);
-        if (deliverRes.status === 'fulfilled') {
-          expect(removeRes.status).toBe('rejected');
-          expect((removeRes as PromiseRejectedResult).reason).toBeInstanceOf(CustomerHasOutstandingBalanceException);
-          expect(invoices).toBe(1);
-          expect(b.deletedAt).toBeNull();
-        } else {
-          expect(removeRes.status).toBe('fulfilled');
-          expect(deliverRes.reason).toBeInstanceOf(CustomerNotFoundException);
-          expect(invoices).toBe(0);
-          expect(b.deletedAt).not.toBeNull();
-        }
+        expect(deliverRes.status).toBe('fulfilled');
+        expect(removeRes.status).toBe('rejected');
+        // remove first → CONFIRMED order blocks; deliver first → the new invoice's debt blocks.
+        const reason = (removeRes as PromiseRejectedResult).reason;
+        expect(reason instanceof CustomerHasOutstandingBalanceException || reason instanceof CustomerHasOpenObligationsException).toBe(true);
+        expect(invoices).toBe(1);
+        expect(b.deletedAt).toBeNull();
         expect(b.cached).toBe(b.ledger);
       }
     });

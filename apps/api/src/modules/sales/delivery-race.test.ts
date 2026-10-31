@@ -7,8 +7,8 @@ import { DocumentNumberingService } from '../../common/document-numbering/docume
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { AppException } from '../../common/errors/app-exception';
 import {
+  CustomerHasOpenObligationsException,
   CustomerHasOutstandingBalanceException,
-  CustomerNotFoundException,
 } from '../customers/customers-exceptions';
 import { CustomersService } from '../customers/customers.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -252,16 +252,12 @@ describe('Goods issue races (F2.4, real Postgres + RLS)', () => {
       onlyDomainErrors([d, r]);
       const invoices = await run((tx) => tx.invoice.count({ where: { orderId: o.id } }));
       const cust = await run((tx) => tx.customer.findUniqueOrThrow({ where: { id: customerId } }));
-      if (d.status === 'fulfilled') {
-        expect((r as PromiseRejectedResult).reason).toBeInstanceOf(CustomerHasOutstandingBalanceException);
-        expect(invoices).toBe(1);
-        expect(cust.deletedAt).toBeNull();
-      } else {
-        expect(r.status).toBe('fulfilled');
-        expect(d.reason).toBeInstanceOf(CustomerNotFoundException);
-        expect(invoices).toBe(0);
-        expect(cust.deletedAt).not.toBeNull();
-      }
+      // ADR-061c: the open order always blocks delete, so deliver always wins.
+      expect(d.status).toBe('fulfilled');
+      const reason = (r as PromiseRejectedResult).reason;
+      expect(reason instanceof CustomerHasOutstandingBalanceException || reason instanceof CustomerHasOpenObligationsException).toBe(true);
+      expect(invoices).toBe(1);
+      expect(cust.deletedAt).toBeNull();
     }
   });
 
