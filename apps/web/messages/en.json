@@ -83,8 +83,16 @@
       "resendIn": "Resend ({seconds}s)",
       "success": "Password updated. Sign in with your new password",
       "back": "Back",
-      "cancel": "Cancel"
-    }
+      "cancel": "Cancel",
+      "accountStepDescription": "Several accounts use this number. The password will change only for the one you choose.",
+      "chooseAccount": "Choose an account",
+      "successAccount": "Password changed only for the account \"{account}\". Other accounts are unchanged. Sign in with your new password"
+    },
+    "chooseCompany": "Which company do you want to sign in to?",
+    "continue": "Continue",
+    "backToPassword": "Back to password",
+    "challengeInvalid": "This selection expired or was already used. Enter your phone and password again.",
+    "challengeRateLimited": "Please wait a moment and try again."
   },
   "NotFound": {
     "title": "This page does not exist",

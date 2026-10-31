@@ -83,8 +83,16 @@
       "resendIn": "Qayta yuborish ({seconds}s)",
       "success": "Parol yangilandi. Endi yangi parol bilan kiring",
       "back": "Orqaga",
-      "cancel": "Bekor qilish"
-    }
+      "cancel": "Bekor qilish",
+      "accountStepDescription": "Bu raqamga bir nechta hisob biriktirilgan. Parol faqat tanlangan hisob uchun o'zgaradi.",
+      "chooseAccount": "Hisobni tanlang",
+      "successAccount": "{account} hisobi uchun parol yangilandi. Boshqa hisoblar o'zgarmadi. Yangi parol bilan kiring"
+    },
+    "chooseCompany": "Qaysi kompaniyaga kirasiz?",
+    "continue": "Davom etish",
+    "backToPassword": "Parol bosqichiga qaytish",
+    "challengeInvalid": "Tanlov muddati tugagan yoki allaqachon ishlatilgan. Telefon raqam va parolni qayta kiriting.",
+    "challengeRateLimited": "Biroz kutib, qayta urinib ko'ring."
   },
   "NotFound": {
     "title": "Bunday sahifa mavjud emas",

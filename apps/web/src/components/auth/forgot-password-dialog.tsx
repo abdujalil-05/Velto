@@ -4,7 +4,9 @@ import { useEffect, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { toast } from 'sonner';
 import { Loader2 } from 'lucide-react';
-import { apiFetch, errorMessage } from '@/lib/api/client';
+import { ApiError, apiFetch, errorMessage } from '@/lib/api/client';
+import { useConfirmPasswordResetMutation, useSelectResetAccountMutation, type AccountSelectionRequired } from '@/lib/api/auth';
+import { AccountPicker } from '@/components/auth/account-picker';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -20,7 +22,7 @@ interface ForgotPasswordDialogProps {
   initialPhoneDigits: string;
 }
 
-type Step = 'phone' | 'code';
+type Step = 'phone' | 'code' | 'account';
 
 export function ForgotPasswordDialog({ open, onOpenChange, initialPhoneDigits }: ForgotPasswordDialogProps) {
   const t = useTranslations('Auth.reset');
@@ -34,6 +36,11 @@ export function ForgotPasswordDialog({ open, onOpenChange, initialPhoneDigits }:
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [cooldown, setCooldown] = useState(0);
+  // Single-use handle: component state only, never persisted or put in the URL.
+  const [selection, setSelection] = useState<AccountSelectionRequired | null>(null);
+  const [optionId, setOptionId] = useState<string | null>(null);
+  const confirmMutation = useConfirmPasswordResetMutation();
+  const selectMutation = useSelectResetAccountMutation();
 
   useEffect(() => {
     if (open) {
@@ -43,6 +50,8 @@ export function ForgotPasswordDialog({ open, onOpenChange, initialPhoneDigits }:
       setNewPassword('');
       setError(null);
       setCooldown(0);
+      setSelection(null);
+      setOptionId(null);
     }
   }, [open, initialPhoneDigits]);
 
@@ -72,14 +81,38 @@ export function ForgotPasswordDialog({ open, onOpenChange, initialPhoneDigits }:
     setError(null);
     setSubmitting(true);
     try {
-      await apiFetch('/auth/password-reset/confirm', {
-        method: 'POST',
-        body: { phone, code, newPassword },
-        skipAuth: true,
-      });
+      const res = await confirmMutation.mutateAsync({ phone, code, newPassword });
+      if (res && res.requiresAccountSelection) {
+        setSelection(res);
+        setOptionId(null);
+        setStep('account');
+        return;
+      }
       toast.success(t('success'));
       onOpenChange(false);
     } catch (err) {
+      setError(errorMessage(err, locale));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submitAccount() {
+    if (!selection || !optionId) return;
+    setError(null);
+    setSubmitting(true);
+    try {
+      await selectMutation.mutateAsync({ resetHandle: selection.resetHandle, optionId, newPassword });
+      const chosen = selection.accounts.find((a) => a.id === optionId);
+      toast.success(t('successAccount', { account: chosen?.name ?? '' }));
+      onOpenChange(false);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'AUTH_CHALLENGE_INVALID') {
+        // Handle expired or already used: restart from the code step.
+        setSelection(null);
+        setOptionId(null);
+        setStep('phone');
+      }
       setError(errorMessage(err, locale));
     } finally {
       setSubmitting(false);
@@ -104,7 +137,26 @@ export function ForgotPasswordDialog({ open, onOpenChange, initialPhoneDigits }:
           </Alert>
         )}
 
-        {step === 'phone' ? (
+        {step === 'account' && selection ? (
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">{t('accountStepDescription')}</p>
+            <AccountPicker
+              legend={t('chooseAccount')}
+              options={selection.accounts}
+              value={optionId}
+              onChange={setOptionId}
+              disabled={submitting}
+            />
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                {t('cancel')}
+              </Button>
+              <Button type="button" disabled={!optionId || submitting} onClick={submitAccount}>
+                {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : t('confirm')}
+              </Button>
+            </DialogFooter>
+          </div>
+        ) : step === 'phone' ? (
           <div className="space-y-4">
             <p className="text-sm text-muted-foreground">{t('phoneStepDescription')}</p>
             <div className="space-y-2">

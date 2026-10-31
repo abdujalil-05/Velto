@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { apiFetch, onUnauthorized } from '@/lib/api/client';
+import { isCompanySelection, loginRequest, selectCompanyRequest, type CompanySelectionRequired } from '@/lib/api/auth';
 import type { AuthenticatedUser, TokenPair } from '@/lib/api/types';
 import { clearTokens, getAccessToken, setAccessToken } from './tokens';
 
@@ -10,7 +11,9 @@ type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated';
 interface AuthContextValue {
   user: AuthenticatedUser | null;
   status: AuthStatus;
-  login: (phone: string, password: string) => Promise<void>;
+  /** Resolves to a company challenge (no session yet) or null when logged in. */
+  login: (phone: string, password: string) => Promise<CompanySelectionRequired | null>;
+  selectCompany: (challengeId: string, optionId: string) => Promise<void>;
   logout: () => Promise<void>;
   hasPermission: (code: string) => boolean;
   hasAnyRole: (...codes: string[]) => boolean;
@@ -62,12 +65,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
-  const login = useCallback(async (phone: string, password: string) => {
-    const tokens = await apiFetch<TokenPair>('/auth/login', {
-      method: 'POST',
-      body: { phone, password },
-      skipAuth: true,
-    });
+  const startSession = useCallback(async (tokens: TokenPair) => {
     // No refresh token here — the API set it as an httpOnly cookie
     // (auth.controller.ts); only the access token is ours to keep.
     setAccessToken(tokens.accessToken);
@@ -75,6 +73,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(me);
     setStatus('authenticated');
   }, []);
+
+  const login = useCallback(
+    async (phone: string, password: string) => {
+      const res = await loginRequest(phone, password);
+      if (isCompanySelection(res)) return res;
+      // Never treat a response without an access token as logged in.
+      if (!res || typeof res.accessToken !== 'string' || !res.accessToken) {
+        throw new Error('Invalid login response');
+      }
+      await startSession(res);
+      return null;
+    },
+    [startSession],
+  );
+
+  const selectCompany = useCallback(
+    async (challengeId: string, optionId: string) => {
+      const res = await selectCompanyRequest(challengeId, optionId);
+      if (!res || typeof res.accessToken !== 'string' || !res.accessToken) {
+        throw new Error('Invalid login response');
+      }
+      await startSession(res);
+    },
+    [startSession],
+  );
 
   const logout = useCallback(async () => {
     clearTokens();
@@ -91,7 +114,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <AuthContext.Provider value={{ user, status, login, logout, hasPermission, hasAnyRole }}>
+    <AuthContext.Provider value={{ user, status, login, selectCompany, logout, hasPermission, hasAnyRole }}>
       {children}
     </AuthContext.Provider>
   );
