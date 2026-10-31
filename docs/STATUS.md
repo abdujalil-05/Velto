@@ -13,8 +13,9 @@ Ma'lum LOW: `perf-metrics.ts:41` `start()`siz xotira o'sishi (faqat flag yoqilga
 
 ## Joriy task: ADR-057..064 (PO qarorlari yakuniy, kod YOZILMAGAN)
 Qarorlar: `STATUS-ARCHIVE.md`. Verdikt va tartib: `docs/parity/PLAN-ADR-057-064.md`. Real moliyaviy pilot gate'i BLOCKED (ADR-058).
+ADR-057/057a API ✅ (commit, push): auth test 58/58 (2 marta ketma-ket), tsc toza; reviewer va security-auditor PASS. Kontrakt o'zgardi (`requiresCompanySelection`, `requiresAccountSelection`, yangi `/auth/login/select-company`, `/auth/password-reset/select-account`): web ekranlarisiz `main` ga chiqmaydi. LOW: reset limitini sarflab egasini ~1 soat bloklash mumkin (egallash yo'q); N>3 akkaunt login vaqtida sezilarli; login 3x argon2 (sekinroq); IP yo'q so'rovlar umumiy `unknown` limitida.
 OCHIQ, tashqi: buxgalter sign-off (HALF_UP), real 1C import, qurilmalar matritsasi, stendda F7 yuk, GA sign-off.
 
 ## Keyingi qadamlar
-1. Reja bo'yicha 1-vazifa (read-only audit), keyin ADR-057.
+1. ADR-057 web (`web-dev`, keyin `i18n-sync`). ADR-061 read-only audit skripti (`packages/database/src/audit-deleted-customers.ts`, commit qilinmagan) to'xtab qolgan, davom ettirish kerak.
 2. F7 qoldig'i: stendda yuk o'lchovi (F7.6 maqsadi, shubhali r2 run'lar, ko'p tenantda hisobot semafori kvotasi), GA sign-off (inson imzosi), v0.9/v1.0 gate'lar (`docs/PLAN.md`).
