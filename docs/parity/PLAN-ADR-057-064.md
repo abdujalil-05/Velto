@@ -26,9 +26,5 @@ Kod o'zgartirilmagan, testlar ishga tushirilmagan: kod va test nomlari bo'yicha 
 10. 062 testlari: `qa-engineer`; ikkinchi batch post bo'lsa `finance-stock`.
 11. 064 testlari: `qa-engineer`; yetishmovchilik bo'lsa `integrations-dev`.
 
-## Foydalanuvchi qarori kerak
-1. TOTP kutubxonasi: `otpauth` 9.5.2 aniq pin (MIT, dep `@noble/hashes`; mustaqil audit tasdiqlanmagan), muqobil `otplib` 13.5.0.
-2. OWNER uchun `/auth/telegram` rad etilsinmi (tavsiya: ha). SALES_DIRECTOR/CASHIER MFA pilotga kiradimi (tavsiya: DIRECTOR ha, CASHIER pilot ma'lumotidan keyin).
-3. `password-reset.service.ts:37`: bitta SMS barcha tenantdagi parolni almashtirishi saqlanadimi.
-4. 060: `reverseMovement` ham alert qiladimi (tavsiya: ha). Opening stock va `reverseForRef` tashqarida (taxmin).
-5. DELIVERED, balans 0 mijozni o'chirish ruxsatmi (tavsiya: ha).
+## Foydalanuvchi qarorlari
+Hal qilindi: ADR-057a, 058a, 060a, 061d (`STATUS-ARCHIVE.md`). Bu ularning reja bilan farqini ustun qo'yadi: MFA rollari, DELIVERED -> CLOSED, otplib.

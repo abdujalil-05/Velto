@@ -11,12 +11,9 @@ Nazorat o'lchovi (M50, 91f2cb2, 1 takror, `docs/perf/F7-load-report.md`): miss p
 **Isbotlanmagan:** bu oyna sababi (host yoki o'z yukimiz). Maqsad production'ga o'xshash stendda o'lchanadi. Integrity ikki run'dan keyin 1 marta: 0 topilma (`max_parallel_workers_per_gather=0` bilan; birinchi urinish Docker /dev/shm 64 MB tufayli yiqildi).
 Ma'lum LOW: `perf-metrics.ts:41` `start()`siz xotira o'sishi (faqat flag yoqilganda); `auth.service.ts:213` Telegram replay hisoblagichi tx'dan oldin oshadi, retry maxUses ni yeyishi mumkin. Docker Postgres `shm_size` oshirilmagan.
 
-## Joriy task: ADR-057..064 (qarorlar qabul qilingan, kod YOZILMAGAN)
+## Joriy task: ADR-057..064 (PO qarorlari yakuniy, kod YOZILMAGAN)
 Qarorlar: `STATUS-ARCHIVE.md`. Verdikt va tartib: `docs/parity/PLAN-ADR-057-064.md`. Real moliyaviy pilot gate'i BLOCKED (ADR-058).
 OCHIQ, tashqi: buxgalter sign-off (HALF_UP), real 1C import, qurilmalar matritsasi, stendda F7 yuk, GA sign-off.
-
-## Foydalanuvchi qarori kutilmoqda
-Reja oxiridagi 5 savol (TOTP kutubxonasi, OWNER Telegram login, parol tiklash, reverseMovement alert, DELIVERED mijozni o'chirish).
 
 ## Keyingi qadamlar
 1. Reja bo'yicha 1-vazifa (read-only audit), keyin ADR-057.
