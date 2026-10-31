@@ -219,6 +219,49 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
       expect((await soCounter())?.lastNumber).toBe(before?.lastNumber);
     });
 
+    it('PRICE_CHANGED serverTotal is Σ per-line HALF_UP-rounded totals = total of the order created at the server price (ADR-059)', async () => {
+      const customerId = await createCustomer();
+      const { pid, pkid } = await tenantPrisma.run(companyId, async (tx) => {
+        const p = await tx.product.create({ data: { companyId, sku: 'SALES-TEST-1004', name: 'Rounding Product', baseUnit: 'dona', vatRate: 12 } });
+        const pk = await tx.productPackaging.create({ data: { productId: p.id, name: 'dona', qtyInBaseUnit: 1, isDefault: true } });
+        const pl = await tx.priceList.findFirstOrThrow({ where: { companyId, isDefault: true } });
+        await tx.priceListItem.create({ data: { priceListId: pl.id, productId: p.id, price: '10.04' } });
+        return { pid: p.id, pkid: pk.id };
+      });
+      // per line 10.04*1.12 = 11.2448 -> 11.24; Σ = 22.48 (unrounded Σ 22.4896 would say 22.49)
+      const err = await tenantPrisma
+        .run(companyId, () =>
+          sales.create(
+            {
+              customerId,
+              lines: [
+                { productId: pid, packagingId: pkid, qty: 1, expectedUnitPrice: '10.00' },
+                { productId: pid, packagingId: pkid, qty: 1, expectedUnitPrice: '10.00' },
+              ],
+            },
+            user,
+          ),
+        )
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(PriceChangedException);
+      const details = ((err as PriceChangedException).getResponse() as { details: { serverTotal: string; expectedTotal: string } }).details;
+      expect(details.serverTotal).toBe('22.48');
+      expect(details.expectedTotal).toBe('22.40');
+      const order = await tenantPrisma.run(companyId, () =>
+        sales.create(
+          {
+            customerId,
+            lines: [
+              { productId: pid, packagingId: pkid, qty: 1, expectedUnitPrice: '10.04' },
+              { productId: pid, packagingId: pkid, qty: 1, expectedUnitPrice: '10.04' },
+            ],
+          },
+          user,
+        ),
+      );
+      expect(order.total.toFixed(2)).toBe(details.serverTotal);
+    });
+
     it('a resubmitted, already-created clientId returns the original order even if the price changed since (DUPLICATE wins over PRICE_CHANGED)', async () => {
       const customerId = await createCustomer();
       const clientId = randomUUID();

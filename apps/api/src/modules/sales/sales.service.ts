@@ -23,7 +23,7 @@ import type { CreateOrderDto } from './dto/create-order.dto';
 import type { DeliverOrderDto, DeliverOrderLineDto } from './dto/deliver-order.dto';
 import type { ListOrdersQueryDto } from './dto/list-orders.query';
 import { isDeliveredQtyCheckViolation } from './delivered-qty-check';
-import { calcLineTotal, deliveredLineTotal, orderTotal, type OrderLineAmounts } from './line-total';
+import { calcLineTotal, deliveredLineTotal, orderTotal, roundLineTotal, type OrderLineAmounts } from './line-total';
 import {
   AmbiguousWarehouseException,
   CourierNotFoundException,
@@ -337,7 +337,10 @@ export class SalesService {
 
       // F4: compared as Decimal ("10000" == "10000.00"); no tolerance.
       const expectedUnitPrice = lineDto.expectedUnitPrice !== undefined ? new Prisma.Decimal(lineDto.expectedUnitPrice) : null;
-      serverTotal = serverTotal.plus(lineTotal);
+      // Informational only (the trigger is the unit-price compare below): Σ of
+      // per-line totals rounded like the stored numeric(18,2) lineTotal, so it
+      // equals the total of the order created at the server price (ADR-059).
+      serverTotal = serverTotal.plus(roundLineTotal(lineTotal));
       if (expectedUnitPrice && !expectedUnitPrice.equals(priceListItem.price)) {
         priceChanges.push({
           lineIndex,
@@ -346,9 +349,9 @@ export class SalesService {
           expectedUnitPrice: expectedUnitPrice.toFixed(2),
           serverUnitPrice: priceListItem.price.toFixed(2),
         });
-        expectedTotal = expectedTotal.plus(calcLineTotal(baseQty, expectedUnitPrice, discountPct, product.vatRate));
+        expectedTotal = expectedTotal.plus(roundLineTotal(calcLineTotal(baseQty, expectedUnitPrice, discountPct, product.vatRate)));
       } else {
-        expectedTotal = expectedTotal.plus(lineTotal);
+        expectedTotal = expectedTotal.plus(roundLineTotal(lineTotal));
       }
 
       lines.push({

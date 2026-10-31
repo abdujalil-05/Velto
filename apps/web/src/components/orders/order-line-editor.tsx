@@ -10,6 +10,7 @@ import { useProductsQuery, type Product } from '@/lib/api/products';
 import { useStockAvailabilityQuery } from '@/lib/api/stock';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
 import { formatMoney, formatQty } from '@/lib/format';
+import { lineTotalHalfUp, mulDecimal as productQty } from '@/lib/decimal-math';
 import type { OrderLineDraft } from './order-form';
 
 interface OrderLineEditorProps {
@@ -31,13 +32,12 @@ export function OrderLineEditor({ line, onChange, onRemove, warehouseId, priceBy
   const selectedPackaging = line.product?.packagings.find((p) => p.id === line.packagingId);
   const unitPrice = line.product ? priceByProductId.get(line.product.id) : undefined;
   const qtyNum = Number(line.qty) || 0;
-  const discountNum = Number(line.discountPct) || 0;
 
-  let estimatedTotal: number | null = null;
+  let estimatedTotal: string | null = null;
   if (line.product && selectedPackaging && unitPrice && qtyNum > 0) {
-    const baseQty = qtyNum * Number(selectedPackaging.qtyInBaseUnit);
-    const vatRate = Number(line.product.vatRate);
-    estimatedTotal = baseQty * Number(unitPrice) * (1 - discountNum / 100) * (1 + vatRate / 100);
+    // base qty = qty × qtyInBaseUnit (exact); total rounded HALF_UP per line like the server
+    const baseQty = productQty(line.qty, selectedPackaging.qtyInBaseUnit);
+    estimatedTotal = baseQty && lineTotalHalfUp(baseQty, unitPrice, line.discountPct, line.product.vatRate);
   }
 
   function selectProduct(product: Product | null) {

@@ -20,6 +20,15 @@ export function calcLineTotal(
     .times(one.plus(new Prisma.Decimal(vatRate).dividedBy(100)));
 }
 
+/**
+ * A line total as it is stored: rounded once, half-up to 2dp — the value the
+ * `Decimal(18,2)` column holds for {@link calcLineTotal}. Only for figures that
+ * must match a stored total (e.g. PRICE_CHANGED details); never changes what is persisted.
+ */
+export function roundLineTotal(lineTotal: Prisma.Decimal): Prisma.Decimal {
+  return lineTotal.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+}
+
 /** The snapshot fields an order line needs to price what was actually delivered. */
 export interface OrderLineAmounts {
   qty: Prisma.Decimal;
@@ -48,10 +57,7 @@ export const ORDER_LINE_AMOUNTS_SELECT = {
  */
 export function deliveredLineTotal(line: OrderLineAmounts): Prisma.Decimal {
   if (line.deliveredQty.equals(line.qty)) return line.lineTotal;
-  return calcLineTotal(line.deliveredQty, line.unitPrice, line.discountPct, line.vatRate).toDecimalPlaces(
-    2,
-    Prisma.Decimal.ROUND_HALF_UP,
-  );
+  return roundLineTotal(calcLineTotal(line.deliveredQty, line.unitPrice, line.discountPct, line.vatRate));
 }
 
 /** Statuses after goods issue: their amounts are what was delivered, not what was ordered. */
