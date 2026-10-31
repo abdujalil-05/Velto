@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import argon2 from 'argon2';
 import { issueMfaEnrollmentCodeInTx, MFA_ENROLLMENT_CODE_ISSUED_AUDIT_ACTION, Prisma, type TenantClient } from '@velto/database';
+import { AppException } from '../../common/errors/app-exception';
 import { AuditLogService, toAuditJson } from '../../common/audit/audit-log.service';
 import { MfaChallengeInvalidException, MfaRequiredException } from '../../common/auth/auth-exceptions';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
@@ -51,6 +52,8 @@ const USER_SAFE_SELECT = {
   // id never leaves the API (see shapeUser).
   telegramId: true,
   roles: { select: { role: { select: { id: true, code: true, name: true } } } },
+  // Selected only to derive `mfaEnabled` (confirmed TOTP); one joined read, no N+1. Secret columns are never selected.
+  mfa: { select: { confirmedAt: true } },
 } satisfies Prisma.UserSelect;
 
 type SafeUserRow = Prisma.UserGetPayload<{ select: typeof USER_SAFE_SELECT }>;
@@ -63,8 +66,8 @@ type SafeUserRow = Prisma.UserGetPayload<{ select: typeof USER_SAFE_SELECT }>;
  * Telegram chat id is a personal identifier with no client-side use.
  */
 function shapeUser(user: SafeUserRow) {
-  const { roles, telegramId, ...rest } = user;
-  return { ...rest, telegramLinked: telegramId !== null, roles: roles.map((r) => r.role) };
+  const { roles, telegramId, mfa, ...rest } = user;
+  return { ...rest, telegramLinked: telegramId !== null, mfaEnabled: mfa?.confirmedAt != null, roles: roles.map((r) => r.role) };
 }
 
 @Injectable()
@@ -317,25 +320,37 @@ export class UsersService {
   }
 
   /** ADR-058 step-up, stage 1 (handler-scope route): pre-checks the target, then hands out a challenge bound to this session + target. */
-  async createMfaResetChallenge(id: string, actor: AuthenticatedUser): Promise<{ challengeId: string; expiresIn: number }> {
-    const binding = this.stepUpBinding(id, actor);
-    await this.tenantPrisma.run(actor.companyId, (tx) => this.loadResetTarget(tx, id, actor));
+  async createMfaResetChallenge(id: string, actor: AuthenticatedUser, meta: RequestMeta = {}): Promise<{ challengeId: string; expiresIn: number }> {
+    const binding = await this.auditedPrecheck(id, actor, meta, async () => {
+      const b = this.stepUpBinding(id, actor);
+      await this.tenantPrisma.run(actor.companyId, (tx) => this.loadResetTarget(tx, id, actor));
+      return b;
+    });
     const challengeId = await this.challenges.issueStepUp(binding);
     return { challengeId, expiresIn: CHALLENGE_TTL_SECONDS };
   }
 
   /**
    * ADR-058 step-up, stage 2 (handler-scope route): clears the target's TOTP + recovery codes and revokes their sessions.
-   * Proof order: attempt counted + bindings checked, password + TOTP (no recovery code), challenge consumed (one winner),
-   * then ONE tenant tx re-validates actor and target and does everything. Redis down => MFA_SERVICE_UNAVAILABLE, nothing executed.
+   * Flow: challenge bindings checked + cheap target pre-check, then reverifyActor (attempt counted, password + TOTP, no
+   * recovery code) runs ONE tenant tx: proof claim, actor/session/target re-checks, challenge consume (one winner),
+   * MFA + recovery-code delete, session revoke, enrollment-code rotation and the `auth.mfa.reset` audit. Any business rejection
+   * rolls the whole tx back (TOTP stays usable, target MFA untouched) and reverifyActor writes one `..._rejected` audit row in a
+   * separate tx. The step-up challenge is consumed (GETDEL) inside that tx, so a business rejection after the consume needs
+   * a NEW challenge while the TOTP stays usable. Pre-check rejections (self/OWNER/not found/bad challenge, before the proof)
+   * and post-proof rejections are each audited once as `auth.mfa.reset_reauth_rejected` (stage precheck / rejected).
+   * Redis down => MFA_SERVICE_UNAVAILABLE, nothing executed.
    */
   async resetMfa(id: string, dto: ResetMfaDto, actor: AuthenticatedUser, meta: RequestMeta) {
-    const binding = this.stepUpBinding(id, actor);
-    await this.challenges.checkStepUp(dto.challengeId, binding);
-    const mfaId = await this.mfa.reverifyActor(actor, { password: dto.currentPassword, totpCode: dto.totpCode }, meta, 'auth.mfa.reset_reauth');
-    await this.challenges.consumeStepUp(dto.challengeId, binding);
-
-    return this.tenantPrisma.run(actor.companyId, async (tx) => {
+    const binding = await this.auditedPrecheck(id, actor, meta, async () => {
+      const b = this.stepUpBinding(id, actor);
+      await this.challenges.checkStepUp(dto.challengeId, b);
+      // Cheap read-only pre-check so an invalid target never reaches the proof step.
+      await this.tenantPrisma.run(actor.companyId, (tx) => this.loadResetTarget(tx, id, actor));
+      return b;
+    });
+    // Proof + challenge consume + all mutations share ONE tx: any rejection rolls the TOTP claim back (valid code stays usable).
+    return this.mfa.reverifyActor(actor, { password: dto.currentPassword, totpCode: dto.totpCode }, meta, 'auth.mfa.reset_reauth', { targetUserId: id }, async (tx, mfaId) => {
       const current = await loadAuthenticatedUser(tx, actor.id, actor.companyId);
       const sessionAlive = await tx.refreshToken.findFirst({
         where: { userId: actor.id, familyId: binding.sid, revokedAt: null, expiresAt: { gt: new Date() } },
@@ -346,6 +361,7 @@ export class UsersService {
         throw new MfaChallengeInvalidException();
       }
       const target = await this.loadResetTarget(tx, id, actor);
+      await this.challenges.consumeStepUp(dto.challengeId, binding); // GETDEL: lost race / Redis down throws => claim rolls back
 
       const codes = await tx.userMfaRecoveryCode.deleteMany({ where: { userId: id } });
       const mfa = await tx.userMfa.deleteMany({ where: { userId: id } });
@@ -383,6 +399,16 @@ export class UsersService {
     });
   }
 
+  /** Runs the pre-proof checks of the MFA reset flow; a business rejection leaves one `..._rejected` (stage precheck) audit row, then the original is rethrown. */
+  private async auditedPrecheck<T>(id: string, actor: AuthenticatedUser, meta: RequestMeta, fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err instanceof AppException) await this.mfa.auditRejectedStepUp(actor, 'auth.mfa.reset_reauth', err, meta, id, 'precheck');
+      throw err;
+    }
+  }
+
   private stepUpBinding(targetUserId: string, actor: AuthenticatedUser): StepUpBinding {
     if (targetUserId === actor.id) throw new CannotResetOwnMfaException();
     if (!actor.sid) throw new MfaRequiredException(); // token predates step-up: re-login
@@ -400,8 +426,8 @@ export class UsersService {
 
   /** Handler-scope route: the actor's step-up proof runs in its own transactions (failed attempts persist), then the issuing tx. */
   async issueMfaEnrollmentCode(id: string, dto: IssueMfaEnrollmentCodeDto, actor: AuthenticatedUser, meta: RequestMeta) {
-    await this.mfa.reverifyActor(actor, { password: dto.currentPassword, totpCode: dto.totpCode }, meta, 'auth.mfa.enrollment_code_reauth', { allowRecovery: true });
-    return this.tenantPrisma.run(actor.companyId, () => this.issueVerified(id, actor));
+    // Same tx as the proof: a rejected target (not applicable / not found) rolls the TOTP/recovery claim back.
+    return this.mfa.reverifyActor(actor, { password: dto.currentPassword, totpCode: dto.totpCode }, meta, 'auth.mfa.enrollment_code_reauth', { allowRecovery: true, targetUserId: id }, () => this.issueVerified(id, actor));
   }
 
   private async issueVerified(id: string, actor: AuthenticatedUser) {

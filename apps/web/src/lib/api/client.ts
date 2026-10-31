@@ -72,20 +72,29 @@ export function consumeAuthNotice(): string | null {
   }
 }
 
-/** MFA_REQUIRED is not an expired token: refreshing cannot fix it, so never enter the refresh path. */
-async function isMfaRequired(res: Response): Promise<boolean> {
+/** Codes where refreshing cannot help: the server ended the session (MFA_REQUIRED, legacy token AUTH_SESSION_EXPIRED). */
+const SESSION_END_NOTICES: Record<string, string> = {
+  MFA_REQUIRED: 'mfaRequired',
+  AUTH_SESSION_EXPIRED: 'sessionExpired',
+};
+
+export function isSessionEndCode(code: string): boolean {
+  return code in SESSION_END_NOTICES;
+}
+
+async function sessionEndNotice(res: Response): Promise<string | null> {
   try {
     const body = (await res.clone().json()) as { code?: string };
-    return body?.code === 'MFA_REQUIRED';
+    return (body?.code && SESSION_END_NOTICES[body.code]) || null;
   } catch {
-    return false;
+    return null;
   }
 }
 
-function endSessionForMfa() {
+function endSession(notice: string) {
   clearTokens();
   try {
-    window.sessionStorage.setItem(AUTH_NOTICE_KEY, 'mfaRequired');
+    window.sessionStorage.setItem(AUTH_NOTICE_KEY, notice);
   } catch {
     // storage unavailable: the redirect still happens, only the message is lost
   }
@@ -152,8 +161,9 @@ export async function apiFetch<T = void>(path: string, options: ApiFetchOptions 
 
   let res = await send(skipAuth ? null : getAccessToken());
 
-  if (res.status === 401 && !skipAuth && (await isMfaRequired(res))) {
-    endSessionForMfa();
+  const endNotice = res.status === 401 && !skipAuth ? await sessionEndNotice(res) : null;
+  if (endNotice) {
+    endSession(endNotice);
     throw new ApiError(401, (await res.json().catch(() => undefined)) as ApiErrorBody);
   }
 
@@ -162,8 +172,7 @@ export async function apiFetch<T = void>(path: string, options: ApiFetchOptions 
     if (refreshed) {
       res = await send(refreshed);
     } else {
-      clearTokens();
-      unauthorizedHandlers.forEach((handler) => handler());
+      endSession('sessionExpired');
     }
   }
 
@@ -195,8 +204,9 @@ export async function apiDownloadWithHash(path: string, fallbackFilename: string
 
   let res = await send(getAccessToken());
 
-  if (res.status === 401 && (await isMfaRequired(res))) {
-    endSessionForMfa();
+  const endNotice = res.status === 401 ? await sessionEndNotice(res) : null;
+  if (endNotice) {
+    endSession(endNotice);
     throw new ApiError(401, (await res.json().catch(() => undefined)) as ApiErrorBody);
   }
 
@@ -205,8 +215,7 @@ export async function apiDownloadWithHash(path: string, fallbackFilename: string
     if (refreshed) {
       res = await send(refreshed);
     } else {
-      clearTokens();
-      unauthorizedHandlers.forEach((handler) => handler());
+      endSession('sessionExpired');
     }
   }
 

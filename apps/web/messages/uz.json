@@ -93,6 +93,7 @@
     "backToPassword": "Parol bosqichiga qaytish",
     "challengeInvalid": "Tanlov muddati tugagan yoki allaqachon ishlatilgan. Telefon raqam va parolni qayta kiriting.",
     "challengeRateLimited": "Biroz kutib, qayta urinib ko'ring.",
+    "sessionExpired": "Sessiya muddati tugadi. Qaytadan kiring.",
     "mfa": {
       "sessionRequired": "Ikki bosqichli autentifikatsiya talab qilinadi. Qaytadan kiring.",
       "loading": "Yuklanmoqda",

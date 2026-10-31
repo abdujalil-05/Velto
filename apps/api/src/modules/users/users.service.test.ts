@@ -16,8 +16,20 @@ import {
   UserAlreadyInactiveException,
   UserHasReferencesException,
 } from './users-exceptions';
-import type { AuthChallengeStore } from '../auth/auth-challenge.store';
-import type { MfaService } from '../auth/mfa.service';
+import { AuthChallengeStore } from '../auth/auth-challenge.store';
+import { MfaService } from '../auth/mfa.service';
+import { AuthService, type MfaStepRequired } from '../auth/auth.service';
+import { LoginRateLimiterService } from '../auth/login-rate-limiter.service';
+import { SecretBox } from '../../common/crypto/secret-box';
+import { MfaChallengeInvalidException, MfaCodeInvalidException } from '../../common/auth/auth-exceptions';
+import { CannotResetOwnMfaException, CannotResetOwnerMfaException, UserNotFoundException } from './users-exceptions';
+import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
+import argon2 from 'argon2';
+import Redis from 'ioredis';
+import { generate } from 'otplib';
+import { generateMfaEnrollmentCode, hashMfaEnrollmentCode } from '@velto/database';
+import { randomInt } from 'node:crypto';
 import { UsersService } from './users.service';
 
 // Prod keeps Prisma's 5s tx default; remove() runs ~20 reference-count queries which under full-suite
@@ -75,6 +87,22 @@ describe('UsersService (integration, real Postgres + RLS)', () => {
     const created = await tenantPrisma.run(companyId, () => users.create(dto({ password: 'a-decent-passphrase' }), actor));
     expect(created.roles.map((r) => r.code)).toEqual(['SALES_AGENT']);
     expect('passwordHash' in created).toBe(false);
+  });
+
+  it('list() returns mfaEnabled true only for a confirmed UserMfa, and no MFA secret material', async () => {
+    const withMfa = await tenantPrisma.run(companyId, () => users.create(dto(), actor));
+    const pending = await tenantPrisma.run(companyId, () => users.create(dto(), actor));
+    const without = await tenantPrisma.run(companyId, () => users.create(dto(), actor));
+    const row = { secretCiphertext: Buffer.from('c'), secretIv: Buffer.from('i'), secretTag: Buffer.from('t'), keyVersion: 1 };
+    await systemPrisma.userMfa.create({ data: { companyId, userId: withMfa.id, ...row, confirmedAt: new Date() } });
+    await systemPrisma.userMfa.create({ data: { companyId, userId: pending.id, ...row, confirmedAt: null } });
+    const res = await tenantPrisma.run(companyId, () => users.list({ page: 1, pageSize: 100 } as never));
+    const by = (id: string) => res.data.find((u) => u.id === id)!;
+    expect(by(withMfa.id).mfaEnabled).toBe(true);
+    expect(by(pending.id).mfaEnabled).toBe(false);
+    expect(by(without.id).mfaEnabled).toBe(false);
+    expect(JSON.stringify(res.data)).not.toContain('secretCiphertext');
+    expect('mfa' in by(withMfa.id)).toBe(false);
   });
 
   it('rejects a duplicate phone within the same tenant', async () => {
@@ -304,6 +332,193 @@ describe('UsersService (integration, real Postgres + RLS)', () => {
       await expect(
         tenantPrisma.run(isolatedCompanyId, () => users.remove(otherOwner.id, {}, director), LOAD_TX),
       ).rejects.toBeInstanceOf(CannotDeleteOwnerException);
+    });
+  });
+
+  // ADR-058 step-up admin MFA reset (service level, real Postgres + Redis). Complements auth/mfa.service.test.ts.
+  describe('resetMfa() step-up (ADR-058)', () => {
+    const pw = 'CorrectHorseBattery9'; // nosemgrep: ajinabraham.njsscan.generic.hardcoded_secrets.node_password
+    const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
+    const jwt = new JwtService({ secret: 'test-secret', signOptions: { expiresIn: '15m' } });
+    const cfg = { get: (k: string, d?: unknown) => (k === 'MFA_ENCRYPTION_KEY' ? process.env.MFA_ENCRYPTION_KEY : d), getOrThrow: (k: string) => (k === 'MFA_ENCRYPTION_KEY' ? process.env.MFA_ENCRYPTION_KEY : undefined) } as unknown as ConfigService;
+    const limiter = new LoginRateLimiterService(redis);
+    const store = new AuthChallengeStore(redis);
+    const auth = new AuthService(jwt, cfg, tenantPrisma, limiter, auditLog, store);
+    const mfaSvc = new MfaService(auth, tenantPrisma, store, limiter, auditLog, new SecretBox(cfg));
+    const svc = new UsersService(tenantPrisma, auditLog, mfaSvc, store);
+    const ip = () => ({ ip: `10.${randomInt(256)}.${randomInt(256)}.${randomInt(256)}` });
+    let hash: string;
+    let coA: string;
+    let coB: string;
+    let coNoPerm: string;
+
+    afterAll(() => {
+      redis.disconnect();
+    });
+
+    async function mkCompany(name: string) {
+      const tenant = await systemPrisma.tenant.create({ data: { slug: `t-su-${name}-${Date.now()}-${randomInt(1e6)}`, name } });
+      return (await systemPrisma.company.create({ data: { tenantId: tenant.id, name } })).id;
+    }
+    async function grantRole(companyId: string, userId: string, code: string) {
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT set_config('app.current_company_id', ${companyId}, true)`;
+        const role = (await tx.role.findFirst({ where: { companyId, code } })) ?? (await tx.role.create({ data: { companyId, code, name: code, isSystem: true } }));
+        await tx.userRole.create({ data: { userId, roleId: role.id } });
+      });
+    }
+    async function grantResetPerm(companyId: string) {
+      const perm = await systemPrisma.permission.upsert({ where: { module_code: { module: 'users', code: 'mfa_reset' } }, update: {}, create: { module: 'users', code: 'mfa_reset' } });
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT set_config('app.current_company_id', ${companyId}, true)`;
+        const role = await tx.role.findFirstOrThrow({ where: { companyId, code: 'OWNER' } });
+        if (!(await tx.rolePermission.findFirst({ where: { roleId: role.id, permissionId: perm.id } }))) await tx.rolePermission.create({ data: { roleId: role.id, permissionId: perm.id } });
+      });
+    }
+    /** MFA-enrolled user of the given role, logged in through the real first-enrollment flow. */
+    async function enrolled(companyId: string, roleCode: string) {
+      const user = await systemPrisma.user.create({ data: { companyId, firstName: roleCode, lastName: 'Su', phone: `+998${String(randomInt(0, 1_000_000_000)).padStart(9, '0')}`, passwordHash: hash } });
+      await grantRole(companyId, user.id, roleCode);
+      const step = (await auth.login({ phone: user.phone, password: pw }, ip())) as MfaStepRequired;
+      const code = generateMfaEnrollmentCode();
+      await systemPrisma.mfaEnrollmentCode.create({ data: { companyId, userId: user.id, codeHash: hashMfaEnrollmentCode(code), expiresAt: new Date(Date.now() + 3_600_000) } });
+      const start = await mfaSvc.startEnroll(step.mfaChallenge, code, ip());
+      const session = await mfaSvc.confirmEnroll({ mfaChallenge: step.mfaChallenge, enrollmentCode: code, code: await generate({ secret: start.secret }) }, ip());
+      const sid = (jwt.decode(session.accessToken) as { sid: string }).sid;
+      return { id: user.id, companyId, secret: start.secret, sid };
+    }
+    type E = Awaited<ReturnType<typeof enrolled>>;
+    const asActor = (e: E): AuthenticatedUser => ({ id: e.id, companyId: e.companyId, firstName: '', lastName: '', roles: ['OWNER'], permissions: ['users.mfa_reset'], sid: e.sid });
+    const fresh = async (e: E) => {
+      await systemPrisma.userMfa.update({ where: { userId: e.id }, data: { lastUsedStep: -1 } });
+      return generate({ secret: e.secret });
+    };
+    const doReset = async (e: E, targetId: string, challengeId: string, over: Partial<{ currentPassword: string; totpCode: string }> = {}, service = svc, actorOverride?: AuthenticatedUser) =>
+      service.resetMfa(targetId, { challengeId, reason: 'lost phone', currentPassword: pw, totpCode: over.totpCode ?? (await fresh(e)), ...over }, actorOverride ?? asActor(e), ip());
+    const live = (id: string) => systemPrisma.refreshToken.count({ where: { userId: id, revokedAt: null } });
+    const expectIntact = async (t: E) => {
+      expect(await systemPrisma.userMfa.count({ where: { userId: t.id } })).toBe(1);
+      expect(await systemPrisma.userMfaRecoveryCode.count({ where: { userId: t.id } })).toBe(10);
+      expect(await live(t.id)).toBeGreaterThan(0);
+    };
+
+    beforeAll(async () => {
+      hash = await argon2.hash(pw, { type: argon2.argon2id });
+      [coA, coB, coNoPerm] = await Promise.all([mkCompany('A'), mkCompany('B'), mkCompany('N')]);
+      await grantRole(coA, (await systemPrisma.user.create({ data: { companyId: coA, firstName: 'x', lastName: 'x', phone: `+998${String(randomInt(0, 1_000_000_000)).padStart(9, '0')}` } })).id, 'OWNER');
+      await grantResetPerm(coA);
+    });
+
+    it('ADR-058: successful step-up deletes MFA + recovery codes, revokes sessions, returns enrollment code once, writes audit', async () => {
+      const a = await enrolled(coA, 'OWNER');
+      const t = await enrolled(coA, 'CASHIER');
+      const { challengeId } = await svc.createMfaResetChallenge(t.id, asActor(a));
+      const res = await doReset(a, t.id, challengeId);
+      expect(res).toMatchObject({ reset: true, sessionsRevoked: 1, enrollmentCode: { code: expect.any(String) } });
+      expect(await systemPrisma.userMfa.count({ where: { userId: t.id } })).toBe(0);
+      expect(await systemPrisma.userMfaRecoveryCode.count({ where: { userId: t.id } })).toBe(0);
+      expect(await live(t.id)).toBe(0);
+      const audit = await tenantPrisma.run(coA, (tx) => tx.auditLog.findFirstOrThrow({ where: { action: 'auth.mfa.reset', entityId: t.id } }));
+      expect(audit.userId).toBe(a.id);
+      expect(JSON.stringify(audit.newValue)).not.toContain(res.enrollmentCode!.code);
+      expect(await systemPrisma.mfaEnrollmentCode.count({ where: { userId: t.id, usedAt: null } })).toBe(1);
+    });
+
+    it('ADR-058: actor without users.mfa_reset is rejected in the final tx, target untouched', async () => {
+      const a = await enrolled(coNoPerm, 'OWNER'); // OWNER role in this company has no mfa_reset permission row
+      const t = await enrolled(coNoPerm, 'CASHIER');
+      const { challengeId } = await svc.createMfaResetChallenge(t.id, asActor(a));
+      await expect(doReset(a, t.id, challengeId)).rejects.toBeInstanceOf(MfaChallengeInvalidException);
+      await expectIntact(t);
+    });
+
+    it('ADR-058: wrong password and replayed TOTP are rejected, target untouched', async () => {
+      const a = await enrolled(coA, 'OWNER');
+      const t = await enrolled(coA, 'CASHIER');
+      const { challengeId } = await svc.createMfaResetChallenge(t.id, asActor(a));
+      await expect(doReset(a, t.id, challengeId, { currentPassword: 'wrong-password' })).rejects.toBeInstanceOf(MfaCodeInvalidException);
+      const code = await fresh(a);
+      await mfaSvc.reverifyActor(asActor(a), { password: pw, totpCode: code }, ip(), 'auth.mfa.reset_reauth'); // burns the step
+      await expect(doReset(a, t.id, challengeId, { totpCode: code }).catch((e) => e)).resolves.toBeInstanceOf(MfaCodeInvalidException); // replay
+      await expectIntact(t);
+    });
+
+    it('ADR-058: challenge bound to another target / another actor; cross-tenant target is not found', async () => {
+      const a = await enrolled(coA, 'OWNER');
+      const t = await enrolled(coA, 'CASHIER');
+      const other = await enrolled(coA, 'CASHIER');
+      const foreign = await enrolled(coB, 'CASHIER');
+      const forOther = (await svc.createMfaResetChallenge(other.id, asActor(a))).challengeId;
+      await expect(doReset(a, t.id, forOther)).rejects.toBeInstanceOf(MfaChallengeInvalidException);
+      const mine = (await svc.createMfaResetChallenge(t.id, asActor(a))).challengeId;
+      const a2 = await enrolled(coA, 'OWNER');
+      await expect(doReset(a2, t.id, mine)).rejects.toBeInstanceOf(MfaChallengeInvalidException);
+      await expect(svc.createMfaResetChallenge(foreign.id, asActor(a))).rejects.toBeInstanceOf(UserNotFoundException);
+      const crossCo = (await svc.createMfaResetChallenge(t.id, asActor(a))).challengeId;
+      await expect(doReset(a, t.id, crossCo, {}, svc, { ...asActor(a), companyId: coB })).rejects.toBeInstanceOf(MfaChallengeInvalidException);
+      await expectIntact(t);
+      await expectIntact(other);
+      await expectIntact(foreign);
+    });
+
+    it('ADR-058: self-reset and OWNER target are rejected', async () => {
+      const a = await enrolled(coA, 'OWNER');
+      const owner2 = await enrolled(coA, 'OWNER');
+      await expect(svc.createMfaResetChallenge(a.id, asActor(a))).rejects.toBeInstanceOf(CannotResetOwnMfaException);
+      await expect(svc.createMfaResetChallenge(owner2.id, asActor(a))).rejects.toBeInstanceOf(CannotResetOwnerMfaException);
+      await expect(doReset(a, a.id, 'x'.repeat(43))).rejects.toBeInstanceOf(CannotResetOwnMfaException);
+      await expectIntact(owner2);
+    });
+
+    it('ADR-058: pre-proof rejections (self / OWNER / not found / bad challenge) write exactly one precheck audit row, no secrets', async () => {
+      const a = await enrolled(coA, 'OWNER');
+      const owner2 = await enrolled(coA, 'OWNER');
+      const t = await enrolled(coA, 'CASHIER');
+      const foreign = await enrolled(coB, 'CASHIER');
+      const rows = (targetUserId: string) =>
+        tenantPrisma.run(coA, (tx) => tx.auditLog.findMany({ where: { userId: a.id, action: 'auth.mfa.reset_reauth_rejected' } })).then((all) => all.filter((r) => (r.newValue as { targetUserId?: string }).targetUserId === targetUserId));
+      const expectOne = async (targetUserId: string, reason: string) => {
+        const found = await rows(targetUserId);
+        expect(found).toHaveLength(1);
+        expect(found[0].newValue).toEqual({ stage: 'precheck', reason, targetUserId });
+        expect(JSON.stringify(found[0].newValue)).not.toContain(pw);
+      };
+      const mine = (await svc.createMfaResetChallenge(t.id, asActor(a))).challengeId;
+      await expect(doReset(a, a.id, mine)).rejects.toBeInstanceOf(CannotResetOwnMfaException);
+      await expectOne(a.id, 'USER_CANNOT_RESET_OWN_MFA');
+      const forOwner = (await svc.createMfaResetChallenge(t.id, asActor(a))).challengeId;
+      await expect(doReset(a, owner2.id, forOwner)).rejects.toBeInstanceOf(MfaChallengeInvalidException); // challenge bound to t
+      await expect(svc.createMfaResetChallenge(owner2.id, asActor(a))).rejects.toBeInstanceOf(CannotResetOwnerMfaException);
+      expect(await rows(owner2.id)).toHaveLength(2);
+      await expect(svc.createMfaResetChallenge(foreign.id, asActor(a))).rejects.toBeInstanceOf(UserNotFoundException);
+      await expectOne(foreign.id, 'USER_NOT_FOUND');
+      await expect(doReset(a, t.id, 'x'.repeat(43))).rejects.toBeInstanceOf(MfaChallengeInvalidException);
+      const tRows = await rows(t.id);
+      expect(tRows).toHaveLength(1);
+      expect(tRows[0].newValue).toMatchObject({ stage: 'precheck' });
+      await expectIntact(t);
+      await expectIntact(owner2);
+    });
+
+    it('ADR-058: a consumed challenge cannot be reused', async () => {
+      const a = await enrolled(coA, 'OWNER');
+      const t = await enrolled(coA, 'CASHIER');
+      const { challengeId } = await svc.createMfaResetChallenge(t.id, asActor(a));
+      await doReset(a, t.id, challengeId);
+      await expect(doReset(a, t.id, challengeId)).rejects.toBeInstanceOf(MfaChallengeInvalidException);
+    });
+
+    it('ADR-058: failure inside the final tx rolls back MFA, recovery codes, sessions and enrollment codes', async () => {
+      const a = await enrolled(coA, 'OWNER');
+      const t = await enrolled(coA, 'CASHIER');
+      const failing = { log: (tx: never, e: { action: string }) => (e.action === 'auth.mfa.reset' ? Promise.reject(new Error('boom')) : auditLog.log(tx, e as never)) } as unknown as AuditLogService;
+      const bad = new UsersService(tenantPrisma, failing, mfaSvc, store);
+      const before = await systemPrisma.mfaEnrollmentCode.count({ where: { userId: t.id } });
+      const { challengeId } = await bad.createMfaResetChallenge(t.id, asActor(a));
+      await expect(doReset(a, t.id, challengeId, {}, bad)).rejects.toThrow('boom');
+      await expectIntact(t);
+      expect(await systemPrisma.mfaEnrollmentCode.count({ where: { userId: t.id } })).toBe(before);
+      expect(await systemPrisma.mfaEnrollmentCode.count({ where: { userId: t.id, usedAt: null } })).toBe(0);
     });
   });
 });

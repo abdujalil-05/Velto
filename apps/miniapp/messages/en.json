@@ -4,6 +4,7 @@
     "mfaWebRequired": "Your role requires two-factor sign-in; use the web app.",
     "needsPhoneLink": "Share your phone number to link your account.",
     "sharePhone": "Share my phone number",
+    "sessionExpired": "Session expired. Please sign in again.",
     "linkTimeout": "Linking failed. Check the message from the Telegram bot or contact your administrator, then try again.",
     "fallbackTitle": "Velto Agent",
     "fallbackBody": "This app only runs inside Telegram. Open the bot and sign in via the Velto button in its menu.",

@@ -18,6 +18,7 @@ import {
 } from '../../common/auth/auth-exceptions';
 import { SecretBox } from '../../common/crypto/secret-box';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
+import { runWithTraceId } from '../../common/trace/trace-context';
 import { SmsService } from '../../common/sms/sms.service';
 import { CannotResetOwnerMfaException, CannotResetOwnMfaException, MfaEnrollmentCodeNotApplicableException, UserNotFoundException } from '../users/users-exceptions';
 import { UsersService } from '../users/users.service';
@@ -383,6 +384,41 @@ describe('ADR-058 TOTP MFA (real Postgres + Redis)', () => {
     await mfa.verify({ mfaChallenge: await verifyChallenge(e), recoveryCode: recoveryCodes[0]! }, { ip: rndIp() });
   });
 
+  describe('reverifyActor ordering (password first, atomic TOTP claim)', () => {
+    const lastStep = async (userId: string) => (await systemPrisma.userMfa.findUniqueOrThrow({ where: { userId } })).lastUsedStep;
+    const actorOf = (e: { id: string; companyId: string }) => ({ id: e.id, companyId: e.companyId, firstName: '', lastName: '', roles: ['OWNER'], permissions: [] });
+
+    it('wrong password does not burn the TOTP; the same code then succeeds', async () => {
+      const e = await enrolled();
+      const code = await freshCode(e.id, e.secret);
+      const before = await lastStep(e.id);
+      await expect(mfa.reverifyActor(actorOf(e), { password: 'wrong-password-1', totpCode: code }, { ip: rndIp() }, 'auth.mfa.test')).rejects.toBeInstanceOf(MfaCodeInvalidException);
+      expect(await lastStep(e.id)).toBe(before);
+      await expect(mfa.reverifyActor(actorOf(e), { password, totpCode: code }, { ip: rndIp() }, 'auth.mfa.test')).resolves.toEqual(expect.any(String));
+      // consumed now: replay rejected
+      await expect(mfa.reverifyActor(actorOf(e), { password, totpCode: code }, { ip: rndIp() }, 'auth.mfa.test')).rejects.toBeInstanceOf(MfaCodeInvalidException);
+    });
+
+    it('work rejection inside the proof tx rolls the TOTP claim back; same code then succeeds; parallel with work: one winner', async () => {
+      const e = await enrolled();
+      const code = await freshCode(e.id, e.secret);
+      const before = await lastStep(e.id);
+      const boom = new Error('business rejection');
+      await expect(mfa.reverifyActor(actorOf(e), { password, totpCode: code }, { ip: rndIp() }, 'auth.mfa.test', {}, async () => { throw boom; })).rejects.toBe(boom);
+      expect(await lastStep(e.id)).toBe(before);
+      const run = () => mfa.reverifyActor(actorOf(e), { password, totpCode: code }, { ip: rndIp() }, 'auth.mfa.test', {}, async () => 'done');
+      const results = await Promise.allSettled([run(), run(), run()]);
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    });
+
+    it('concurrent requests with the same valid TOTP: at most one succeeds', async () => {
+      const e = await enrolled();
+      const code = await freshCode(e.id, e.secret);
+      const results = await Promise.allSettled(Array.from({ length: 4 }, () => mfa.reverifyActor(actorOf(e), { password, totpCode: code }, { ip: rndIp() }, 'auth.mfa.test')));
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    });
+  });
+
   describe('POST /users/:id/mfa/reset (service, ADR-058 step-up)', () => {
     const meta = () => ({ ip: rndIp() });
     const stepKey = (id: string) => `auth:stepup:${createHash('sha256').update(id).digest('hex')}`;
@@ -436,6 +472,19 @@ describe('ADR-058 TOTP MFA (real Postgres + Redis)', () => {
       const t2 = await enrolled('CASHIER');
       await expect(reset(a, t.id, challengeId)).rejects.toBeInstanceOf(MfaChallengeInvalidException);
       await intact(t2);
+    });
+
+    it('final-tx rejection (target became OWNER after challenge) does not burn the TOTP or the proof; same TOTP + new challenge works on a valid target', async () => {
+      const a = await admin();
+      const bad = await enrolled('CASHIER');
+      const good = await enrolled('CASHIER');
+      const { challengeId } = await start(a, bad.id);
+      await grant(coA, bad.id, 'OWNER');
+      const totpCode = await freshCode(a.e.id, a.e.secret);
+      await expect(users.resetMfa(bad.id, { challengeId, reason: 'x', currentPassword: password, totpCode }, a.actor, meta())).rejects.toBeInstanceOf(CannotResetOwnerMfaException);
+      await intact(bad);
+      const ok = await users.resetMfa(good.id, { challengeId: (await start(a, good.id)).challengeId, reason: 'x', currentPassword: password, totpCode }, a.actor, meta());
+      expect(ok).toMatchObject({ reset: true });
     });
 
     it('non-MFA target: reset returns enrollmentCode null and invalidates old enrollment codes', async () => {
@@ -520,6 +569,70 @@ describe('ADR-058 TOTP MFA (real Postgres + Redis)', () => {
       await systemPrisma.refreshToken.updateMany({ where: { userId: a.e.id }, data: { revokedAt: new Date() } });
       await expect(reset(a, t.id, challengeId)).rejects.toBeInstanceOf(MfaChallengeInvalidException);
       await intact(t);
+    });
+
+    describe('rejected step-up audit (valid proof, business rejection)', () => {
+      const REJECTED = 'auth.mfa.reset_reauth_rejected';
+      const rows = (a: Admin) =>
+        tenantPrisma.run(coA, (tx) => tx.auditLog.findMany({ where: { userId: a.e.id, action: { startsWith: 'auth.mfa.reset' } } }));
+      const codeOf = (e: unknown) => ((e as { getResponse(): { code: string } }).getResponse()).code;
+
+      it('OWNER target (race past the pre-check): 403, exactly one rejected row with reason/target/traceId, no success rows, MFA untouched, no secrets', async () => {
+        const a = await admin();
+        const t = await enrolled('CASHIER');
+        const { challengeId } = await start(a, t.id);
+        await grant(coA, t.id, 'OWNER');
+        const real = (users as unknown as { loadResetTarget: (...x: unknown[]) => Promise<unknown> }).loadResetTarget.bind(users);
+        const spy = vi.spyOn(users as unknown as { loadResetTarget: typeof real }, 'loadResetTarget').mockImplementationOnce(async () => ({ id: t.id, roles: [] })); // pre-check passes, in-tx check is real
+        const body = { challengeId, reason: 'lost phone', ...(await a.proof()) };
+        const traceId = `trace-${randomUUID()}`;
+        const err = await runWithTraceId(traceId, () => users.resetMfa(t.id, body, a.actor, meta())).catch((e: unknown) => e);
+        spy.mockRestore();
+        expect(err).toBeInstanceOf(CannotResetOwnerMfaException);
+        expect((err as CannotResetOwnerMfaException).getStatus()).toBe(403);
+        const got = await rows(a);
+        expect(got.map((r) => r.action)).toEqual([REJECTED]);
+        expect(got[0]).toMatchObject({ userId: a.e.id, companyId: coA, traceId });
+        expect(got[0]!.newValue).toMatchObject({ reason: codeOf(err), targetUserId: t.id });
+        const json = JSON.stringify(got[0]!.newValue);
+        for (const secret of [password, body.totpCode, a.e.secret, ...a.e.recoveryCodes]) expect(json).not.toContain(secret);
+        await intact(t);
+        expect(await systemPrisma.userMfaRecoveryCode.count({ where: { userId: t.id } })).toBe(10);
+      });
+
+      it('revoked actor session: MFA_CHALLENGE_INVALID, exactly one rejected row, target MFA untouched, TOTP not burned', async () => {
+        const a = await admin();
+        const t = await enrolled('CASHIER');
+        const { challengeId } = await start(a, t.id);
+        await systemPrisma.refreshToken.updateMany({ where: { userId: a.e.id }, data: { revokedAt: new Date() } });
+        const body = { challengeId, reason: 'x', ...(await a.proof()) };
+        const traceId = `trace-${randomUUID()}`;
+        const err = await runWithTraceId(traceId, () => users.resetMfa(t.id, body, a.actor, meta())).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(MfaChallengeInvalidException);
+        const got = await rows(a);
+        expect(got.map((r) => r.action)).toEqual([REJECTED]);
+        expect(got[0]).toMatchObject({ traceId });
+        expect(got[0]!.newValue).toMatchObject({ reason: codeOf(err), targetUserId: t.id });
+        await intact(t);
+        const m = await systemPrisma.userMfa.findFirstOrThrow({ where: { userId: a.e.id } });
+        expect(m.lastUsedStep).toBe(-1n); // claim rolled back (freshCode rewound it to -1)
+      });
+
+      it('audit write failure: original exception still thrown, error logged with security marker, no row', async () => {
+        const a = await admin();
+        const t = await enrolled('CASHIER');
+        const failing = { log: (tx: never, e: { action: string }) => (e.action === REJECTED ? Promise.reject(new Error('audit down')) : auditLog.log(tx, e as never)) } as unknown as AuditLogService;
+        const badMfa = new MfaService(auth, tenantPrisma, store, rateLimiter, failing, secretBox);
+        const svc = new UsersService(tenantPrisma, auditLog, badMfa, store);
+        const logSpy = vi.spyOn((badMfa as unknown as { logger: { error(m: string): void } }).logger, 'error').mockImplementation(() => undefined);
+        const { challengeId } = await start(a, t.id, svc);
+        await systemPrisma.refreshToken.updateMany({ where: { userId: a.e.id }, data: { revokedAt: new Date() } });
+        await expect(reset(a, t.id, challengeId, {}, svc)).rejects.toBeInstanceOf(MfaChallengeInvalidException);
+        expect(logSpy).toHaveBeenCalledTimes(1);
+        expect(String(logSpy.mock.calls[0]![0])).toContain('[SECURITY]');
+        expect(await rows(a)).toHaveLength(0);
+        await intact(t);
+      });
     });
 
     it('a failure inside the tx leaves no partial reset', async () => {

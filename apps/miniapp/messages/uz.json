@@ -4,6 +4,7 @@
     "mfaWebRequired": "Rolingiz ikki bosqichli kirishni talab qiladi — veb-ilovadan foydalaning.",
     "needsPhoneLink": "Hisobingizni bog'lash uchun telefon raqamingizni ulashing.",
     "sharePhone": "Telefon raqamimni ulashish",
+    "sessionExpired": "Sessiya muddati tugadi. Qayta kiring.",
     "linkTimeout": "Bog'lash amalga oshmadi. Telegram botdagi xabarni tekshiring yoki administratoringiz bilan bog'laning, so'ng qayta urinib ko'ring.",
     "fallbackTitle": "Velto Agent",
     "fallbackBody": "Bu ilova faqat Telegram ichida ishlaydi. Botni oching va menyudagi Velto tugmasi orqali kiring.",

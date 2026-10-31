@@ -164,3 +164,30 @@ describe('revoke wipe (TZ 8.6, ADR-022)', () => {
     expect(await queueRepository.queueRowCount()).toBe(0);
   });
 });
+
+describe('AUTH_SESSION_EXPIRED on access token (ADR-058)', () => {
+  it('skips /auth/refresh, drops tokens only, keeps the queue and cache', async () => {
+    let refreshCalls = 0;
+    vi.stubGlobal('fetch', async (url: unknown) => {
+      if (String(url).endsWith('/auth/refresh')) refreshCalls += 1;
+      return json(401, { code: 'AUTH_SESSION_EXPIRED', message: { uz: '', ru: '', en: '' } });
+    });
+    clearTokens();
+    setTokens('legacy', 'refresh-1');
+    asUser(A);
+    await db.queue.clear();
+    await seedCache();
+    const id = await queueRepository.enqueue('order', order);
+    const seen: boolean[] = [];
+    const stop = onUnauthorized((i) => seen.push(!!i.sessionExpired));
+    await expect(apiFetch('/auth/me')).rejects.toBeTruthy();
+    stop();
+    vi.unstubAllGlobals();
+
+    expect(refreshCalls).toBe(0);
+    expect(seen).toEqual([true]);
+    expect(getRefreshToken()).toBeNull();
+    expect((await db.queue.toArray()).map((r) => r.clientId)).toContain(id);
+    expect(await db.customers.count()).toBe(1);
+  });
+});

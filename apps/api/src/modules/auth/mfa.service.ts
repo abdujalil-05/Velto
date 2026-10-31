@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import argon2 from 'argon2';
 import { hashMfaEnrollmentCode, type TenantClient } from '@velto/database';
 import { AuditLogService } from '../../common/audit/audit-log.service';
@@ -11,13 +11,24 @@ import {
   MfaServiceUnavailableException,
   TooManyLoginAttemptsException,
 } from '../../common/auth/auth-exceptions';
+import { AppException } from '../../common/errors/app-exception';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { SecretBox, type SealedSecret } from '../../common/crypto/secret-box';
 import { ServiceUnavailableAppException } from '../../common/redis/redis-unavailable';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { AuthChallengeStore, CHALLENGE_TTL_SECONDS, type MfaBinding } from './auth-challenge.store';
-import { AuthService, type MfaStepRequired, type RequestMeta, type TokenPair } from './auth.service';
-import type { MfaEnrollConfirmDto, MfaReenrollDto, MfaVerifyDto, RegenerateRecoveryCodesDto } from './dto/mfa.dto';
+import {
+  AuthService,
+  type MfaStepRequired,
+  type RequestMeta,
+  type TokenPair,
+} from './auth.service';
+import type {
+  MfaEnrollConfirmDto,
+  MfaReenrollDto,
+  MfaVerifyDto,
+  RegenerateRecoveryCodesDto,
+} from './dto/mfa.dto';
 import { LoginRateLimiterService } from './login-rate-limiter.service';
 import { findMatchingRecoveryCode, generateRecoveryCodes } from './mfa-recovery-codes';
 import { checkTotp, newTotpSecret, totpEnrollmentArtifacts } from './mfa-totp';
@@ -41,17 +52,37 @@ type MfaRow = NonNullable<Awaited<ReturnType<typeof findConfirmedMfa>>>;
 
 const aadOf = (companyId: string, userId: string): string => `${companyId}:${userId}`;
 
-function toSealed(row: { secretCiphertext: Uint8Array; secretIv: Uint8Array; secretTag: Uint8Array; keyVersion: number }): SealedSecret {
-  return { ciphertext: Buffer.from(row.secretCiphertext), iv: Buffer.from(row.secretIv), tag: Buffer.from(row.secretTag), keyVersion: row.keyVersion };
+function toSealed(row: {
+  secretCiphertext: Uint8Array;
+  secretIv: Uint8Array;
+  secretTag: Uint8Array;
+  keyVersion: number;
+}): SealedSecret {
+  return {
+    ciphertext: Buffer.from(row.secretCiphertext),
+    iv: Buffer.from(row.secretIv),
+    tag: Buffer.from(row.secretTag),
+    keyVersion: row.keyVersion,
+  };
 }
 
 function encodePending(s: SealedSecret): string {
-  return JSON.stringify({ c: s.ciphertext.toString('base64'), i: s.iv.toString('base64'), t: s.tag.toString('base64'), v: s.keyVersion });
+  return JSON.stringify({
+    c: s.ciphertext.toString('base64'),
+    i: s.iv.toString('base64'),
+    t: s.tag.toString('base64'),
+    v: s.keyVersion,
+  });
 }
 
 function decodePending(raw: string): SealedSecret {
   const p = JSON.parse(raw) as { c: string; i: string; t: string; v: number };
-  return { ciphertext: Buffer.from(p.c, 'base64'), iv: Buffer.from(p.i, 'base64'), tag: Buffer.from(p.t, 'base64'), keyVersion: p.v };
+  return {
+    ciphertext: Buffer.from(p.c, 'base64'),
+    iv: Buffer.from(p.i, 'base64'),
+    tag: Buffer.from(p.t, 'base64'),
+    keyVersion: p.v,
+  };
 }
 
 /**
@@ -61,6 +92,8 @@ function decodePending(raw: string): SealedSecret {
  */
 @Injectable()
 export class MfaService {
+  private readonly logger = new Logger('MfaService');
+
   constructor(
     private readonly auth: AuthService,
     private readonly tenantPrisma: TenantPrismaService,
@@ -73,19 +106,30 @@ export class MfaService {
   // ---- public (challenge-bound) endpoints --------------------------------
 
   /** Generates (or replaces) the pending TOTP secret of an enroll challenge. Nothing is persisted in Postgres until confirm. */
-  async startEnroll(mfaChallenge: string, enrollmentCode: string | undefined, meta: RequestMeta): Promise<EnrollStart> {
+  async startEnroll(
+    mfaChallenge: string,
+    enrollmentCode: string | undefined,
+    meta: RequestMeta,
+  ): Promise<EnrollStart> {
     await this.throttleIp(meta);
     const binding = await this.challenges.readMfa(mfaChallenge, 'mfa_enroll');
     await this.assertUserNotLimited(binding.userId);
     if (binding.replacesMfaId === null) await this.reserveAttempt(binding.userId, mfaChallenge); // first enrollment: code guesses are counted
     const user = await this.tenantPrisma.run(binding.companyId, async (tx) => {
       const found = await this.findActiveUser(tx, binding);
-      if (binding.replacesMfaId === null && !(await this.enrollmentCodeUsable(tx, binding.userId, enrollmentCode))) return undefined;
+      if (
+        binding.replacesMfaId === null &&
+        !(await this.enrollmentCodeUsable(tx, binding.userId, enrollmentCode))
+      )
+        return undefined;
       return found;
     });
     if (!user) return this.rejectEnrollmentCode(binding, mfaChallenge, meta);
     const secret = newTotpSecret();
-    await this.challenges.setMfaPending(mfaChallenge, encodePending(this.secretBox.seal(secret, aadOf(binding.companyId, binding.userId))));
+    await this.challenges.setMfaPending(
+      mfaChallenge,
+      encodePending(this.secretBox.seal(secret, aadOf(binding.companyId, binding.userId))),
+    );
     return { secret, ...(await totpEnrollmentArtifacts(secret, user.phone)) };
   }
 
@@ -95,7 +139,8 @@ export class MfaService {
     const binding = await this.challenges.readMfa(dto.mfaChallenge, 'mfa_enroll');
     await this.assertUserNotLimited(binding.userId);
     await this.reserveAttempt(binding.userId, dto.mfaChallenge);
-    if (binding.replacesMfaId === null && !dto.enrollmentCode) return this.rejectEnrollmentCode(binding, dto.mfaChallenge, meta);
+    if (binding.replacesMfaId === null && !dto.enrollmentCode)
+      return this.rejectEnrollmentCode(binding, dto.mfaChallenge, meta);
     const pending = await this.challenges.getMfaPending(dto.mfaChallenge);
     if (!pending) throw new MfaChallengeInvalidException();
     const aad = aadOf(binding.companyId, binding.userId);
@@ -107,42 +152,60 @@ export class MfaService {
     const codes = await generateRecoveryCodes();
     const sealed = this.secretBox.seal(secret, aad);
     let codeRejected = false;
-    const session = await this.tenantPrisma.run(binding.companyId, async (tx) => {
-      const user = await this.findActiveUser(tx, binding);
-      const current = await findConfirmedMfa(tx, binding.userId);
-      if ((current?.id ?? null) !== binding.replacesMfaId) throw new MfaChallengeInvalidException(); // MFA changed since the challenge was issued
-      if (binding.replacesMfaId === null) {
-        // Atomic single-use claim in the same tx that creates UserMfa: 0 rows => rollback.
-        const claimed = await tx.mfaEnrollmentCode.updateMany({
-          where: { userId: user.id, companyId: user.companyId, codeHash: hashMfaEnrollmentCode(dto.enrollmentCode!), usedAt: null, expiresAt: { gt: new Date() } },
-          data: { usedAt: new Date() },
-        });
-        if (claimed.count !== 1) {
-          codeRejected = true;
-          throw new MfaEnrollmentCodeInvalidException();
+    const session = await this.tenantPrisma
+      .run(binding.companyId, async (tx) => {
+        const user = await this.findActiveUser(tx, binding);
+        const current = await findConfirmedMfa(tx, binding.userId);
+        if ((current?.id ?? null) !== binding.replacesMfaId)
+          throw new MfaChallengeInvalidException(); // MFA changed since the challenge was issued
+        if (binding.replacesMfaId === null) {
+          // Atomic single-use claim in the same tx that creates UserMfa: 0 rows => rollback.
+          const claimed = await tx.mfaEnrollmentCode.updateMany({
+            where: {
+              userId: user.id,
+              companyId: user.companyId,
+              codeHash: hashMfaEnrollmentCode(dto.enrollmentCode!),
+              usedAt: null,
+              expiresAt: { gt: new Date() },
+            },
+            data: { usedAt: new Date() },
+          });
+          if (claimed.count !== 1) {
+            codeRejected = true;
+            throw new MfaEnrollmentCodeInvalidException();
+          }
         }
-      }
-      await tx.refreshToken.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } });
-      await tx.userMfaRecoveryCode.deleteMany({ where: { userId: user.id } });
-      await tx.userMfa.deleteMany({ where: { userId: user.id } });
-      const mfa = await tx.userMfa.create({
-        data: {
-          companyId: user.companyId,
-          userId: user.id,
-          secretCiphertext: new Uint8Array(sealed.ciphertext),
-          secretIv: new Uint8Array(sealed.iv),
-          secretTag: new Uint8Array(sealed.tag),
-          keyVersion: sealed.keyVersion,
-          confirmedAt: new Date(),
-          lastUsedStep: BigInt(step),
-        },
+        await tx.refreshToken.updateMany({
+          where: { userId: user.id, revokedAt: null },
+          data: { revokedAt: new Date() },
+        });
+        await tx.userMfaRecoveryCode.deleteMany({ where: { userId: user.id } });
+        await tx.userMfa.deleteMany({ where: { userId: user.id } });
+        const mfa = await tx.userMfa.create({
+          data: {
+            companyId: user.companyId,
+            userId: user.id,
+            secretCiphertext: new Uint8Array(sealed.ciphertext),
+            secretIv: new Uint8Array(sealed.iv),
+            secretTag: new Uint8Array(sealed.tag),
+            keyVersion: sealed.keyVersion,
+            confirmedAt: new Date(),
+            lastUsedStep: BigInt(step),
+          },
+        });
+        await tx.userMfaRecoveryCode.createMany({
+          data: codes.hashes.map((codeHash) => ({
+            companyId: user.companyId,
+            userId: user.id,
+            codeHash,
+          })),
+        });
+        return this.auth.issueTokensInTx(tx, user, meta, undefined, 'auth.mfa.enrolled', mfa.id);
+      })
+      .catch((err: unknown) => {
+        if (codeRejected) return this.rejectEnrollmentCode(binding, dto.mfaChallenge, meta);
+        throw err;
       });
-      await tx.userMfaRecoveryCode.createMany({ data: codes.hashes.map((codeHash) => ({ companyId: user.companyId, userId: user.id, codeHash })) });
-      return this.auth.issueTokensInTx(tx, user, meta, undefined, 'auth.mfa.enrolled', mfa.id);
-    }).catch((err: unknown) => {
-      if (codeRejected) return this.rejectEnrollmentCode(binding, dto.mfaChallenge, meta);
-      throw err;
-    });
     await this.rateLimiter.recordSuccess(this.limiterKey(binding.userId));
     return { ...session, recoveryCodes: codes.plain };
   }
@@ -150,21 +213,34 @@ export class MfaService {
   /** Second login step: a TOTP code or a single-use recovery code. */
   async verify(dto: MfaVerifyDto, meta: RequestMeta): Promise<MfaSession> {
     await this.throttleIp(meta);
-    if ((dto.code === undefined) === (dto.recoveryCode === undefined)) throw new MfaCodeInvalidException();
+    if ((dto.code === undefined) === (dto.recoveryCode === undefined))
+      throw new MfaCodeInvalidException();
     const binding = await this.challenges.readMfa(dto.mfaChallenge, 'mfa_verify');
     await this.assertUserNotLimited(binding.userId);
     await this.reserveAttempt(binding.userId, dto.mfaChallenge);
-    const recoveryId = dto.recoveryCode !== undefined ? await this.matchRecoveryCode(binding, dto.recoveryCode) : undefined;
+    const recoveryId =
+      dto.recoveryCode !== undefined
+        ? await this.matchRecoveryCode(binding, dto.recoveryCode)
+        : undefined;
 
     const outcome = await this.tenantPrisma.run(binding.companyId, async (tx) => {
       const user = await this.findActiveUser(tx, binding);
       const mfa = await findConfirmedMfa(tx, user.id);
       if (!mfa) throw new MfaChallengeInvalidException();
       const viaRecovery = dto.recoveryCode !== undefined;
-      const accepted = viaRecovery ? await this.claimRecoveryCode(tx, user.id, recoveryId) : await this.claimTotp(tx, mfa, user, dto.code!);
+      const accepted = viaRecovery
+        ? await this.claimRecoveryCode(tx, user.id, recoveryId)
+        : await this.claimTotp(tx, mfa, user, dto.code!);
       if (!accepted) return undefined;
       await this.challenges.consumeMfa(dto.mfaChallenge, 'mfa_verify'); // single-use; also rolls the claim back if already consumed
-      return this.auth.issueTokensInTx(tx, user, meta, undefined, viaRecovery ? 'auth.mfa.recovery_used' : 'auth.mfa.verified', mfa.id);
+      return this.auth.issueTokensInTx(
+        tx,
+        user,
+        meta,
+        undefined,
+        viaRecovery ? 'auth.mfa.recovery_used' : 'auth.mfa.verified',
+        mfa.id,
+      );
     });
     if (!outcome) return this.rejectCode(binding, dto.mfaChallenge, meta);
     await this.rateLimiter.recordSuccess(this.limiterKey(binding.userId));
@@ -174,45 +250,113 @@ export class MfaService {
   // ---- authenticated self-service ---------------------------------------
 
   /** Re-verifies password + current TOTP, then hands out an enroll challenge. The old MFA stays valid until the new one is confirmed. */
-  async startReenroll(actor: AuthenticatedUser, dto: MfaReenrollDto, meta: RequestMeta): Promise<MfaStepRequired> {
-    const mfaId = await this.reverifyActor(actor, { password: dto.password, totpCode: dto.code }, meta, 'auth.mfa.reenroll');
-    const mfaChallenge = await this.challenges.issueMfa({ scope: 'mfa_enroll', userId: actor.id, companyId: actor.companyId, replacesMfaId: mfaId });
+  async startReenroll(
+    actor: AuthenticatedUser,
+    dto: MfaReenrollDto,
+    meta: RequestMeta,
+  ): Promise<MfaStepRequired> {
+    const mfaId = await this.reverifyActor(
+      actor,
+      { password: dto.password, totpCode: dto.code },
+      meta,
+      'auth.mfa.reenroll',
+    );
+    const mfaChallenge = await this.challenges.issueMfa({
+      scope: 'mfa_enroll',
+      userId: actor.id,
+      companyId: actor.companyId,
+      replacesMfaId: mfaId,
+    });
     return { mfa: 'enroll', mfaChallenge, expiresIn: CHALLENGE_TTL_SECONDS };
   }
 
   /**
    * Shared step-up proof for the authenticated actor: password + current TOTP (replay-guarded via lastUsedStep),
    * or, with `allowRecovery`, a single-use recovery code instead of the TOTP. Counts attempts, audits failures
-   * (`auth.mfa.failed`), throws MfaCodeInvalidException. Opens its own transactions: call from a handler-scope route.
+   * (`auth.mfa.failed`), throws MfaCodeInvalidException. Opens its own transaction: call from a handler-scope route.
+   * `work` runs INSIDE that same tx after the proof is claimed: if it throws, the TOTP/recovery claim rolls back with it
+   * (a valid code is never burned by a later business rejection), while parallel requests with the same code are still
+   * serialized by the row-level `lastUsedStep` UPDATE (one winner). Failed proofs commit nothing and are counted outside.
+   * A business AppException from `work` rolls the whole tx back (incl. the `<successAction>` row); exactly one
+   * `<successAction>_rejected` audit row (reason = exception code, optional `opts.targetUserId`) is then written in a
+   * SEPARATE tx. If that write fails it is logged at error level and the ORIGINAL exception is still rethrown.
    */
-  async reverifyActor(
+  async reverifyActor<T = string>(
     actor: AuthenticatedUser,
     proof: { password: string; totpCode: string },
     meta: RequestMeta,
     successAction: string,
-    opts: { allowRecovery?: boolean } = {},
-  ): Promise<string> {
+    opts: { allowRecovery?: boolean; targetUserId?: string } = {},
+    work?: (tx: TenantClient, mfaId: string) => Promise<T>,
+  ): Promise<T> {
     await this.assertUserNotLimited(actor.id);
     await this.reserveAttempt(actor.id);
     const isTotp = /^\d{6}$/.test(proof.totpCode);
-    const recoveryId = !isTotp && opts.allowRecovery ? await this.matchRecoveryCode({ userId: actor.id, companyId: actor.companyId }, proof.totpCode) : undefined;
-    const mfaId = await this.tenantPrisma.run(actor.companyId, async (tx) => {
-      const user = await tx.user.findUnique({ where: { id: actor.id } });
-      const mfa = await findConfirmedMfa(tx, actor.id);
-      if (!user?.passwordHash || !mfa) return undefined;
-      if (!(await argon2.verify(user.passwordHash, proof.password))) return undefined;
-      const accepted = isTotp ? await this.claimTotp(tx, mfa, actor, proof.totpCode) : await this.claimRecoveryCode(tx, actor.id, recoveryId);
-      if (!accepted) return undefined;
-      await this.audit(tx, actor, successAction, meta, { stage: 'requested' });
-      return mfa.id;
-    });
-    if (!mfaId) return this.rejectCode({ userId: actor.id, companyId: actor.companyId }, undefined, meta);
+    const recoveryId =
+      !isTotp && opts.allowRecovery
+        ? await this.matchRecoveryCode(
+            { userId: actor.id, companyId: actor.companyId },
+            proof.totpCode,
+          )
+        : undefined;
+    let workStarted = false;
+    let outcome: { value: T } | undefined;
+    try {
+      outcome = await this.tenantPrisma.run(actor.companyId, async (tx) => {
+        const user = await tx.user.findUnique({ where: { id: actor.id } });
+        const mfa = await findConfirmedMfa(tx, actor.id);
+        if (!user?.passwordHash || !mfa) return undefined;
+        if (!(await argon2.verify(user.passwordHash, proof.password))) return undefined; // password first: nothing claimed on failure
+        const accepted = isTotp
+          ? await this.claimTotp(tx, mfa, actor, proof.totpCode)
+          : await this.claimRecoveryCode(tx, actor.id, recoveryId);
+        if (!accepted) return undefined;
+        await this.audit(tx, actor, successAction, meta, { stage: 'requested' });
+        workStarted = true; // proof valid: any AppException from here on is a business rejection
+        return { value: (work ? await work(tx, mfa.id) : mfa.id) as T };
+      });
+    } catch (err) {
+      if (workStarted && err instanceof AppException)
+        await this.auditRejectedStepUp(actor, successAction, err, meta, opts.targetUserId);
+      throw err;
+    }
+    if (!outcome)
+      return this.rejectCode({ userId: actor.id, companyId: actor.companyId }, undefined, meta);
     await this.rateLimiter.recordSuccess(this.limiterKey(actor.id));
-    return mfaId;
+    return outcome.value;
+  }
+
+  /** Business rejection (stage 'rejected' = after a valid proof, tx rolled back; 'precheck' = before the proof): leave one trace in a separate tx. Never masks the original error. */
+  async auditRejectedStepUp(
+    actor: AuthenticatedUser,
+    successAction: string,
+    err: AppException,
+    meta: RequestMeta,
+    targetUserId?: string,
+    stage: 'rejected' | 'precheck' = 'rejected',
+  ): Promise<void> {
+    const { code } = err.getResponse() as { code: string };
+    try {
+      await this.tenantPrisma.run(actor.companyId, (tx) =>
+        this.audit(tx, actor, `${successAction}_rejected`, meta, {
+          stage,
+          reason: code,
+          ...(targetUserId ? { targetUserId } : {}),
+        }),
+      );
+    } catch (auditErr) {
+      this.logger.error(
+        `[SECURITY] step-up rejection audit write FAILED action=${successAction}_rejected actor=${actor.id} reason=${code}: ${auditErr instanceof Error ? auditErr.message : String(auditErr)}`,
+      );
+    }
   }
 
   /** New set of recovery codes (needs a fresh TOTP); the previous set is deleted. */
-  async regenerateRecoveryCodes(actor: AuthenticatedUser, dto: RegenerateRecoveryCodesDto, meta: RequestMeta): Promise<{ recoveryCodes: string[] }> {
+  async regenerateRecoveryCodes(
+    actor: AuthenticatedUser,
+    dto: RegenerateRecoveryCodesDto,
+    meta: RequestMeta,
+  ): Promise<{ recoveryCodes: string[] }> {
     await this.assertUserNotLimited(actor.id);
     await this.reserveAttempt(actor.id);
     let codes: Awaited<ReturnType<typeof generateRecoveryCodes>> | undefined;
@@ -221,73 +365,155 @@ export class MfaService {
       if (!mfa || !(await this.claimTotp(tx, mfa, actor, dto.code))) return false;
       const fresh = (codes = await generateRecoveryCodes()); // only after the TOTP claim succeeded
       await tx.userMfaRecoveryCode.deleteMany({ where: { userId: actor.id } });
-      await tx.userMfaRecoveryCode.createMany({ data: fresh.hashes.map((codeHash) => ({ companyId: actor.companyId, userId: actor.id, codeHash })) });
+      await tx.userMfaRecoveryCode.createMany({
+        data: fresh.hashes.map((codeHash) => ({
+          companyId: actor.companyId,
+          userId: actor.id,
+          codeHash,
+        })),
+      });
       await this.audit(tx, actor, 'auth.mfa.recovery_regenerated', meta);
       return true;
     });
-    if (!ok) return this.rejectCode({ userId: actor.id, companyId: actor.companyId }, undefined, meta);
+    if (!ok)
+      return this.rejectCode({ userId: actor.id, companyId: actor.companyId }, undefined, meta);
     await this.rateLimiter.recordSuccess(this.limiterKey(actor.id));
     return { recoveryCodes: codes!.plain };
   }
 
   // ---- internals ---------------------------------------------------------
 
-  private async findActiveUser(tx: TenantClient, binding: Pick<MfaBinding, 'userId' | 'companyId'>) {
+  private async findActiveUser(
+    tx: TenantClient,
+    binding: Pick<MfaBinding, 'userId' | 'companyId'>,
+  ) {
     const user = await tx.user.findFirst({
-      where: { id: binding.userId, companyId: binding.companyId, isActive: true, company: { isActive: true } },
-      select: { id: true, companyId: true, firstName: true, lastName: true, isActive: true, phone: true },
+      where: {
+        id: binding.userId,
+        companyId: binding.companyId,
+        isActive: true,
+        company: { isActive: true },
+      },
+      select: {
+        id: true,
+        companyId: true,
+        firstName: true,
+        lastName: true,
+        isActive: true,
+        phone: true,
+      },
     });
     if (!user) throw new MfaChallengeInvalidException();
     return user;
   }
 
   /** Verifies the code against the stored secret, then wins the atomic `lastUsedStep < step` UPDATE (0 rows => replay/race => reject). */
-  private async claimTotp(tx: TenantClient, mfa: MfaRow, user: { id: string; companyId: string }, code: string): Promise<boolean> {
+  private async claimTotp(
+    tx: TenantClient,
+    mfa: MfaRow,
+    user: { id: string; companyId: string },
+    code: string,
+  ): Promise<boolean> {
     const secret = this.secretBox.open(toSealed(mfa), aadOf(user.companyId, user.id));
     const step = await checkTotp(secret, code, Number(mfa.lastUsedStep));
     if (step === null) return false;
-    const claimed = await tx.userMfa.updateMany({ where: { id: mfa.id, lastUsedStep: { lt: BigInt(step) } }, data: { lastUsedStep: BigInt(step) } });
+    const claimed = await tx.userMfa.updateMany({
+      where: { id: mfa.id, lastUsedStep: { lt: BigInt(step) } },
+      data: { lastUsedStep: BigInt(step) },
+    });
     return claimed.count === 1;
   }
 
   /** argon2 matching runs outside any DB transaction; returns the matching unused code id. */
-  private async matchRecoveryCode(binding: Pick<MfaBinding, 'userId' | 'companyId'>, input: string): Promise<string | undefined> {
-    const rows = await this.tenantPrisma.run(binding.companyId, (tx) => tx.userMfaRecoveryCode.findMany({ where: { userId: binding.userId, usedAt: null } }));
+  private async matchRecoveryCode(
+    binding: Pick<MfaBinding, 'userId' | 'companyId'>,
+    input: string,
+  ): Promise<string | undefined> {
+    const rows = await this.tenantPrisma.run(binding.companyId, (tx) =>
+      tx.userMfaRecoveryCode.findMany({ where: { userId: binding.userId, usedAt: null } }),
+    );
     return (await findMatchingRecoveryCode(rows, input))?.id;
   }
 
   /** Single-use: the conditional `usedAt IS NULL` update must affect exactly one row. */
-  private async claimRecoveryCode(tx: TenantClient, userId: string, codeId: string | undefined): Promise<boolean> {
+  private async claimRecoveryCode(
+    tx: TenantClient,
+    userId: string,
+    codeId: string | undefined,
+  ): Promise<boolean> {
     if (!codeId) return false;
-    const claimed = await tx.userMfaRecoveryCode.updateMany({ where: { id: codeId, userId, usedAt: null }, data: { usedAt: new Date() } });
+    const claimed = await tx.userMfaRecoveryCode.updateMany({
+      where: { id: codeId, userId, usedAt: null },
+      data: { usedAt: new Date() },
+    });
     return claimed.count === 1;
   }
 
-  private async enrollmentCodeUsable(tx: TenantClient, userId: string, code: string | undefined): Promise<boolean> {
+  private async enrollmentCodeUsable(
+    tx: TenantClient,
+    userId: string,
+    code: string | undefined,
+  ): Promise<boolean> {
     if (!code) return false;
     const row = await tx.mfaEnrollmentCode.findFirst({
-      where: { userId, codeHash: hashMfaEnrollmentCode(code), usedAt: null, expiresAt: { gt: new Date() } },
+      where: {
+        userId,
+        codeHash: hashMfaEnrollmentCode(code),
+        usedAt: null,
+        expiresAt: { gt: new Date() },
+      },
       select: { id: true },
     });
     return row !== null;
   }
 
   /** Bad first-enrollment code (attempt already reserved): count it against the challenge, audit (never the code), generic error. */
-  private async rejectEnrollmentCode(subject: Pick<MfaBinding, 'userId' | 'companyId'>, challengeId: string, meta: RequestMeta): Promise<never> {
+  private async rejectEnrollmentCode(
+    subject: Pick<MfaBinding, 'userId' | 'companyId'>,
+    challengeId: string,
+    meta: RequestMeta,
+  ): Promise<never> {
     await this.challenges.failMfaAttempt(challengeId);
-    await this.tenantPrisma.run(subject.companyId, (tx) => this.audit(tx, { id: subject.userId, companyId: subject.companyId }, 'auth.mfa.enrollment_code_failed', meta));
+    await this.tenantPrisma.run(subject.companyId, (tx) =>
+      this.audit(
+        tx,
+        { id: subject.userId, companyId: subject.companyId },
+        'auth.mfa.enrollment_code_failed',
+        meta,
+      ),
+    );
     throw new MfaEnrollmentCodeInvalidException();
   }
 
   /** Wrong code (attempt already reserved by reserveAttempt): burn the challenge once exhausted, audit (never the code), answer MFA_CODE_INVALID. */
-  private async rejectCode(subject: Pick<MfaBinding, 'userId' | 'companyId'>, challengeId: string | undefined, meta: RequestMeta): Promise<never> {
+  private async rejectCode(
+    subject: Pick<MfaBinding, 'userId' | 'companyId'>,
+    challengeId: string | undefined,
+    meta: RequestMeta,
+  ): Promise<never> {
     if (challengeId) await this.challenges.failMfaAttempt(challengeId);
-    await this.tenantPrisma.run(subject.companyId, (tx) => this.audit(tx, { id: subject.userId, companyId: subject.companyId }, 'auth.mfa.failed', meta));
+    await this.tenantPrisma.run(subject.companyId, (tx) =>
+      this.audit(tx, { id: subject.userId, companyId: subject.companyId }, 'auth.mfa.failed', meta),
+    );
     throw new MfaCodeInvalidException();
   }
 
-  private audit(tx: TenantClient, actor: { id: string; companyId: string }, action: string, meta: RequestMeta, newValue?: Record<string, string>) {
-    return this.auditLog.log(tx, { companyId: actor.companyId, userId: actor.id, action, entity: 'User', entityId: actor.id, newValue, ip: meta.ip });
+  private audit(
+    tx: TenantClient,
+    actor: { id: string; companyId: string },
+    action: string,
+    meta: RequestMeta,
+    newValue?: Record<string, string>,
+  ) {
+    return this.auditLog.log(tx, {
+      companyId: actor.companyId,
+      userId: actor.id,
+      action,
+      entity: 'User',
+      entityId: actor.id,
+      newValue,
+      ip: meta.ip,
+    });
   }
 
   /** Atomically reserves an attempt on the per-user counter (and the challenge's) BEFORE the code is checked. */
@@ -303,7 +529,9 @@ export class MfaService {
   }
 
   private throttleIp(meta: RequestMeta): Promise<void> {
-    return this.translateLimits(() => this.challenges.hit('mfa-ip', meta.ip ?? 'unknown', IP_MAX_PER_WINDOW, IP_WINDOW_SECONDS));
+    return this.translateLimits(() =>
+      this.challenges.hit('mfa-ip', meta.ip ?? 'unknown', IP_MAX_PER_WINDOW, IP_WINDOW_SECONDS),
+    );
   }
 
   private assertUserNotLimited(userId: string): Promise<void> {
@@ -315,8 +543,14 @@ export class MfaService {
     try {
       await fn();
     } catch (err) {
-      if (err instanceof AuthChallengeRateLimitedException || err instanceof TooManyLoginAttemptsException) {
-        throw new MfaRateLimitedException((err.getResponse() as { details: { retryAfterSeconds: number } }).details.retryAfterSeconds);
+      if (
+        err instanceof AuthChallengeRateLimitedException ||
+        err instanceof TooManyLoginAttemptsException
+      ) {
+        throw new MfaRateLimitedException(
+          (err.getResponse() as { details: { retryAfterSeconds: number } }).details
+            .retryAfterSeconds,
+        );
       }
       if (err instanceof ServiceUnavailableAppException) throw new MfaServiceUnavailableException();
       throw err;

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
@@ -111,7 +112,7 @@ describe('E2E ADR-058: mandatory TOTP MFA', () => {
 
   it('a privileged token without the mfa claim is 401 MFA_REQUIRED and audited', async () => {
     const owner = await mkUser(coA, 'OWNER');
-    const forged = await app.get(JwtService, { strict: false }).signAsync({ sub: owner.id, companyId: coA, roles: ['OWNER'] });
+    const forged = await app.get(JwtService, { strict: false }).signAsync({ sub: owner.id, companyId: coA, roles: ['OWNER'], sid: randomUUID() });
     const res = await http().get('/auth/me').set('Authorization', `Bearer ${forged}`).expect(401);
     expect(res.body.code).toBe('MFA_REQUIRED');
     expect(res.body.message).toMatchObject({ uz: expect.any(String), ru: expect.any(String), en: expect.any(String) });

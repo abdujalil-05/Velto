@@ -169,7 +169,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(
     () =>
-      onUnauthorized(({ revoked: serverRejected, mfaRequired }) => {
+      onUnauthorized(({ revoked: serverRejected, mfaRequired, sessionExpired }) => {
         // Wipe ONLY when the server confirmed the account/company is BLOCKED
         // (api client sets `revoked` solely on 403 AUTH_ACCOUNT_BLOCKED). An
         // ordinary expired/invalid refresh token or a network failure only ends
@@ -182,12 +182,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             })
             .catch(() => {});
         }
+        if (sessionExpired) toast.error(tAuth('sessionExpired'));
         setOfflineSession(null);
         resetPreparedSession();
         setUser(null);
         setStatus(mfaRequired ? 'mfa-web-required' : 'unauthenticated');
       }),
-    [tRevoked],
+    [tRevoked, tAuth],
   );
 
   const logout = useCallback(async (opts?: { force?: boolean }) => {

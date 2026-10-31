@@ -98,12 +98,12 @@ export function UsersTable({
                         </Button>
                       </>
                     )}
-                    {canResetMfa && onResetMfa && user.id !== currentUserId && (
+                    {canResetMfa && onResetMfa && user.mfaEnabled && user.id !== currentUserId && (
                       <Button variant="ghost" size="sm" onClick={() => onResetMfa(user)} aria-label={t('mfaReset.action')} title={t('mfaReset.action')}>
                         <KeyRound className="h-4 w-4" />
                       </Button>
                     )}
-                    {canResetMfa && onIssueMfaCode && user.id !== currentUserId && (
+                    {canResetMfa && onIssueMfaCode && !user.mfaEnabled && user.id !== currentUserId && (
                       <Button variant="ghost" size="sm" onClick={() => onIssueMfaCode(user)} aria-label={t('mfaCode.action')} title={t('mfaCode.action')}>
                         <ShieldPlus className="h-4 w-4" />
                       </Button>

@@ -29,9 +29,9 @@ export class TooManyLoginAttemptsException extends AppException {
 export class SessionExpiredException extends AppException {
   constructor() {
     super(HttpStatus.UNAUTHORIZED, 'AUTH_SESSION_EXPIRED', {
-      uz: 'Sessiya muddati tugagan. Qayta kiring',
-      ru: 'Сессия истекла. Войдите снова',
-      en: 'Your session has expired. Please log in again',
+      uz: 'Sessiya muddati tugagan. Qayta kiring.',
+      ru: 'Сессия истекла. Войдите снова.',
+      en: 'Your session has expired. Please log in again.',
     });
   }
 }

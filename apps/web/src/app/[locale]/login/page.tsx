@@ -57,7 +57,9 @@ export default function LoginPage() {
 
   useEffect(() => {
     // Set by apiFetch when the server ended the session with MFA_REQUIRED (ADR-058).
-    if (consumeAuthNotice() === 'mfaRequired') setSubmitError(t('mfa.sessionRequired'));
+    const notice = consumeAuthNotice();
+    if (notice === 'mfaRequired') setSubmitError(t('mfa.sessionRequired'));
+    else if (notice === 'sessionExpired') setSubmitError(t('sessionExpired'));
   }, [t]);
 
   useEffect(() => {

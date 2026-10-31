@@ -1,4 +1,4 @@
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from './client';
 import type { TokenPair } from './types';
 
@@ -83,8 +83,11 @@ export function useMfaResetChallengeMutation() {
 }
 
 export function useResetUserMfaMutation() {
+  const queryClient = useQueryClient();
   return useMutation({
     gcTime: 0,
+    // mfaEnabled flips on reset: refresh the users list so row actions update.
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['users'] }),
     mutationFn: ({
       id,
       ...body
@@ -100,8 +103,10 @@ export function useResetUserMfaMutation() {
 
 // One-time out-of-band enrollment code: mutation result is shown once; never cached or persisted.
 export function useIssueMfaEnrollmentCodeMutation() {
+  const queryClient = useQueryClient();
   return useMutation({
     gcTime: 0,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['users'] }),
     mutationFn: ({ id, currentPassword, totpCode }: { id: string; currentPassword: string; totpCode: string }) =>
       apiFetch<{ code: string; expiresAt: string }>(`/users/${id}/mfa/enrollment-code`, {
         method: 'POST',

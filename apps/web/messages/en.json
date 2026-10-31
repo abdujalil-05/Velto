@@ -93,6 +93,7 @@
     "backToPassword": "Back to password",
     "challengeInvalid": "This selection expired or was already used. Enter your phone and password again.",
     "challengeRateLimited": "Please wait a moment and try again.",
+    "sessionExpired": "Session expired. Please sign in again.",
     "mfa": {
       "sessionRequired": "Two-factor authentication is required. Please sign in again.",
       "loading": "Loading",

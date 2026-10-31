@@ -59,6 +59,8 @@ export interface UnauthorizedInfo {
   revoked: boolean;
   /** 401 MFA_REQUIRED: the session lacks the MFA its role needs; refreshing cannot fix it (ADR-058). */
   mfaRequired?: boolean;
+  /** 401 AUTH_SESSION_EXPIRED on an access token (legacy token without `sid`, ADR-058): tokens dropped, re-auth needed; offline store/queue untouched. */
+  sessionExpired?: boolean;
 }
 type UnauthorizedHandler = (info: UnauthorizedInfo) => void;
 const unauthorizedHandlers = new Set<UnauthorizedHandler>();
@@ -111,9 +113,9 @@ export interface ApiFetchOptions extends Omit<RequestInit, 'body'> {
   skipAuth?: boolean;
 }
 
-async function isMfaRequired(res: Response): Promise<boolean> {
+async function unauthorizedCode(res: Response): Promise<string | undefined> {
   const body = (await res.clone().json().catch(() => null)) as { code?: string } | null;
-  return body?.code === 'MFA_REQUIRED';
+  return body?.code;
 }
 
 export async function apiFetch<T = void>(path: string, options: ApiFetchOptions = {}): Promise<T> {
@@ -133,10 +135,11 @@ export async function apiFetch<T = void>(path: string, options: ApiFetchOptions 
 
   let res = await send(skipAuth ? null : getAccessToken());
 
-  if (res.status === 401 && !skipAuth && (await isMfaRequired(res))) {
-    // No refresh loop: drop the session tokens only (offline queue untouched) and let the UI show the web-login screen.
+  const code = res.status === 401 && !skipAuth ? await unauthorizedCode(res) : undefined;
+  if (code === 'MFA_REQUIRED' || code === 'AUTH_SESSION_EXPIRED') {
+    // No refresh loop: drop the session tokens only (offline store/queue untouched) and let the UI re-authenticate.
     clearTokens();
-    unauthorizedHandlers.forEach((handler) => handler({ revoked: false, mfaRequired: true }));
+    unauthorizedHandlers.forEach((handler) => handler({ revoked: false, ...(code === 'MFA_REQUIRED' ? { mfaRequired: true } : { sessionExpired: true }) }));
   } else if (res.status === 401 && !skipAuth) {
     const refreshed = await refreshAccessToken();
     if ('token' in refreshed) {

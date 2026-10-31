@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { Check, Copy, Loader2 } from 'lucide-react';
-import { ApiError, errorMessage } from '@/lib/api/client';
+import { ApiError, errorMessage, isSessionEndCode } from '@/lib/api/client';
 import { useMfaResetChallengeMutation, useResetUserMfaMutation, type MfaResetResult } from '@/lib/api/mfa';
 import type { User } from '@/lib/api/users';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -48,7 +48,8 @@ export function ResetMfaDialog({ user, onClose }: ResetMfaDialogProps) {
       expiryTimer.current = setTimeout(() => void loadChallenge(), Math.max(1, c.expiresIn) * 1000);
     } catch (err) {
       setChallengeFailed(true);
-      setError(errorMessage(err, locale));
+      // Session ended: apiFetch already redirects to login with a notice.
+      if (!(err instanceof ApiError && isSessionEndCode(err.code))) setError(errorMessage(err, locale));
     }
   }, [userId, requestChallenge, locale]);
 
@@ -92,7 +93,9 @@ export function ResetMfaDialog({ user, onClose }: ResetMfaDialogProps) {
       );
       if (expiryTimer.current) clearTimeout(expiryTimer.current);
     } catch (err) {
-      if (err instanceof ApiError && err.code === 'MFA_CHALLENGE_INVALID') {
+      if (err instanceof ApiError && isSessionEndCode(err.code)) {
+        // Session ended: apiFetch already redirects to login with a notice.
+      } else if (err instanceof ApiError && err.code === 'MFA_CHALLENGE_INVALID') {
         setError(t('challengeRenewed'));
         void loadChallenge();
       } else if (err instanceof ApiError && err.code === 'MFA_CODE_INVALID') {

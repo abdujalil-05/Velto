@@ -51,8 +51,8 @@ export class UsersController {
   @Post(':id/mfa/reset/challenge')
   @RequirePermission('users.mfa_reset')
   @TenantTx({ scope: 'handler' })
-  createMfaResetChallenge(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.users.createMfaResetChallenge(id, user);
+  createMfaResetChallenge(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser, @Req() req: Request) {
+    return this.users.createMfaResetChallenge(id, user, requestMeta(req));
   }
 
   /** ADR-058 step-up stage 2: needs the challenge + OWNER password + current TOTP; clears the target's TOTP + recovery codes, revokes their sessions, issues a new enrollment code. */
