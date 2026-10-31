@@ -19,57 +19,48 @@
 // Run:
 //   pnpm --filter @velto/database exec tsx src/backfill-permissions.ts
 //   pnpm --filter @velto/database exec tsx src/backfill-permissions.ts --dry-run
+//   ... --company=<uuid> [--company=<uuid>]   (limit the per-role pass to these companies)
 //
 // Against a production database (nothing is written without this):
 //   NODE_ENV=production ALLOW_PRODUCTION_BACKFILL=1 pnpm --filter @velto/database exec tsx src/backfill-permissions.ts
 import 'dotenv/config';
-import { systemPrisma } from './index';
-import { ALL_PERMISSION_KEYS, ROLE_PERMISSIONS, permissionKeysForRole } from './rbac-catalog';
+import { systemPrisma, type TenantClient } from './index';
+import { ALL_PERMISSION_KEYS, ROLE_PERMISSIONS, parsePermissionKey, permissionKeysForRole } from './rbac-catalog';
 
-const DRY_RUN = process.argv.includes('--dry-run');
+/** Accepts `systemPrisma` itself or one of its transactions (tests roll back). */
+type Db = TenantClient;
 
-// Unlike the other one-off scripts this one legitimately targets live tenants,
-// so production is allowed — but only when asked for explicitly.
-if (process.env.NODE_ENV === 'production' && process.env.ALLOW_PRODUCTION_BACKFILL !== '1') {
-  console.error(
-    'Refusing to run: NODE_ENV=production. Re-run with ALLOW_PRODUCTION_BACKFILL=1 once reviewed (try --dry-run first).',
-  );
-  process.exit(1);
-}
+export type BackfillOptions = { dryRun: boolean; companyIds?: string[] };
+export type BackfillResult = { companiesProcessed: number; permissionsCreated: number; linksAdded: number };
 
 const SYSTEM_ROLE_CODES = Object.keys(ROLE_PERMISSIONS);
-
-function splitKey(key: string): { module: string; code: string } {
-  const [module, code] = key.split('.');
-  return { module: module!, code: code! };
-}
 
 /**
  * Permission is global reference data (schema 6.2, not tenant-scoped) — there
  * is one row per "module.action" for the whole install, so this runs once, not
  * per company.
  */
-async function ensurePermissions(): Promise<{ idByKey: Map<string, string>; created: number }> {
-  const existing = await systemPrisma.permission.findMany({ select: { id: true, module: true, code: true } });
+async function ensurePermissions(db: Db, dryRun: boolean): Promise<{ idByKey: Map<string, string>; created: number }> {
+  const existing = await db.permission.findMany({ select: { id: true, module: true, code: true } });
   const idByKey = new Map(existing.map((p) => [`${p.module}.${p.code}`, p.id]));
 
   const missing = ALL_PERMISSION_KEYS.filter((key) => !idByKey.has(key));
   if (missing.length === 0) return { idByKey, created: 0 };
 
   console.log(`Missing Permission rows: ${missing.join(', ')}`);
-  if (DRY_RUN) {
+  if (dryRun) {
     // Stand-in ids so the per-role counts below reflect what a real run would
     // grant, instead of reporting the not-yet-created permissions as skipped.
     for (const key of missing) idByKey.set(key, `dry-run:${key}`);
     return { idByKey, created: missing.length };
   }
 
-  const result = await systemPrisma.permission.createMany({
-    data: missing.map(splitKey),
+  const result = await db.permission.createMany({
+    data: missing.map(parsePermissionKey),
     skipDuplicates: true,
   });
 
-  const refreshed = await systemPrisma.permission.findMany({ select: { id: true, module: true, code: true } });
+  const refreshed = await db.permission.findMany({ select: { id: true, module: true, code: true } });
   return {
     idByKey: new Map(refreshed.map((p) => [`${p.module}.${p.code}`, p.id])),
     created: result.count,
@@ -77,13 +68,15 @@ async function ensurePermissions(): Promise<{ idByKey: Map<string, string>; crea
 }
 
 async function backfillCompany(
+  db: Db,
+  dryRun: boolean,
   company: { id: string; name: string },
   permissionIdByKey: Map<string, string>,
 ): Promise<number> {
   // Matched on `code`, not on `isSystem`: role codes are what the app keys off
   // (users.service.ts, cash-sessions.service.ts), and MVP has no custom-role
   // authoring, so a catalog code always means the system role.
-  const roles = await systemPrisma.role.findMany({
+  const roles = await db.role.findMany({
     where: { companyId: company.id, code: { in: SYSTEM_ROLE_CODES } },
     select: { id: true, code: true, companyId: true },
   });
@@ -100,7 +93,7 @@ async function backfillCompany(
 
     const held = new Set(
       (
-        await systemPrisma.rolePermission.findMany({
+        await db.rolePermission.findMany({
           where: { roleId: role.id },
           select: { permissionId: true },
         })
@@ -120,12 +113,12 @@ async function backfillCompany(
     if (toAdd.length === 0) continue;
 
     console.log(`  ${company.name}/${role.code}: +${toAdd.length} (${toAdd.map((e) => e.key).join(', ')})`);
-    if (DRY_RUN) {
+    if (dryRun) {
       added += toAdd.length;
       continue;
     }
 
-    const result = await systemPrisma.rolePermission.createMany({
+    const result = await db.rolePermission.createMany({
       data: toAdd.map((entry) => ({ roleId: role.id, permissionId: entry.permissionId })),
       skipDuplicates: true,
     });
@@ -135,31 +128,52 @@ async function backfillCompany(
   return added;
 }
 
-async function main() {
-  if (DRY_RUN) console.log('DRY RUN — no writes will be performed.\n');
+/** Additive and idempotent: a second run reports 0 created / 0 added. A dry run writes nothing. */
+export async function backfillPermissions(db: Db, { dryRun, companyIds }: BackfillOptions): Promise<BackfillResult> {
+  const { idByKey, created: permissionsCreated } = await ensurePermissions(db, dryRun);
 
-  const { idByKey, created: permissionsCreated } = await ensurePermissions();
-
-  const companies = await systemPrisma.company.findMany({
+  const companies = await db.company.findMany({
+    where: companyIds ? { id: { in: companyIds } } : undefined,
     select: { id: true, name: true },
     orderBy: { createdAt: 'asc' },
   });
 
-  let linksCreated = 0;
+  let linksAdded = 0;
   for (const company of companies) {
-    linksCreated += await backfillCompany(company, idByKey);
+    linksAdded += await backfillCompany(db, dryRun, company, idByKey);
   }
-
-  console.log('\n--- Summary ---');
-  console.log(`Companies processed:        ${companies.length}`);
-  console.log(`Permission rows created:    ${permissionsCreated}`);
-  console.log(`RolePermission links added: ${linksCreated}`);
-  if (DRY_RUN) console.log('(dry run — nothing was written)');
+  return { companiesProcessed: companies.length, permissionsCreated, linksAdded };
 }
 
-main()
-  .catch((err) => {
-    console.error(err);
-    process.exit(1);
-  })
-  .finally(() => process.exit(0));
+async function main() {
+  // Unlike the other one-off scripts this one legitimately targets live tenants,
+  // so production is allowed — but only when asked for explicitly.
+  if (process.env.NODE_ENV === 'production' && process.env.ALLOW_PRODUCTION_BACKFILL !== '1') {
+    throw new Error(
+      'Refusing to run: NODE_ENV=production. Re-run with ALLOW_PRODUCTION_BACKFILL=1 once reviewed (try --dry-run first).',
+    );
+  }
+  const dryRun = process.argv.includes('--dry-run');
+  const companyArgs = process.argv.filter((arg) => arg.startsWith('--company=')).map((arg) => arg.slice('--company='.length));
+  if (dryRun) console.log('DRY RUN — no writes will be performed.\n');
+
+  const result = await backfillPermissions(systemPrisma, {
+    dryRun,
+    companyIds: companyArgs.length > 0 ? companyArgs : undefined,
+  });
+
+  console.log('\n--- Summary ---');
+  console.log(`Companies processed:        ${result.companiesProcessed}`);
+  console.log(`Permission rows created:    ${result.permissionsCreated}`);
+  console.log(`RolePermission links added: ${result.linksAdded}`);
+  if (dryRun) console.log('(dry run — nothing was written)');
+}
+
+if (require.main === module) {
+  main()
+    .catch((err) => {
+      console.error(err);
+      process.exitCode = 1;
+    })
+    .finally(() => systemPrisma.$disconnect());
+}

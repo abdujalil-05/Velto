@@ -8,8 +8,13 @@
 // names, phones, customer codes or amounts. Being unable to write, it has no
 // production guard, because pilot data is what this audit exists to inspect.
 //
+// Each order / code-conflict finding carries an ADR-061c resolution option
+// code for the PO; the audit only suggests it, it never applies anything.
+// `--summary` prints aggregated counts only: companies are anonymised to
+// ordinal labels and no UUIDs at all are emitted.
+//
 // Run:
-//   pnpm --filter @velto/database exec tsx src/audit-deleted-customers.ts
+//   pnpm --filter @velto/database exec tsx src/audit-deleted-customers.ts [--summary]
 import { OrderStatus, Prisma, systemPrisma } from './index';
 
 const TERMINAL_ORDER_STATUSES: readonly OrderStatus[] = [OrderStatus.CLOSED, OrderStatus.CANCELLED];
@@ -20,6 +25,29 @@ export const NON_TERMINAL_ORDER_STATUSES: readonly OrderStatus[] = Object.values
 );
 
 export type CustomerRef = { customerId: string; id: string };
+
+/**
+ * ADR-061c resolution option per finding:
+ * - CANCEL: SalesService.cancel() — releases the reservation (CONFIRMED) or has none (DRAFT/SUBMITTED).
+ * - DELIVER_THEN_CLOSE: goods already left the warehouse (SHIPPED) or arrived (DELIVERED);
+ *   cancelling would release stock that is physically gone, so finish delivery and close.
+ * - RESTORE_REQUIRED: restoring the customer is blocked by a live customer's `code`;
+ *   the PO renames one of them by hand first.
+ */
+export type ResolutionCode = 'CANCEL' | 'DELIVER_THEN_CLOSE' | 'RESTORE_REQUIRED';
+
+/** Typed over every status, so a new OrderStatus fails to compile until it is mapped. Terminal → null. */
+const ORDER_RESOLUTION: Record<OrderStatus, ResolutionCode | null> = {
+  DRAFT: 'CANCEL',
+  SUBMITTED: 'CANCEL',
+  CONFIRMED: 'CANCEL',
+  SHIPPED: 'DELIVER_THEN_CLOSE',
+  DELIVERED: 'DELIVER_THEN_CLOSE',
+  CLOSED: null,
+  CANCELLED: null,
+};
+
+export type Finding = CustomerRef & { kind: 'ORDER' | 'CODE_CONFLICT'; resolution: ResolutionCode };
 
 export type CompanyAudit = {
   companyId: string;
@@ -184,28 +212,78 @@ export async function auditDeletedCustomers(): Promise<{ companiesScanned: numbe
   return { companiesScanned: companyIds.length, companies };
 }
 
-function summarize(audit: CompanyAudit) {
+export function resolveFindings(audit: CompanyAudit): Finding[] {
+  const orders = Object.entries(audit.ordersByStatus).flatMap(([status, refs]) => {
+    const resolution = ORDER_RESOLUTION[status as OrderStatus];
+    return resolution ? refs.map((ref): Finding => ({ ...ref, kind: 'ORDER', resolution })) : [];
+  });
+  const conflicts = audit.codeReusedByActive.map((ref): Finding => ({ ...ref, kind: 'CODE_CONFLICT', resolution: 'RESTORE_REQUIRED' }));
+  return [...orders, ...conflicts];
+}
+
+type Tally = Record<string, number>;
+
+function tally(keys: string[]): Tally {
+  const out: Tally = {};
+  for (const key of keys) out[key] = (out[key] ?? 0) + 1;
+  return out;
+}
+
+function countsOf(audit: CompanyAudit) {
   return {
-    companyId: audit.companyId,
-    counts: {
-      deletedCustomers: audit.deletedCustomers,
-      allocationsAfterDelete: audit.allocationsAfterDelete.length,
-      reversalsAfterDelete: audit.reversalsAfterDelete.length,
-      ordersByStatus: Object.fromEntries(Object.entries(audit.ordersByStatus).map(([status, refs]) => [status, refs.length])),
-      remainingReservations: audit.remainingReservations.length,
-      nonZeroBalance: audit.nonZeroBalance.length,
-      nonZeroAdvance: audit.nonZeroAdvance.length,
-      nonZeroCachedBalance: audit.nonZeroCachedBalance.length,
-      pendingHandoverPayments: audit.pendingHandoverPayments.length,
-      codeReusedByActive: audit.codeReusedByActive.length,
-    },
-    details: audit,
+    deletedCustomers: audit.deletedCustomers,
+    allocationsAfterDelete: audit.allocationsAfterDelete.length,
+    reversalsAfterDelete: audit.reversalsAfterDelete.length,
+    ordersByStatus: Object.fromEntries(Object.entries(audit.ordersByStatus).map(([status, refs]) => [status, refs.length])) as Tally,
+    remainingReservations: audit.remainingReservations.length,
+    nonZeroBalance: audit.nonZeroBalance.length,
+    nonZeroAdvance: audit.nonZeroAdvance.length,
+    nonZeroCachedBalance: audit.nonZeroCachedBalance.length,
+    pendingHandoverPayments: audit.pendingHandoverPayments.length,
+    codeReusedByActive: audit.codeReusedByActive.length,
+    resolutions: tally(resolveFindings(audit).map((finding) => finding.resolution)),
+  };
+}
+
+export type AuditCounts = ReturnType<typeof countsOf>;
+
+function addCounts(a: AuditCounts, b: AuditCounts): AuditCounts {
+  const out: Record<string, number | Tally> = { ...a };
+  for (const [key, value] of Object.entries(b)) {
+    if (typeof value === 'number') {
+      out[key] = (out[key] as number) + value;
+    } else {
+      const merged: Tally = { ...(out[key] as Tally) };
+      for (const [k, n] of Object.entries(value)) merged[k] = (merged[k] ?? 0) + n;
+      out[key] = merged;
+    }
+  }
+  return out as AuditCounts;
+}
+
+/** Full report: counts, UUID details and per-finding resolution codes. */
+function summarize(audit: CompanyAudit) {
+  return { companyId: audit.companyId, counts: countsOf(audit), resolutions: resolveFindings(audit), details: audit };
+}
+
+/** `--summary`: counts only, companies anonymised to ordinal labels — no UUIDs, names, phones or codes. */
+export function anonymisedSummary({ companiesScanned, companies }: { companiesScanned: number; companies: CompanyAudit[] }) {
+  const perCompany = companies.map((audit, index) => ({ company: `company-${index + 1}`, counts: countsOf(audit) }));
+  const [first, ...rest] = perCompany.map((entry) => entry.counts);
+  return {
+    companiesScanned,
+    companiesWithDeletedCustomers: companies.length,
+    total: first ? rest.reduce(addCounts, first) : null,
+    companies: perCompany,
   };
 }
 
 async function main(): Promise<void> {
-  const { companiesScanned, companies } = await auditDeletedCustomers();
-  console.log(JSON.stringify({ companiesScanned, companies: companies.map(summarize) }, null, 2));
+  const result = await auditDeletedCustomers();
+  const output = process.argv.includes('--summary')
+    ? anonymisedSummary(result)
+    : { companiesScanned: result.companiesScanned, companies: result.companies.map(summarize) };
+  console.log(JSON.stringify(output, null, 2));
 }
 
 if (require.main === module) {

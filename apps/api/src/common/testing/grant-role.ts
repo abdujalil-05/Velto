@@ -1,4 +1,4 @@
-import { prisma, systemPrisma } from '@velto/database';
+import { parsePermissionKey, prisma, systemPrisma } from '@velto/database';
 
 /**
  * Test-only: gives `userId` a DB role `code` carrying `permissionKeys`
@@ -8,7 +8,7 @@ import { prisma, systemPrisma } from '@velto/database';
 export async function grantRole(companyId: string, userId: string, code: string, permissionKeys: string[]): Promise<string> {
   const permissionIds: string[] = [];
   for (const key of permissionKeys) {
-    const [module, action] = key.split('.') as [string, string];
+    const { module, code: action } = parsePermissionKey(key);
     const perm = await systemPrisma.permission.upsert({ where: { module_code: { module, code: action } }, update: {}, create: { module, code: action } });
     permissionIds.push(perm.id);
   }

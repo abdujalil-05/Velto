@@ -5,9 +5,10 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { systemPrisma, type TenantClient } from '../client';
-import { auditCompany, auditDeletedCustomers, enterReadOnly, runReadOnly } from '../audit-deleted-customers';
+import { anonymisedSummary, auditCompany, auditDeletedCustomers, enterReadOnly, resolveFindings, runReadOnly } from '../audit-deleted-customers';
 
 const READ_ONLY_REJECTED = /read-only transaction|25006/i;
+const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
 class Rollback extends Error {}
 
@@ -171,6 +172,30 @@ describe('audit-deleted-customers', () => {
         expect(serialized).not.toContain(foreign);
       }
 
+      expect(resolveFindings(report)).toEqual([
+        { ...refs(draft.id)[0], kind: 'ORDER', resolution: 'CANCEL' },
+        { ...refs(submitted.id)[0], kind: 'ORDER', resolution: 'CANCEL' },
+        { ...refs(confirmed.id)[0], kind: 'ORDER', resolution: 'CANCEL' },
+        { ...refs(shipped.id)[0], kind: 'ORDER', resolution: 'DELIVER_THEN_CLOSE' },
+        { ...refs(delivered.id)[0], kind: 'ORDER', resolution: 'DELIVER_THEN_CLOSE' },
+        { customerId: collided.id, id: inactiveHolder.id, kind: 'CODE_CONFLICT', resolution: 'RESTORE_REQUIRED' },
+      ]);
+
+      const summary = anonymisedSummary({ companiesScanned: 2, companies: [report] });
+      expect(summary.companies).toEqual([{ company: 'company-1', counts: summary.total }]);
+      expect(summary.total).toMatchObject({
+        deletedCustomers: 4,
+        ordersByStatus: { DRAFT: 1, SUBMITTED: 1, CONFIRMED: 1, SHIPPED: 1, DELIVERED: 1 },
+        remainingReservations: 1,
+        codeReusedByActive: 1,
+        resolutions: { CANCEL: 3, DELIVER_THEN_CLOSE: 2, RESTORE_REQUIRED: 1 },
+      });
+      const summaryText = JSON.stringify(summary);
+      expect(summaryText).not.toMatch(UUID);
+      for (const pii of ['DIRTY', 'COLLIDE', 'ONLY-OTHER', 'Audit Co', actor.phone, 'SO-', 'PAY-', 'INV-']) {
+        expect(summaryText).not.toContain(pii);
+      }
+
       expect(await digest(tx, companyId)).toBe(before);
       await expect(tx.customer.update({ where: { id: dirty.id }, data: { name: 'y' } })).rejects.toThrow(READ_ONLY_REJECTED);
     });
@@ -188,5 +213,6 @@ describe('audit-deleted-customers', () => {
     ).rejects.toThrow(READ_ONLY_REJECTED);
     const result = await auditDeletedCustomers();
     expect(result.companiesScanned).toBeGreaterThanOrEqual(result.companies.length);
+    expect(JSON.stringify(anonymisedSummary(result))).not.toMatch(UUID);
   }, 120_000);
 });

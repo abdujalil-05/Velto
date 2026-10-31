@@ -43,11 +43,17 @@ export const SYSTEM_ROLES: { code: string; name: string }[] = [
 // the TZ — a reasonable module/action split covering MVP scope (5.3), grants
 // per role loosely matching the responsibilities in 4.1.
 export const PERMISSION_DEFS: { module: string; actions: string[] }[] = [
-  { module: 'customers', actions: ['read', 'create', 'update', 'delete'] },
+  // `restore` (ADR-061b): undo a customer soft-delete. OWNER only — restore can
+  // collide with a live customer's `code` (partial unique index), which only
+  // the owner may resolve.
+  { module: 'customers', actions: ['read', 'create', 'update', 'delete', 'restore'] },
   { module: 'catalog', actions: ['read', 'create', 'update', 'delete'] },
   // `reverse` (F2.1): post a compensating StockMovement / PaymentReversal.
   // OWNER + SALES_DIRECTOR only — never ACCOUNTANT (ADR-003c: read/export-only).
-  { module: 'stock', actions: ['read', 'receive', 'adjust', 'reverse'] },
+  // `movements.read` (ADR-061a): the StockMovement ledger, split from
+  // `stock.read` (levels) — every stock.read holder except SALES_AGENT. Note the
+  // action itself contains a dot: always parse keys with parsePermissionKey().
+  { module: 'stock', actions: ['read', 'receive', 'adjust', 'reverse', 'movements.read'] },
   // M08 Xarid (ADR-011): suppliers + purchase orders + goods receipts.
   // `receive` posts a GoodsReceipt (and its StockMovement RECEIVE rows) — kept
   // separate from `create` so a warehouse keeper can receive without being
@@ -117,7 +123,7 @@ export const MFA_REQUIRED_ROLE_CODES = ['OWNER', 'SALES_DIRECTOR', 'CASHIER'] as
 export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
   OWNER: 'ALL',
   SALES_DIRECTOR: [
-    'customers.read', 'customers.update', 'catalog.read', 'stock.read',
+    'customers.read', 'customers.update', 'catalog.read', 'stock.read', 'stock.movements.read',
     'purchases.read', 'purchases.create',
     'orders.read', 'orders.update', 'orders.deliver', 'invoices.read', 'payments.read',
     'payments.reverse', 'stock.reverse', 'payments.allocate',
@@ -138,7 +144,7 @@ export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
     'customers.read', 'catalog.read', 'orders.read', 'orders.deliver',
   ],
   WAREHOUSE: [
-    'catalog.read', 'stock.read', 'stock.receive', 'stock.adjust',
+    'catalog.read', 'stock.read', 'stock.movements.read', 'stock.receive', 'stock.adjust',
     'purchases.read', 'purchases.receive',
     'orders.read', 'orders.update',
     'orders.deliver', // marks CONFIRMED orders as DELIVERED
@@ -160,6 +166,17 @@ export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
 export const ALL_PERMISSION_KEYS: string[] = PERMISSION_DEFS.flatMap((def) =>
   def.actions.map((action) => `${def.module}.${action}`),
 );
+
+/**
+ * Splits a "module.action" key on the FIRST dot only — the action may itself
+ * contain dots (`stock.movements.read` → stock / movements.read). The single
+ * parser for permission keys; never `key.split('.')`.
+ */
+export function parsePermissionKey(key: string): { module: string; code: string } {
+  const dot = key.indexOf('.');
+  if (dot <= 0 || dot === key.length - 1) throw new Error(`Invalid permission key "${key}"`);
+  return { module: key.slice(0, dot), code: key.slice(dot + 1) };
+}
 
 /**
  * Permission keys a system role must hold. Unknown role codes (custom roles,

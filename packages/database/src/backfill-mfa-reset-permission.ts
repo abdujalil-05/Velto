@@ -14,7 +14,7 @@
 //   NODE_ENV=production ALLOW_PRODUCTION_BACKFILL=1 pnpm --filter @velto/database exec tsx src/backfill-mfa-reset-permission.ts
 import 'dotenv/config';
 import { systemPrisma } from './index';
-import { ROLE_PERMISSIONS, permissionKeysForRole } from './rbac-catalog';
+import { ROLE_PERMISSIONS, parsePermissionKey, permissionKeysForRole } from './rbac-catalog';
 
 const KEY = 'users.mfa_reset';
 const DRY_RUN = process.argv.includes('--dry-run');
@@ -25,7 +25,7 @@ if (process.env.NODE_ENV === 'production' && process.env.ALLOW_PRODUCTION_BACKFI
 }
 
 async function main() {
-  const [module, code] = KEY.split('.') as [string, string];
+  const { module, code } = parsePermissionKey(KEY);
   const roleCodes = Object.keys(ROLE_PERMISSIONS).filter((c) => permissionKeysForRole(c).includes(KEY));
 
   let permission = await systemPrisma.permission.findUnique({ where: { module_code: { module, code } } });

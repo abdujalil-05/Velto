@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ALL_PERMISSION_KEYS, MFA_REQUIRED_ROLE_CODES, PERMISSION_DEFS, SYSTEM_ROLES, permissionKeysForRole } from '../rbac-catalog';
+import { ALL_PERMISSION_KEYS, MFA_REQUIRED_ROLE_CODES, PERMISSION_DEFS, SYSTEM_ROLES, parsePermissionKey, permissionKeysForRole } from '../rbac-catalog';
 
 /** F1.4 / SEC-020..024: fixed system roles; ACCOUNTANT is read/export-only, COURIER is minimal. */
 describe('rbac-catalog: F1.4 role grants', () => {
@@ -30,7 +30,7 @@ describe('rbac-catalog: F1.4 role grants', () => {
     // plus exactly one write exception (ADR-003c): integrations.ack1c.
     const allowedActions = new Set(['read', 'export', 'export1c']);
     const ADR_003C_EXCEPTIONS = ['integrations.ack1c'];
-    const writes = keys.filter((key) => !allowedActions.has(key.split('.')[1]!));
+    const writes = keys.filter((key) => !allowedActions.has(parsePermissionKey(key).code));
     expect(writes).toEqual(ADR_003C_EXCEPTIONS);
   });
 
@@ -106,5 +106,24 @@ describe('rbac-catalog: F1.4 role grants', () => {
     for (const role of SYSTEM_ROLES) {
       for (const key of permissionKeysForRole(role.code)) expect(all.has(key), `${role.code}:${key}`).toBe(true);
     }
+  });
+
+  it('parsePermissionKey splits on the first dot only', () => {
+    expect(parsePermissionKey('stock.movements.read')).toEqual({ module: 'stock', code: 'movements.read' });
+    expect(parsePermissionKey('users.mfa_reset')).toEqual({ module: 'users', code: 'mfa_reset' });
+    for (const bad of ['stock', '.read', 'stock.']) expect(() => parsePermissionKey(bad), bad).toThrow(/Invalid permission key/);
+    for (const key of ALL_PERMISSION_KEYS) {
+      const { module, code } = parsePermissionKey(key);
+      expect(`${module}.${code}`).toBe(key);
+    }
+  });
+
+  it('ADR-061: stock.movements.read for every stock.read holder except SALES_AGENT; customers.restore OWNER only', () => {
+    const holders = (key: string) =>
+      SYSTEM_ROLES.filter((r) => permissionKeysForRole(r.code).includes(key)).map((r) => r.code).sort();
+    expect(holders('stock.movements.read')).toEqual(holders('stock.read').filter((code) => code !== 'SALES_AGENT'));
+    expect(holders('stock.movements.read')).toEqual(['OWNER', 'SALES_DIRECTOR', 'WAREHOUSE']);
+    expect(holders('stock.read')).toContain('SALES_AGENT');
+    expect(holders('customers.restore')).toEqual(['OWNER']);
   });
 });
