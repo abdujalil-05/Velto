@@ -11,6 +11,7 @@ import { systemPrisma, withTenant } from './index';
 // Role/permission catalog lives in one place only — see rbac-catalog.ts.
 // Do not re-declare these lists here.
 import { SYSTEM_ROLES, PERMISSION_DEFS, permissionKeysForRole } from './rbac-catalog';
+import { issueMfaEnrollmentCodeInTx } from './mfa-enrollment-code';
 
 if (process.env.NODE_ENV === 'production') {
   console.error('Refusing to run: NODE_ENV=production.');
@@ -63,7 +64,7 @@ async function main() {
   // while an RLS-scoped connection is held open.
   const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
 
-  await withTenant(company.id, async (tx) => {
+  const enrollment = await withTenant(company.id, async (tx) => {
     const roleIdByCode: Record<string, string> = {};
     for (const def of SYSTEM_ROLES) {
       const role = await tx.role.create({
@@ -91,12 +92,21 @@ async function main() {
       },
     });
     await tx.userRole.create({ data: { userId: owner.id, roleId: roleIdByCode.OWNER! } });
+    // ADR-058: OWNER requires MFA, and first enrollment needs an out-of-band
+    // code — without one the new owner could never log in.
+    return issueMfaEnrollmentCodeInTx(tx, {
+      companyId: company.id,
+      userId: owner.id,
+      createdById: null,
+      auditNewValue: { operatorName: 'bootstrap-owner', reason: 'initial owner provisioning' },
+    });
   });
 
   console.log('Company yaratildi:', company.name, `(${company.id})`);
   console.log('Owner login:');
   console.log('  Telefon:', OWNER_PHONE);
   console.log('  Parol:  ', password);
+  console.log('  MFA enrollment kodi (bir marta, 72 soat):', enrollment.code);
 }
 
 main()

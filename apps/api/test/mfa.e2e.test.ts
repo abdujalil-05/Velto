@@ -82,11 +82,18 @@ describe('E2E ADR-058: mandatory TOTP MFA', () => {
     // anonymous-looking call with the challenge as bearer does nothing
     await http().get('/auth/me').set('Authorization', `Bearer ${login.body.mfaChallenge}`).expect(401);
 
-    const start = await mfaPost('/auth/mfa/enroll/start').send({ mfaChallenge: login.body.mfaChallenge }).expect(200);
+    // password alone is not enough (first enrollment needs the out-of-band code)
+    await mfaPost('/auth/mfa/enroll/start').send({ mfaChallenge: login.body.mfaChallenge }).expect(401);
+    const admin = await mkUser(coA, 'OWNER');
+    const adminSession = await loginWithMfa(app, admin.phone, password);
+    const issued = await http().post(`/users/${owner.id}/mfa/enrollment-code`).set({ Authorization: `Bearer ${adminSession.accessToken}` }).expect(200);
+    expect(issued.body).toMatchObject({ code: expect.any(String), expiresAt: expect.any(String) });
+    const enrollmentCode = issued.body.code as string;
+    const start = await mfaPost('/auth/mfa/enroll/start').send({ mfaChallenge: login.body.mfaChallenge, enrollmentCode }).expect(200);
     expect(start.body).toMatchObject({ otpauthUri: expect.stringContaining('otpauth://totp/'), qrDataUrl: expect.stringContaining('data:image/png') });
-    await mfaPost('/auth/mfa/enroll/confirm').send({ mfaChallenge: login.body.mfaChallenge, code: '000000' }).expect(401);
+    await mfaPost('/auth/mfa/enroll/confirm').send({ mfaChallenge: login.body.mfaChallenge, enrollmentCode, code: '000000' }).expect(401);
     const confirm = await mfaPost('/auth/mfa/enroll/confirm')
-      .send({ mfaChallenge: login.body.mfaChallenge, code: await generate({ secret: start.body.secret }) })
+      .send({ mfaChallenge: login.body.mfaChallenge, enrollmentCode, code: await generate({ secret: start.body.secret }) })
       .expect(200);
     expect(confirm.body.recoveryCodes).toHaveLength(10);
     expect(confirm.body.refreshToken).toBeUndefined();
@@ -144,6 +151,31 @@ describe('E2E ADR-058: mandatory TOTP MFA', () => {
     // MFA is not off: the target must enroll again
     const next = await http().post('/auth/login').set('X-Forwarded-For', randomIp()).send({ phone: target.phone, password }).expect(201);
     expect(next.body.mfa).toBe('enroll');
+  });
+
+  it('POST /users/:id/mfa/enrollment-code: RBAC, self, cross-tenant, already-enrolled, non-privileged', async () => {
+    const admin = await mkUser(coA, 'OWNER');
+    const cashier = await mkUser(coA, 'CASHIER');
+    const fresh = await mkUser(coA, 'OWNER');
+    const agent = await mkUser(coA, 'SALES_AGENT');
+    const foreign = await mkUser(coB, 'OWNER');
+    const adminSession = await loginWithMfa(app, admin.phone, password);
+    const cashierSession = await loginWithMfa(app, cashier.phone, password);
+    const bearer = (t: string) => ({ Authorization: `Bearer ${t}` });
+    const url = (id: string) => `/users/${id}/mfa/enrollment-code`;
+    await http().post(url(fresh.id)).set(bearer(cashierSession.accessToken)).expect(403);
+    await http().post(url(admin.id)).set(bearer(adminSession.accessToken)).expect(400);
+    await http().post(url(foreign.id)).set(bearer(adminSession.accessToken)).expect(404);
+    await http().post(url(cashier.id)).set(bearer(adminSession.accessToken)).expect(400); // already has confirmed MFA
+    const bad = await http().post(url(agent.id)).set(bearer(adminSession.accessToken)).expect(400);
+    expect(bad.body.code).toBe('USER_MFA_ENROLLMENT_CODE_NOT_APPLICABLE');
+    await systemPrisma.user.update({ where: { id: agent.id }, data: { isActive: false } });
+    await http().post(url(agent.id)).set(bearer(adminSession.accessToken)).expect(404); // inactive target
+    const ok = await http().post(url(fresh.id)).set(bearer(adminSession.accessToken)).expect(200);
+    const audits = await systemPrisma.auditLog.findMany({ where: { entityId: fresh.id, action: 'auth.mfa.enrollment_code_issued' } });
+    expect(audits).toHaveLength(1);
+    expect(audits[0].traceId).toBeTruthy();
+    expect(JSON.stringify(audits[0].newValue)).not.toContain(ok.body.code);
   });
 
   it('self-service re-enroll over HTTP: wrong password rejected; correct returns an enroll challenge; confirm kills the old access token', async () => {

@@ -19,8 +19,8 @@ function settingsSchema(t: (key: string) => string) {
     address: z.string().max(500).optional().or(z.literal('')),
     currency: z.string().length(3, t('currencyLength')),
     timezone: z.string().min(1, t('required')).max(64),
-    visitGpsRadiusM: z.coerce.number({ invalid_type_error: t('gpsRadiusRange') }).int(t('gpsRadiusRange')).min(10, t('gpsRadiusRange')).max(5000, t('gpsRadiusRange')),
-    gpsMaxAccuracyM: z.coerce.number({ invalid_type_error: t('gpsAccuracyRange') }).int(t('gpsAccuracyRange')).min(5, t('gpsAccuracyRange')).max(1000, t('gpsAccuracyRange')),
+    visitGpsRadiusM: z.coerce.number({ error: t('gpsRadiusRange') }).int(t('gpsRadiusRange')).min(10, t('gpsRadiusRange')).max(5000, t('gpsRadiusRange')),
+    gpsMaxAccuracyM: z.coerce.number({ error: t('gpsAccuracyRange') }).int(t('gpsAccuracyRange')).min(5, t('gpsAccuracyRange')).max(1000, t('gpsAccuracyRange')),
   });
 }
 

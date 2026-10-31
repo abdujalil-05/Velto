@@ -35,7 +35,10 @@ onlyBuiltDependencies:
 
 overrides:
   proxy-addr: ^2.0.8
-  multer: ^2.3.0
+  # GHSA-q7qp-rjg7-q26m: Nest 10 has no fixed release
+  multer: ^2.5.0
+  # GHSA-27r3-jxmh-p828: Nest 10 has no fixed release
+  body-parser@1: ^1.20.9
   lodash: ^4.17.24
   postcss: ^8.5.23
   sharp: ^0.35.5
@@ -44,3 +47,5 @@ overrides:
   brace-expansion@1: ^1.1.21
   brace-expansion@2: ^2.1.7
   deepmerge-ts: ^8.0.2
+  # GHSA-xhq7-xmqj-769h: fast-uri via @hookform/resolvers>ajv
+  fast-uri: ^3.1.9

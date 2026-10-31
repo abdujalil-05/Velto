@@ -38,7 +38,8 @@ function productSchema(t: (key: string) => string) {
   });
 }
 
-export type ProductFormValues = z.infer<ReturnType<typeof productSchema>>;
+export type ProductFormValues = z.output<ReturnType<typeof productSchema>>;
+type ProductSchemaInput = z.input<ReturnType<typeof productSchema>>;
 
 export interface ProductStockInit {
   warehouseId: string;
@@ -67,7 +68,7 @@ export function ProductForm({ mode, defaultValues, categories, isSubmitting, sub
     setValue,
     watch,
     formState: { errors },
-  } = useForm<ProductFormValues>({
+  } = useForm<ProductSchemaInput, unknown, ProductFormValues>({
     resolver: zodResolver(schema),
     defaultValues: defaultValues ?? { packagings: [DEFAULT_PACKAGING] },
   });

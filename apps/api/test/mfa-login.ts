@@ -1,6 +1,7 @@
 import { randomInt } from 'node:crypto';
 import type { INestApplication } from '@nestjs/common';
 import { generate } from 'otplib';
+import { generateMfaEnrollmentCode, hashMfaEnrollmentCode, systemPrisma } from '@velto/database';
 import request from 'supertest';
 
 export interface MfaLoginResult {
@@ -37,12 +38,18 @@ export async function loginWithMfa(app: INestApplication, phone: string, passwor
       .expect(200);
     return { accessToken: res.body.accessToken as string, cookies: res.headers['set-cookie'] as unknown as string[], secret };
   }
-  const start = await http().post('/auth/mfa/enroll/start').set('X-Forwarded-For', ip).send({ mfaChallenge }).expect(200);
+  // ADR-058: first enrollment needs the out-of-band code; tests insert one directly (the endpoint has its own e2e).
+  const user = await systemPrisma.user.findFirstOrThrow({ where: { phone, isActive: true }, select: { id: true, companyId: true } });
+  const enrollmentCode = generateMfaEnrollmentCode();
+  await systemPrisma.mfaEnrollmentCode.create({
+    data: { companyId: user.companyId, userId: user.id, codeHash: hashMfaEnrollmentCode(enrollmentCode), expiresAt: new Date(Date.now() + 3_600_000) },
+  });
+  const start = await http().post('/auth/mfa/enroll/start').set('X-Forwarded-For', ip).send({ mfaChallenge, enrollmentCode }).expect(200);
   const newSecret = start.body.secret as string;
   const res = await http()
     .post('/auth/mfa/enroll/confirm')
     .set('X-Forwarded-For', ip)
-    .send({ mfaChallenge, code: await generate({ secret: newSecret }) })
+    .send({ mfaChallenge, enrollmentCode, code: await generate({ secret: newSecret }) })
     .expect(200);
   return { accessToken: res.body.accessToken as string, cookies: res.headers['set-cookie'] as unknown as string[], secret: newSecret, recoveryCodes: res.body.recoveryCodes as string[] };
 }

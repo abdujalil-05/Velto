@@ -6,7 +6,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
 import { AllowDuringMaintenance } from '../../common/maintenance/allow-during-maintenance.decorator';
 import { TenantTx } from '../../common/tenant/tenant-tx-options.decorator';
-import { MfaChallengeDto, MfaEnrollConfirmDto, MfaReenrollDto, MfaVerifyDto, RegenerateRecoveryCodesDto } from './dto/mfa.dto';
+import { MfaEnrollConfirmDto, MfaEnrollStartDto, MfaReenrollDto, MfaVerifyDto, RegenerateRecoveryCodesDto } from './dto/mfa.dto';
 import { MfaService } from './mfa.service';
 import { requestMeta, setRefreshCookie, withoutRefreshToken } from './session-http';
 
@@ -21,8 +21,8 @@ export class MfaController {
   @AllowDuringMaintenance()
   @HttpCode(HttpStatus.OK)
   @Post('enroll/start')
-  enrollStart(@Body() dto: MfaChallengeDto, @Req() req: Request) {
-    return this.mfa.startEnroll(dto.mfaChallenge, requestMeta(req));
+  enrollStart(@Body() dto: MfaEnrollStartDto, @Req() req: Request) {
+    return this.mfa.startEnroll(dto.mfaChallenge, dto.enrollmentCode, requestMeta(req));
   }
 
   @Public()

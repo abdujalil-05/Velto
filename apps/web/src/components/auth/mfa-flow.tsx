@@ -172,9 +172,11 @@ interface MfaFlowProps {
   onRestart: (message: string) => void;
   /** Label of the final button on the recovery screen. */
   finishLabel?: string;
+  /** First enrollment of a privileged account needs the owner-issued code (ADR-058); not for self-service reenroll. */
+  requireEnrollmentCode?: boolean;
 }
 
-export function MfaFlow({ mode, challenge, onAuthenticated, onRestart, finishLabel }: MfaFlowProps) {
+export function MfaFlow({ mode, challenge, onAuthenticated, onRestart, finishLabel, requireEnrollmentCode = false }: MfaFlowProps) {
   const t = useTranslations('Auth.mfa');
   const toMessage = useMfaErrorMessage();
 
@@ -183,7 +185,8 @@ export function MfaFlow({ mode, challenge, onAuthenticated, onRestart, finishLab
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [setup, setSetup] = useState<MfaEnrollStart | null>(null);
-  const [setupLoading, setSetupLoading] = useState(mode === 'enroll');
+  const [setupLoading, setSetupLoading] = useState(mode === 'enroll' && !requireEnrollmentCode);
+  const [enrollmentCode, setEnrollmentCode] = useState('');
   const [secretCopied, setSecretCopied] = useState(false);
   // Held until the user confirms the recovery codes are saved; cleared right after use.
   const [pendingTokens, setPendingTokens] = useState<{ tokens: TokenPair; codes: string[] } | null>(null);
@@ -205,19 +208,19 @@ export function MfaFlow({ mode, challenge, onAuthenticated, onRestart, finishLab
     setSetupLoading(true);
     setError(null);
     try {
-      setSetup(await mfaEnrollStartRequest(challenge));
+      setSetup(await mfaEnrollStartRequest(challenge, requireEnrollmentCode ? enrollmentCode : undefined));
     } catch (err) {
       fail(err);
     } finally {
       setSetupLoading(false);
     }
-  }, [challenge, fail]);
+  }, [challenge, fail, requireEnrollmentCode, enrollmentCode]);
 
   useEffect(() => {
-    if (mode !== 'enroll' || startedFor.current === challenge) return;
+    if (mode !== 'enroll' || requireEnrollmentCode || startedFor.current === challenge) return;
     startedFor.current = challenge;
     void loadSetup();
-  }, [mode, challenge, loadSetup]);
+  }, [mode, challenge, loadSetup, requireEnrollmentCode]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -235,8 +238,9 @@ export function MfaFlow({ mode, challenge, onAuthenticated, onRestart, finishLab
         setCode('');
         await onAuthenticated({ accessToken: tokens.accessToken, user: tokens.user });
       } else {
-        const res = await mfaEnrollConfirmRequest(challenge, code);
+        const res = await mfaEnrollConfirmRequest(challenge, code, requireEnrollmentCode ? enrollmentCode : undefined);
         setCode('');
+        setEnrollmentCode('');
         setSetup(null);
         setPendingTokens({ tokens: { accessToken: res.accessToken, user: res.user }, codes: res.recoveryCodes });
       }
@@ -303,7 +307,32 @@ export function MfaFlow({ mode, challenge, onAuthenticated, onRestart, finishLab
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
         )}
-        {!setupLoading && !setup && (
+        {requireEnrollmentCode && !setup && !setupLoading && (
+          <div className="space-y-2">
+            <p className="text-sm text-muted-foreground">{t('enrollmentCodeHint')}</p>
+            <Label htmlFor="mfa-enrollment-code">{t('enrollmentCodeLabel')}</Label>
+            <Input
+              id="mfa-enrollment-code"
+              value={enrollmentCode}
+              onChange={(e) => setEnrollmentCode(e.target.value)}
+              autoComplete="off"
+              autoCapitalize="characters"
+              spellCheck={false}
+              maxLength={20}
+              className="font-mono"
+            />
+            <Button
+              type="button"
+              size="lg"
+              className="w-full"
+              disabled={enrollmentCode.replace(/[\s-]/g, '').length !== 12}
+              onClick={() => void loadSetup()}
+            >
+              {t('enrollmentCodeContinue')}
+            </Button>
+          </div>
+        )}
+        {!requireEnrollmentCode && !setupLoading && !setup && (
           <Button type="button" variant="outline" className="w-full" onClick={() => void loadSetup()}>
             {t('retry')}
           </Button>

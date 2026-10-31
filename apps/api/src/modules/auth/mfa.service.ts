@@ -1,11 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import argon2 from 'argon2';
-import type { TenantClient } from '@velto/database';
+import { hashMfaEnrollmentCode, type TenantClient } from '@velto/database';
 import { AuditLogService } from '../../common/audit/audit-log.service';
 import {
   AuthChallengeRateLimitedException,
   MfaChallengeInvalidException,
   MfaCodeInvalidException,
+  MfaEnrollmentCodeInvalidException,
   MfaRateLimitedException,
   MfaServiceUnavailableException,
   TooManyLoginAttemptsException,
@@ -72,11 +73,17 @@ export class MfaService {
   // ---- public (challenge-bound) endpoints --------------------------------
 
   /** Generates (or replaces) the pending TOTP secret of an enroll challenge. Nothing is persisted in Postgres until confirm. */
-  async startEnroll(mfaChallenge: string, meta: RequestMeta): Promise<EnrollStart> {
+  async startEnroll(mfaChallenge: string, enrollmentCode: string | undefined, meta: RequestMeta): Promise<EnrollStart> {
     await this.throttleIp(meta);
     const binding = await this.challenges.readMfa(mfaChallenge, 'mfa_enroll');
     await this.assertUserNotLimited(binding.userId);
-    const user = await this.tenantPrisma.run(binding.companyId, (tx) => this.findActiveUser(tx, binding));
+    if (binding.replacesMfaId === null) await this.reserveAttempt(binding.userId, mfaChallenge); // first enrollment: code guesses are counted
+    const user = await this.tenantPrisma.run(binding.companyId, async (tx) => {
+      const found = await this.findActiveUser(tx, binding);
+      if (binding.replacesMfaId === null && !(await this.enrollmentCodeUsable(tx, binding.userId, enrollmentCode))) return undefined;
+      return found;
+    });
+    if (!user) return this.rejectEnrollmentCode(binding, mfaChallenge, meta);
     const secret = newTotpSecret();
     await this.challenges.setMfaPending(mfaChallenge, encodePending(this.secretBox.seal(secret, aadOf(binding.companyId, binding.userId))));
     return { secret, ...(await totpEnrollmentArtifacts(secret, user.phone)) };
@@ -88,6 +95,7 @@ export class MfaService {
     const binding = await this.challenges.readMfa(dto.mfaChallenge, 'mfa_enroll');
     await this.assertUserNotLimited(binding.userId);
     await this.reserveAttempt(binding.userId, dto.mfaChallenge);
+    if (binding.replacesMfaId === null && !dto.enrollmentCode) return this.rejectEnrollmentCode(binding, dto.mfaChallenge, meta);
     const pending = await this.challenges.getMfaPending(dto.mfaChallenge);
     if (!pending) throw new MfaChallengeInvalidException();
     const aad = aadOf(binding.companyId, binding.userId);
@@ -98,10 +106,22 @@ export class MfaService {
     await this.challenges.consumeMfa(dto.mfaChallenge, 'mfa_enroll'); // exactly one concurrent confirm wins
     const codes = await generateRecoveryCodes();
     const sealed = this.secretBox.seal(secret, aad);
+    let codeRejected = false;
     const session = await this.tenantPrisma.run(binding.companyId, async (tx) => {
       const user = await this.findActiveUser(tx, binding);
       const current = await findConfirmedMfa(tx, binding.userId);
       if ((current?.id ?? null) !== binding.replacesMfaId) throw new MfaChallengeInvalidException(); // MFA changed since the challenge was issued
+      if (binding.replacesMfaId === null) {
+        // Atomic single-use claim in the same tx that creates UserMfa: 0 rows => rollback.
+        const claimed = await tx.mfaEnrollmentCode.updateMany({
+          where: { userId: user.id, companyId: user.companyId, codeHash: hashMfaEnrollmentCode(dto.enrollmentCode!), usedAt: null, expiresAt: { gt: new Date() } },
+          data: { usedAt: new Date() },
+        });
+        if (claimed.count !== 1) {
+          codeRejected = true;
+          throw new MfaEnrollmentCodeInvalidException();
+        }
+      }
       await tx.refreshToken.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } });
       await tx.userMfaRecoveryCode.deleteMany({ where: { userId: user.id } });
       await tx.userMfa.deleteMany({ where: { userId: user.id } });
@@ -119,6 +139,9 @@ export class MfaService {
       });
       await tx.userMfaRecoveryCode.createMany({ data: codes.hashes.map((codeHash) => ({ companyId: user.companyId, userId: user.id, codeHash })) });
       return this.auth.issueTokensInTx(tx, user, meta, undefined, 'auth.mfa.enrolled', mfa.id);
+    }).catch((err: unknown) => {
+      if (codeRejected) return this.rejectEnrollmentCode(binding, dto.mfaChallenge, meta);
+      throw err;
     });
     await this.rateLimiter.recordSuccess(this.limiterKey(binding.userId));
     return { ...session, recoveryCodes: codes.plain };
@@ -219,6 +242,22 @@ export class MfaService {
     if (!codeId) return false;
     const claimed = await tx.userMfaRecoveryCode.updateMany({ where: { id: codeId, userId, usedAt: null }, data: { usedAt: new Date() } });
     return claimed.count === 1;
+  }
+
+  private async enrollmentCodeUsable(tx: TenantClient, userId: string, code: string | undefined): Promise<boolean> {
+    if (!code) return false;
+    const row = await tx.mfaEnrollmentCode.findFirst({
+      where: { userId, codeHash: hashMfaEnrollmentCode(code), usedAt: null, expiresAt: { gt: new Date() } },
+      select: { id: true },
+    });
+    return row !== null;
+  }
+
+  /** Bad first-enrollment code (attempt already reserved): count it against the challenge, audit (never the code), generic error. */
+  private async rejectEnrollmentCode(subject: Pick<MfaBinding, 'userId' | 'companyId'>, challengeId: string, meta: RequestMeta): Promise<never> {
+    await this.challenges.failMfaAttempt(challengeId);
+    await this.tenantPrisma.run(subject.companyId, (tx) => this.audit(tx, { id: subject.userId, companyId: subject.companyId }, 'auth.mfa.enrollment_code_failed', meta));
+    throw new MfaEnrollmentCodeInvalidException();
   }
 
   /** Wrong code (attempt already reserved by reserveAttempt): burn the challenge once exhausted, audit (never the code), answer MFA_CODE_INVALID. */

@@ -124,7 +124,10 @@
       "recoveryTitle": "Zaxira kodlarni saqlang",
       "recoveryHint": "Autentifikatorni yo'qotsangiz, har bir kod bir marta ishlaydi. Ular faqat hozir ko'rsatiladi.",
       "download": ".txt yuklab olish",
-      "savedCheck": "Kodlarni xavfsiz joyga saqladim"
+      "savedCheck": "Kodlarni xavfsiz joyga saqladim",
+      "enrollmentCodeHint": "Tasdiqlash kodi kompaniya egangizdan olinadi (egalar uchun — Velto qo'llab-quvvatlash xizmatidan). Kod bir martalik.",
+      "enrollmentCodeLabel": "Sozlash kodi",
+      "enrollmentCodeContinue": "Davom etish"
     }
   },
   "NotFound": {
@@ -687,6 +690,17 @@
       "cancel": "Bekor qilish",
       "confirm": "MFA ni tiklash",
       "success": "{name} uchun MFA tiklandi"
+    },
+    "mfaCode": {
+      "action": "MFA sozlash kodini berish",
+      "title": "MFA sozlash kodi",
+      "description": "{name} uchun bir martalik MFA sozlash kodi yaratiladi. Kod faqat bir marta ko'rsatiladi.",
+      "shownOnce": "{name} uchun kod. Uni xavfsiz yo'l bilan yetkazing — qayta ko'rsatilmaydi.",
+      "copy": "Nusxalash",
+      "expires": "Amal qilish muddati: {at}",
+      "close": "Yopish",
+      "issue": "Kod yaratish",
+      "retry": "Qayta urinish"
     }
   },
   "Onboarding": {

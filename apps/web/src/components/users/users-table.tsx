@@ -1,7 +1,7 @@
 'use client';
 
 import { useLocale, useTranslations } from 'next-intl';
-import { KeyRound, Pencil, Power, Trash2 } from 'lucide-react';
+import { KeyRound, Pencil, Power, ShieldPlus, Trash2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { formatDateTime } from '@/lib/format';
@@ -19,6 +19,7 @@ interface UsersTableProps {
   /** `users.mfa_reset` (ADR-058). */
   canResetMfa?: boolean;
   onResetMfa?: (user: User) => void;
+  onIssueMfaCode?: (user: User) => void;
   togglingId?: string;
 }
 
@@ -32,6 +33,7 @@ export function UsersTable({
   onDelete,
   canResetMfa = false,
   onResetMfa,
+  onIssueMfaCode,
   togglingId,
 }: UsersTableProps) {
   const t = useTranslations('Users');
@@ -99,6 +101,11 @@ export function UsersTable({
                     {canResetMfa && onResetMfa && user.id !== currentUserId && (
                       <Button variant="ghost" size="sm" onClick={() => onResetMfa(user)} aria-label={t('mfaReset.action')} title={t('mfaReset.action')}>
                         <KeyRound className="h-4 w-4" />
+                      </Button>
+                    )}
+                    {canResetMfa && onIssueMfaCode && user.id !== currentUserId && (
+                      <Button variant="ghost" size="sm" onClick={() => onIssueMfaCode(user)} aria-label={t('mfaCode.action')} title={t('mfaCode.action')}>
+                        <ShieldPlus className="h-4 w-4" />
                       </Button>
                     )}
                     {canDelete && onDelete && (

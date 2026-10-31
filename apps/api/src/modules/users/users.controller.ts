@@ -51,6 +51,14 @@ export class UsersController {
     return this.users.resetMfa(id, dto, user);
   }
 
+  /** ADR-058: one-time out-of-band code (72h) a privileged user without TOTP must present to enroll. Returned once, never logged. */
+  @Post(':id/mfa/enrollment-code')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('users.mfa_reset')
+  issueMfaEnrollmentCode(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.users.issueMfaEnrollmentCode(id, user);
+  }
+
   /** Returns 200 with `{ mode: 'soft' | 'hard', references }` — a soft delete is a successful outcome, not a partial failure. */
   @Delete(':id')
   @RequirePermission('users.delete')

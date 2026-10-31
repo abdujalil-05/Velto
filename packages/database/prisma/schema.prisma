@@ -99,6 +99,7 @@ model Company {
   openingBalanceBatches  OpeningBalanceBatch[]
   userMfas               UserMfa[]
   userMfaRecoveryCodes   UserMfaRecoveryCode[]
+  mfaEnrollmentCodes     MfaEnrollmentCode[]
 
   @@index([tenantId])
 }
@@ -149,6 +150,8 @@ model User {
   openingBatchesVoided        OpeningBalanceBatch[]   @relation("OpeningBatchVoidedBy")
   mfa                         UserMfa?
   mfaRecoveryCodes            UserMfaRecoveryCode[]
+  mfaEnrollmentCodes          MfaEnrollmentCode[]     @relation("MfaEnrollmentCodeUser")
+  mfaEnrollmentCodesIssued    MfaEnrollmentCode[]     @relation("MfaEnrollmentCodeCreatedBy")
 
   @@unique([companyId, phone])
   // Scoped per-company like every other natural key here: a global unique on
@@ -274,6 +277,29 @@ model UserMfaRecoveryCode {
 
   @@index([userId, usedAt])
   @@index([companyId])
+}
+
+/// ADR-058 follow-up: one-time out-of-band code required for a user's FIRST
+/// TOTP enrollment (a password alone must not let anyone bind an
+/// authenticator). Only sha256 hex of the code is stored. usedAt set = consumed
+/// or invalidated by a newer code. createdById null = issued by a platform script.
+model MfaEnrollmentCode {
+  id          String    @id @default(uuid()) @db.Uuid
+  companyId   String    @db.Uuid
+  userId      String    @db.Uuid
+  codeHash    String    @unique
+  expiresAt   DateTime
+  usedAt      DateTime?
+  createdById String?   @db.Uuid
+  createdAt   DateTime  @default(now())
+
+  company   Company @relation(fields: [companyId], references: [id])
+  user      User    @relation("MfaEnrollmentCodeUser", fields: [userId], references: [id], onDelete: Cascade)
+  createdBy User?   @relation("MfaEnrollmentCodeCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([userId, usedAt])
+  @@index([companyId])
+  @@index([createdById])
 }
 
 // ---------------------------------------------------------------------------

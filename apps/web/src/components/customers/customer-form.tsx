@@ -28,7 +28,8 @@ function customerSchema(t: (key: string) => string) {
   });
 }
 
-export type CustomerFormValues = z.infer<ReturnType<typeof customerSchema>>;
+export type CustomerFormValues = z.output<ReturnType<typeof customerSchema>>;
+type CustomerSchemaInput = z.input<ReturnType<typeof customerSchema>>;
 
 interface CustomerFormProps {
   mode: 'create' | 'edit';
@@ -47,7 +48,7 @@ export function CustomerForm({ mode, defaultValues, priceLists, isSubmitting, su
     register,
     handleSubmit,
     formState: { errors },
-  } = useForm<CustomerFormValues>({
+  } = useForm<CustomerSchemaInput, unknown, CustomerFormValues>({
     resolver: zodResolver(schema),
     defaultValues,
   });

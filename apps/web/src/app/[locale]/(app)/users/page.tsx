@@ -25,6 +25,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { PaginationBar } from '@/components/shared/pagination-bar';
 import { ExportCsvButton } from '@/components/shared/export-csv-button';
+import { IssueMfaCodeDialog } from '@/components/users/issue-mfa-code-dialog';
 import { ResetMfaDialog } from '@/components/users/reset-mfa-dialog';
 import { UsersTable } from '@/components/users/users-table';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
@@ -92,6 +93,7 @@ export default function UsersPage() {
   const deleteMutation = useDeleteUserMutation();
   const [pendingDelete, setPendingDelete] = useState<User | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [pendingMfaCode, setPendingMfaCode] = useState<User | null>(null);
   const [pendingMfaReset, setPendingMfaReset] = useState<User | null>(null);
 
   // Deactivation cuts the user off from the system — always confirm.
@@ -272,6 +274,7 @@ export default function UsersPage() {
               currentUserId={currentUser?.id}
               canResetMfa={canResetMfa}
               onResetMfa={setPendingMfaReset}
+              onIssueMfaCode={setPendingMfaCode}
               onEdit={(u) => router.push(`/users/${u.id}/edit`)}
               onToggleActive={toggleActive}
               onDelete={(u) => {
@@ -285,6 +288,7 @@ export default function UsersPage() {
         </Card>
       )}
 
+      <IssueMfaCodeDialog user={pendingMfaCode} onClose={() => setPendingMfaCode(null)} />
       <ResetMfaDialog user={pendingMfaReset} onClose={() => setPendingMfaReset(null)} />
 
       <ConfirmDialog

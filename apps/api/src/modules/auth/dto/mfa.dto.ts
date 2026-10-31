@@ -10,7 +10,17 @@ export class MfaChallengeDto {
   mfaChallenge!: string;
 }
 
-export class MfaEnrollConfirmDto extends MfaChallengeDto {
+const ENROLLMENT_CODE_RE = /^[a-zA-Z0-9\s-]{8,32}$/;
+
+/** `enrollmentCode` is required for a FIRST enrollment (enforced in MfaService); ignored for self-service re-enroll. */
+export class MfaEnrollStartDto extends MfaChallengeDto {
+  @IsOptional()
+  @IsString()
+  @Matches(ENROLLMENT_CODE_RE, { message: 'enrollmentCode has an invalid format' })
+  enrollmentCode?: string;
+}
+
+export class MfaEnrollConfirmDto extends MfaEnrollStartDto {
   @IsString()
   @Matches(TOTP_RE, { message: 'code must be 6 digits' })
   code!: string;

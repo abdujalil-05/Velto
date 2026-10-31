@@ -157,6 +157,7 @@ export default function LoginPage() {
                 <MfaFlow
                   key={mfa.mfaChallenge}
                   mode={mfa.mfa}
+                  requireEnrollmentCode
                   challenge={mfa.mfaChallenge}
                   onAuthenticated={async (tokens) => {
                     await completeMfa(tokens);

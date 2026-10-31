@@ -166,3 +166,13 @@ export class CannotResetOwnMfaException extends AppException {
     });
   }
 }
+
+export class MfaEnrollmentCodeNotApplicableException extends AppException {
+  constructor() {
+    super(HttpStatus.BAD_REQUEST, 'USER_MFA_ENROLLMENT_CODE_NOT_APPLICABLE', {
+      uz: "Bu foydalanuvchi uchun ro'yxatdan o'tkazish kodi berib bo'lmaydi",
+      ru: 'Для этого пользователя нельзя выдать код регистрации',
+      en: 'An enrollment code cannot be issued for this user',
+    });
+  }
+}

@@ -5,10 +5,11 @@ import { JwtService } from '@nestjs/jwt';
 import argon2 from 'argon2';
 import Redis from 'ioredis';
 import { generate } from 'otplib';
-import { prisma, systemPrisma } from '@velto/database';
+import { generateMfaEnrollmentCode, hashMfaEnrollmentCode, prisma, systemPrisma } from '@velto/database';
 import { AuditLogService } from '../../common/audit/audit-log.service';
 import {
   MfaChallengeInvalidException,
+  MfaEnrollmentCodeInvalidException,
   MfaCodeInvalidException,
   MfaRateLimitedException,
   MfaRequiredException,
@@ -18,7 +19,7 @@ import {
 import { SecretBox } from '../../common/crypto/secret-box';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { SmsService } from '../../common/sms/sms.service';
-import { CannotResetOwnMfaException, UserNotFoundException } from '../users/users-exceptions';
+import { CannotResetOwnMfaException, MfaEnrollmentCodeNotApplicableException, UserNotFoundException } from '../users/users-exceptions';
 import { UsersService } from '../users/users.service';
 import { AuthChallengeStore } from './auth-challenge.store';
 import { AuthService, type MfaStepRequired, type TokenPair } from './auth.service';
@@ -89,13 +90,23 @@ describe('ADR-058 TOTP MFA (real Postgres + Redis)', () => {
     return step;
   };
 
+  /** Inserts a valid enrollment code for the user (what POST /users/:id/mfa/enrollment-code stores). */
+  async function mkCode(u: { id: string; companyId: string }, over: { expiresAt?: Date; usedAt?: Date } = {}) {
+    const code = generateMfaEnrollmentCode();
+    await systemPrisma.mfaEnrollmentCode.create({
+      data: { companyId: u.companyId, userId: u.id, codeHash: hashMfaEnrollmentCode(code), expiresAt: over.expiresAt ?? new Date(Date.now() + 3_600_000), usedAt: over.usedAt ?? null },
+    });
+    return code;
+  }
+
   /** Logs a fresh user in through the first-login enrollment flow. */
   async function enrolled(roleCode = 'OWNER', companyId = coA) {
     const u = await mkUser(companyId, roleCode);
     const step = challengeOf(await auth.login({ phone: u.phone, password }, { ip: rndIp() }));
     expect(step.mfa).toBe('enroll');
-    const start = await mfa.startEnroll(step.mfaChallenge, { ip: rndIp() });
-    const session = await mfa.confirmEnroll({ mfaChallenge: step.mfaChallenge, code: await generate({ secret: start.secret }) }, { ip: rndIp() });
+    const enrollmentCode = await mkCode(u);
+    const start = await mfa.startEnroll(step.mfaChallenge, enrollmentCode, { ip: rndIp() });
+    const session = await mfa.confirmEnroll({ mfaChallenge: step.mfaChallenge, enrollmentCode, code: await generate({ secret: start.secret }) }, { ip: rndIp() });
     return { ...u, secret: start.secret, session, recoveryCodes: session.recoveryCodes! };
   }
 
@@ -223,7 +234,7 @@ describe('ADR-058 TOTP MFA (real Postgres + Redis)', () => {
   it('a scope works on its own endpoints only; exactly one of code/recoveryCode', async () => {
     const e = await enrolled();
     const verifyCh = await verifyChallenge(e);
-    await expect(mfa.startEnroll(verifyCh, { ip: rndIp() })).rejects.toBeInstanceOf(MfaChallengeInvalidException);
+    await expect(mfa.startEnroll(verifyCh, undefined, { ip: rndIp() })).rejects.toBeInstanceOf(MfaChallengeInvalidException);
     const u = await mkUser(coA, 'OWNER');
     const enrollCh = challengeOf(await auth.login({ phone: u.phone, password }, { ip: rndIp() })).mfaChallenge;
     await expect(mfa.verify({ mfaChallenge: enrollCh, code: '123456' }, { ip: rndIp() })).rejects.toBeInstanceOf(MfaChallengeInvalidException);
@@ -249,13 +260,14 @@ describe('ADR-058 TOTP MFA (real Postgres + Redis)', () => {
   it('enroll/start replaces the pending secret: only the latest one confirms', async () => {
     const u = await mkUser(coA, 'OWNER');
     const ch = challengeOf(await auth.login({ phone: u.phone, password }, { ip: rndIp() })).mfaChallenge;
-    const first = await mfa.startEnroll(ch, { ip: rndIp() });
-    const second = await mfa.startEnroll(ch, { ip: rndIp() });
+    const ec = await mkCode(u);
+    const first = await mfa.startEnroll(ch, ec, { ip: rndIp() });
+    const second = await mfa.startEnroll(ch, ec, { ip: rndIp() });
     expect(second.secret).not.toBe(first.secret);
     expect(second.otpauthUri).toContain('otpauth://totp/');
     expect(second.qrDataUrl.startsWith('data:image/png;base64,')).toBe(true);
-    await expect(mfa.confirmEnroll({ mfaChallenge: ch, code: await generate({ secret: first.secret }) }, { ip: rndIp() })).rejects.toBeInstanceOf(MfaCodeInvalidException);
-    const s = await mfa.confirmEnroll({ mfaChallenge: ch, code: await generate({ secret: second.secret }) }, { ip: rndIp() });
+    await expect(mfa.confirmEnroll({ mfaChallenge: ch, enrollmentCode: ec, code: await generate({ secret: first.secret }) }, { ip: rndIp() })).rejects.toBeInstanceOf(MfaCodeInvalidException);
+    const s = await mfa.confirmEnroll({ mfaChallenge: ch, enrollmentCode: ec, code: await generate({ secret: second.secret }) }, { ip: rndIp() });
     expect(s.recoveryCodes).toHaveLength(10);
   });
 
@@ -265,8 +277,9 @@ describe('ADR-058 TOTP MFA (real Postgres + Redis)', () => {
       tx.refreshToken.create({ data: { userId: u.id, tokenHash: `old-${randomUUID()}`, familyId: randomUUID(), expiresAt: new Date(Date.now() + 3_600_000) } }),
     );
     const ch = challengeOf(await auth.login({ phone: u.phone, password }, { ip: rndIp() })).mfaChallenge;
-    const start = await mfa.startEnroll(ch, { ip: rndIp() });
-    await mfa.confirmEnroll({ mfaChallenge: ch, code: await generate({ secret: start.secret }) }, { ip: rndIp() });
+    const ec = await mkCode(u);
+    const start = await mfa.startEnroll(ch, ec, { ip: rndIp() });
+    await mfa.confirmEnroll({ mfaChallenge: ch, enrollmentCode: ec, code: await generate({ secret: start.secret }) }, { ip: rndIp() });
     const rows = await refreshRows(u);
     expect(rows.filter((r) => !r.revokedAt)).toHaveLength(1);
   });
@@ -338,7 +351,7 @@ describe('ADR-058 TOTP MFA (real Postgres + Redis)', () => {
     // old MFA still valid before the new one is confirmed
     await mfa.verify({ mfaChallenge: await verifyChallenge(e), code: await freshCode(e.id, e.secret) }, { ip: rndIp() });
 
-    const start = await mfa.startEnroll(step.mfaChallenge, { ip: rndIp() });
+    const start = await mfa.startEnroll(step.mfaChallenge, undefined, { ip: rndIp() });
     const s = await mfa.confirmEnroll({ mfaChallenge: step.mfaChallenge, code: await generate({ secret: start.secret }) }, { ip: rndIp() });
     const newRow = await systemPrisma.userMfa.findUniqueOrThrow({ where: { userId: e.id } });
     expect(newRow.id).not.toBe(oldRow.id);
@@ -356,7 +369,7 @@ describe('ADR-058 TOTP MFA (real Postgres + Redis)', () => {
     const actor = { id: e.id, companyId: e.companyId, firstName: '', lastName: '', roles: ['OWNER'], permissions: [] };
     const step = await mfa.startReenroll(actor, { password, code: await freshCode(e.id, e.secret) }, { ip: rndIp() });
     await systemPrisma.userMfa.delete({ where: { userId: e.id } });
-    const start = await mfa.startEnroll(step.mfaChallenge, { ip: rndIp() });
+    const start = await mfa.startEnroll(step.mfaChallenge, undefined, { ip: rndIp() });
     await expect(mfa.confirmEnroll({ mfaChallenge: step.mfaChallenge, code: await generate({ secret: start.secret }) }, { ip: rndIp() })).rejects.toBeInstanceOf(MfaChallengeInvalidException);
   });
 
@@ -393,6 +406,113 @@ describe('ADR-058 TOTP MFA (real Postgres + Redis)', () => {
       await expect(asActor(actor, () => users.resetMfa(a.id, { reason: 'self reset' }, actor))).rejects.toBeInstanceOf(CannotResetOwnMfaException);
       await expect(asActor(actor, () => users.resetMfa(b.id, { reason: 'cross tenant' }, actor))).rejects.toBeInstanceOf(UserNotFoundException);
       expect(await systemPrisma.userMfa.count({ where: { userId: b.id } })).toBe(1);
+    });
+  });
+
+  describe('first-enrollment code (password alone is not enough)', () => {
+    async function freshEnroll() {
+      const u = await mkUser(coA, 'OWNER');
+      const ch = challengeOf(await auth.login({ phone: u.phone, password }, { ip: rndIp() })).mfaChallenge;
+      return { u, ch };
+    }
+    const noMfa = (u: { id: string }) => systemPrisma.userMfa.count({ where: { userId: u.id } });
+
+    it('password-only enroll start/confirm is rejected and nothing is enrolled', async () => {
+      const { u, ch } = await freshEnroll();
+      await expect(mfa.startEnroll(ch, undefined, { ip: rndIp() })).rejects.toBeInstanceOf(MfaEnrollmentCodeInvalidException);
+      await expect(mfa.confirmEnroll({ mfaChallenge: ch, code: '123456' }, { ip: rndIp() })).rejects.toBeInstanceOf(MfaEnrollmentCodeInvalidException);
+      expect(await noMfa(u)).toBe(0);
+    });
+
+    it('wrong, expired, used and other-user codes are rejected (start) and counted against the challenge', async () => {
+      const { u, ch } = await freshEnroll();
+      const other = await mkUser(coA, 'OWNER');
+      const bad = [
+        generateMfaEnrollmentCode(),
+        await mkCode(u, { expiresAt: new Date(Date.now() - 1000) }),
+        await mkCode(u, { usedAt: new Date() }),
+        await mkCode(other),
+      ];
+      for (const code of bad) await expect(mfa.startEnroll(ch, code, { ip: rndIp() })).rejects.toBeInstanceOf(MfaEnrollmentCodeInvalidException);
+      expect(await auditActions(u)).toContain('auth.mfa.enrollment_code_failed');
+      // 4 failed attempts counted: the challenge (max attempts) is burnt soon after
+      const good = await mkCode(u);
+      await mfa.startEnroll(ch, good, { ip: rndIp() }).catch(() => undefined);
+      expect(await noMfa(u)).toBe(0);
+    });
+
+    it('confirm rejects a code that expired/was used after start (rollback, no UserMfa)', async () => {
+      const { u, ch } = await freshEnroll();
+      const code = await mkCode(u);
+      const start = await mfa.startEnroll(ch, code, { ip: rndIp() });
+      await systemPrisma.mfaEnrollmentCode.updateMany({ where: { userId: u.id }, data: { usedAt: new Date() } });
+      await expect(mfa.confirmEnroll({ mfaChallenge: ch, enrollmentCode: code, code: await generate({ secret: start.secret }) }, { ip: rndIp() })).rejects.toBeInstanceOf(MfaEnrollmentCodeInvalidException);
+      expect(await noMfa(u)).toBe(0);
+    });
+
+    it('a valid code enrolls once; it cannot be reused for another challenge', async () => {
+      const { u, ch } = await freshEnroll();
+      const code = await mkCode(u);
+      const start = await mfa.startEnroll(ch, code, { ip: rndIp() });
+      const s = await mfa.confirmEnroll({ mfaChallenge: ch, enrollmentCode: code, code: await generate({ secret: start.secret }) }, { ip: rndIp() });
+      expect(s.recoveryCodes).toHaveLength(10);
+      expect((await systemPrisma.mfaEnrollmentCode.findFirstOrThrow({ where: { userId: u.id } })).usedAt).not.toBeNull();
+      await systemPrisma.userMfa.delete({ where: { userId: u.id } });
+      const ch2 = challengeOf(await auth.login({ phone: u.phone, password }, { ip: rndIp() })).mfaChallenge;
+      await expect(mfa.startEnroll(ch2, code, { ip: rndIp() })).rejects.toBeInstanceOf(MfaEnrollmentCodeInvalidException);
+    });
+
+    it('concurrent double confirm on one challenge: exactly one wins', async () => {
+      const { u, ch } = await freshEnroll();
+      const code = await mkCode(u);
+      const start = await mfa.startEnroll(ch, code, { ip: rndIp() });
+      const totp = await generate({ secret: start.secret });
+      const results = await Promise.allSettled([
+        mfa.confirmEnroll({ mfaChallenge: ch, enrollmentCode: code, code: totp }, { ip: rndIp() }),
+        mfa.confirmEnroll({ mfaChallenge: ch, enrollmentCode: code, code: totp }, { ip: rndIp() }),
+      ]);
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      expect(await noMfa(u)).toBe(1);
+    });
+  });
+
+  describe('POST /users/:id/mfa/enrollment-code (service)', () => {
+    const asActor = <T>(a: { id: string; companyId: string }, fn: () => Promise<T>) => tenantPrisma.run(a.companyId, () => fn());
+    const actorOf = (id: string, companyId = coA) => ({ id, companyId, firstName: '', lastName: '', roles: ['OWNER'], permissions: [] });
+
+    it('issues a code once (hash only stored), audits without the code, and it enrolls the target', async () => {
+      const admin = await mkUser(coA, 'OWNER');
+      const target = await mkUser(coA, 'OWNER');
+      const actor = actorOf(admin.id);
+      const res = await asActor(actor, () => users.issueMfaEnrollmentCode(target.id, actor));
+      expect(res.code).toBeTruthy();
+      expect(new Date(res.expiresAt).getTime()).toBeGreaterThan(Date.now());
+      const rows = await systemPrisma.mfaEnrollmentCode.findMany({ where: { userId: target.id } });
+      expect(rows).toHaveLength(1);
+      expect(JSON.stringify(rows)).not.toContain(res.code);
+      expect(rows[0]!.createdById).toBe(admin.id);
+      const audit = await tenantPrisma.run(coA, (tx) => tx.auditLog.findFirstOrThrow({ where: { action: 'auth.mfa.enrollment_code_issued', entityId: target.id } }));
+      expect(JSON.stringify(audit.newValue)).not.toContain(res.code);
+      const ch = challengeOf(await auth.login({ phone: target.phone, password }, { ip: rndIp() })).mfaChallenge;
+      const start = await mfa.startEnroll(ch, res.code, { ip: rndIp() });
+      await mfa.confirmEnroll({ mfaChallenge: ch, enrollmentCode: res.code, code: await generate({ secret: start.secret }) }, { ip: rndIp() });
+      // re-issuing is now refused: target has confirmed MFA
+      await expect(asActor(actor, () => users.issueMfaEnrollmentCode(target.id, actor))).rejects.toBeInstanceOf(MfaEnrollmentCodeNotApplicableException);
+    });
+
+    it('a second issue invalidates the first; self, cross-tenant and non-privileged targets are refused', async () => {
+      const admin = await mkUser(coA, 'OWNER');
+      const target = await mkUser(coA, 'OWNER');
+      const actor = actorOf(admin.id);
+      const first = await asActor(actor, () => users.issueMfaEnrollmentCode(target.id, actor));
+      await asActor(actor, () => users.issueMfaEnrollmentCode(target.id, actor));
+      const ch = challengeOf(await auth.login({ phone: target.phone, password }, { ip: rndIp() })).mfaChallenge;
+      await expect(mfa.startEnroll(ch, first.code, { ip: rndIp() })).rejects.toBeInstanceOf(MfaEnrollmentCodeInvalidException);
+      await expect(asActor(actor, () => users.issueMfaEnrollmentCode(admin.id, actor))).rejects.toBeInstanceOf(CannotResetOwnMfaException);
+      const b = await mkUser(coB, 'OWNER');
+      await expect(asActor(actor, () => users.issueMfaEnrollmentCode(b.id, actor))).rejects.toBeInstanceOf(UserNotFoundException);
+      const agent = await mkUser(coA, 'SALES_AGENT');
+      await expect(asActor(actor, () => users.issueMfaEnrollmentCode(agent.id, actor))).rejects.toBeInstanceOf(MfaEnrollmentCodeNotApplicableException);
     });
   });
 

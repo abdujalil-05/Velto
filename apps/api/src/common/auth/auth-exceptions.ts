@@ -169,6 +169,17 @@ export class MfaCodeInvalidException extends AppException {
   }
 }
 
+/** First MFA enrollment code missing/wrong/expired/used/other user's. One generic answer for all (no existence oracle). */
+export class MfaEnrollmentCodeInvalidException extends AppException {
+  constructor() {
+    super(HttpStatus.UNAUTHORIZED, 'MFA_ENROLLMENT_CODE_INVALID', {
+      uz: "Ro'yxatdan o'tkazish kodi noto'g'ri yoki muddati o'tgan",
+      ru: 'Код регистрации неверен или истёк',
+      en: 'The enrollment code is invalid or expired',
+    });
+  }
+}
+
 /** Expired, already used, wrong-scope or attempt-exhausted MFA challenge. One generic answer for all. */
 export class MfaChallengeInvalidException extends AppException {
   constructor() {

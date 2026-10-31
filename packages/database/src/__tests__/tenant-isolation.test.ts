@@ -4,7 +4,7 @@
 // direct-companyId tables (Customer) and parent-subquery child tables
 // (RolePermission, isolated via its Role's companyId), plus the fail-closed
 // default and the AuditLog append-only trigger.
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { prisma, systemPrisma, withTenant } from '../client';
 
@@ -478,6 +478,63 @@ describe('tenant isolation (RLS)', () => {
       await systemPrisma.refreshToken.deleteMany({ where: users });
       await systemPrisma.userMfaRecoveryCode.deleteMany({ where: users });
       await systemPrisma.userMfa.deleteMany({ where: users });
+    }
+  });
+
+  it('ADR-058 MfaEnrollmentCode is scoped per tenant; cross-tenant user/issuer and plain codes rejected', async () => {
+    const hash = () => createHash('sha256').update(randomUUID()).digest('hex');
+    const codeData = (companyId: string, userId: string, createdById: string | null = null) => ({
+      companyId,
+      userId,
+      createdById,
+      codeHash: hash(),
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const users = { userId: { in: [recipientId, courierAId, userBId] } };
+    try {
+      const codeA = await withTenant(companyAId, (tx) =>
+        tx.mfaEnrollmentCode.create({ data: codeData(companyAId, recipientId, courierAId) }),
+      );
+      await withTenant(companyBId, (tx) => tx.mfaEnrollmentCode.create({ data: codeData(companyBId, userBId) }));
+
+      const seen = (companyId: string) =>
+        withTenant(companyId, async (tx) => (await tx.mfaEnrollmentCode.findMany()).map((c) => c.userId));
+      expect(await seen(companyAId)).toEqual([recipientId]);
+      expect(await seen(companyBId)).toEqual([userBId]);
+
+      // No tenant context: zero rows or the '' ::uuid cast error — both fail closed.
+      try {
+        expect(await prisma.mfaEnrollmentCode.findMany()).toHaveLength(0);
+      } catch (err) {
+        expect(String(err)).toMatch(/uuid/i);
+      }
+
+      // B cannot claim A's companyId, store A's user, or name A's user as issuer.
+      await expect(
+        withTenant(companyBId, (tx) => tx.mfaEnrollmentCode.create({ data: codeData(companyAId, recipientId) })),
+      ).rejects.toThrow();
+      await expect(
+        withTenant(companyBId, (tx) => tx.mfaEnrollmentCode.create({ data: codeData(companyBId, recipientId) })),
+      ).rejects.toThrow();
+      await expect(
+        withTenant(companyBId, (tx) => tx.mfaEnrollmentCode.create({ data: codeData(companyBId, userBId, courierAId) })),
+      ).rejects.toThrow();
+      // Plain codes are refused (sha256 hex only).
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.mfaEnrollmentCode.create({ data: { ...codeData(companyAId, recipientId), codeHash: 'ABCDEFGH1234' } }),
+        ),
+      ).rejects.toThrow();
+
+      // B cannot consume/delete A's code (invisible, never matched).
+      const tampered = await withTenant(companyBId, async (tx) => ({
+        upd: (await tx.mfaEnrollmentCode.updateMany({ where: { id: codeA.id }, data: { usedAt: new Date() } })).count,
+        del: (await tx.mfaEnrollmentCode.deleteMany({ where: { id: codeA.id } })).count,
+      }));
+      expect(tampered).toEqual({ upd: 0, del: 0 });
+      expect(await systemPrisma.mfaEnrollmentCode.findUniqueOrThrow({ where: { id: codeA.id } })).toMatchObject({ usedAt: null });
+    } finally {
+      await systemPrisma.mfaEnrollmentCode.deleteMany({ where: users });
     }
   });
 

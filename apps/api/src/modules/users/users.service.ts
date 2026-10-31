@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import argon2 from 'argon2';
-import { Prisma, type TenantClient } from '@velto/database';
+import { issueMfaEnrollmentCodeInTx, MFA_ENROLLMENT_CODE_ISSUED_AUDIT_ACTION, Prisma, type TenantClient } from '@velto/database';
 import { AuditLogService, toAuditJson } from '../../common/audit/audit-log.service';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
+import { requiresMfa } from '../../common/auth/mfa-policy';
 import { paginate } from '../../common/pagination/pagination.dto';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import {
@@ -12,6 +13,7 @@ import {
   CannotGrantOwnerRoleException,
   CannotSetOthersPasswordException,
   CannotResetOwnMfaException,
+  MfaEnrollmentCodeNotApplicableException,
   DuplicateUserPhoneException,
   InvalidRoleCodesException,
   LastOwnerException,
@@ -327,6 +329,31 @@ export class UsersService {
       newValue: { reason: dto.reason, mfaDeleted: mfa.count, recoveryCodesDeleted: codes.count, sessionsRevoked: sessions.count },
     });
     return { reset: true, sessionsRevoked: sessions.count };
+  }
+
+  async issueMfaEnrollmentCode(id: string, actor: AuthenticatedUser) {
+    if (id === actor.id) throw new CannotResetOwnMfaException();
+    const tx = this.tenantPrisma.client;
+    const target = await tx.user.findUnique({ where: { id }, select: { id: true, isActive: true, roles: { select: { role: { select: { code: true } } } } } });
+    if (!target || !target.isActive) throw new UserNotFoundException();
+    const confirmed = await tx.userMfa.findFirst({ where: { userId: id, confirmedAt: { not: null } }, select: { id: true } });
+    if (confirmed || !requiresMfa(target.roles.map((r) => r.role.code))) throw new MfaEnrollmentCodeNotApplicableException();
+    const { code, expiresAt, enrollmentCodeId, invalidated } = await issueMfaEnrollmentCodeInTx(tx, {
+      companyId: actor.companyId,
+      userId: id,
+      createdById: actor.id,
+      skipAudit: true,
+    });
+    await this.auditLog.log(tx, {
+      companyId: actor.companyId,
+      userId: actor.id,
+      action: MFA_ENROLLMENT_CODE_ISSUED_AUDIT_ACTION,
+      entity: 'User',
+      entityId: id,
+      // Never the code or its hash.
+      newValue: { enrollmentCodeId, expiresAt: expiresAt.toISOString(), invalidatedPrevious: invalidated },
+    });
+    return { code, expiresAt: expiresAt.toISOString() };
   }
 
   async activate(id: string, actor: AuthenticatedUser) {

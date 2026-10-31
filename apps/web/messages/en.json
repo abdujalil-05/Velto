@@ -124,7 +124,10 @@
       "recoveryTitle": "Save your recovery codes",
       "recoveryHint": "Each code works once if you lose your authenticator. They are shown only now.",
       "download": "Download .txt",
-      "savedCheck": "I saved these codes in a safe place"
+      "savedCheck": "I saved these codes in a safe place",
+      "enrollmentCodeHint": "Get this code from your company owner (owners: Velto support). The code is single-use.",
+      "enrollmentCodeLabel": "Setup code",
+      "enrollmentCodeContinue": "Continue"
     }
   },
   "NotFound": {
@@ -687,6 +690,17 @@
       "cancel": "Cancel",
       "confirm": "Reset MFA",
       "success": "MFA reset for {name}"
+    },
+    "mfaCode": {
+      "action": "Issue MFA setup code",
+      "title": "MFA setup code",
+      "description": "A one-time MFA setup code will be generated for {name}. It is shown only once.",
+      "shownOnce": "Code for {name}. Share it through a secure channel; it will not be shown again.",
+      "copy": "Copy",
+      "expires": "Expires: {at}",
+      "close": "Close",
+      "issue": "Generate code",
+      "retry": "Retry"
     }
   },
   "Onboarding": {
