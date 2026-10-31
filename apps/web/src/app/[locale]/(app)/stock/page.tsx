@@ -25,6 +25,7 @@ export default function StockPage() {
   const locale = useLocale();
   const { hasPermission } = useAuth();
 
+  const canMovements = hasPermission('stock.movements.read');
   const [tab, setTab] = useState<'levels' | 'movements'>('levels');
   const [page, setPage] = useState(1);
   const { sort, toggle: toggleSort } = useSort();
@@ -62,16 +63,16 @@ export default function StockPage() {
       </div>
 
       <div role="tablist" className="flex gap-2">
-        {(['levels', 'movements'] as const).map((k) => (
+        {(canMovements ? (['levels', 'movements'] as const) : (['levels'] as const)).map((k) => (
           <Button key={k} role="tab" aria-selected={tab === k} variant={tab === k ? 'default' : 'outline'} size="sm" onClick={() => setTab(k)}>
             {t(`tabs.${k}`)}
           </Button>
         ))}
       </div>
 
-      {tab === 'movements' && <MovementsSection />}
+      {tab === 'movements' && canMovements && <MovementsSection />}
 
-      {tab === 'levels' && <>
+      {(tab === 'levels' || !canMovements) && <>
       <div className="flex flex-wrap items-center gap-3">
         <Button variant="ghost" size="sm" onClick={() => refetch()} disabled={isFetching}>
           <RefreshCw className={cn('mr-2 h-4 w-4', isFetching && 'animate-spin')} />

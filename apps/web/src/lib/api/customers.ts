@@ -77,6 +77,8 @@ export interface ListCustomersParams {
   pageSize?: number;
   search?: string;
   isBlocked?: boolean;
+  /** Soft-deleted only; requires `customers.restore`. */
+  deleted?: boolean;
   sortBy?: string;
   sortDir?: 'asc' | 'desc';
   [key: string]: string | number | boolean | undefined;
@@ -193,4 +195,21 @@ export function useDeleteCustomerMutation() {
       queryClient.invalidateQueries({ queryKey: ['customers', id] });
     },
   });
+}
+
+/** POST /customers/:id/restore — Owner-only (`customers.restore`); 409 CUSTOMER_CODE_CONFLICT_ON_RESTORE if a live customer holds the code. */
+export function useRestoreCustomerMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => apiFetch<Customer>(`/customers/${id}/restore`, { method: 'POST' }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['customers'] }),
+  });
+}
+
+/** details.blockers of CUSTOMER_HAS_OPEN_OBLIGATIONS (money as decimal strings). */
+export interface CustomerDeleteBlockers {
+  orders: Record<string, number>;
+  pendingHandover: number;
+  debt: string;
+  advance: string;
 }

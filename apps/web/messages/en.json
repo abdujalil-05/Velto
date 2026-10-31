@@ -202,7 +202,8 @@
     "filter": {
       "all": "All",
       "active": "Active",
-      "blocked": "Blocked"
+      "blocked": "Blocked",
+      "deleted": "Deleted"
     },
     "form": {
       "required": "Required field",
@@ -297,7 +298,29 @@
       "inTransitHint": "Debt is not reduced until a cashier accepts the payment"
     },
     "credit": "Credit",
-    "advance": "Advance"
+    "advance": "Advance",
+    "restore": "Restore",
+    "confirmRestore": {
+      "title": "Restore customer",
+      "description": "Restore “{name}”? The customer will reappear in the active list."
+    },
+    "restoreSuccess": "“{name}” has been restored.",
+    "restoreCodeConflict": "An active customer with code “{code}” already exists. Rename that active customer first, then restore this one.",
+    "emptyDeleted": "No deleted customers",
+    "deleteBlockers": {
+      "intro": "Cannot delete — open items:",
+      "orders": "{count} order(s) in status {status}",
+      "pendingHandover": "{count} payment(s) awaiting cashier handover",
+      "debt": "Open debt: {amount}",
+      "advance": "Unapplied advance: {amount}",
+      "status": {
+        "DRAFT": "Draft",
+        "SUBMITTED": "Submitted",
+        "CONFIRMED": "Confirmed",
+        "SHIPPED": "Shipped",
+        "DELIVERED": "Delivered"
+      }
+    }
   },
   "OrderStatus": {
     "DRAFT": "Draft",

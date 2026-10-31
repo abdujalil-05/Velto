@@ -1,5 +1,5 @@
 import { useTranslations } from 'next-intl';
-import { Trash2 } from 'lucide-react';
+import { RotateCcw, Trash2 } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -15,12 +15,15 @@ interface CustomersTableProps {
   /** `customers.delete` — Owner-only on the API side. */
   canDelete?: boolean;
   onDelete?: (customer: Customer) => void;
+  /** `customers.restore` — shown instead of delete in the deleted view. */
+  canRestore?: boolean;
+  onRestore?: (customer: Customer) => void;
 }
 
-export function CustomersTable({ customers, sort, onSort, canDelete = false, onDelete }: CustomersTableProps) {
+export function CustomersTable({ customers, sort, onSort, canDelete = false, onDelete, canRestore = false, onRestore }: CustomersTableProps) {
   const t = useTranslations('Customers');
   const tCommon = useTranslations('Common');
-  const showActions = canDelete && !!onDelete;
+  const showActions = (canDelete && !!onDelete) || (canRestore && !!onRestore);
 
   return (
     <div className="overflow-x-auto">
@@ -81,9 +84,16 @@ export function CustomersTable({ customers, sort, onSort, canDelete = false, onD
                 </td>
                 {showActions && (
                   <td className="py-2 text-right">
-                    <Button variant="ghost" size="sm" onClick={() => onDelete?.(customer)} aria-label={t('delete')}>
-                      <Trash2 className="h-4 w-4 text-destructive" />
-                    </Button>
+                    {canRestore && onRestore ? (
+                      <Button variant="ghost" size="sm" onClick={() => onRestore(customer)}>
+                        <RotateCcw className="mr-1 h-4 w-4" />
+                        {t('restore')}
+                      </Button>
+                    ) : (
+                      <Button variant="ghost" size="sm" onClick={() => onDelete?.(customer)} aria-label={t('delete')}>
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      </Button>
+                    )}
                   </td>
                 )}
               </tr>

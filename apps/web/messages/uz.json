@@ -202,7 +202,8 @@
     "filter": {
       "all": "Barchasi",
       "active": "Faol",
-      "blocked": "Bloklangan"
+      "blocked": "Bloklangan",
+      "deleted": "O'chirilgan"
     },
     "form": {
       "required": "Majburiy maydon",
@@ -297,7 +298,29 @@
       "inTransitHint": "Kassir qabul qilmaguncha qarz kamaymaydi"
     },
     "credit": "Kredit",
-    "advance": "Avans"
+    "advance": "Avans",
+    "restore": "Tiklash",
+    "confirmRestore": {
+      "title": "Mijozni tiklash",
+      "description": "“{name}” tiklansinmi? Mijoz faol ro'yxatda qayta paydo bo'ladi."
+    },
+    "restoreSuccess": "“{name}” tiklandi.",
+    "restoreCodeConflict": "“{code}” kodli faol mijoz allaqachon mavjud. Avval o'sha faol mijoz kodini o'zgartiring, so'ng bu mijozni tiklang.",
+    "emptyDeleted": "O'chirilgan mijozlar yo'q",
+    "deleteBlockers": {
+      "intro": "O'chirib bo'lmaydi — yopilmagan ma'lumotlar:",
+      "orders": "{status} holatidagi buyurtmalar: {count}",
+      "pendingHandover": "Kassir qabul qilishini kutayotgan to'lovlar: {count}",
+      "debt": "Ochiq qarz: {amount}",
+      "advance": "Qo'llanmagan avans: {amount}",
+      "status": {
+        "DRAFT": "Qoralama",
+        "SUBMITTED": "Yuborilgan",
+        "CONFIRMED": "Tasdiqlangan",
+        "SHIPPED": "Jo'natilgan",
+        "DELIVERED": "Yetkazilgan"
+      }
+    }
   },
   "OrderStatus": {
     "DRAFT": "Qoralama",

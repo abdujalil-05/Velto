@@ -6,10 +6,11 @@ import { toast } from 'sonner';
 import { Plus, RefreshCw, Search, Users } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
-import { useCustomersQuery, useDeleteCustomerMutation, type Customer } from '@/lib/api/customers';
-import { errorMessage } from '@/lib/api/client';
+import { useCustomersQuery, useDeleteCustomerMutation, useRestoreCustomerMutation, type Customer, type CustomerDeleteBlockers } from '@/lib/api/customers';
+import { ApiError, errorMessage } from '@/lib/api/client';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
 import { useSort } from '@/lib/hooks/use-sort';
+import { formatMoney } from '@/lib/format';
 import { exportToCsv } from '@/lib/export-csv';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -22,10 +23,11 @@ import { CustomersTable } from '@/components/customers/customers-table';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { cn } from '@/lib/utils';
 
-type BlockedFilter = 'all' | 'active' | 'blocked';
+type BlockedFilter = 'all' | 'active' | 'blocked' | 'deleted';
 
 export default function CustomersPage() {
   const t = useTranslations('Customers');
+  const tCommon = useTranslations('Common');
   const locale = useLocale();
   const { hasPermission } = useAuth();
 
@@ -35,12 +37,15 @@ export default function CustomersPage() {
   const debouncedSearch = useDebouncedValue(search, 300);
   const { sort, toggle: toggleSort } = useSort();
   const canDelete = hasPermission('customers.delete');
+  const canRestore = hasPermission('customers.restore');
+  const showDeleted = canRestore && filter === 'deleted';
 
   const { data, isLoading, isError, error, refetch, isFetching } = useCustomersQuery({
     page,
     pageSize: 25,
     search: debouncedSearch || undefined,
-    isBlocked: filter === 'all' ? undefined : filter === 'blocked',
+    isBlocked: filter === 'active' || filter === 'blocked' ? filter === 'blocked' : undefined,
+    deleted: showDeleted || undefined,
     sortBy: sort.sortBy,
     sortDir: sort.sortDir,
   });
@@ -60,7 +65,42 @@ export default function CustomersPage() {
       toast.success(t('deleteSuccess', { name: pendingDelete.name }));
       setPendingDelete(null);
     } catch (err) {
-      setDeleteError(errorMessage(err, locale));
+      setDeleteError(deleteErrorText(err));
+    }
+  }
+
+  // ADR-061c: CUSTOMER_HAS_OPEN_OBLIGATIONS carries details.blockers — list them.
+  function deleteErrorText(err: unknown): string {
+    const base = errorMessage(err, locale);
+    const blockers = err instanceof ApiError ? (err.details as { blockers?: Partial<CustomerDeleteBlockers> } | undefined)?.blockers : undefined;
+    if (!blockers) return base;
+    const parts: string[] = [];
+    for (const [status, count] of Object.entries(blockers.orders ?? {})) {
+      if (count > 0) parts.push(t('deleteBlockers.orders', { count, status: t.has(`deleteBlockers.status.${status}`) ? t(`deleteBlockers.status.${status}`) : status }));
+    }
+    if (blockers.pendingHandover) parts.push(t('deleteBlockers.pendingHandover', { count: blockers.pendingHandover }));
+    if (blockers.debt && Number(blockers.debt) !== 0) parts.push(t('deleteBlockers.debt', { amount: `${formatMoney(blockers.debt)} ${tCommon('somUnit')}` }));
+    if (blockers.advance && Number(blockers.advance) !== 0) parts.push(t('deleteBlockers.advance', { amount: `${formatMoney(blockers.advance)} ${tCommon('somUnit')}` }));
+    return parts.length ? `${base} ${t('deleteBlockers.intro')} ${parts.join('; ')}` : base;
+  }
+
+  const restoreMutation = useRestoreCustomerMutation();
+  const [pendingRestore, setPendingRestore] = useState<Customer | null>(null);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+
+  async function confirmRestore() {
+    if (!pendingRestore) return;
+    setRestoreError(null);
+    try {
+      await restoreMutation.mutateAsync(pendingRestore.id);
+      toast.success(t('restoreSuccess', { name: pendingRestore.name }));
+      setPendingRestore(null);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'CUSTOMER_CODE_CONFLICT_ON_RESTORE') {
+        setRestoreError(t('restoreCodeConflict', { code: pendingRestore.code }));
+      } else {
+        setRestoreError(errorMessage(err, locale));
+      }
     }
   }
 
@@ -108,7 +148,7 @@ export default function CustomersPage() {
         </div>
 
         <div className="flex gap-1 rounded-md border border-border p-1">
-          {(['all', 'active', 'blocked'] as const).map((f) => (
+          {((canRestore ? ['all', 'active', 'blocked', 'deleted'] : ['all', 'active', 'blocked']) as BlockedFilter[]).map((f) => (
             <button
               key={f}
               type="button"
@@ -159,8 +199,8 @@ export default function CustomersPage() {
         <Card>
           <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
             <Users className="h-10 w-10 text-muted-foreground" />
-            {hasFilters ? (
-              <p className="text-sm text-muted-foreground">{t('emptySearch')}</p>
+            {hasFilters || showDeleted ? (
+              <p className="text-sm text-muted-foreground">{showDeleted ? t('emptyDeleted') : t('emptySearch')}</p>
             ) : (
               <>
                 <p className="max-w-sm text-sm text-muted-foreground">{t('emptyState')}</p>
@@ -183,7 +223,12 @@ export default function CustomersPage() {
               customers={data.data}
               sort={sort}
               onSort={toggleSort}
-              canDelete={canDelete}
+              canDelete={canDelete && !showDeleted}
+              canRestore={showDeleted}
+              onRestore={(customer) => {
+                setRestoreError(null);
+                setPendingRestore(customer);
+              }}
               onDelete={(customer) => {
                 setDeleteError(null);
                 setPendingDelete(customer);
@@ -208,6 +253,22 @@ export default function CustomersPage() {
         error={deleteError}
         isPending={deleteMutation.isPending}
         onConfirm={confirmDelete}
+      />
+
+      <ConfirmDialog
+        open={pendingRestore !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingRestore(null);
+            setRestoreError(null);
+          }
+        }}
+        title={t('confirmRestore.title')}
+        description={t('confirmRestore.description', { name: pendingRestore?.name ?? '' })}
+        confirmLabel={t('restore')}
+        error={restoreError}
+        isPending={restoreMutation.isPending}
+        onConfirm={confirmRestore}
       />
     </div>
   );
