@@ -225,19 +225,46 @@ describe('AllExceptionsFilter', () => {
       expect(Sentry.captureException).not.toHaveBeenCalled();
     });
 
-    it('keeps P2028 "Transaction already closed" (timeout inside a tx) as 500 + Sentry', () => {
+    it.each([
+      'Transaction API error: Transaction already closed: A commit cannot be executed on an expired transaction. The timeout for this transaction was 5000 ms, however 5037 ms passed since the start of the transaction.',
+      'Transaction API error: Transaction already closed: A query cannot be executed on an expired transaction. The timeout for this transaction was 5000 ms',
+    ])('maps P2028 expired tx (%s) to 503 SERVICE_BUSY, same contract as 55P03, warn only, no Sentry', (message) => {
       const filter = new AllExceptionsFilter();
       const { host, status, json, setHeader } = mockHost();
 
-      filter.catch(
-        prismaErr('P2028', 'Transaction API error: Transaction already closed: A commit cannot be executed on an expired transaction. The timeout for this transaction was 5000 ms'),
-        host,
-      );
+      filter.catch(prismaErr('P2028', message), host);
+
+      expect(status).toHaveBeenCalledWith(HttpStatus.SERVICE_UNAVAILABLE);
+      const body = json.mock.calls[0]![0];
+      expect(body.code).toBe('SERVICE_BUSY');
+      expect(Object.keys(body.message).sort()).toEqual(['en', 'ru', 'uz']);
+      expect(setHeader).toHaveBeenCalledWith('Retry-After', '1');
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      'Transaction API error: Transaction already closed: A query cannot be executed on a committed transaction.',
+      'Transaction API error: Transaction not found. Transaction ID is invalid, refers to an old closed transaction',
+    ])('keeps P2028 that does not prove a rollback (%s) as 500 + Sentry', (message) => {
+      const filter = new AllExceptionsFilter();
+      const { host, status, json, setHeader } = mockHost();
+
+      filter.catch(prismaErr('P2028', message), host);
 
       expect(status).toHaveBeenCalledWith(HttpStatus.INTERNAL_SERVER_ERROR);
       expect(json.mock.calls[0]![0].code).toBe('HTTP_500');
       expect(setHeader).not.toHaveBeenCalled();
       expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not map the expired-tx text without a P2028 code', () => {
+      const filter = new AllExceptionsFilter();
+      const { host, status } = mockHost();
+
+      filter.catch(new Error('Transaction already closed: A commit cannot be executed on an expired transaction'), host);
+
+      expect(status).toHaveBeenCalledWith(HttpStatus.INTERNAL_SERVER_ERROR);
     });
 
     it('keeps an unrelated error as 500 + Sentry', () => {

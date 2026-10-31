@@ -121,12 +121,18 @@ const TX_CONFLICT_RETRY_AFTER_SECONDS = 1;
 const TX_START_TIMEOUT_PATTERN = /Unable to start a transaction in the (?:given|allocated) time/i;
 
 /**
+ * P2028 text when the interactive tx hit its timeout: Prisma rolled it back and
+ * refused the operation, so nothing was committed (deliver-tx-timeout.test.ts).
+ * Deliberately not "Transaction already closed" alone: the "on a committed
+ * transaction" shape means the writes ARE durable, so a retry is not safe.
+ */
+const TX_EXPIRED_PATTERN = /Transaction already closed:.*\bcannot be executed on an expired transaction/is;
+
+/**
  * Pool exhaustion (P2024) and tx-start timeout (P2028 "Unable to start...")
- * both fail BEFORE any statement ran, so a retry is safe -> 503. The other
- * P2028 shapes ("Transaction already closed", "expired transaction", "not
- * found") mean the timeout hit INSIDE an open transaction: the outcome may be
- * partially applied, so they must stay a 500 (and reach Sentry), never a
- * retry-me 503.
+ * both fail BEFORE any statement ran, so a retry is safe -> 503. Other P2028
+ * shapes that do not prove a rollback ("committed transaction", "not found")
+ * stay a 500 and reach Sentry; the expired shape is in txConflictState().
  */
 function isPoolBusy(exception: unknown): boolean {
   if (!(exception instanceof Error) || !isPrismaKnownRequestError(exception)) return false;
@@ -150,11 +156,16 @@ function isPrismaUnknownRequestError(exception: object): boolean {
  * F7: lock_not_available (55P03, the per-request `SET LOCAL lock_timeout`, see
  * common/tenant/lock-timeout.ts) is the same class: the statement fails before
  * the lock is granted and the request tx is rolled back -> 503, retry-safe.
+ * P2028 on an expired tx (TX_EXPIRED_PATTERN) is the same class: full rollback.
  */
 function txConflictState(exception: unknown): string | undefined {
   if (!(exception instanceof Error)) return undefined;
   const prismaErr = isPrismaKnownRequestError(exception) || isPrismaUnknownRequestError(exception);
-  if (isPrismaKnownRequestError(exception) && (exception as { code?: unknown }).code === 'P2034') return 'P2034';
+  if (isPrismaKnownRequestError(exception)) {
+    const code = (exception as { code?: unknown }).code;
+    if (code === 'P2034') return 'P2034';
+    if (code === 'P2028' && TX_EXPIRED_PATTERN.test(exception.message)) return 'P2028';
+  }
   const state = sqlState(exception);
   if (state === '40P01' || state === '40001' || state === '55P03') return state;
   if (/deadlock detected/i.test(exception.message)) return '40P01';
