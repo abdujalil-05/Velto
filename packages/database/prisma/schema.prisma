@@ -1247,7 +1247,13 @@ model ImportJob {
   // importjob_createdby_same_company (20261014090000).
   createdBy String?  @db.Uuid
   progress  Int? // 0..100, CHECK ImportJob_progress_range_check
-  createdAt DateTime @default(now())
+  // ADR-064b (20261031120000): durable count of automatic dispatch/recovery
+  // enqueues (NOT BullMQ-internal retries). CHECK ImportJob_attemptCount_nonneg_check.
+  attemptCount Int      @default(0)
+  createdAt    DateTime @default(now())
+  // ADR-064b: last state change. Also bumped by DB trigger
+  // importjob_set_updated_at on every UPDATE, incl. raw SQL writers.
+  updatedAt    DateTime @default(now()) @updatedAt
 
   company Company @relation(fields: [companyId], references: [id])
   creator User?   @relation("ImportJobCreator", fields: [createdBy], references: [id])
@@ -1256,6 +1262,8 @@ model ImportJob {
 
   @@index([companyId, status])
   @@index([companyId, createdAt(sort: Desc)])
+  // ADR-064b: cross-tenant stale-PROCESSING sweep (status + age).
+  @@index([status, updatedAt])
 }
 
 // 11.1: "Buxgalter /export/1c'da davrni tanlaydi -> fayl BullMQ orqali fon
