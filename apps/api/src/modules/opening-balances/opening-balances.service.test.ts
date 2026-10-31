@@ -202,6 +202,74 @@ describe('OpeningBalancesService (integration)', () => {
     expect(await codeOf(post(stale.batch.id, { debt: '70' }))).toBe('OPENING_CONFLICT');
   });
 
+  it('ADR-062: same file as two CUSTOMER batches (DEBT without docRef + advance) posts the ledger exactly once - sequential and parallel', async () => {
+    const ledgerCount = (ids: string[]) => run((tx) => tx.invoice.count({ where: { customerId: { in: ids }, openingBatchId: { not: null } } }));
+    const paymentCount = (ids: string[]) => run((tx) => tx.payment.count({ where: { customerId: { in: ids }, openingBatchId: { not: null } } }));
+
+    // DEBT without docRef is refused by the parser, so the app lock is the only guard for the docRef-keyed rows below.
+    const [nd] = await makeCustomers(`ND${tag}`, 1);
+    expect((await previewCustomers([[nd, 10, undefined, undefined, undefined]])).invalidCount).toBe(1);
+
+    // (a) sequential
+    const [s1, s2] = await makeCustomers(`DS${tag}`, 2);
+    const sRows = [
+      [s1, 300, undefined, `DS-${tag}`, undefined],
+      [s2, undefined, 50, undefined, undefined],
+    ];
+    const a = await previewCustomers(sRows);
+    expect(a.invalidCount).toBe(0);
+    await post(a.batch.id, { debt: '300', credit: '50' });
+    const b = await previewCustomers(sRows);
+    expect(b.invalidCount).toBe(2); // existing ledger -> row errors
+    expect(await codeOf(post(b.batch.id, { debt: '300', credit: '50' }))).toBe('OPENING_PREVIEW_HAS_ERRORS');
+    expect(await ledgerCount([(await customerByCode(s1!)).id])).toBe(1);
+    expect(await paymentCount([(await customerByCode(s2!)).id])).toBe(1);
+    expect((await customerByCode(s1!)).cachedBalance.toFixed(2)).toBe('300.00');
+    expect((await customerByCode(s2!)).cachedBalance.toFixed(2)).toBe('-50.00');
+
+    // (b) parallel: both previewed before either posts
+    const [p1, p2] = await makeCustomers(`DP${tag}`, 2);
+    const pRows = [
+      [p1, 300, undefined, `DP-${tag}`, undefined],
+      [p2, undefined, 50, undefined, undefined],
+    ];
+    const x = await previewCustomers(pRows);
+    const y = await previewCustomers(pRows);
+    expect(x.invalidCount + y.invalidCount).toBe(0);
+    const settled = await Promise.allSettled([post(x.batch.id, { debt: '300', credit: '50' }), post(y.batch.id, { debt: '300', credit: '50' })]);
+    expect(settled.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const rejected = settled.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+    expect((rejected.reason as { response?: { code?: string } }).response?.code).toBe('OPENING_CONFLICT');
+    const ids = [(await customerByCode(p1!)).id, (await customerByCode(p2!)).id];
+    expect(await ledgerCount(ids)).toBe(1);
+    expect(await paymentCount(ids)).toBe(1);
+    expect((await customerByCode(p1!)).cachedBalance.toFixed(2)).toBe('300.00');
+    expect((await customerByCode(p2!)).cachedBalance.toFixed(2)).toBe('-50.00');
+    await assertBalanceInvariants([s1!, s2!, p1!, p2!]);
+  });
+
+  it('ADR-062: OPENING_FILE_ALREADY_UPLOADED warning for the same fileHash while a live batch exists; not shown once that batch is VOIDED', async () => {
+    const [c1] = await makeCustomers(`FH${tag}`, 1);
+    const rows = [[c1, 77, undefined, `FH-${tag}`, undefined]];
+    const upload = await xlsx(CUST_HEADERS, rows);
+    const previewSame = () => run(() => service.preview('CUSTOMER_BALANCE', upload, owner));
+    const first = await previewSame();
+    expect(first.warnings).toEqual([]);
+    const second = await previewSame();
+    expect(second.warnings.map((w) => w.code)).toEqual(['OPENING_FILE_ALREADY_UPLOADED']);
+    expect(second.warnings[0]!.batchIds).toEqual([first.batch.id]);
+    expect(second.invalidCount).toBe(0); // a warning, not an error
+
+    const posted = await post(first.batch.id, { debt: '77' });
+    expect(posted.status).toBe('POSTED');
+    expect((await previewSame()).warnings[0]!.batchIds).toContain(first.batch.id);
+
+    await voidBatch(first.batch.id);
+    const afterVoid = await previewSame();
+    // VOIDED batches are excluded; the abandoned PREVIEWED ones (first-preview duplicates) still warn.
+    expect(afterVoid.warnings[0]?.batchIds ?? []).not.toContain(first.batch.id);
+  });
+
   it('docDate after asOfDate is refused (400)', async () => {
     const [c1] = await makeCustomers(`DD${tag}`, 1);
     const p = await previewCustomers([[c1, 5, undefined, 'L1', daysAgo(1)]]);
