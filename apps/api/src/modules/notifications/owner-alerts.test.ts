@@ -1,6 +1,6 @@
 import 'reflect-metadata';
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ConfigService } from '@nestjs/config';
 import type { ExecutionContext } from '@nestjs/common';
 import { prisma, systemPrisma } from '@velto/database';
@@ -17,6 +17,7 @@ import { PaymentsService } from '../finance/payments/payments.service';
 import { StockController } from '../stock/stock.controller';
 import { StockService } from '../stock/stock.service';
 import type { NotificationDeliveryJobData } from './notification-delivery.constants';
+import { NotificationDeliveryService } from './notification-delivery.service';
 import { NotificationsService } from './notifications.service';
 import { OwnerAlertsService, formatTashkent } from './owner-alerts';
 
@@ -106,8 +107,8 @@ describe('OWNER alerts for critical operations (ADR-060a, real Postgres + RLS)',
         const msg = (linked.message as Record<string, string>)[lang]!;
         expect(msg).toContain('1500000.00 UZS');
         expect(msg).toContain(p.number);
-        expect(msg).toContain('Cash Zed');
-        expect(msg).toContain('wrong customer');
+        expect(msg).not.toContain('Cash');
+        expect(msg).not.toContain('wrong customer');
         expect(msg).toContain('REVERSED');
         expect(msg).not.toMatch(/\+998/);
         expect((linked.title as Record<string, string>)[lang]).toBeTruthy();
@@ -168,7 +169,9 @@ describe('OWNER alerts for critical operations (ADR-060a, real Postgres + RLS)',
       const rows = await systemPrisma.notification.findMany({ where: { dedupKey: `stock.adjust:${mv.id}` } });
       expect(rows.map((r) => r.recipientId).sort()).toEqual([ownerLinked, ownerUnlinked].sort());
       const msg = (rows[0]!.message as Record<string, string>).en!;
-      for (const part of ['Alert Cola (OA-SKU-1)', 'Main WH', '-7 dona', 'Cash Zed', 'broken pallet']) expect(msg).toContain(part);
+      for (const part of ['Alert Cola (OA-SKU-1)', 'Main WH', '-7 dona', 'Reason and details are available in Velto']) expect(msg).toContain(part);
+      expect(msg).not.toContain('Cash');
+      expect(msg).not.toContain('broken pallet');
       expect(rows[0]).toMatchObject({ type: 'stock.adjusted', entityType: 'StockMovement', entityId: mv.id });
       const audit = await systemPrisma.auditLog.findFirstOrThrow({ where: { companyId, action: 'stock.adjust', entityId: mv.id } });
       expect(audit).toMatchObject({ userId: actor.id, traceId: 'trace-oa-stock-1' });
@@ -226,6 +229,60 @@ describe('OWNER alerts for critical operations (ADR-060a, real Postgres + RLS)',
       expect(await systemPrisma.stockMovement.count({ where: { companyId, note: 'idem adjust' } })).toBe(m0 + 1);
       expect(n1 - n0).toBe(2);
       expect(await countAll()).toBe(n1);
+    });
+  });
+
+  describe('privacy: free-text reason / actor never reach Notification.message or the Telegram body (ADR-060)', () => {
+    afterEach(() => vi.unstubAllGlobals());
+    const NASTY = [
+      '+998 90 123 45 67',
+      '<b>x</b><a href="http://evil.example">l</a>',
+      '*bold* _x_ [l](http://e.example) `code`',
+      'spec \u0007\u001b[31m \u202e emoji 😀🔥',
+    ];
+    const BIG = `BIGSECRET${'z'.repeat(10_000)}`;
+    const leaks = ['998 90 123', '<b>x</b>', 'evil.example', '*bold*', '[l](http', '`code`', 'emoji', 'BIGSECRET', 'Cash Zed'];
+
+    async function assertSafe(dedupKey: string) {
+      const rows = await systemPrisma.notification.findMany({ where: { dedupKey, recipientId: ownerLinked } });
+      expect(rows).toHaveLength(1);
+      const row = rows[0]!;
+      const stored = JSON.stringify([row.title, row.message]);
+      for (const l of leaks) expect(stored).not.toContain(l);
+      const f = vi.fn(async () => ({ ok: true, status: 200, body: null }));
+      vi.stubGlobal('fetch', f);
+      const delivery = new NotificationDeliveryService(tenantPrisma, { get: () => 'TEST-TOKEN' } as unknown as ConfigService);
+      expect(await delivery.deliver(companyId, row.id)).toBe('SENT');
+      const body = JSON.parse((f.mock.calls[0] as unknown as [string, { body: string }])[1].body) as Record<string, unknown>;
+      expect(body).not.toHaveProperty('parse_mode');
+      expect(Object.keys(body).sort()).toEqual(['chat_id', 'text']);
+      for (const l of leaks) expect(String(body.text)).not.toContain(l);
+      expect(String(body.text).length).toBeLessThanOrEqual(1024);
+      expect(String(body.text)).toContain("Sabab va tafsilotlar Velto'da");
+    }
+
+    it('payment reversal with nasty reasons', async () => {
+      const p = await newPayment();
+      await tenantPrisma.run(companyId, () => payments.reverse(p.id, `${NASTY.join(' | ')} ${BIG}`, actor));
+      const reversal = await systemPrisma.paymentReversal.findUniqueOrThrow({ where: { reversesPaymentId: p.id } });
+      await assertSafe(`payment.reverse:${reversal.id}`);
+      expect(reversal.reason).toContain('BIGSECRET'); // business reason is untouched
+    });
+
+    it('stock adjust / reverse with nasty reasons; hostile product name is sanitized and clipped', async () => {
+      const hostile = await systemPrisma.product.create({ data: { companyId, sku: 'OA-<i>X</i>', name: `<b>Cola</b>\n\u0007*x* ${'N'.repeat(500)}`, baseUnit: 'dona' } });
+      await tenantPrisma.run(companyId, () => stock.receive({ productId: hostile.id, warehouseId, qty: 50 } as never, actor));
+      await tenantPrisma.run(companyId, () => stock.adjust({ productId: hostile.id, warehouseId, qty: -3, reason: NASTY.join(' | ') }, actor));
+      const mv = await systemPrisma.stockMovement.findFirstOrThrow({ where: { companyId, type: 'ADJUST', productId: hostile.id } });
+      const row = await systemPrisma.notification.findFirstOrThrow({ where: { dedupKey: `stock.adjust:${mv.id}`, recipientId: ownerLinked } });
+      const en = (row.message as Record<string, string>).en!;
+      expect(en).not.toContain('\u0007');
+      expect(en.split('\n').find((l) => l.startsWith('Product:'))!.length).toBeLessThan(160);
+      expect(en).not.toContain('N'.repeat(100));
+      await assertSafe(`stock.adjust:${mv.id}`);
+
+      const res = await tenantPrisma.run(companyId, () => stock.reverseMovement(mv.id, `${NASTY.join(' | ')} ${BIG}`, actor));
+      await assertSafe(`stock.reverse:${res.movement.id}`);
     });
   });
 

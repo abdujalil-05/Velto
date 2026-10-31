@@ -2,17 +2,12 @@ import { Injectable } from '@nestjs/common';
 import type { Prisma, TenantClient } from '@velto/database';
 import type { LocalizedMessage } from '../../common/errors/app-exception';
 import { NotificationsService } from './notifications.service';
+import { safeValue } from './telegram-text';
 
 const TZ = 'Asia/Tashkent';
-const REASON_MAX = 200;
 
 /** Notification types that go to OWNERs only; delivery re-checks the OWNER role at send time. */
 export const OWNER_ALERT_TYPES: ReadonlySet<string> = new Set(['payment.reversed', 'stock.adjusted', 'stock.reversed']);
-
-export interface OwnerAlertActor {
-  firstName: string;
-  lastName: string;
-}
 
 export interface PaymentReversedAlert {
   companyId: string;
@@ -20,8 +15,6 @@ export interface PaymentReversedAlert {
   paymentId: string;
   paymentNumber: string;
   amount: Prisma.Decimal;
-  actor: OwnerAlertActor;
-  reason: string;
   at: Date;
 }
 
@@ -32,8 +25,6 @@ export interface StockAlert {
   productId: string;
   warehouseId: string;
   qty: Prisma.Decimal;
-  actor: OwnerAlertActor;
-  reason: string;
   at: Date;
 }
 
@@ -44,15 +35,15 @@ export function formatTashkent(at: Date): string {
   return `${p('year')}-${p('month')}-${p('day')} ${p('hour')}:${p('minute')}`;
 }
 
-const actorName = (a: OwnerAlertActor) => `${a.firstName} ${a.lastName}`.trim();
-const clip = (s: string) => (s.length > REASON_MAX ? `${s.slice(0, REASON_MAX)}…` : s);
+const DETAILS_LINE: LocalizedMessage = { uz: "Sabab va tafsilotlar Velto'da", ru: 'Причина и подробности доступны в Velto', en: 'Reason and details are available in Velto' };
 const signed = (q: Prisma.Decimal) => (q.isNegative() ? q.toString() : `+${q.toString()}`);
 
 /**
  * ADR-060a: critical-operation alerts to the company's OWNERs. Recipients are resolved inside the caller's tx
  * (active users who currently hold the OWNER role in this company); one deduplicated Notification per OWNER is
  * inserted in that same tx, so the alert commits/rolls back with the operation. Telegram delivery is async.
- * Content: no phone numbers or credentials.
+ * Content (ADR-060 privacy): allowlisted fields only. No free-text reason, no actor name, no phone numbers or
+ * credentials; catalog values are sanitized and clipped. A fixed line points the OWNER to Velto for details.
  */
 @Injectable()
 export class OwnerAlertsService {
@@ -71,13 +62,12 @@ export class OwnerAlertsService {
     if (a.amount.isZero()) return;
     const amount = `${a.amount.toFixed(2)} UZS`;
     const when = formatTashkent(a.at);
-    const reason = clip(a.reason);
-    const who = actorName(a.actor);
+    const number = safeValue(a.paymentNumber);
     const title: LocalizedMessage = { uz: "To'lov bekor qilindi", ru: 'Платёж отменён', en: 'Payment reversed' };
     const message: LocalizedMessage = {
-      uz: `Summa: ${amount}\nTo'lov: ${a.paymentNumber}\nKim: ${who}\nSabab: ${reason}\nVaqt: ${when}\nHolat: REVERSED`,
-      ru: `Сумма: ${amount}\nПлатёж: ${a.paymentNumber}\nКто: ${who}\nПричина: ${reason}\nВремя: ${when}\nСтатус: REVERSED`,
-      en: `Amount: ${amount}\nPayment: ${a.paymentNumber}\nBy: ${who}\nReason: ${reason}\nTime: ${when}\nStatus: REVERSED`,
+      uz: `Summa: ${amount}\nTo'lov: ${number}\nVaqt: ${when}\nHolat: REVERSED\n${DETAILS_LINE.uz}`,
+      ru: `Сумма: ${amount}\nПлатёж: ${number}\nВремя: ${when}\nСтатус: REVERSED\n${DETAILS_LINE.ru}`,
+      en: `Amount: ${amount}\nPayment: ${number}\nTime: ${when}\nStatus: REVERSED\n${DETAILS_LINE.en}`,
     };
     await this.send(tx, a.companyId, { type: 'payment.reversed', title, message, entityType: 'Payment', entityId: a.paymentId, dedupKey: `payment.reverse:${a.reversalId}` });
   }
@@ -96,16 +86,14 @@ export class OwnerAlertsService {
       tx.product.findUnique({ where: { id: a.productId }, select: { name: true, sku: true, baseUnit: true } }),
       tx.warehouse.findUnique({ where: { id: a.warehouseId }, select: { name: true } }),
     ]);
-    const item = `${product?.name ?? '?'} (${product?.sku ?? '?'})`;
-    const delta = `${signed(a.qty)} ${product?.baseUnit ?? ''}`.trim();
-    const wh = warehouse?.name ?? '?';
+    const item = `${safeValue(product?.name) || '?'} (${safeValue(product?.sku, 40) || '?'})`;
+    const delta = `${signed(a.qty)} ${safeValue(product?.baseUnit, 20)}`.trim();
+    const wh = safeValue(warehouse?.name) || '?';
     const when = formatTashkent(a.at);
-    const reason = clip(a.reason);
-    const who = actorName(a.actor);
     const message: LocalizedMessage = {
-      uz: `Mahsulot: ${item}\nOmbor: ${wh}\nO'zgarish: ${delta}\nKim: ${who}\nSabab: ${reason}\nVaqt: ${when}`,
-      ru: `Товар: ${item}\nСклад: ${wh}\nИзменение: ${delta}\nКто: ${who}\nПричина: ${reason}\nВремя: ${when}`,
-      en: `Product: ${item}\nWarehouse: ${wh}\nChange: ${delta}\nBy: ${who}\nReason: ${reason}\nTime: ${when}`,
+      uz: `Mahsulot: ${item}\nOmbor: ${wh}\nO'zgarish: ${delta}\nVaqt: ${when}\n${DETAILS_LINE.uz}`,
+      ru: `Товар: ${item}\nСклад: ${wh}\nИзменение: ${delta}\nВремя: ${when}\n${DETAILS_LINE.ru}`,
+      en: `Product: ${item}\nWarehouse: ${wh}\nChange: ${delta}\nTime: ${when}\n${DETAILS_LINE.en}`,
     };
     await this.send(tx, a.companyId, { type, title, message, entityType: 'StockMovement', entityId: a.movementId, dedupKey: `${dedupPrefix}:${a.movementId}` });
   }

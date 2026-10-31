@@ -190,7 +190,7 @@ export class StockService {
       newValue: toAuditJson(movement),
     });
     // ADR-060a: OWNER alert in this same tx — if it fails the whole adjustment rolls back.
-    await this.ownerAlerts.stockAdjusted(tx, { companyId: user.companyId, movementId: movement.id, productId: movement.productId, warehouseId: movement.warehouseId, qty: movement.qty, actor: user, reason: dto.reason, at: movement.createdAt });
+    await this.ownerAlerts.stockAdjusted(tx, { companyId: user.companyId, movementId: movement.id, productId: movement.productId, warehouseId: movement.warehouseId, qty: movement.qty, at: movement.createdAt });
 
     return this.getLevel(tx, dto.productId, dto.warehouseId);
   }
@@ -301,7 +301,7 @@ export class StockService {
       newValue: toAuditJson(reversal),
     });
     // ADR-060a: compensate() changed onHand by reversal.qty; alert in the same tx.
-    await this.ownerAlerts.stockReversed(tx, { companyId: user.companyId, movementId: reversal.id, productId: reversal.productId, warehouseId: reversal.warehouseId, qty: reversal.qty, actor: user, reason: trimmedReason, at: reversal.createdAt });
+    await this.ownerAlerts.stockReversed(tx, { companyId: user.companyId, movementId: reversal.id, productId: reversal.productId, warehouseId: reversal.warehouseId, qty: reversal.qty, at: reversal.createdAt });
 
     return { movement: reversal, level: await this.getLevel(tx, original.productId, original.warehouseId) };
   }

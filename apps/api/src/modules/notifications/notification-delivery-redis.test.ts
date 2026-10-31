@@ -215,7 +215,8 @@ describe('ADR-060 Telegram delivery (real Redis/BullMQ + Postgres)', () => {
     await until(async () => (await row(rows[0]!.id)).telegramStatus === 'SENT');
     const done = await row(rows[0]!.id);
     expect(done).toMatchObject({ telegramStatus: 'SENT', telegramAttempts: 1, telegramLastError: null });
-    expect(callsFor(note)).toHaveLength(1);
+    expect(callsFor(A.name)).toHaveLength(1);
+    expect(callsFor(note)).toHaveLength(0); // ADR-060: free-text reason never reaches Telegram
     expect(calls[0]!.chat).toBe(A.ownerTg.toString());
   });
 
@@ -293,11 +294,11 @@ describe('ADR-060 Telegram delivery (real Redis/BullMQ + Postgres)', () => {
     }
     const failed = await row(nid);
     expect(failed).toMatchObject({ telegramStatus: 'FAILED', telegramAttempts: TELEGRAM_MAX_ATTEMPTS, telegramLastError: 'HTTP_500', telegramNextAttemptAt: null });
-    expect(callsFor(note)).toHaveLength(TELEGRAM_MAX_ATTEMPTS);
+    expect(callsFor(A.name)).toHaveLength(TELEGRAM_MAX_ATTEMPTS);
     // terminal: more sweeps neither enqueue it nor send again
     await sweeper.sweep();
     await sleep(600);
-    expect(callsFor(note)).toHaveLength(TELEGRAM_MAX_ATTEMPTS);
+    expect(callsFor(A.name)).toHaveLength(TELEGRAM_MAX_ATTEMPTS);
     expect(await systemPrisma.stockMovement.count({ where: { id: mv.id } })).toBe(1);
   });
 
@@ -327,8 +328,8 @@ describe('ADR-060 Telegram delivery (real Redis/BullMQ + Postgres)', () => {
     mkWorker();
     await new NotificationDeliverySweepService(q).sweep();
     await until(async () => (await row(ra.id)).telegramStatus === 'SENT' && (await row(rb.id)).telegramStatus === 'SENT');
-    expect(callsFor(noteA).map((c) => c.chat)).toEqual([A.ownerTg.toString()]);
-    expect(callsFor(noteB).map((c) => c.chat)).toEqual([B.ownerTg.toString()]);
+    expect(callsFor(A.name).map((c) => c.chat)).toEqual([A.ownerTg.toString()]);
+    expect(callsFor(B.name).map((c) => c.chat)).toEqual([B.ownerTg.toString()]);
     expect(callsFor(A.name).every((c) => c.chat === A.ownerTg.toString())).toBe(true);
     expect(callsFor(B.name).every((c) => c.chat === B.ownerTg.toString())).toBe(true);
     expect(await row(ra.id)).toMatchObject({ companyId: A.companyId });

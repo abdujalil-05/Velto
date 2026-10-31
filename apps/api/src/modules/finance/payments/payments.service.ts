@@ -487,8 +487,6 @@ export class PaymentsService {
       paymentId,
       paymentNumber: before.number,
       amount: before.amount,
-      actor: user,
-      reason: trimmedReason,
       at: reversal.createdAt,
     });
     return withAdvance(full);

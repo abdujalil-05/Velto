@@ -12,6 +12,7 @@ import {
 } from './notification-delivery.constants';
 import { OWNER_ALERT_TYPES } from './owner-alerts';
 import { sendTelegramMessage } from './telegram-send';
+import { renderTelegramText } from './telegram-text';
 
 export type DeliveryOutcome = 'NOOP' | 'SKIPPED' | 'SENT' | 'RETRY' | 'FAILED';
 
@@ -115,6 +116,6 @@ export class NotificationDeliveryService {
     const title = row.title as unknown as LocalizedMessage;
     const message = row.message as unknown as LocalizedMessage;
     // uz only — there is no per-user locale preference in the schema (6.2).
-    return { claimedAt: now, attempts: row.telegramAttempts, telegramId: recipient.telegramId, text: `${title.uz}\n${message.uz}` };
+    return { claimedAt: now, attempts: row.telegramAttempts, telegramId: recipient.telegramId, text: renderTelegramText(String(title.uz ?? ''), String(message.uz ?? '')) };
   }
 }

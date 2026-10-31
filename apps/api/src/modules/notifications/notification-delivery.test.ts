@@ -73,6 +73,33 @@ describe('Notification Telegram delivery pipeline (ADR-060, real Postgres + RLS)
   }
   const reload = (id: string) => systemPrisma.notification.findUniqueOrThrow({ where: { id } });
 
+  describe('safe Telegram rendering (ADR-060 privacy)', () => {
+    it('strips control chars, hard-caps length, sends plain text without parse_mode; error never contains text/token', async () => {
+      const long = `<b>x</b> *y* ${'q'.repeat(10_000)}`;
+      const row = await systemPrisma.notification.create({
+        data: { companyId, recipientId: linkedId, type: 'test.safe', title: { uz: 'T\u0001it\u0007le', ru: 'T', en: 'T' }, message: { uz: `a\r\nb\u001bc‮ ${long}`, ru: 'r', en: 'e' }, telegramStatus: 'PENDING' },
+      });
+      const f = stubFetch(async () => okRes());
+      expect(await delivery.deliver(companyId, row.id)).toBe('SENT');
+      const [url, init] = f.mock.calls[0] as unknown as [string, { body: string }];
+      const body = JSON.parse(init.body) as Record<string, string>;
+      expect(Object.keys(body).sort()).toEqual(['chat_id', 'text']);
+      expect(body.text.length).toBeLessThanOrEqual(1024);
+      expect(body.text.startsWith('Title\na\nbc ')).toBe(true);
+      expect([...body.text].every((c) => c === '\n' || (c.codePointAt(0)! > 0x1f && c.codePointAt(0)! !== 0x202e && !(c.codePointAt(0)! >= 0x7f && c.codePointAt(0)! <= 0x9f)))).toBe(true);
+      expect(url).toContain(TOKEN); // token only in the request URL, never persisted:
+
+      const bad = await systemPrisma.notification.create({
+        data: { companyId, recipientId: linkedId, type: 'test.safe', title: MSG, message: { uz: 'SECRET-BODY-TEXT', ru: 'r', en: 'e' }, telegramStatus: 'PENDING', telegramAttempts: TELEGRAM_MAX_ATTEMPTS - 1 },
+      });
+      stubFetch(async () => status(400));
+      expect(await delivery.deliver(companyId, bad.id)).toBe('FAILED');
+      const after = await reload(bad.id);
+      expect(after.telegramLastError).toBe('HTTP_400');
+      expect(String(after.telegramLastError)).not.toMatch(/SECRET|bot/);
+    });
+  });
+
   describe('notify() insert', () => {
     it('PENDING for a linked recipient, SKIPPED/TELEGRAM_NOT_LINKED otherwise; enqueues by id only after commit', async () => {
       const queue = new FakeBullQueue();
