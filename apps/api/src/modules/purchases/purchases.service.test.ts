@@ -16,6 +16,7 @@ import {
   SupplierNotFoundException,
 } from './purchases-exceptions';
 import { computePurchaseLineTotal, PurchasesService } from './purchases.service';
+import { makeOwnerAlerts } from '../notifications/test-owner-alerts';
 
 describe('PurchasesService (integration, real Postgres + RLS)', () => {
   let companyId: string;
@@ -31,7 +32,7 @@ describe('PurchasesService (integration, real Postgres + RLS)', () => {
 
   const tenantPrisma = new TenantPrismaService();
   const auditLog = new AuditLogService();
-  const stock = new StockService(tenantPrisma, auditLog);
+  const stock = new StockService(tenantPrisma, auditLog, makeOwnerAlerts(tenantPrisma));
   const purchases = new PurchasesService(tenantPrisma, auditLog, stock, new DocumentNumberingService());
   const run = <T>(fn: () => Promise<T>) => tenantPrisma.run(companyId, fn);
 

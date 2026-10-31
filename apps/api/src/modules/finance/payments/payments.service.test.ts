@@ -26,6 +26,7 @@ import {
 import { CashSessionsService } from '../cash-sessions/cash-sessions.service';
 import { insertExportJob } from '../../integrations/export-1c/export-job-fixtures';
 import { PaymentsService } from './payments.service';
+import { makeOwnerAlerts } from '../../notifications/test-owner-alerts';
 
 describe('PaymentsService (integration, real Postgres + RLS)', () => {
   let companyId: string;
@@ -35,7 +36,7 @@ describe('PaymentsService (integration, real Postgres + RLS)', () => {
   const auditLog = new AuditLogService();
   const customers = new CustomersService(tenantPrisma, auditLog);
   const docNumbering = new DocumentNumberingService();
-  const payments = new PaymentsService(tenantPrisma, auditLog, customers, docNumbering);
+  const payments = new PaymentsService(tenantPrisma, auditLog, customers, docNumbering, makeOwnerAlerts(tenantPrisma));
 
   beforeAll(async () => {
     const tenant = await systemPrisma.tenant.create({

@@ -1,11 +1,24 @@
-import { Injectable } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import type { Queue } from 'bullmq';
 import { Prisma, type TenantClient } from '@velto/database';
 import type { LocalizedMessage } from '../../common/errors/app-exception';
 import { paginate } from '../../common/pagination/pagination.dto';
+import { addTracedJobReplacingTerminal, enqueueBestEffort } from '../../common/queue/trace-job';
+import { TenantContext } from '../../common/tenant/tenant-context';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import type { ListNotificationsQueryDto } from './dto/list-notifications.query';
+import {
+  NOTIFICATION_DELIVERY_JOB_OPTS,
+  NOTIFICATION_DELIVERY_QUEUE,
+  TELEGRAM_SEND_TIMEOUT_MS,
+  notificationJobId,
+  type NotificationDeliveryJobData,
+} from './notification-delivery.constants';
 import { NotificationNotFoundException } from './notifications-exceptions';
+import { sendTelegramMessage } from './telegram-send';
 
 export interface NotifyInput {
   recipientId: string;
@@ -14,6 +27,8 @@ export interface NotifyInput {
   message: LocalizedMessage;
   entityType?: string;
   entityId?: string;
+  /** Stable per-recipient idempotency key (e.g. "payment.reverse:<id>"): a repeat insert is a silent no-op. */
+  dedupKey?: string;
 }
 
 /** SalesOrder → Courier assignment notice (the kuryer delivery flow). */
@@ -22,49 +37,66 @@ export interface CourierOrderAssignedNotice {
   orderNumber: string;
 }
 
-const TELEGRAM_API = 'https://api.telegram.org';
-
 /**
- * M14 (5.3: "In-app + Telegram"). The Notification row (in-app) is the
- * reliable channel — it's created first and always succeeds or the whole
- * call fails; Telegram is sent best-effort on top of it afterwards (silently
- * skipped if the bot isn't configured or the recipient hasn't linked
- * Telegram, and any send failure is swallowed) since a Telegram outage must
- * never fail the business operation (e.g. order creation) that triggered
- * the notification.
+ * M14 (5.3: "In-app + Telegram"), ADR-060. notify() only writes the in-app Notification row inside the caller's
+ * transaction, with its Telegram state (PENDING when the recipient is linked, else SKIPPED); no Telegram call
+ * happens in any transaction. After COMMIT the row id is enqueued (jobId = id); NotificationDeliveryService
+ * delivers it with retry/backoff, and NotificationDeliverySweepService re-enqueues rows whose enqueue was lost.
+ * Without an injected queue (unit tests) the sweep is the only trigger.
  */
 @Injectable()
 export class NotificationsService {
+  private readonly logger = new Logger(NotificationsService.name);
+
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     private readonly configService: ConfigService,
+    @Optional() @InjectQueue(NOTIFICATION_DELIVERY_QUEUE) private readonly queue?: Queue<NotificationDeliveryJobData>,
   ) {}
 
   /** `tx` is explicit (not `this.tenantPrisma.client`) so callers already inside a transaction — e.g. SalesService.create() — write the notification atomically with whatever triggered it. */
   async notify(tx: TenantClient, input: NotifyInput): Promise<void> {
-    await tx.notification.create({
-      data: {
-        companyId: this.tenantPrisma.companyId,
-        recipientId: input.recipientId,
-        type: input.type,
-        title: input.title as unknown as Prisma.InputJsonValue,
-        message: input.message as unknown as Prisma.InputJsonValue,
-        entityType: input.entityType,
-        entityId: input.entityId,
-      },
+    const companyId = this.tenantPrisma.companyId;
+    const recipient = await tx.user.findUnique({ where: { id: input.recipientId }, select: { telegramId: true, isActive: true } });
+    const deliverable = Boolean(recipient?.isActive && recipient.telegramId);
+    const id = randomUUID();
+    // createMany + skipDuplicates = INSERT .. ON CONFLICT DO NOTHING: a dedupKey repeat neither throws nor aborts the caller's tx.
+    const { count } = await tx.notification.createMany({
+      skipDuplicates: true,
+      data: [
+        {
+          id,
+          companyId,
+          recipientId: input.recipientId,
+          type: input.type,
+          title: input.title as unknown as Prisma.InputJsonValue,
+          message: input.message as unknown as Prisma.InputJsonValue,
+          entityType: input.entityType,
+          entityId: input.entityId,
+          dedupKey: input.dedupKey,
+          telegramStatus: deliverable ? 'PENDING' : 'SKIPPED',
+          telegramLastError: deliverable ? null : recipient?.isActive === false ? 'RECIPIENT_INACTIVE' : 'TELEGRAM_NOT_LINKED',
+        },
+      ],
     });
-
-    const recipient = await tx.user.findUnique({ where: { id: input.recipientId }, select: { telegramId: true } });
-    if (recipient?.telegramId) {
-      // uz only — there's no per-user locale preference anywhere in the schema (6.2) to pick from.
-      await this.sendTelegram(recipient.telegramId, `${input.title.uz}\n${input.message.uz}`);
-    }
+    if (count === 1 && deliverable) this.enqueueAfterCommit(companyId, id);
   }
 
   async notifyMany(tx: TenantClient, recipientIds: string[], input: Omit<NotifyInput, 'recipientId'>): Promise<void> {
     for (const recipientId of recipientIds) {
       await this.notify(tx, { ...input, recipientId });
     }
+  }
+
+  /** ADR-047: enqueue only after the row is durably visible; failure leaves the PENDING row for the sweep. */
+  private enqueueAfterCommit(companyId: string, notificationId: string): void {
+    const queue = this.queue;
+    if (!queue || !TenantContext.peek()?.txActive) return;
+    TenantContext.afterCommit(() =>
+      enqueueBestEffort(this.logger, `notification ${notificationId}`, () =>
+        addTracedJobReplacingTerminal(queue, 'deliver', { notificationId, companyId }, { ...NOTIFICATION_DELIVERY_JOB_OPTS, jobId: notificationJobId(notificationId) }),
+      ),
+    );
   }
 
   async list(recipientId: string, query: ListNotificationsQueryDto) {
@@ -121,21 +153,10 @@ export class NotificationsService {
     await this.sendTelegram(telegramId, lines.join('\n'));
   }
 
-  /**
-   * ADR-047: Telegram sends are best-effort, called directly (not via outbox/queue), failures swallowed and
-   * nothing is persisted. They have no effect on money or stock; a lost message is acceptable.
-   */
+  /** Courier assignment pings are not Notification rows: direct best-effort send after commit (a lost one is acceptable, ADR-047). */
   private async sendTelegram(telegramId: bigint, text: string): Promise<void> {
     const token = this.configService.get<string>('TELEGRAM_BOT_TOKEN', '');
     if (!token) return;
-    try {
-      await fetch(`${TELEGRAM_API}/bot${token}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: telegramId.toString(), text }),
-      });
-    } catch {
-      // best-effort — see class doc.
-    }
+    await sendTelegramMessage(token, telegramId, text, TELEGRAM_SEND_TIMEOUT_MS);
   }
 }

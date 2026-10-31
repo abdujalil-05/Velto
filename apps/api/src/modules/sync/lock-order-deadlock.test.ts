@@ -18,6 +18,7 @@ import { SalesService } from '../sales/sales.service';
 import { StockService } from '../stock/stock.service';
 import { SyncDocType, type SyncPushDocumentDto } from './dto/sync-push.dto';
 import { SyncService } from './sync.service';
+import { makeOwnerAlerts } from '../notifications/test-owner-alerts';
 
 /**
  * F7 load finding (A): 40P01 between sync push (Customer FOR UPDATE -> SO
@@ -46,11 +47,11 @@ describe('Writer lock order: sync push x orders x deliver x payments (real Postg
   const tenantPrisma = new TenantPrismaService();
   const auditLog = new AuditLogService();
   const customers = new CustomersService(tenantPrisma, auditLog);
-  const stock = new StockService(tenantPrisma, auditLog);
+  const stock = new StockService(tenantPrisma, auditLog, makeOwnerAlerts(tenantPrisma));
   const docNumbering = new DocumentNumberingService();
   const notifications = new NotificationsService(tenantPrisma, new ConfigService());
   const sales = new SalesService(tenantPrisma, auditLog, customers, stock, docNumbering, notifications);
-  const payments = new PaymentsService(tenantPrisma, auditLog, customers, docNumbering);
+  const payments = new PaymentsService(tenantPrisma, auditLog, customers, docNumbering, makeOwnerAlerts(tenantPrisma));
   const visits = new VisitsService(tenantPrisma, auditLog);
   const sync = new SyncService(tenantPrisma, sales, payments, visits, customers, new ConfigService({ SYNC_PUSH_MAX_BATCH: 20 }));
   const run = <T>(fn: () => Promise<T>) => tenantPrisma.run(companyId, fn);

@@ -12,6 +12,7 @@ import {
   StockReversalInsufficientException,
 } from './stock-exceptions';
 import { StockService } from './stock.service';
+import { makeOwnerAlerts } from '../notifications/test-owner-alerts';
 
 describe('StockService (integration, real Postgres + RLS)', () => {
   let companyId: string;
@@ -21,7 +22,7 @@ describe('StockService (integration, real Postgres + RLS)', () => {
 
   const tenantPrisma = new TenantPrismaService();
   const auditLog = new AuditLogService();
-  const stock = new StockService(tenantPrisma, auditLog);
+  const stock = new StockService(tenantPrisma, auditLog, makeOwnerAlerts(tenantPrisma));
 
   beforeAll(async () => {
     const tenant = await systemPrisma.tenant.create({

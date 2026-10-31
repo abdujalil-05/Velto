@@ -1350,11 +1350,23 @@ model ExportJob {
 // M14 (5.3: "In-app + Telegram"). `title`/`message` are LocalizedMessage
 // JSON ({uz, ru, en} — the same trilingual shape as AppException's error
 // body, 7.1) so the web UI can render whichever language it's set to;
-// Telegram delivery (NotificationsService) is best-effort and always uses
-// `uz` since there's no per-user locale preference stored anywhere in the
-// schema. `entityType`/`entityId` let the UI deep-link to what triggered it
-// (e.g. an approved order) without a per-notification-type
-// table.
+// Telegram text always uses `uz` since there's no per-user locale preference
+// stored anywhere in the schema. `entityType`/`entityId` let the UI deep-link
+// to what triggered it (e.g. an approved order) without a
+// per-notification-type table.
+//
+// ADR-060: a row is also the durable Telegram outbox record (ADR-047 pattern:
+// row written in the business tx + afterCommit enqueue + cross-tenant sweep).
+// For tracked rows (`telegramStatus` NOT NULL) Telegram is NOT sent inside the
+// tx; the worker claims PENDING rows (SENDING + `telegramClaimedAt` lease),
+// retries with `telegramNextAttemptAt` backoff and ends in SENT/FAILED/SKIPPED.
+// `telegramStatus` NULL = pre-migration legacy row (best-effort-in-tx), never
+// swept. `dedupKey` (e.g. "payment.reverse:<reversalId>") makes the alert
+// idempotent per recipient; NULLs stay distinct so legacy rows are unaffected.
+// SQL-only (not expressible in Prisma): CHECK telegramAttempts >= 0, CHECK
+// length(telegramLastError) <= 500, BEFORE UPDATE trigger bumping updatedAt,
+// partial index "Notification_telegram_sweep_idx" (telegramStatus,
+// telegramNextAttemptAt) WHERE telegramStatus IN ('PENDING','SENDING').
 model Notification {
   id          String    @id @default(uuid()) @db.Uuid
   companyId   String    @db.Uuid
@@ -1366,11 +1378,30 @@ model Notification {
   entityId    String?   @db.Uuid
   readAt      DateTime?
   createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @default(now()) @updatedAt
+
+  dedupKey              String?
+  telegramStatus        NotificationTelegramStatus?
+  telegramAttempts      Int                         @default(0)
+  telegramNextAttemptAt DateTime?
+  telegramClaimedAt     DateTime?
+  telegramSentAt        DateTime?
+  telegramLastError     String?
 
   company   Company @relation(fields: [companyId], references: [id])
   recipient User    @relation(fields: [recipientId], references: [id])
 
+  @@unique([companyId, recipientId, dedupKey])
   @@index([companyId, recipientId, readAt])
+}
+
+// ADR-060: Telegram delivery state of a tracked Notification row.
+enum NotificationTelegramStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+  SKIPPED
 }
 
 // 8.6: sequential, gapless-per-cancellation document numbering

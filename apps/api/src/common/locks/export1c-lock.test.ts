@@ -11,6 +11,7 @@ import { Export1cService } from '../../modules/integrations/export-1c/export-1c.
 import type { Export1cLimitsService } from '../../modules/integrations/export-1c/export-1c-limits.service';
 import { StockService } from '../../modules/stock/stock.service';
 import { lockExport1cExclusive } from './export1c-lock';
+import { makeOwnerAlerts } from '../../modules/notifications/test-owner-alerts';
 
 /**
  * ADR-025: 1C export create() (exclusive) vs payments.reverse() (shared) on
@@ -21,10 +22,10 @@ describe('export1c advisory lock (ADR-025, real Postgres + RLS)', () => {
   const tenantPrisma = new TenantPrismaService();
   const auditLog = new AuditLogService();
   const customers = new CustomersService(tenantPrisma, auditLog);
-  const payments = new PaymentsService(tenantPrisma, auditLog, customers, new DocumentNumberingService());
+  const payments = new PaymentsService(tenantPrisma, auditLog, customers, new DocumentNumberingService(), makeOwnerAlerts(tenantPrisma));
   const fakeQueue = { add: async () => ({}) } as never;
   const export1c = new Export1cService(tenantPrisma, fakeQueue, auditLog, { assertCanCreate: async () => undefined } as unknown as Export1cLimitsService);
-  const stock = new StockService(tenantPrisma, auditLog);
+  const stock = new StockService(tenantPrisma, auditLog, makeOwnerAlerts(tenantPrisma));
   const DAY = 24 * 3600 * 1000;
   // 1C export periods must end yesterday (Asia/Tashkent): the payment is posted "yesterday", the period is that one day.
   const yesterday = () => new Date(Date.now() - DAY);

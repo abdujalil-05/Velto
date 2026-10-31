@@ -29,6 +29,7 @@ import {
 } from './sales-exceptions';
 import { isDeliveredQtyCheckViolation } from './delivered-qty-check';
 import { SalesService } from './sales.service';
+import { makeOwnerAlerts } from '../notifications/test-owner-alerts';
 
 describe('SalesService (integration, real Postgres + RLS)', () => {
   let companyId: string;
@@ -42,11 +43,11 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
   const tenantPrisma = new TenantPrismaService();
   const auditLog = new AuditLogService();
   const customers = new CustomersService(tenantPrisma, auditLog);
-  const stock = new StockService(tenantPrisma, auditLog);
+  const stock = new StockService(tenantPrisma, auditLog, makeOwnerAlerts(tenantPrisma));
   const docNumbering = new DocumentNumberingService();
   const notifications = new NotificationsService(tenantPrisma, new ConfigService());
   const sales = new SalesService(tenantPrisma, auditLog, customers, stock, docNumbering, notifications);
-  const payments = new PaymentsService(tenantPrisma, auditLog, customers, docNumbering);
+  const payments = new PaymentsService(tenantPrisma, auditLog, customers, docNumbering, makeOwnerAlerts(tenantPrisma));
 
   beforeAll(async () => {
     const tenant = await systemPrisma.tenant.create({

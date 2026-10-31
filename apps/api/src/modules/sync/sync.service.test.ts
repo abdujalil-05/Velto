@@ -18,6 +18,7 @@ import { SalesService } from '../sales/sales.service';
 import { StockService } from '../stock/stock.service';
 import { SyncDocType } from './dto/sync-push.dto';
 import { SyncService } from './sync.service';
+import { makeOwnerAlerts } from '../notifications/test-owner-alerts';
 
 describe('SyncService (integration, real Postgres + RLS)', () => {
   let companyId: string;
@@ -31,11 +32,11 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
   const tenantPrisma = new TenantPrismaService();
   const auditLog = new AuditLogService();
   const customers = new CustomersService(tenantPrisma, auditLog);
-  const stock = new StockService(tenantPrisma, auditLog);
+  const stock = new StockService(tenantPrisma, auditLog, makeOwnerAlerts(tenantPrisma));
   const docNumbering = new DocumentNumberingService();
   const notifications = new NotificationsService(tenantPrisma, new ConfigService());
   const sales = new SalesService(tenantPrisma, auditLog, customers, stock, docNumbering, notifications);
-  const payments = new PaymentsService(tenantPrisma, auditLog, customers, docNumbering);
+  const payments = new PaymentsService(tenantPrisma, auditLog, customers, docNumbering, makeOwnerAlerts(tenantPrisma));
   const visits = new VisitsService(tenantPrisma, auditLog);
   const sync = new SyncService(tenantPrisma, sales, payments, visits, customers, new ConfigService({ SYNC_PUSH_MAX_BATCH: 20 }));
 

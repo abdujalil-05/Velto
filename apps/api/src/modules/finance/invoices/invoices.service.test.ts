@@ -12,6 +12,7 @@ import { StockService } from '../../stock/stock.service';
 import { InvoiceNotFoundException } from '../finance-exceptions';
 import { PaymentsService } from '../payments/payments.service';
 import { InvoicesService } from './invoices.service';
+import { makeOwnerAlerts } from '../../notifications/test-owner-alerts';
 
 // TZ 6.3 (INV-{YYYY}-{6-digit}, concurrent-safe numbering), 6.1 (snapshot), 16.1 P0 (invoice = order snapshot).
 describe('InvoicesService (integration, real Postgres + RLS)', () => {
@@ -25,11 +26,11 @@ describe('InvoicesService (integration, real Postgres + RLS)', () => {
   const tenantPrisma = new TenantPrismaService();
   const auditLog = new AuditLogService();
   const customers = new CustomersService(tenantPrisma, auditLog);
-  const stock = new StockService(tenantPrisma, auditLog);
+  const stock = new StockService(tenantPrisma, auditLog, makeOwnerAlerts(tenantPrisma));
   const docNumbering = new DocumentNumberingService();
   const notifications = new NotificationsService(tenantPrisma, new ConfigService());
   const sales = new SalesService(tenantPrisma, auditLog, customers, stock, docNumbering, notifications);
-  const payments = new PaymentsService(tenantPrisma, auditLog, customers, docNumbering);
+  const payments = new PaymentsService(tenantPrisma, auditLog, customers, docNumbering, makeOwnerAlerts(tenantPrisma));
   const invoices = new InvoicesService(tenantPrisma, customers);
 
   beforeAll(async () => {

@@ -18,6 +18,7 @@ import {
 import type { AdjustStockDto } from './dto/adjust-stock.dto';
 import type { ListMovementsQueryDto } from './dto/list-movements.query';
 import type { ListStockQueryDto } from './dto/list-stock.query';
+import { OwnerAlertsService } from '../notifications/owner-alerts';
 import { endOfDay, startOfDay } from '../analytics/report-utils';
 import type { ReceiveStockDto } from './dto/receive-stock.dto';
 
@@ -42,6 +43,7 @@ export class StockService {
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     private readonly auditLog: AuditLogService,
+    private readonly ownerAlerts: OwnerAlertsService,
   ) {}
 
   async list(query: ListStockQueryDto) {
@@ -187,6 +189,8 @@ export class StockService {
       entityId: movement.id,
       newValue: toAuditJson(movement),
     });
+    // ADR-060a: OWNER alert in this same tx — if it fails the whole adjustment rolls back.
+    await this.ownerAlerts.stockAdjusted(tx, { companyId: user.companyId, movementId: movement.id, productId: movement.productId, warehouseId: movement.warehouseId, qty: movement.qty, actor: user, reason: dto.reason, at: movement.createdAt });
 
     return this.getLevel(tx, dto.productId, dto.warehouseId);
   }
@@ -296,6 +300,8 @@ export class StockService {
       oldValue: toAuditJson(original),
       newValue: toAuditJson(reversal),
     });
+    // ADR-060a: compensate() changed onHand by reversal.qty; alert in the same tx.
+    await this.ownerAlerts.stockReversed(tx, { companyId: user.companyId, movementId: reversal.id, productId: reversal.productId, warehouseId: reversal.warehouseId, qty: reversal.qty, actor: user, reason: trimmedReason, at: reversal.createdAt });
 
     return { movement: reversal, level: await this.getLevel(tx, original.productId, original.warehouseId) };
   }

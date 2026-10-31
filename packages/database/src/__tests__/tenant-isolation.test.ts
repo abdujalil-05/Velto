@@ -350,6 +350,26 @@ describe('tenant isolation (RLS)', () => {
 
     expect(seenFromA).toHaveLength(1);
     expect(seenFromB).toHaveLength(0);
+
+    // ADR-060 delivery columns: company B can neither see nor update A's
+    // Telegram delivery state.
+    const tgFromB = await withTenant(companyBId, (tx) =>
+      tx.notification.findMany({ where: { telegramStatus: null }, select: { id: true, telegramAttempts: true } }),
+    );
+    expect(tgFromB).toHaveLength(0);
+    const updatedFromB = await withTenant(companyBId, (tx) =>
+      tx.notification.updateMany({
+        where: { id: seenFromA[0]!.id },
+        data: { telegramStatus: 'SENT', telegramAttempts: 9, dedupKey: 'x:1', telegramLastError: 'leak' },
+      }),
+    );
+    expect(updatedFromB.count).toBe(0);
+    const afterA = await withTenant(companyAId, (tx) =>
+      tx.notification.findUniqueOrThrow({ where: { id: seenFromA[0]!.id } }),
+    );
+    expect(afterA.telegramStatus).toBeNull();
+    expect(afterA.telegramAttempts).toBe(0);
+    expect(afterA.dedupKey).toBeNull();
   });
 
   it('a direct-companyId table (DocumentCounter, 11.2 document numbering) is scoped per tenant', async () => {

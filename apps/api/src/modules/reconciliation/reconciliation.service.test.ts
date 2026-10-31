@@ -14,6 +14,7 @@ import {
   ReconciliationSnapshotRequiredException,
 } from './reconciliation-exceptions';
 import { ReconciliationService } from './reconciliation.service';
+import { makeOwnerAlerts } from '../notifications/test-owner-alerts';
 
 describe('ReconciliationService (integration, real Postgres + RLS)', () => {
   const tenantPrisma = new TenantPrismaService();
@@ -24,8 +25,9 @@ describe('ReconciliationService (integration, real Postgres + RLS)', () => {
     auditLog,
     customers,
     new DocumentNumberingService(),
+    makeOwnerAlerts(tenantPrisma),
   );
-  const stock = new StockService(tenantPrisma, auditLog);
+  const stock = new StockService(tenantPrisma, auditLog, makeOwnerAlerts(tenantPrisma));
   const recon = new ReconciliationService(tenantPrisma, auditLog, customers);
 
   let companyId: string;

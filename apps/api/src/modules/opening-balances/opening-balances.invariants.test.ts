@@ -21,6 +21,7 @@ import { StockService } from '../stock/stock.service';
 import { OPENING_REF_TYPE, OPENING_TX_OPTIONS } from './opening-balances.constants';
 import { OpeningBalancesService } from './opening-balances.service';
 import { expectWithinBudget } from '../../common/testing/perf';
+import { makeOwnerAlerts } from '../notifications/test-owner-alerts';
 
 const CUST_HEADERS = ['customerCode', 'debt', 'credit', 'docRef', 'docDate'];
 const STOCK_HEADERS = ['sku', 'warehouseName', 'qty'];
@@ -34,11 +35,11 @@ describe('Opening balances invariants (integration)', () => {
   const tenantPrisma = new TenantPrismaService();
   const auditLog = new AuditLogService();
   const customers = new CustomersService(tenantPrisma, auditLog);
-  const stock = new StockService(tenantPrisma, auditLog);
+  const stock = new StockService(tenantPrisma, auditLog, makeOwnerAlerts(tenantPrisma));
   const numbering = new DocumentNumberingService();
   const storage = { upload: async () => `memory://opening/${randomUUID()}` } as unknown as StorageService;
   const service = new OpeningBalancesService(tenantPrisma, storage, auditLog, stock, numbering);
-  const payments = new PaymentsService(tenantPrisma, auditLog, customers, numbering);
+  const payments = new PaymentsService(tenantPrisma, auditLog, customers, numbering, makeOwnerAlerts(tenantPrisma));
   const recon = new ReconciliationService(tenantPrisma, auditLog, customers);
   const tag = randomUUID().slice(0, 6);
 

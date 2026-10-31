@@ -22,6 +22,7 @@ import { localDateString } from '../../analytics/report-utils';
 import { paymentPostedWithin } from '../ledger-filters';
 import { insertExportJob } from '../../integrations/export-1c/export-job-fixtures';
 import { PaymentsService } from './payments.service';
+import { makeOwnerAlerts } from '../../notifications/test-owner-alerts';
 
 /** ADR-029 / TZ §6.5, F-01: agent cash PENDING_HANDOVER -> cashier accept (POSTED + FIFO) / reject. */
 describe('Payment handover (integration, real Postgres + RLS)', () => {
@@ -31,7 +32,7 @@ describe('Payment handover (integration, real Postgres + RLS)', () => {
   const tenantPrisma = new TenantPrismaService();
   const auditLog = new AuditLogService();
   const customers = new CustomersService(tenantPrisma, auditLog);
-  const payments = new PaymentsService(tenantPrisma, auditLog, customers, new DocumentNumberingService());
+  const payments = new PaymentsService(tenantPrisma, auditLog, customers, new DocumentNumberingService(), makeOwnerAlerts(tenantPrisma));
   const cashSessions = new CashSessionsService(tenantPrisma, auditLog);
   const run = <T>(fn: () => Promise<T>) => tenantPrisma.run(companyId, fn);
 

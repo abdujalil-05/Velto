@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { AuditLogService } from '../../common/audit/audit-log.service';
 import { DocumentNumberingModule } from '../../common/document-numbering/document-numbering.module';
 import { ReportExportService } from '../analytics/report-export-audit.service';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { CustomersModule } from '../customers/customers.module';
 import { CashSessionsController } from './cash-sessions/cash-sessions.controller';
 import { CashSessionsService } from './cash-sessions/cash-sessions.service';
@@ -14,7 +15,7 @@ import { AgingReportController } from './reports/aging-report.controller';
 import { AgingReportService } from './reports/aging-report.service';
 
 @Module({
-  imports: [CustomersModule, DocumentNumberingModule, ReportConcurrencyModule],
+  imports: [CustomersModule, NotificationsModule, DocumentNumberingModule, ReportConcurrencyModule],
   controllers: [InvoicesController, PaymentsController, CashSessionsController, AgingReportController],
   providers: [InvoicesService, PaymentsService, CashSessionsService, AgingReportService, AuditLogService, ReportExportService],
   // AgingReportService is reused by the Analytics module for the dashboard's

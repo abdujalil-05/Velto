@@ -9,13 +9,14 @@ import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { PaymentsService } from '../finance/payments/payments.service';
 import { CustomersController } from './customers.controller';
 import { CustomersService } from './customers.service';
+import { makeOwnerAlerts } from '../notifications/test-owner-alerts';
 
 /** ADR-061a/c + restore: real Postgres + RLS. */
 describe('Customer lifecycle integrity (ADR-061)', () => {
   const tenantPrisma = new TenantPrismaService();
   const auditLog = new AuditLogService();
   const customers = new CustomersService(tenantPrisma, auditLog);
-  const payments = new PaymentsService(tenantPrisma, auditLog, customers, new DocumentNumberingService());
+  const payments = new PaymentsService(tenantPrisma, auditLog, customers, new DocumentNumberingService(), makeOwnerAlerts(tenantPrisma));
   const tag = randomUUID().slice(0, 6);
 
   let companyId: string;

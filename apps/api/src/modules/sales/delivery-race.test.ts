@@ -16,6 +16,7 @@ import { InsufficientStockException } from '../stock/stock-exceptions';
 import { StockService } from '../stock/stock.service';
 import { InvalidOrderTransitionException } from './sales-exceptions';
 import { SalesService } from './sales.service';
+import { makeOwnerAlerts } from '../notifications/test-owner-alerts';
 
 /**
  * F2.4 / TZ §10.5 (+ §6.6 1 order = 1 invoice, §8.6 gapless INV numbering):
@@ -32,7 +33,7 @@ describe('Goods issue races (F2.4, real Postgres + RLS)', () => {
   const tenantPrisma = new TenantPrismaService();
   const auditLog = new AuditLogService();
   const customers = new CustomersService(tenantPrisma, auditLog);
-  const stock = new StockService(tenantPrisma, auditLog);
+  const stock = new StockService(tenantPrisma, auditLog, makeOwnerAlerts(tenantPrisma));
   const docNumbering = new DocumentNumberingService();
   const notifications = new NotificationsService(tenantPrisma, new ConfigService());
   const sales = new SalesService(tenantPrisma, auditLog, customers, stock, docNumbering, notifications);

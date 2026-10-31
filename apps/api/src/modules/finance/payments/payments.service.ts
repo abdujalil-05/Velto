@@ -35,6 +35,7 @@ import {
   PaymentReversalReasonRequiredException,
   PaymentStatusesLimitException,
 } from '../finance-exceptions';
+import { OwnerAlertsService } from '../../notifications/owner-alerts';
 import { VALID_ALLOCATION_WHERE, paymentAdvanceOf, paymentPostedAt, paymentPostedWithin } from '../ledger-filters';
 
 // customer is included alongside allocations so the web UI (9.2 "/payments")
@@ -58,6 +59,7 @@ export class PaymentsService {
     private readonly auditLog: AuditLogService,
     private readonly customers: CustomersService,
     private readonly docNumbering: DocumentNumberingService,
+    private readonly ownerAlerts: OwnerAlertsService,
   ) {}
 
   async list(query: ListPaymentsQueryDto, user: AuthenticatedUser) {
@@ -450,7 +452,7 @@ export class PaymentsService {
     await this.assertNotInClosedCashSession(tx, before);
     await this.assertNotExportedTo1c(tx, paymentPostedAt(before));
 
-    await tx.paymentReversal.create({
+    const reversal = await tx.paymentReversal.create({
       data: { companyId: user.companyId, reversesPaymentId: paymentId, reason: trimmedReason, actorId: user.id },
     });
     await tx.payment.update({ where: { id: paymentId }, data: { status: PaymentStatus.REVERSED } });
@@ -477,6 +479,17 @@ export class PaymentsService {
       entityId: paymentId,
       oldValue: toAuditJson(before),
       newValue: toAuditJson({ status: full.status, reason: trimmedReason }),
+    });
+    // ADR-060a: OWNER alert in this same tx — if it fails the whole reversal rolls back.
+    await this.ownerAlerts.paymentReversed(tx, {
+      companyId: user.companyId,
+      reversalId: reversal.id,
+      paymentId,
+      paymentNumber: before.number,
+      amount: before.amount,
+      actor: user,
+      reason: trimmedReason,
+      at: reversal.createdAt,
     });
     return withAdvance(full);
   }

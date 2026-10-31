@@ -11,16 +11,17 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { SalesService } from '../sales/sales.service';
 import { StockService } from '../stock/stock.service';
 import { CustomersService } from './customers.service';
+import { makeOwnerAlerts } from '../notifications/test-owner-alerts';
 
 /** ADR-061c concurrency: real parallel transactions on real Postgres; invariants, not timings. */
 describe('Customer lifecycle races (ADR-061)', () => {
   const tenantPrisma = new TenantPrismaService();
   const auditLog = new AuditLogService();
   const customers = new CustomersService(tenantPrisma, auditLog);
-  const stock = new StockService(tenantPrisma, auditLog);
+  const stock = new StockService(tenantPrisma, auditLog, makeOwnerAlerts(tenantPrisma));
   const docNumbering = new DocumentNumberingService();
   const sales = new SalesService(tenantPrisma, auditLog, customers, stock, docNumbering, new NotificationsService(tenantPrisma, new ConfigService()));
-  const payments = new PaymentsService(tenantPrisma, auditLog, customers, docNumbering);
+  const payments = new PaymentsService(tenantPrisma, auditLog, customers, docNumbering, makeOwnerAlerts(tenantPrisma));
   const tag = randomUUID().slice(0, 6);
   const ROUNDS = 8;
 

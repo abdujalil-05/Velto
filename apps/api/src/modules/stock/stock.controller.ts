@@ -33,6 +33,7 @@ export class StockController {
   }
 
   @Post('adjust')
+  @Idempotent()
   @RequirePermission('stock.adjust')
   adjust(@Body() dto: AdjustStockDto, @CurrentUser() user: AuthenticatedUser) {
     return this.stock.adjust(dto, user);

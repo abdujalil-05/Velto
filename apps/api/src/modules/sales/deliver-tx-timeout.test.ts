@@ -17,6 +17,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { StockService } from '../stock/stock.service';
 import { InvalidOrderTransitionException } from './sales-exceptions';
 import { SalesService } from './sales.service';
+import { makeOwnerAlerts } from '../notifications/test-owner-alerts';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** Just past the default 5000 ms interactive tx timeout; the timeout itself stays the production default. */
@@ -38,7 +39,7 @@ describe('deliver: interactive tx timeout (real Postgres + RLS)', () => {
   const tenantPrisma = new TenantPrismaService();
   const auditLog = new AuditLogService();
   const customers = new CustomersService(tenantPrisma, auditLog);
-  const stock = new StockService(tenantPrisma, auditLog);
+  const stock = new StockService(tenantPrisma, auditLog, makeOwnerAlerts(tenantPrisma));
   const notifications = new NotificationsService(tenantPrisma, new ConfigService());
   const sales = new SalesService(tenantPrisma, auditLog, customers, stock, new DocumentNumberingService(), notifications);
   const idempotency = new IdempotencyInterceptor();
