@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { PaymentSource, PaymentStatus, Prisma, type TenantClient } from '@velto/database';
 import { DEFAULT_DASHBOARD_CACHE_TTL_S } from '../../common/config/env.schema';
 import { ReportConcurrencyLimiter } from '../../common/concurrency/report-concurrency.limiter';
+import { perfMetrics } from '../../common/perf/perf-metrics';
 import { TenantContext } from '../../common/tenant/tenant-context';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { REPORT_TX_OPTIONS } from './report-tx.constants';
@@ -169,6 +170,7 @@ export class DashboardService {
       });
       const at = Date.now();
       this.logger.log({ event: 'dashboard.compute', mode, companyId, permitWaitMs, poolWaitMs, computeMs: at - t1 });
+      perfMetrics.logDashboardCompute({ mode, permitWaitMs, poolWaitMs, computeMs: at - t1 });
       return { data, generatedAt: new Date(at).toISOString(), at };
     } finally {
       release();

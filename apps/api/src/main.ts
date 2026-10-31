@@ -5,6 +5,7 @@ import { NestFactory } from '@nestjs/core';
 import * as Sentry from '@sentry/node';
 import { AppModule } from './app.module';
 import { TraceLogger } from './common/trace/trace-logger';
+import { perfMetrics } from './common/perf/perf-metrics';
 import { configureApp } from './bootstrap';
 
 async function bootstrap() {
@@ -37,6 +38,7 @@ async function bootstrap() {
   const port = process.env.API_PORT ?? 3001;
   const host = process.env.API_HOST ?? '0.0.0.0';
   await app.listen(port, host);
+  perfMetrics.start();
   Logger.log(`Velto API listening on ${host}:${port} (version=${process.env.APP_VERSION ?? 'dev'} commit=${process.env.GIT_SHA ?? 'dev'})`, 'Bootstrap');
 }
 

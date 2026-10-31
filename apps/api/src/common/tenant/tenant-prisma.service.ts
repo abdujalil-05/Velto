@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { withTenant, type TenantClient, type TenantTxOptions } from '@velto/database';
+import { perfMetrics } from '../perf/perf-metrics';
 import { getTraceId } from '../trace/trace-context';
 import { TenantContext } from './tenant-context';
 
@@ -30,9 +31,14 @@ export class TenantPrismaService {
       this.logger.error(`${msg} (traceId=${getTraceId() ?? 'n/a'})`);
     }
     const afterCommit: Array<() => unknown> = [];
+    const requestedAt = perfMetrics.enabled ? performance.now() : 0;
     const result = await withTenant(
       companyId,
-      (tx) => TenantContext.run({ companyId, tx, afterCommit, txActive: true }, () => fn(tx)),
+      (tx) => {
+        // Approximation of pool wait: request -> entering the callback also includes BEGIN + SET LOCAL.
+        if (requestedAt) perfMetrics.recordPoolWait(performance.now() - requestedAt);
+        return TenantContext.run({ companyId, tx, afterCommit, txActive: true }, () => fn(tx));
+      },
       options,
     );
     // One failing callback must not starve the others; the first error is rethrown once all have run.

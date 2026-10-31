@@ -125,6 +125,13 @@ export const envSchema = z.object({
     .optional()
     .default('false')
     .transform((v) => v === 'true'),
+  // Diagnostic perf metrics (event-loop delay, tx pool wait, dashboard compute),
+  // logged as `perf {json}` lines. Off by default: no timers, no overhead.
+  PERF_METRICS: z
+    .enum(['true', 'false'])
+    .optional()
+    .default('false')
+    .transform((v) => v === 'true'),
 })
   .refine((e) => e.REPORT_TENANT_MAX_CONCURRENCY <= e.REPORT_MAX_CONCURRENCY, {
     path: ['REPORT_TENANT_MAX_CONCURRENCY'],
