@@ -70,6 +70,38 @@ Aralash profil: ~20% agent (sync push 20 hujjat + 2 pull), ~15-20% yozuv zanjiri
 
 **Isbotlanmagan / cheklovlar:** (1) Barcha run'lar SUSPECT (LA > 8) — mutlaq raqamlar yuqoriga siljigan. (2) Miss n=1-8, warm miss 0 — miss p95 uchun kafolat yo'q; miss'ning sababi (pool-wait / permit navbat / host bosimi) alohida o'lchanmagan. (3) Hit/miss ajratish `cached` bayrog'iga tayanadi; SWR da "hit" eskirgan ma'lumot qaytarishi mumkin (yangilik chegarasi bu testda tekshirilmagan). (4) Sokin host, 100 VU, bitta noutbuk — SLA emas. (5) 5xx sababi: kuzatilmadi, shuning uchun eski nuqson haqida xulosa yo'q.
 
+## F7.6 qayta o'lchov #3 (2026-10-31, kod: 2c4bd46, dist o'zgarmagan — yangilash shart bo'lmadi)
+**Lokal, SLA emas.** Usul va matritsa #2 bilan bir xil: `velto_load` (3 tenant, 40k buyurtma/tenant), konfiguratsiya B (`REPORTS=1`), mixed, 120 s, S20 = 20 VU / 1 tenant, M50 = 50 VU / 3 tenant, port 3011, cold = yangi API jarayoni, warm = shu jarayonda keyingi run, 3 takror, jami 12/12 run tugadi. `LOAD_PASSWORD` runtime'da tasodifiy (diskka/hujjatga yozilmagan). Yangi: har run'dan OLDIN 30 s trafiksiz baseline (load average + swap, 5 s oralig'ida), run davomida ham namuna. SUSPECT = baseline LA maksimumi > 8 yoki Docker muammosi. Xom natijalar: `scripts/load/results/F76c_*` (git'da emas; `.baseline`, `.host`, `.api.log`, `_verify.txt`).
+**Muhit:** Apple M1 8 GB; Docker Postgres 16/Redis (velto-*) muammosiz. `ruscha-local-*` (7 konteyner, `ruscha-local-web-1` restart tsiklida), VS Code va boshqa jarayonlar tegilmagan, butun vaqt ishlab turdi. Baseline'da ham swap ~5.1-5.8 GB band. Mening API jarayonim oxirida to'xtatildi (3011 bo'sh).
+
+| Run | read p95 (n) | write p95 (n) | sync-push-20 p95 (n) | dashboard HIT p95 (n) | dashboard MISS p95 (n) | 5xx | 503 | Tx closed | verify | baseline LA | baseline swap MB | run LA | run swap MB | holat |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| S20 r1 cold | 90 (911) | 130 (618) | 1918 (48) | 32 (85) | 1437 (2) | 0 | 0 | 0 | 0 | 4.78-6.54 | 5119-5151 | 3.7-5.03 |  |
+| S20 r1 warm | 75 (913) | 104 (624) | 1140 (52) | 37 (75) | 854 (2) | 0 | 0 | 0 | 0 | 2.91-3.84 | 5264-5305 | 2.99-4.33 |  |
+| M50 r1 cold | 216 (2137) | 422 (1362) | 3971 (99) | 113 (207) | 2495 (5) | 0 | 9 | 0 | 0 | 3.25-3.99 | 5246-5334 | 3.07-11.38 |  |
+| M50 r1 warm | 188 (2172) | 339 (1407) | 4112 (99) | 84 (193) | 1601 (5) | 0 | 4 | 0 | 0 | 7.26-9.37 | 5407-5841 | 6.92-17.52 |  |
+| S20 r2 cold | 86 (877) | 134 (621) | 2707 (48) | 25 (82) | 825 (1) | 0 | 2 | 0 | 0 | 10.42-14.19 | 5518-5662 | 6.22-10.17 |  |
+| S20 r2 warm | 132 (850) | 180 (615) | 5452 (48) | 26 (83) | 884 (2) | 0 | 4 | 0 | 0 | 4.52-6.22 | 5542-5550 | 4.08-6.9 |  |
+| M50 r2 cold | 209 (2136) | 374 (1398) | 7610 (100) | 74 (200) | 1984 (5) | 0 | 8 | 0 | 0 | 3.13-4.4 | 5069-5109 | 2.88-10.6 |  |
+| M50 r2 warm | 313 (1925) | 522 (1365) | 5630 (94) | 94 (183) | 1386 (5) | 0 | 19 | 0 | 0 | 6.63-9.42 | 4988-5060 | 5.84-11.9 |  |
+| S20 r3 cold | 637 (626) | 1217 (462) | 9520 (36) | 432 (47) | 1336 (2) | 0 | 31 | 0 | 0 | 6.8-9.27 | 5172-5236 | 6.57-19.49 |  |
+| S20 r3 warm | 295 (618) | 367 (561) | 3896 (44) | 68 (61) | 2306 (1) | 0 | 28 | 0 | 0 | 17.5-19.74 | 5745-6327 | 13.39-17.57 |  |
+| M50 r3 cold | 1361 (1396) | 2717 (834) | 27370 (54) | 556 (134) | 1269 (3) | 1 | 77 | 1 | 0 | 9.24-12.11 | 5512-5840 | 8.17-19.37 |  |
+| M50 r3 warm | 224 (2067) | 384 (1434) | 4722 (99) | 74 (192) | 1229 (4) | 0 | 8 | 0 | 0 | 11.01-15.61 | 5540-5612 | 8.66-10.67 |  |
+
+(Run LA/swap — run davomidagi namunalar, baseline — oldingi 30 s trafiksiz. 503 = hisobot semafori "busy"; conn_err/429/4xx 0. verify = verify-integrity topilmalar soni.)
+
+**Maqsadlar (hit < 300 ms, miss <= 2 s):**
+- Dashboard **hit**: 10/12 **O'TDI** (25-113 ms). **O'TMADI**: S20 r3 cold 432 ms (baseline LA 6.8-9.3, run LA 6.6-19.5), M50 r3 cold 556 ms (SUSPECT, baseline LA 9.2-12.1). Hit n: S20 jami 433, M50 jami 1109. #2: 11/12 o'tdi, 24-309 ms.
+- Dashboard **miss**: 10/12 **O'TDI** (825-1984 ms). **O'TMADI**: M50 r1 cold 2495 (n=5), S20 r3 warm 2306 (n=1, SUSPECT). Miss n: S20 jami 10, M50 jami 27 (har run'da 1-5) — p95 sifatida ishonchsiz. #2 da 3/6 cold FAIL (1037-6450) va warm miss 0 edi; endi warm run'larda ham miss kuzatildi (n=1-5), maks 2306.
+- **5xx = 1** (M50 r3 cold): `POST /orders/:id/deliver` 500, "Transaction already closed ... timeout 5000 ms, 5037 ms passed" (interaktiv tx 5 s timeout oshdi). Shu run'da write p95 2717, sync-push-20 p95 27370, baseline LA 9.2-12.1, run LA 8.2-19.4 (SUSPECT) — host bosimi bilan mos, lekin sabab sifatida isbotlanmagan. API log saqlangan: `F76c_M50_r3_cold.api.log`. Qolgan 11 run'da 5xx 0; 55P03 0, deadlock 0 hamma run'da.
+- 503: S20 jami 65 (r3 cold 31, warm 28), M50 jami 125 (r3 cold 77); #2 da S20 29, M50 157. verify-integrity 12/12 run 0 topilma.
+- Ma'lumot: read p95 75-1361, write p95 104-2717; eng sokin run'lar S20 r1 (90/130, 75/104).
+
+**SUSPECT run'lar (baseline LA maksimumi > 8): 7/12** — M50 r1 warm (9.4), S20 r2 cold (14.2), M50 r2 warm (9.4), S20 r3 cold (9.3), S20 r3 warm (19.7), M50 r3 cold (12.1), M50 r3 warm (15.6). Toza (baseline <= 8, 5/12): S20 r1 cold/warm, M50 r1 cold, S20 r2 warm, M50 r2 cold — ularda hit 25-113 ms, miss 825-2495 ms (faqat M50 r1 cold miss > 2 s), 5xx 0. #2 da 12/12 SUSPECT edi; endi baseline LA r1-r2 da 3-14, r3 da 7-20 (host tashqi yuki r3 da oshgan).
+
+**Cheklovlar:** (1) Miss n 1-5 — miss p95 deyarli maksimumga teng. (2) Hit/miss ajratish `cached` bayrog'iga tayanadi (SWR eskirgan javob "hit"). (3) 5xx sababi host bosimi bilan mos, ammo sekin tx ning ildiz sababi (pool-wait / host) ajratilmagan. (4) Bitta noutbuk, SLA emas.
+
 ## Ko'p tenantli qayta o'lchov (2026-10-20, kod: ffe847e, F7 merge) — QISMAN, tebranish yuqori
 **Lokal, SLA emas.** `velto_load` qayta yaratildi (migrate deploy, velto_owner), 3 tenant (`load`, `load2`, `load3`, har biri 40 000 buyurtma, 2k SKU, 1k mijoz), API dist qayta qurildi. Yangi: `scripts/load/prepare-multi-load-data.sh` (tenant boshiga noyob telefonli klonlar: 40 OWNER/20 AGENT/2 CASHIER) va `velto-load.js` da `fixtures.tenants` + `TENANTS=n` (umumiy VU teng bo'linadi, har VU bitta tenantda). Parol runtime'da tasodifiy (hujjat/diskka yozilmagan; Docker qayta ishga tushgani uchun 4 marta almashtirilgan). Har run 120 s, cold = yangi API jarayoni, warm = keyingi run. verify-integrity va deadlocks har run'dan keyin tekshirildi.
 **MUHIM cheklovlar (halol):** (1) Host 8 GB, swap 9/10 GB, load average 24-32 (tashqi jarayonlar) — Docker daemon 2 marta o'zi to'xtadi; shu davrdagi run'lar (X_*, BAD_*, BAD2_* prefiksli fayllar `scripts/load/results/`, hisobga olinmadi) yaroqsiz. (2) Yaroqli 30 run ichida ham M50_C_r2, M100_A_r2, M100_B_r2 host bosimi davriga to'g'ri kelgan (rps 50 -> 13-28, r1 bilan 5-10x farq) — SHUBHALI, quyida `*` bilan. Ishonchli: S20 (6), M50_A_r1, M50_B_r1, M100_C_r1/r2, M50_A_r2, M50_B_r2, M100_A_r1, M100_B_r1, M50_C_r1. (3) Har konfiguratsiya 2 takror, lekin r1/r2 turli sharoitda. (4) Stok kamayishi sababli product ro'yxati keyingi prepare'da (>200 mavjud) qayta tanlangan. (5) Lock-ulushi namunasi (pg_locks) bu seriyada o'lchanmadi.

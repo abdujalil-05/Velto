@@ -8,11 +8,12 @@ F0–F6, F8.1, F5.3+, F4.5: ✅ kod tomoni. F7 chiniqtirish: ✅ kod, yuk mezonl
 ## Joriy task: F7.6 dashboard miss (TZ §12.1)
 Kod ✅ (ADR-056: to'liq SWR, alohida permit yo'lagi, pool boot tekshiruvi). Reviewer va security-auditor PASS, checks: api 834, database 113, miniapp 120; lint/typecheck/build toza (2026-10-30).
 Refresh xatosidan keyin backoff (ttl/4) qo'shildi: reviewer PASS, api test 835/835, lint/typecheck toza.
-**Qayta o'lchov #2 (2c4bd46, 12/12 run, S20/M50, `docs/perf/F7-load-report.md`):** hit p95 11/12 <300 ms (M50 r3 cold 309). Miss p95 3/6 cold run'da ≤2 s (1037-1381 ms), 3 tasida o'tmadi (2043, 3797, 6450 ms), n=1-8; warm'da miss 0. 5xx, deadlock, 55P03, 'Transaction already closed' 0; integrity 0 topilma. M50 r2-r3 da hisobot 503: 14-67.
-**Isbotlanmagan:** hamma run SUSPECT (load 4.9-36.5, swap 4.7-6.1 GB, `ruscha-local` ishlab turgan); yukning qancha qismi testning o'zidan ekani ajratilmagan. Miss maqsadi O'TMADI. Eski M50 cold write 5xx qaytarilmadi, sababi noma'lum.
+**Qayta o'lchov #3 (12/12 run, S20/M50, `docs/perf/F7-load-report.md`; #2 ham shu yerda):** hit p95 10/12 <300 ms (o'tmadi: S20 r3 cold 432, M50 r3 cold 556). Miss p95 10/12 ≤2 s (o'tmadi: M50 r1 cold 2495 n=5, S20 r3 warm 2306 n=1), har run'da n=1-5, ishonchsiz. Integrity 0 topilma. Hisobot 503: S20 65, M50 125.
+5xx 1 ta: M50 r3 cold, `POST /orders/:id/deliver` 500, 'Transaction already closed' (timeout 5000 ms, 5037 ms o'tgan); host bosimiga mos, isbotlanmagan. Eski M50 cold 5xx bilan bir xilligi tasdiqlanmagan.
+**Isbotlanmagan:** 7/12 run SUSPECT (baseline load maks. >8, `ruscha-local` va VS Code ishlab turgan). Toza 5 run: hit 25-113 ms, miss 825-2495 ms, 5xx 0. Miss maqsadi to'liq O'TMADI.
 
 ## Foydalanuvchi qarori kutilmoqda
-1. F7.6 miss: `ruscha-local` to'xtatilgan holda qayta o'lchash yoki natijani qabul qilish.
+1. F7.6: natijani qabul qilish yoki miss/deliver timeout bo'yicha pool-wait va event-loop lag o'lchovini qo'shish.
 2. Ochiq savollar (telefon noyobligi, MFA, HALF_UP, CSV ajratgich, 1C pilot, qurilmalar ro'yxati): `grep -n -A12 '^## Ochiq savollar' docs/STATUS-ARCHIVE.md`.
 
 ## Keyingi qadamlar
