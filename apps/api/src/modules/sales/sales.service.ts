@@ -23,6 +23,7 @@ import type { CreateOrderDto } from './dto/create-order.dto';
 import type { DeliverOrderDto, DeliverOrderLineDto } from './dto/deliver-order.dto';
 import type { ListOrdersQueryDto } from './dto/list-orders.query';
 import { isDeliveredQtyCheckViolation } from './delivered-qty-check';
+import { assertNotBelowMinPrice, assertQtyPrecision } from './order-line-guards';
 import { calcLineTotal, deliveredLineTotal, orderTotal, roundLineTotal, type OrderLineAmounts } from './line-total';
 import {
   AmbiguousWarehouseException,
@@ -331,8 +332,13 @@ export class SalesService {
       const priceListItem = priceByProduct.get(lineDto.productId) ?? null;
       if (!priceListItem) throw new PriceNotFoundException(lineDto.productId);
 
-      const baseQty = new Prisma.Decimal(lineDto.qty).times(packaging.qtyInBaseUnit);
+      // ADR-059a: reject (never round) qty finer than the Decimal(18,3) column.
+      const enteredQty = new Prisma.Decimal(lineDto.qty);
+      const baseQty = enteredQty.times(packaging.qtyInBaseUnit);
+      assertQtyPrecision({ productId: product.id, packagingId: packaging.id, qty: enteredQty, qtyInBaseUnit: packaging.qtyInBaseUnit, baseQty });
       const discountPct = new Prisma.Decimal(lineDto.discountPct ?? 0);
+      // ADR-059b: server price after discount must not go below minPrice.
+      assertNotBelowMinPrice({ productId: product.id, unitPrice: priceListItem.price, discountPct, minPrice: product.minPrice });
       const lineTotal = calcLineTotal(baseQty, priceListItem.price, discountPct, product.vatRate);
 
       // F4: compared as Decimal ("10000" == "10000.00"); no tolerance.
@@ -457,6 +463,8 @@ export class SalesService {
       throw new InvalidOrderTransitionException(order.status, OrderStatus.CONFIRMED);
     }
 
+    // ADR-059b: re-check against the CURRENT minPrice; reject, never reprice.
+    await this.assertLinesNotBelowMinPrice(tx, order.lines);
     await this.reserveOrderStock(tx, order, user);
 
     const updated = await tx.salesOrder.update({
@@ -716,6 +724,8 @@ export class SalesService {
     // CONFIRMED (or already-SHIPPED) order already carries one, and
     // reserving twice would double-count against StockLevel.reserved.
     if (order.status === OrderStatus.DRAFT || order.status === OrderStatus.SUBMITTED) {
+      // Same confirm-equivalent step as confirm(): ADR-059b minPrice re-check.
+      await this.assertLinesNotBelowMinPrice(tx, order.lines);
       await this.reserveOrderStock(tx, order, user);
     }
 
@@ -765,6 +775,18 @@ export class SalesService {
       entityId: id,
       oldValue: toAuditJson(order),
     });
+  }
+
+  /** ADR-059b at confirm time: reads each product's current minPrice; read-only. */
+  private async assertLinesNotBelowMinPrice(
+    tx: TenantClient,
+    lines: { productId: string; unitPrice: Prisma.Decimal; discountPct: Prisma.Decimal }[],
+  ): Promise<void> {
+    const products = await tx.product.findMany({ where: { id: { in: [...new Set(lines.map((l) => l.productId))] } }, select: { id: true, minPrice: true } });
+    const minPriceById = new Map(products.map((p) => [p.id, p.minPrice]));
+    for (const line of lines) {
+      assertNotBelowMinPrice({ ...line, minPrice: minPriceById.get(line.productId) ?? null });
+    }
   }
 
   /** Reserves every line of `order` (8.3) — shared by confirm(), create() (courier-known-up-front) and assignCourier(). */

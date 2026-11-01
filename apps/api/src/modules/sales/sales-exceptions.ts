@@ -213,3 +213,42 @@ export class PriceChangedException extends AppException {
     );
   }
 }
+
+/**
+ * ADR-059a: an entered qty or its base-unit conversion (qty × packaging
+ * qtyInBaseUnit) has more than 3 decimal places. SalesOrderLine.qty is
+ * Decimal(18,3); the quantity is rejected, never silently rounded.
+ */
+export class OrderQtyPrecisionException extends AppException {
+  constructor(details: { productId: string; packagingId: string; qty: string; qtyInBaseUnit: string; baseQty: string; maxDecimals: number }) {
+    super(
+      HttpStatus.BAD_REQUEST,
+      'ORDER_QTY_PRECISION',
+      {
+        uz: `Miqdor asosiy birlikda ko'pi bilan 3 kasr xonali bo'lishi kerak (kiritildi ${details.qty} × ${details.qtyInBaseUnit} = ${details.baseQty})`,
+        ru: `Количество в базовой единице должно иметь не более 3 знаков после запятой (введено ${details.qty} × ${details.qtyInBaseUnit} = ${details.baseQty})`,
+        en: `Quantity in the base unit may have at most 3 decimal places (entered ${details.qty} × ${details.qtyInBaseUnit} = ${details.baseQty})`,
+      },
+      details,
+    );
+  }
+}
+
+/**
+ * ADR-059b: effective unit price (unitPrice × (1 − discount/100), ex-VAT,
+ * base unit, unrounded) is below the product's minPrice. No role bypass.
+ */
+export class OrderPriceBelowMinException extends AppException {
+  constructor(details: { productId: string; effectivePrice: string; minPrice: string }) {
+    super(
+      HttpStatus.BAD_REQUEST,
+      'ORDER_PRICE_BELOW_MIN',
+      {
+        uz: `Sotuv narxi (${details.effectivePrice}) mahsulotning minimal narxidan (${details.minPrice}) past`,
+        ru: `Цена продажи (${details.effectivePrice}) ниже минимальной цены товара (${details.minPrice})`,
+        en: `Sale price (${details.effectivePrice}) is below the product's minimum price (${details.minPrice})`,
+      },
+      details,
+    );
+  }
+}

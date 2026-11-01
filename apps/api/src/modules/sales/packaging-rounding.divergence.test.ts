@@ -12,12 +12,9 @@ import { StockService } from '../stock/stock.service';
 import { SalesService } from './sales.service';
 
 /**
- * ADR-059 PO question: packaging qty 0.125 × qtyInBaseUnit 1.5 = 0.1875 base units.
- * SalesOrderLine.qty is Decimal(18,3), so it is STORED as 0.188, but lineTotal is computed
- * (sales.service.ts createWithOutcome) from the UNROUNDED 0.1875 base qty.
- * Hand values (price 1000.00, VAT 12, no discount):
- *   from 0.1875: 0.1875 × 1000 = 187.5; × 1.12 = 210.00   (what is stored today)
- *   from 0.188 : 0.188  × 1000 = 188;   × 1.12 = 210.56   (what stored qty × price × VAT gives)
+ * ADR-059 PO question (resolved by ADR-059a: reject): packaging qty 0.125 × qtyInBaseUnit 1.5 = 0.1875 base units.
+ * SalesOrderLine.qty is Decimal(18,3): it used to be STORED as 0.188 while lineTotal came from
+ * the UNROUNDED 0.1875 (210.00 vs 0.188 × 1000 × 1.12 = 210.56). Now rejected before any write.
  */
 describe('ADR-059 PO question: packaging factor makes base qty finer than 3dp', () => {
   const tenantPrisma = new TenantPrismaService();
@@ -54,23 +51,15 @@ describe('ADR-059 PO question: packaging factor makes base qty finer than 3dp', 
     await systemPrisma.$disconnect();
   });
 
-  async function createLine() {
-    const order = await tenantPrisma.run(companyId, () => sales.create({ customerId, lines: [{ productId, packagingId, qty: 0.125 }] }, user));
-    return { order, line: order.lines[0]! };
-  }
-
-  it('characterisation (today): qty stored 0.188 but lineTotal 210.00 is computed from the unrounded 0.1875', async () => {
-    const { order, line } = await createLine();
-    expect(line.qty.toString()).toBe('0.188');
-    expect(line.lineTotal.toFixed(2)).toBe('210.00');
-    expect(order.total.toFixed(2)).toBe('210.00');
-  });
-
-  // ADR-059 PO question: the stored line is not self-consistent (0.188 × 1000 × 1.12 = 210.56 ≠ 210.00).
-  // This asserts the consistent behaviour; it.fails flips to a failure the day the divergence is resolved.
-  it.fails('ADR-059 PO question: stored lineTotal equals stored qty × price × VAT (210.56)', async () => {
-    const { line } = await createLine();
-    expect(line.qty.toString()).toBe('0.188'); // precondition: the divergence setup is real
-    expect(line.lineTotal.toFixed(2)).toBe('210.56');
+  // ADR-059a (PO 2026-11-01): resolved by rejecting, never rounding, a base qty finer than 3 dp.
+  it('ADR-059a: 0.125 × 1.5 = 0.1875 base units is rejected (ORDER_QTY_PRECISION), nothing written', async () => {
+    const before = await tenantPrisma.run(companyId, (tx) => tx.salesOrder.count());
+    const err = await tenantPrisma
+      .run(companyId, () => sales.create({ customerId, lines: [{ productId, packagingId, qty: 0.125 }] }, user))
+      .then(() => null, (e: unknown) => e as { getStatus(): number; getResponse(): { code: string; details: Record<string, unknown> } });
+    expect(err?.getStatus()).toBe(400);
+    expect(err?.getResponse().code).toBe('ORDER_QTY_PRECISION');
+    expect(err?.getResponse().details).toMatchObject({ qty: '0.125', qtyInBaseUnit: '1.5', baseQty: '0.1875' });
+    expect(await tenantPrisma.run(companyId, (tx) => tx.salesOrder.count())).toBe(before);
   });
 });
