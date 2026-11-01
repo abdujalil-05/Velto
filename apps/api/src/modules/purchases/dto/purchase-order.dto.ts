@@ -6,7 +6,6 @@ import {
   IsDateString,
   IsEnum,
   IsIn,
-  IsNumber,
   IsOptional,
   IsString,
   IsUUID,
@@ -24,12 +23,10 @@ export class CreatePurchaseOrderLineDto {
   // Base unit, Decimal(18,3) — more precision would be silently rounded by
   // Postgres and break the qty − qtyReceived arithmetic, so reject it.
   @IsQuantity()
-  @IsNumber({ maxDecimalPlaces: 3 })
   qty!: number;
 
   // Supplier's net price per base unit (excl. VAT), Decimal(18,2).
   @IsMoneyAmount({ allowZero: true })
-  @IsNumber({ maxDecimalPlaces: 2 })
   unitPrice!: number;
 }
 

@@ -4,7 +4,6 @@ import {
   ArrayMinSize,
   IsArray,
   IsDateString,
-  IsNumber,
   IsOptional,
   IsString,
   IsUUID,
@@ -29,13 +28,11 @@ export class CreateGoodsReceiptLineDto {
   productId?: string;
 
   @IsQuantity()
-  @IsNumber({ maxDecimalPlaces: 3 })
   qty!: number;
 
   // Only honoured for ad-hoc receipts; with a PO the cost is the PO line's unitPrice.
   @IsOptional()
   @IsMoneyAmount({ allowZero: true })
-  @IsNumber({ maxDecimalPlaces: 2 })
   unitCost?: number;
 }
 
