@@ -1,6 +1,6 @@
 # ADR-059 этап C — аудит экспорта 1С (2026-11-01)
 
-Статус: **release blocker до sign-off бухгалтера.** Код экспорта, `mappingVersion 2` и ранее созданные файлы не менялись. Реальный импорт в 1С не выполнялся.
+Статус: **release blocker до sign-off бухгалтера.** С 2026-11-01 (`0390808`, web `f5b26bd`) — строгий отказ для непредставимых документов (см. ниже); `mappingVersion 2`, формат корректных файлов и ранее созданные файлы не менялись. Реальный импорт в 1С не выполнялся.
 
 ## Текущий mapping (источник — Invoice + InvoiceLine, не SalesOrder)
 | Формат | Шапка | Строка | Нет |
@@ -20,8 +20,17 @@
 5. Документ: Σ(qty × цена) = 57 975.13 при сумме документа 58 827.23.
 Корректно только для строк без скидки и с НДС 0%.
 
-## Безопасный способ пометки (предложение, не реализовано)
-Перед выгрузкой — проверка каждой строки: `discount ≠ 0` или `vatRate ≠ 0` или упаковка ≠ базовая или `round(qty × unitPrice) ≠ lineTotal` → предупреждение `UNSUPPORTED_COMBINATION` (invoice, sku, причина) в `ExportJob.errorLog.warnings` (тот же механизм, что `missingExternalCode`), видимое в UI. Строгий режим (FAILED) — решение PO. Исправление формата — только новым `mappingVersion 3` после sign-off.
+## Политика строгого отказа (СДЕЛАНО, 2026-11-01, решение PO)
+- XML/CSV: если в периоде есть хотя бы один непредставимый документ → job `FAILED` (`UnrecoverableError`, без retry), файл не создаётся, статус не `GENERATED`. Охват — вся задача (период = один файл; исключение документов дало бы неполный файл) → пользователь сужает период.
+- `errorLog`: `code = 1C_EXPORT_UNSUPPORTED_COMBINATION`, сообщения uz/ru/en, `total`, `violations[]` (invoiceId, number, sku, reasons) ≤ 100, только своей компании.
+- Причины (`export-1c-representability.ts`): `DISCOUNT`, `VAT` (≠ 0), `QTY_X_PRICE_MISMATCH`, `UNIT` (qtyInBaseUnit ≠ 1), `TOTAL_MISMATCH`.
+- Счета без заказа (orderless): проверяются только арифметика и НДС (скидки/упаковки в InvoiceLine нет). OPENING-счета исключены фильтром kind = SALE и ложно не отклоняются.
+- Корректные документы выгружаются как прежде: `mappingVersion 2`, external IDs, checksum, audit, RBAC, idempotency, GENERATED vs ACCOUNTING_ACCEPTED без изменений.
+- **EXCEL** — информационный реестр (fallback ТЗ 11.1), не импорт в 1С: не отклоняется, лист «Eslatma» это указывает, суммы = `Invoice.total` (Decimal). ACK для EXCEL → 409 `1C_EXPORT_REGISTER_NOT_ACKNOWLEDGEABLE`. Формат по умолчанию — EXCEL.
+- Web (`export-1c/page.tsx`): таблица нарушений, метка «реестр» для EXCEL, кнопка ACK скрыта для EXCEL; i18n uz/ru/en.
+- Read-only диагностика исторических выгрузок: `packages/database/src/diagnostics/export-1c-unsupported.ts [--company]`.
+- Тесты: `export-1c.unsupported.test.ts`, `export-1c.consistency.golden.test.ts`, e2e `export-1c-ack-download`/`export-1c-hardening`, `packages/database/src/__tests__/export-1c-unsupported.test.ts`.
+- **Следствие:** любой документ с НДС ≠ 0 (большинство реальных счетов) отклоняется mapping v2 → выгрузка XML/CSV фактически заблокирована до утверждения v3. Браузерный smoke страницы export-1c не выполнялся.
 
 ## Проект mapping v3 (DRAFT, требует реальной конфигурации 1С)
 | Поле | Источник |
