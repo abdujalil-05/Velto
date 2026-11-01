@@ -8,8 +8,7 @@ import { useAuth } from '@/lib/auth/auth-context';
 import { useStockLevelsQuery } from '@/lib/api/stock';
 import { errorMessage } from '@/lib/api/client';
 import { useSort } from '@/lib/hooks/use-sort';
-import { exportToCsv } from '@/lib/export-csv';
-import { formatQty } from '@/lib/format';
+import { exportToCsv, csvDecimal } from '@/lib/export-csv';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -42,9 +41,9 @@ export default function StockPage() {
     exportToCsv(`qoldiq-${new Date().toISOString().slice(0, 10)}.csv`, data.data, [
       { header: t('product'), value: (r) => r.product.name },
       { header: t('warehouse'), value: (r) => r.warehouse.name },
-      { header: t('onHand'), value: (r) => formatQty(r.onHand) },
-      { header: t('reserved'), value: (r) => formatQty(r.reserved) },
-      { header: t('available'), value: (r) => formatQty(r.available) },
+      { header: t('onHand'), value: (r) => csvDecimal(r.onHand, 3) },
+      { header: t('reserved'), value: (r) => csvDecimal(r.reserved, 3) },
+      { header: t('available'), value: (r) => csvDecimal(r.available, 3) },
     ]);
   }
 

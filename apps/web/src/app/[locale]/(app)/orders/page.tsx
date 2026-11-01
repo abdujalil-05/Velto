@@ -13,8 +13,8 @@ import { errorMessage } from '@/lib/api/client';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
 import { useSort } from '@/lib/hooks/use-sort';
 import { useInitialQueryParam } from '@/lib/hooks/use-initial-query-param';
-import { exportToCsv } from '@/lib/export-csv';
-import { formatDate, formatMoney } from '@/lib/format';
+import { exportToCsv, csvDecimal } from '@/lib/export-csv';
+import { formatDate } from '@/lib/format';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -90,7 +90,7 @@ export default function OrdersPage() {
       { header: t('number'), value: (o) => o.number },
       { header: t('customer'), value: (o) => o.customer.name },
       { header: t('date'), value: (o) => formatDate(o.createdAt, locale) },
-      { header: t('total'), value: (o) => formatMoney(o.total) },
+      { header: t('total'), value: (o) => csvDecimal(o.total, 2) },
       { header: t('status'), value: (o) => o.status },
     ]);
   }

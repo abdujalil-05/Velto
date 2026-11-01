@@ -11,7 +11,9 @@ export interface CsvColumn<T> {
  */
 export function exportToCsv<T>(filename: string, rows: T[], columns: CsvColumn<T>[]): void {
   const escape = (value: string | number): string => {
-    const s = String(value);
+    let s = String(value);
+    // OWASP CSV formula injection: neutralise text cells; plain numbers (incl. negatives) stay numeric.
+    if (/^[=+\-@\t\r]/.test(s) && !/^-?\d+(\.\d+)?$/.test(s)) s = `'${s}`;
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
 
@@ -30,4 +32,17 @@ export function exportToCsv<T>(filename: string, rows: T[], columns: CsvColumn<T
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+}
+
+/** CSV numeric format: plain decimal, "." separator, no thousands/currency, "-" sign only, padded to `scale`; values with more decimals are emitted unchanged (never rounded); non-numeric input is returned as-is. */
+export function csvDecimal(value: string | null | undefined, scale: number): string {
+  if (value == null) return '';
+  const m = /^\s*([+-]?)(\d+)(?:\.(\d*))?\s*$/.exec(value);
+  if (!m) return value;
+  const frac = m[3] ?? '';
+  if (frac.length > scale) return value.trim();
+  const int = m[2]!.replace(/^0+(?=\d)/, '');
+  const digits = int + frac;
+  const neg = m[1] === '-' && /[1-9]/.test(digits);
+  return `${neg ? '-' : ''}${int}${scale > 0 ? `.${frac.padEnd(scale, '0')}` : ''}`;
 }

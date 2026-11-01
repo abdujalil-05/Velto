@@ -11,7 +11,7 @@ import { ApiError, errorMessage } from '@/lib/api/client';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
 import { useSort } from '@/lib/hooks/use-sort';
 import { formatMoney } from '@/lib/format';
-import { exportToCsv } from '@/lib/export-csv';
+import { exportToCsv, csvDecimal } from '@/lib/export-csv';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
@@ -113,7 +113,7 @@ export default function CustomersPage() {
         { header: t('code'), value: (c) => c.code },
         { header: t('name'), value: (c) => c.name },
         { header: t('phone'), value: (c) => c.phone ?? '' },
-        { header: t('balance'), value: (c) => c.cachedBalance },
+        { header: t('balance'), value: (c) => csvDecimal(c.cachedBalance, 2) },
         { header: t('status'), value: (c) => (c.isBlocked ? t('blocked') : t('active')) },
       ],
     );

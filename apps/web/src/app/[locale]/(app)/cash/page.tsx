@@ -24,8 +24,8 @@ import {
 import { useCustomersQuery, type Customer } from '@/lib/api/customers';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
 import { useSort } from '@/lib/hooks/use-sort';
-import { exportToCsv } from '@/lib/export-csv';
-import { formatDateTime, formatMoney } from '@/lib/format';
+import { exportToCsv, csvDecimal } from '@/lib/export-csv';
+import { formatDateTime } from '@/lib/format';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -73,9 +73,9 @@ function CashSection() {
       { header: t('cashier'), value: (s) => (s.user ? `${s.user.firstName} ${s.user.lastName}` : '') },
       { header: t('openedAt'), value: (s) => formatDateTime(s.openedAt, locale) },
       { header: t('closedAt'), value: (s) => (s.closedAt ? formatDateTime(s.closedAt, locale) : '') },
-      { header: t('openAmount'), value: (s) => formatMoney(s.openAmount) },
-      { header: t('closeAmount'), value: (s) => (s.closeAmount ? formatMoney(s.closeAmount) : '') },
-      { header: t('totalCollected'), value: (s) => formatMoney(s.totalCollected) },
+      { header: t('openAmount'), value: (s) => csvDecimal(s.openAmount, 2) },
+      { header: t('closeAmount'), value: (s) => (s.closeAmount ? csvDecimal(s.closeAmount, 2) : '') },
+      { header: t('totalCollected'), value: (s) => csvDecimal(s.totalCollected, 2) },
     ]);
   }
 
@@ -240,7 +240,7 @@ function PaymentsSection({ canCreate, canReverse, canHandover }: { canCreate: bo
       { header: t('customer'), value: (p) => p.customer.name },
       { header: t('date'), value: (p) => formatDateTime(p.createdAt, locale) },
       { header: t('method'), value: (p) => t(`methods.${p.method}`) },
-      { header: t('amount'), value: (p) => formatMoney(p.amount) },
+      { header: t('amount'), value: (p) => csvDecimal(p.amount, 2) },
     ]);
   }
 
