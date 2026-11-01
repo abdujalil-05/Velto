@@ -261,6 +261,26 @@ export class PaymentIdempotencyConflictException extends AppException {
   }
 }
 
+/**
+ * 10.4 / PO decision: the stored Payment columns match the replay, but the
+ * original request's allocation mode cannot be proven from immutable data
+ * (legacy payment without a create-time request record). Never a silent replay.
+ */
+export class PaymentIdempotencyUnverifiableException extends AppException {
+  constructor(clientId: string) {
+    super(
+      HttpStatus.CONFLICT,
+      'PAYMENT_IDEMPOTENCY_UNVERIFIABLE',
+      {
+        uz: "Bu clientId bilan to'lov allaqachon mavjud, lekin asl so'rovni ishonchli tekshirib bo'lmaydi. Takroriy to'lov yaratilmadi — buxgalter bilan qo'lda solishtiring",
+        ru: 'Платёж с этим clientId уже существует, но исходный запрос невозможно достоверно проверить. Повторный платёж не создан — выполните ручную сверку с бухгалтером',
+        en: 'A payment with this clientId already exists, but the original request cannot be reliably verified. No duplicate payment was created — reconcile manually with the accountant',
+      },
+      { clientId },
+    );
+  }
+}
+
 export class PaymentOpeningNotReversibleException extends AppException {
   constructor() {
     super(HttpStatus.CONFLICT, 'PAYMENT_OPENING_NOT_REVERSIBLE', {

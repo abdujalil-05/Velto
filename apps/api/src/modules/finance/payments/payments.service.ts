@@ -30,6 +30,7 @@ import {
   PaymentHandoverRejectReasonRequiredException,
   PaymentHandoverSelfResolveException,
   PaymentIdempotencyConflictException,
+  PaymentIdempotencyUnverifiableException,
   PaymentNotPendingHandoverException,
   PaymentNotPostedException,
   PaymentOpeningNotReversibleException,
@@ -38,7 +39,7 @@ import {
   PaymentStatusesLimitException,
 } from '../finance-exceptions';
 import { OwnerAlertsService } from '../../notifications/owner-alerts';
-import { isSamePaymentRequest } from './payment-replay';
+import { isSamePaymentColumns, isSamePaymentRequest } from './payment-replay';
 import { VALID_ALLOCATION_WHERE, paymentAdvanceOf, paymentPostedAt, paymentPostedWithin } from '../ledger-filters';
 
 // customer is included alongside allocations so the web UI (9.2 "/payments")
@@ -213,7 +214,9 @@ export class PaymentsService {
       action: 'payment.create',
       entity: 'Payment',
       entityId: payment.id,
-      newValue: toAuditJson(full),
+      // createRequest: the immutable record of what was REQUESTED (manual lines or
+      // null = FIFO), the replay gate's source of truth (findReplay).
+      newValue: toAuditJson({ ...full, createRequest: { allocations: dto.allocations?.length ? dto.allocations.map((a) => ({ invoiceId: a.invoiceId, amount: new Prisma.Decimal(a.amount).toString() })) : null } }),
     });
     await this.auditAllocations(tx, user, payment.id, dto.allocations?.length ? 'MANUAL' : 'FIFO', allocations);
 
@@ -236,33 +239,48 @@ export class PaymentsService {
     const existing = await tx.payment.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: PAYMENT_INCLUDE });
     if (!existing) return null;
     assertClientIdReplayAllowed(existing.collectedBy, user);
+    const reject = (err: AppException) =>
+      auditRejection(this.tenantPrisma, this.auditLog, { companyId: user.companyId, userId: user.id, action: 'payment.create', entity: 'Payment', entityId: existing.id }, err);
+    // 1) Provable difference in the Payment row's own columns -> CONFLICT, whatever the allocation record says.
+    if (!isSamePaymentColumns(existing, dto)) throw reject(new PaymentIdempotencyConflictException(dto.clientId));
+    // 2) Original allocation mode not provable (legacy) -> UNVERIFIABLE: never a silent replay, manual reconciliation.
     const manualAllocations = await this.createTimeManualAllocations(tx, existing.id);
-    if (!isSamePaymentRequest({ ...existing, manualAllocations }, dto)) {
-      throw auditRejection(
-        this.tenantPrisma,
-        this.auditLog,
-        { companyId: user.companyId, userId: user.id, action: 'payment.create', entity: 'Payment', entityId: existing.id },
-        new PaymentIdempotencyConflictException(dto.clientId),
-      );
-    }
+    if (manualAllocations === 'UNVERIFIABLE') throw reject(new PaymentIdempotencyUnverifiableException(dto.clientId));
+    // 3) Proven original request: equal -> the original payment as it is now; different -> CONFLICT.
+    if (!isSamePaymentRequest({ ...existing, manualAllocations }, dto)) throw reject(new PaymentIdempotencyConflictException(dto.clientId));
     return withAdvance(existing);
   }
 
   /**
-   * The manual allocation lines the payment was CREATED with, from its own
-   * append-only `payment.allocate` audit row (mode MANUAL is written only by
-   * create(); FIFO/MANUAL_LATER rows are server-chosen or later advance use).
-   * null = the original request had no `allocations` (FIFO).
+   * The manual allocation lines the payment was CREATED with (null = FIFO
+   * request), from append-only AuditLog only:
+   * - `payment.create` row's `createRequest` (written by create() for every
+   *   payment, incl. zero-allocation ones);
+   * - else (created before createRequest existed) a `payment.allocate` row of
+   *   mode MANUAL (lines) or FIFO (null) — both written only by create() /
+   *   acceptHandover() of an in-transit payment, which cannot carry manual lines;
+   * - else 'UNVERIFIABLE': legacy (pre-841e56d) or a pre-createRequest payment
+   *   with nothing allocated — no allocation rows do NOT prove a FIFO request.
+   * Unreadable snapshot => 'UNVERIFIABLE' (fail closed, never a silent replay).
    */
-  private async createTimeManualAllocations(tx: TenantClient, paymentId: string): Promise<{ invoiceId: string; amount: string }[] | null> {
-    const row = await tx.auditLog.findFirst({
-      where: { entity: 'Payment', entityId: paymentId, action: 'payment.allocate', newValue: { path: ['mode'], equals: 'MANUAL' } },
-      select: { newValue: true },
+  private async createTimeManualAllocations(tx: TenantClient, paymentId: string): Promise<{ invoiceId: string; amount: string }[] | null | 'UNVERIFIABLE'> {
+    const rows = await tx.auditLog.findMany({
+      where: { entity: 'Payment', entityId: paymentId, action: { in: ['payment.create', 'payment.allocate'] } },
+      select: { action: true, newValue: true },
+      orderBy: { createdAt: 'asc' },
     });
-    if (!row) return null;
-    const lines = (row.newValue as { allocations?: unknown } | null)?.allocations;
-    // Unreadable snapshot => empty set: never matches a manual request (fail closed to 409, never a silent replay).
-    return Array.isArray(lines) ? (lines as { invoiceId: string; amount: string }[]) : [];
+    const value = (r: (typeof rows)[number]) => (r.newValue ?? {}) as { createRequest?: { allocations?: unknown }; mode?: unknown; allocations?: unknown };
+    const created = rows.find((r) => r.action === 'payment.create' && value(r).createRequest !== undefined);
+    const lines = (l: unknown) => (Array.isArray(l) ? (l as { invoiceId: string; amount: string }[]) : 'UNVERIFIABLE' as const);
+    if (created) {
+      const requested = value(created).createRequest?.allocations;
+      return requested === null ? null : lines(requested);
+    }
+    const allocate = rows.filter((r) => r.action === 'payment.allocate');
+    const manual = allocate.find((r) => value(r).mode === 'MANUAL');
+    if (manual) return lines(value(manual).allocations);
+    if (allocate.some((r) => value(r).mode === 'FIFO')) return null;
+    return 'UNVERIFIABLE';
   }
 
   /**

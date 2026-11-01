@@ -20,6 +20,7 @@
     "loadError": "Couldn't load data",
     "stops": "stops",
     "collected": "Collected",
+    "ordersTotalToday": "Orders total today",
     "routeAction": "ROUTE",
     "orderAction": "ORDER",
     "reportAction": "REPORT"

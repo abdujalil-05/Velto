@@ -4,7 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { ForbiddenException } from '@nestjs/common';
 import { Prisma, prisma, systemPrisma } from '@velto/database';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
-import { AuditLogService } from '../../common/audit/audit-log.service';
+import { AuditLogService, toAuditJson } from '../../common/audit/audit-log.service';
 import { grantRole } from '../../common/testing/grant-role';
 import { envSchema } from '../../common/config/env.schema';
 import { DocumentNumberingService } from '../../common/document-numbering/document-numbering.service';
@@ -461,6 +461,80 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
       vi.spyOn(payments, 'create').mockRejectedValueOnce(pgError('P2002'));
       const { results } = await sync.push([{ ...pay, payload: { ...pay.payload, amount: 2000 } }], user);
       expect(results[0]).toMatchObject({ status: 'REJECTED', error: { code: 'PAYMENT_IDEMPOTENCY_CONFLICT', details: { clientId: pay.clientId } } });
+    });
+
+    it('10.4 PAYMENT P2002 conflict path audits payment.create_rejected on the existing payment (CONFLICT, then UNVERIFIABLE legacy)', async () => {
+      const rejectedAudits = (paymentId: string) =>
+        tenantPrisma.run(companyId, async (tx) => (await tx.auditLog.findMany({ where: { entityId: paymentId, action: 'payment.create_rejected' }, select: { newValue: true } })).map((a) => (a.newValue as { reason: string }).reason));
+      // CONFLICT: payment created via new code, same clientId pushed with other amount.
+      const pay = payDoc();
+      const created = (await sync.push([pay], user)).results[0];
+      expect(created?.status).toBe('ACCEPTED');
+      vi.spyOn(payments, 'create').mockRejectedValueOnce(pgError('P2002'));
+      const c = await sync.push([{ ...pay, payload: { ...pay.payload, amount: 2000 } }], user);
+      expect(c.results[0]).toMatchObject({ status: 'REJECTED', error: { code: 'PAYMENT_IDEMPOTENCY_CONFLICT' } });
+      expect(await rejectedAudits(created!.id!)).toEqual(['PAYMENT_IDEMPOTENCY_CONFLICT']);
+
+      // UNVERIFIABLE: legacy payment (no createRequest / allocate audit), identical content.
+      const leg = payDoc();
+      const legacy = await tenantPrisma.run(companyId, async (tx) => {
+        const p = await tx.payment.create({
+          data: { companyId, number: `PAY-SYNC-RA-${Date.now()}`, customerId, amount: '1000', method: 'CASH', status: 'POSTED', collectedBy: user.id, clientId: leg.clientId },
+        });
+        const full = await tx.payment.findUniqueOrThrow({ where: { id: p.id }, include: { allocations: true } });
+        await auditLog.log(tx, { companyId, userId: user.id, action: 'payment.create', entity: 'Payment', entityId: p.id, newValue: toAuditJson(full) });
+        return p;
+      });
+      vi.spyOn(payments, 'create').mockRejectedValueOnce(pgError('P2002'));
+      const u = await sync.push([leg], user);
+      expect(u.results[0]).toMatchObject({ status: 'REJECTED', error: { code: 'PAYMENT_IDEMPOTENCY_UNVERIFIABLE' } });
+      expect(await rejectedAudits(legacy.id)).toEqual(['PAYMENT_IDEMPOTENCY_UNVERIFIABLE']);
+    });
+
+    it('10.4 PAYMENT real race (no mock): parallel pushes of one clientId with different amounts -> exactly one Payment, losers REJECTED CONFLICT, rejection audited', async () => {
+      const pay = payDoc();
+      const amounts = [1000, 1001, 1002, 1003, 1004];
+      const outs = await Promise.all(amounts.map((amount) => sync.push([{ ...pay, payload: { ...pay.payload, amount } }], user)));
+      const items = outs.map((o) => o.results[0]!);
+      const accepted = items.filter((i) => i.status === 'ACCEPTED');
+      expect(accepted).toHaveLength(1);
+      const others = items.filter((i) => i.status !== 'ACCEPTED');
+      for (const i of others) expect(i).toMatchObject({ status: 'REJECTED', error: { code: 'PAYMENT_IDEMPOTENCY_CONFLICT' } });
+      const rows = await tenantPrisma.run(companyId, (tx) => tx.payment.findMany({ where: { clientId: pay.clientId } }));
+      expect(rows).toHaveLength(1);
+      const audits = await tenantPrisma.run(companyId, (tx) => tx.auditLog.count({ where: { entityId: rows[0]!.id, action: 'payment.create_rejected' } }));
+      expect(audits).toBe(others.length);
+    });
+
+    it.each([
+      ['with allocation rows', true],
+      ['without allocation rows', false],
+    ])('10.4 legacy PAYMENT (%s, no createRequest / payment.allocate audit) identical replay → REJECTED PAYMENT_IDEMPOTENCY_UNVERIFIABLE, never DUPLICATE', async (_n, withAlloc) => {
+      const pay = payDoc();
+      const tag = `${Date.now()}-${withAlloc ? 'a' : 'z'}`;
+      const before = await tenantPrisma.run(companyId, async (tx) => {
+        const p = await tx.payment.create({
+          data: { companyId, number: `PAY-SYNC-LEG-${tag}`, customerId, amount: '1000', method: 'CASH', status: 'POSTED', collectedBy: user.id, clientId: pay.clientId },
+        });
+        if (withAlloc) {
+          const inv = await tx.invoice.create({ data: { companyId, number: `SYNC-LEG-INV-${tag}`, customerId, total: '5000', status: 'OPEN' } });
+          await tx.paymentAllocation.create({ data: { paymentId: p.id, invoiceId: inv.id, amount: '1000' } });
+        }
+        const full = await tx.payment.findUniqueOrThrow({ where: { id: p.id }, include: { allocations: true } });
+        await auditLog.log(tx, { companyId, userId: user.id, action: 'payment.create', entity: 'Payment', entityId: p.id, newValue: toAuditJson(full) });
+        return { payments: await tx.payment.count({ where: { customerId } }), allocations: await tx.paymentAllocation.count({ where: { payment: { customerId } } }) };
+      });
+      const { results } = await sync.push([pay], user);
+      expect(results[0]).toMatchObject({ status: 'REJECTED', error: { code: 'PAYMENT_IDEMPOTENCY_UNVERIFIABLE', details: { clientId: pay.clientId } } });
+      // P2002 lost-race recovery goes through the same gate (never DUPLICATE / RETRY).
+      vi.spyOn(payments, 'create').mockRejectedValueOnce(pgError('P2002'));
+      const raced = await sync.push([pay], user);
+      expect(raced.results[0]).toMatchObject({ status: 'REJECTED', error: { code: 'PAYMENT_IDEMPOTENCY_UNVERIFIABLE', details: { clientId: pay.clientId } } });
+      const after = await tenantPrisma.run(companyId, async (tx) => ({
+        payments: await tx.payment.count({ where: { customerId } }),
+        allocations: await tx.paymentAllocation.count({ where: { payment: { customerId } } }),
+      }));
+      expect(after).toEqual(before);
     });
 
     it('P2002 with no existing doc for the clientId → RETRY (not a duplicate)', async () => {

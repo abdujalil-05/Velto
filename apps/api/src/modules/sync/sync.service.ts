@@ -13,7 +13,7 @@ import { setWriterLockTimeout } from '../../common/tenant/lock-timeout';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { CustomersService } from '../customers/customers.service';
 import { CreatePaymentDto } from '../finance/dto/create-payment.dto';
-import { PaymentIdempotencyConflictException } from '../finance/finance-exceptions';
+import { PaymentIdempotencyConflictException, PaymentIdempotencyUnverifiableException } from '../finance/finance-exceptions';
 import { PaymentsService } from '../finance/payments/payments.service';
 import { CreateVisitDto } from '../field/visits/dto/create-visit.dto';
 import { VisitsService } from '../field/visits/visits.service';
@@ -406,7 +406,7 @@ export class SyncService {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
       const existing = await this.tenantPrisma
         .run(user.companyId, () => this.findExistingByClientId(doc, user))
-        .catch((e: unknown) => (e instanceof ClientIdConflictException || e instanceof PaymentIdempotencyConflictException ? e : null));
+        .catch((e: unknown) => (e instanceof ClientIdConflictException || e instanceof PaymentIdempotencyConflictException || e instanceof PaymentIdempotencyUnverifiableException ? e : null));
       if (existing instanceof HttpException) return { clientId: doc.clientId, status: 'REJECTED', error: toErrorDetail(existing) };
       if (existing) return { ...existing, clientId: doc.clientId, status: 'DUPLICATE' };
       return retryResult(doc, error);

@@ -4,7 +4,7 @@ import { Prisma, prisma, systemPrisma } from '@velto/database';
 import { AppException } from '../../../common/errors/app-exception';
 import { localDateString } from '../../analytics/report-utils';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
-import { AuditLogService } from '../../../common/audit/audit-log.service';
+import { AuditLogService, toAuditJson } from '../../../common/audit/audit-log.service';
 import { DocumentNumberingService } from '../../../common/document-numbering/document-numbering.service';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import { CustomersService } from '../../customers/customers.service';
@@ -20,6 +20,7 @@ import {
   PaymentAlreadyReversedException,
   PaymentExportedTo1cException,
   PaymentIdempotencyConflictException,
+  PaymentIdempotencyUnverifiableException,
   PaymentInClosedCashSessionException,
   PaymentNotFoundException,
   PaymentNotPostedException,
@@ -284,6 +285,147 @@ describe('PaymentsService (integration, real Postgres + RLS)', () => {
       const replay = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 4000, method: 'CASH', clientId }, user));
       expect(replay.id).toBe(first.id);
       expect(replay.allocations).toHaveLength(2);
+    });
+
+    it('zero-allocation payment (pure advance) is proven by payment.create createRequest: identical replay -> original, changed -> 409', async () => {
+      const { customerId } = await createCustomerWithInvoices([]);
+      const clientId = randomUUID();
+      const first = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 2500, method: 'CASH', clientId }, user));
+      expect(first.allocations).toHaveLength(0);
+      const replay = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: D('2500.00'), method: 'CASH', clientId }, user));
+      expect(replay.id).toBe(first.id);
+      await expectConflict(tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 2500, method: 'CARD', clientId }, user)), clientId);
+    });
+
+    it('ADR-029 agent payment (SALES_AGENT, PENDING_HANDOVER, 0 allocations) created with createRequest: identical replay -> original; changed amount -> 409; nothing written', async () => {
+      const { customerId } = await createCustomerWithInvoices([{ total: '10000', ageDays: 2 }]);
+      const agentDb = await systemPrisma.user.create({ data: { companyId, firstName: 'Ag', lastName: 'Ent', phone: `+99894${String(Date.now()).slice(-7)}` } });
+      const agent: AuthenticatedUser = { ...user, id: agentDb.id, roles: ['SALES_AGENT'] };
+      const clientId = randomUUID();
+      const first = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 3000, method: 'CASH', clientId }, agent));
+      expect(first.status).toBe('PENDING_HANDOVER');
+      expect(first.allocations).toHaveLength(0);
+      const auditActions = (id: string) =>
+        tenantPrisma.run(companyId, async (tx) => (await tx.auditLog.findMany({ where: { entityId: id }, orderBy: { createdAt: 'asc' }, select: { action: true } })).map((a) => a.action));
+      const actionsBefore = await auditActions(first.id);
+      expect(actionsBefore).toContain('payment.create');
+      expect(actionsBefore).not.toContain('payment.allocate');
+      const before = await snapshot(customerId);
+
+      const replay = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: D('3000.00'), method: 'CASH', clientId }, agent));
+      expect(replay.id).toBe(first.id);
+      expect(replay.status).toBe('PENDING_HANDOVER');
+      expect(await snapshot(customerId)).toEqual(before);
+      expect(await auditActions(first.id)).toEqual(actionsBefore);
+
+      await expectConflict(tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 3000.01, method: 'CASH', clientId }, agent)), clientId);
+      expect(await snapshot(customerId)).toEqual(before);
+      expect((await auditActions(first.id)).filter((a) => a === 'payment.create_rejected')).toHaveLength(1);
+    });
+
+    describe('legacy (pre-841e56d) payment: payment.create audit without createRequest, no payment.allocate row', () => {
+      /** Inserts a payment the way pre-audit code left it: Payment (+ optional allocation rows) + a legacy payment.create snapshot. */
+      const insertLegacy = (customerId: string, clientId: string, amount: string, alloc?: { invoiceId: string; amount: string }) =>
+        tenantPrisma.run(companyId, async (tx) => {
+          const p = await tx.payment.create({
+            data: { companyId, number: `PAY-LEGACY-${Date.now()}-${invoiceSeq++}`, customerId, amount, method: 'CASH', status: 'POSTED', collectedBy: user.id, clientId },
+          });
+          if (alloc) await tx.paymentAllocation.create({ data: { paymentId: p.id, invoiceId: alloc.invoiceId, amount: alloc.amount } });
+          const full = await tx.payment.findUniqueOrThrow({ where: { id: p.id }, include: { allocations: true } });
+          await auditLog.log(tx, { companyId, userId: user.id, action: 'payment.create', entity: 'Payment', entityId: p.id, newValue: toAuditJson(full) });
+          return p;
+        });
+      const expectUnverifiable = async (p: Promise<unknown>, clientId: string) => {
+        const err = await p.catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(PaymentIdempotencyUnverifiableException);
+        const body = (err as AppException).getResponse() as { code: string; details: unknown; message: Record<string, string> };
+        expect(body.code).toBe('PAYMENT_IDEMPOTENCY_UNVERIFIABLE');
+        expect((err as AppException).getStatus()).toBe(409);
+        expect(body.details).toEqual({ clientId });
+        expect(Object.keys(body.message).sort()).toEqual(['en', 'ru', 'uz']);
+      };
+      const rejections = (paymentId: string) =>
+        tenantPrisma.run(companyId, (tx) =>
+          tx.auditLog.findMany({ where: { entityId: paymentId }, orderBy: { createdAt: 'asc' }, select: { action: true, newValue: true } }),
+        );
+
+      it('with allocation rows: identical FIFO-shaped and manual-shaped replay -> UNVERIFIABLE, nothing written, rejection audited (no backfill)', async () => {
+        const { customerId, invoiceIds } = await createCustomerWithInvoices([{ total: '10000', ageDays: 3 }]);
+        const clientId = randomUUID();
+        const legacy = await insertLegacy(customerId, clientId, '4000', { invoiceId: invoiceIds[0]!, amount: '4000' });
+        const before = await snapshot(customerId);
+
+        await expectUnverifiable(tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 4000, method: 'CASH', clientId }, user)), clientId);
+        await expectUnverifiable(
+          tenantPrisma.run(companyId, () =>
+            payments.create({ customerId, amount: 4000, method: 'CASH', clientId, allocations: [{ invoiceId: invoiceIds[0]!, amount: 4000 }] }, user),
+          ),
+          clientId,
+        );
+        expect(await snapshot(customerId)).toEqual(before);
+        const audits = await rejections(legacy.id);
+        expect(audits.map((a) => a.action)).toEqual(['payment.create', 'payment.create_rejected', 'payment.create_rejected']);
+        expect(audits[1]!.newValue).toEqual({ reason: 'PAYMENT_IDEMPOTENCY_UNVERIFIABLE', details: { clientId } });
+      });
+
+      it('without allocation rows: identical replay -> UNVERIFIABLE (no allocations is not proof of a FIFO request)', async () => {
+        const { customerId } = await createCustomerWithInvoices([]);
+        const clientId = randomUUID();
+        const legacy = await insertLegacy(customerId, clientId, '2500');
+        const before = await snapshot(customerId);
+        await expectUnverifiable(tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 2500, method: 'CASH', clientId }, user)), clientId);
+        expect(await snapshot(customerId)).toEqual(before);
+        expect((await rejections(legacy.id)).map((a) => a.action)).toEqual(['payment.create', 'payment.create_rejected']);
+      });
+
+      it('provably different amount / method / customer -> PAYMENT_IDEMPOTENCY_CONFLICT (not UNVERIFIABLE)', async () => {
+        const { customerId, invoiceIds } = await createCustomerWithInvoices([{ total: '10000', ageDays: 3 }]);
+        const other = await createCustomerWithInvoices([]);
+        const clientId = randomUUID();
+        await insertLegacy(customerId, clientId, '4000', { invoiceId: invoiceIds[0]!, amount: '4000' });
+        const before = await snapshot(customerId);
+        await expectConflict(tenantPrisma.run(companyId, () => payments.create({ customerId, amount: D('4000.01'), method: 'CASH', clientId }, user)), clientId);
+        await expectConflict(tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 4000, method: 'CARD', clientId }, user)), clientId);
+        await expectConflict(tenantPrisma.run(companyId, () => payments.create({ customerId: other.customerId, amount: 4000, method: 'CASH', clientId }, user)), clientId);
+        expect(await snapshot(customerId)).toEqual(before);
+      });
+
+      it('race: N parallel identical legacy replays -> all UNVERIFIABLE; payments, allocations, cachedBalance, ledger unchanged', async () => {
+        const { customerId, invoiceIds } = await createCustomerWithInvoices([{ total: '10000', ageDays: 3 }]);
+        const clientId = randomUUID();
+        await insertLegacy(customerId, clientId, '4000', { invoiceId: invoiceIds[0]!, amount: '4000' });
+        const before = await snapshot(customerId);
+        const ledgerBefore = await ledgerBalance(customerId);
+        const settled = await Promise.allSettled(
+          Array.from({ length: 6 }, () => tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 4000, method: 'CASH', clientId }, user))),
+        );
+        for (const s of settled) {
+          expect(s.status).toBe('rejected');
+          expect((s as PromiseRejectedResult).reason).toBeInstanceOf(PaymentIdempotencyUnverifiableException);
+        }
+        expect(await snapshot(customerId)).toEqual(before);
+        expect(await ledgerBalance(customerId)).toBe(ledgerBefore);
+      });
+
+      it('cross-tenant: the legacy clientId in another company creates an independent payment there; A untouched, nothing leaks', async () => {
+        const { customerId } = await createCustomerWithInvoices([]);
+        const clientId = randomUUID();
+        const legacy = await insertLegacy(customerId, clientId, '2500');
+        const before = await snapshot(customerId);
+
+        const tenant = await systemPrisma.tenant.create({ data: { slug: `test-payments-lx-${Date.now()}`, name: 'Payments LX Tenant' } });
+        const otherCompanyId = (await systemPrisma.company.create({ data: { tenantId: tenant.id, name: 'Payments LX Co' } })).id;
+        const dbUser = await systemPrisma.user.create({ data: { companyId: otherCompanyId, firstName: 'L', lastName: 'X', phone: `+99895${Math.floor(1_000_000 + Math.random() * 8_000_000)}` } });
+        const otherUser: AuthenticatedUser = { ...user, id: dbUser.id, companyId: otherCompanyId };
+        const otherCustomer = await tenantPrisma.run(otherCompanyId, (tx) => tx.customer.create({ data: { companyId: otherCompanyId, code: `LX-${Date.now()}`, name: 'LX' } }));
+
+        const theirs = await tenantPrisma.run(otherCompanyId, () => payments.create({ customerId: otherCustomer.id, amount: 2500, method: 'CASH', clientId }, otherUser));
+        expect(theirs.id).not.toBe(legacy.id);
+        expect(theirs.companyId).toBe(otherCompanyId);
+        expect(JSON.stringify(theirs)).not.toContain(legacy.id);
+        expect(await snapshot(customerId)).toEqual(before);
+        expect((await rejections(legacy.id)).map((a) => a.action)).toEqual(['payment.create']);
+      });
     });
 
     it('race: N parallel identical requests -> exactly one Payment, all return its id', async () => {

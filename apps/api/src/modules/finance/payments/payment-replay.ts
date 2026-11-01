@@ -22,6 +22,16 @@ function byInvoice(lines: readonly AllocationLine[]): Map<string, Prisma.Decimal
   return sums;
 }
 
+/** The provable part: request fields stored on the Payment row itself (customer, amount by Decimal equality, method, COLLECTION source). */
+export function isSamePaymentColumns(
+  stored: Omit<StoredPaymentRequest, 'manualAllocations'>,
+  request: Pick<CreatePaymentDto, 'customerId' | 'amount' | 'method'>,
+): boolean {
+  if (stored.source !== PaymentSource.COLLECTION || stored.method !== request.method) return false;
+  if (stored.customerId.toLowerCase() !== request.customerId.toLowerCase()) return false;
+  return stored.amount.equals(new Prisma.Decimal(request.amount));
+}
+
 /**
  * 10.4 clientId replay (security audit / PO P0): a resubmitted clientId is an
  * idempotent replay only if every request-supplied essential field matches the
@@ -33,9 +43,7 @@ export function isSamePaymentRequest(
   stored: StoredPaymentRequest,
   request: Pick<CreatePaymentDto, 'customerId' | 'amount' | 'method' | 'allocations'>,
 ): boolean {
-  if (stored.source !== PaymentSource.COLLECTION || stored.method !== request.method) return false;
-  if (stored.customerId.toLowerCase() !== request.customerId.toLowerCase()) return false;
-  if (!stored.amount.equals(new Prisma.Decimal(request.amount))) return false;
+  if (!isSamePaymentColumns(stored, request)) return false;
 
   const requested = request.allocations?.length ? request.allocations : null;
   if (!requested || !stored.manualAllocations) return !requested && !stored.manualAllocations;
