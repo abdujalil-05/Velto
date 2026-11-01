@@ -1808,7 +1808,7 @@
       "xmlUnverified": "XML (CommerceML) has not been verified in a pilot with 1C yet. Prefer Excel."
     },
     "format": {
-      "EXCEL": "Excel",
+      "EXCEL": "Excel (informational register, not a 1C import file)",
       "CSV": "CSV",
       "XML": "XML (not pilot-verified)"
     },
@@ -1846,6 +1846,20 @@
       "rejectDescription": "Describe why the file {file} was rejected by 1C. This cannot be changed later.",
       "doneAccepted": "Marked as accepted.",
       "doneRejected": "Marked as rejected."
+    },
+    "unsupported": {
+      "total": "Unsupported documents: {total}",
+      "invoice": "Invoice",
+      "sku": "SKU",
+      "reasons": "Reasons",
+      "hint": "Choose another period. Documents were not changed; no partial file was created.",
+      "reason": {
+        "DISCOUNT": "Discount",
+        "VAT": "VAT",
+        "QTY_X_PRICE_MISMATCH": "Qty × price mismatch",
+        "UNIT": "Unit",
+        "TOTAL_MISMATCH": "Total mismatch"
+      }
     }
   },
   "Trial": {

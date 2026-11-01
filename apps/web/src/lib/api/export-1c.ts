@@ -10,13 +10,33 @@ export type AckResult = 'ACCEPTED' | 'REJECTED';
 export const ACTIVE_EXPORT_STATUSES: ExportJobStatus[] = ['QUEUED', 'PROCESSING'];
 export const DOWNLOADABLE_EXPORT_STATUSES: ExportJobStatus[] = ['GENERATED', 'ACCOUNTING_ACCEPTED', 'FAILED_REVIEW'];
 
+export type UnsupportedReason = 'DISCOUNT' | 'VAT' | 'QTY_X_PRICE_MISMATCH' | 'UNIT' | 'TOTAL_MISMATCH';
+
+export interface UnsupportedViolation {
+  invoiceId: string;
+  invoiceNumber: string;
+  sku: string | null;
+  reasons: UnsupportedReason[];
+}
+
+export interface ExportErrorLog {
+  code?: string;
+  message?: string;
+  messages?: { uz: string; ru: string; en: string };
+  total?: number;
+  violations?: UnsupportedViolation[];
+  warnings?: string[];
+}
+
+export const UNSUPPORTED_COMBINATION_CODE = '1C_EXPORT_UNSUPPORTED_COMBINATION';
+
 export interface ExportJob {
   id: string;
   format: ExportFormat;
   periodFrom: string;
   periodTo: string;
   status: ExportJobStatus;
-  errorLog: { message?: string } | null;
+  errorLog: ExportErrorLog | null;
   fileHash: string | null;
   recordCount: number | null;
   fileName: string | null;

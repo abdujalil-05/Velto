@@ -1808,7 +1808,7 @@
       "xmlUnverified": "XML (CommerceML) 1C bilan pilotda hali tasdiqlanmagan. Excel afzal."
     },
     "format": {
-      "EXCEL": "Excel",
+      "EXCEL": "Excel (axborot reestri, 1C importi uchun emas)",
       "CSV": "CSV",
       "XML": "XML (pilot tasdiqlanmagan)"
     },
@@ -1846,6 +1846,20 @@
       "rejectDescription": "{file} fayli 1C tomonidan nega rad etilganini yozing. Keyin o'zgartirib bo'lmaydi.",
       "doneAccepted": "Qabul qilingan deb belgilandi.",
       "doneRejected": "Rad etilgan deb belgilandi."
+    },
+    "unsupported": {
+      "total": "Nomuvofiq hujjatlar: {total}",
+      "invoice": "Hujjat",
+      "sku": "SKU",
+      "reasons": "Sabablar",
+      "hint": "Boshqa davrni tanlang. Hujjatlar o'zgartirilmadi; qisman fayl yaratilmadi.",
+      "reason": {
+        "DISCOUNT": "Chegirma",
+        "VAT": "QQS",
+        "QTY_X_PRICE_MISMATCH": "Miqdor × narx mos emas",
+        "UNIT": "Birlik",
+        "TOTAL_MISMATCH": "Jami summa mos emas"
+      }
     }
   },
   "Trial": {

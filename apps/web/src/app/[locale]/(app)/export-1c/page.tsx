@@ -9,6 +9,7 @@ import { ApiError, errorMessage } from '@/lib/api/client';
 import {
   DOWNLOADABLE_EXPORT_STATUSES,
   useAckExportMutation,
+  UNSUPPORTED_COMBINATION_CODE,
   useCreateExportMutation,
   useDownloadExportMutation,
   useExportJobsQuery,
@@ -287,8 +288,34 @@ export default function Export1cPage() {
                           {job.status === 'FAILED' && (
                             <p className="mt-1 flex max-w-xs items-start gap-1 text-xs text-destructive">
                               <XCircle className="mt-0.5 h-3 w-3 shrink-0" />
-                              <span className="break-words">{job.errorLog?.message ?? t('failedUnknown')}</span>
+                              <span className="break-words">
+                                {job.errorLog?.messages?.[locale as 'uz' | 'ru' | 'en'] ?? job.errorLog?.message ?? t('failedUnknown')}
+                              </span>
                             </p>
+                          )}
+                          {job.status === 'FAILED' && job.errorLog?.code === UNSUPPORTED_COMBINATION_CODE && (
+                            <div className="mt-2 max-w-md text-xs">
+                              <p className="font-medium">{t('unsupported.total', { total: job.errorLog.total ?? job.errorLog.violations?.length ?? 0 })}</p>
+                              <table className="mt-1 w-full text-left">
+                                <thead>
+                                  <tr className="text-muted-foreground">
+                                    <th className="pr-2 font-medium">{t('unsupported.invoice')}</th>
+                                    <th className="pr-2 font-medium">{t('unsupported.sku')}</th>
+                                    <th className="font-medium">{t('unsupported.reasons')}</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {(job.errorLog.violations ?? []).map((v, i) => (
+                                    <tr key={`${v.invoiceId}-${v.sku ?? ''}-${i}`}>
+                                      <td className="pr-2">{v.invoiceNumber}</td>
+                                      <td className="pr-2">{v.sku ?? '—'}</td>
+                                      <td>{v.reasons.map((r) => t(`unsupported.reason.${r}`)).join(', ')}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                              <p className="mt-1 text-muted-foreground">{t('unsupported.hint')}</p>
+                            </div>
                           )}
                         </td>
                         <td className="whitespace-nowrap py-2 pr-3">
@@ -340,7 +367,7 @@ export default function Export1cPage() {
                                 {t('download')}
                               </Button>
                             )}
-                            {canAck && job.status === 'GENERATED' && job.fileHash && (
+                            {canAck && job.status === 'GENERATED' && job.fileHash && job.format !== 'EXCEL' && (
                               <>
                                 <Button size="sm" className="min-h-12" onClick={() => openAck(job, 'ACCEPTED')}>
                                   {t('ack.accept')}
