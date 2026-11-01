@@ -9,7 +9,7 @@ describe('parseProductsWorkbook', () => {
     const buffer = await buildTestWorkbook(HEADERS, [
       ['SKU-1', 'Coca-Cola', 'Ichimliklar', 'Coca-Cola', 'dona', 12, 4500, '4870001234567', '1C-001'],
     ]);
-    const result = await parseProductsWorkbook(buffer, new Set());
+    const result = await parseProductsWorkbook(buffer, new Set(), 12);
 
     expect(result.errors).toHaveLength(0);
     expect(result.validRows[0]).toMatchObject({
@@ -24,9 +24,19 @@ describe('parseProductsWorkbook', () => {
     });
   });
 
+  it('uses the tenant default vatRate for blank cells, keeps explicit 0 and 12 (ADR-059c)', async () => {
+    const buffer = await buildTestWorkbook(HEADERS, [
+      ['S-A', 'A', '', '', 'dona', '', '', '', ''],
+      ['S-B', 'B', '', '', 'dona', 0, '', '', ''],
+      ['S-C', 'C', '', '', 'dona', 12, '', '', ''],
+    ]);
+    const result = await parseProductsWorkbook(buffer, new Set(), 15);
+    expect(result.validRows.map((r) => r.vatRate)).toEqual([15, 0, 12]);
+  });
+
   it('defaults externalCode to sku and vatRate to 12 when left blank', async () => {
     const buffer = await buildTestWorkbook(HEADERS, [['SKU-1', 'Product', '', '', 'dona', '', '', '', '']]);
-    const result = await parseProductsWorkbook(buffer, new Set());
+    const result = await parseProductsWorkbook(buffer, new Set(), 12);
 
     expect(result.errors).toHaveLength(0);
     expect(result.validRows[0]).toMatchObject({ externalCode: 'SKU-1', vatRate: 12 });
@@ -37,7 +47,7 @@ describe('parseProductsWorkbook', () => {
     // deliberately skipped rather than validated — see the "skips fully
     // blank trailing rows" test below).
     const buffer = await buildTestWorkbook(HEADERS, [['', '', '', 'SomeBrand', '', '', '', '', '']]);
-    const result = await parseProductsWorkbook(buffer, new Set());
+    const result = await parseProductsWorkbook(buffer, new Set(), 12);
 
     expect(result.validRows).toHaveLength(0);
     expect(result.errors).toEqual([
@@ -51,7 +61,7 @@ describe('parseProductsWorkbook', () => {
       ['SKU-1', 'Second', '', '', 'dona', '', '', '', ''],
       ['SKU-EXISTING', 'Third', '', '', 'dona', '', '', '', ''],
     ]);
-    const result = await parseProductsWorkbook(buffer, new Set(['SKU-EXISTING']));
+    const result = await parseProductsWorkbook(buffer, new Set(['SKU-EXISTING']), 12);
 
     expect(result.validRows).toHaveLength(1);
     expect(result.errors).toEqual([
@@ -65,7 +75,7 @@ describe('parseProductsWorkbook', () => {
       ['SKU-1', 'Bad VAT', '', '', 'dona', 150, '', '', ''],
       ['SKU-2', 'Bad Price', '', '', 'dona', '', -100, '', ''],
     ]);
-    const result = await parseProductsWorkbook(buffer, new Set());
+    const result = await parseProductsWorkbook(buffer, new Set(), 12);
 
     expect(result.validRows).toHaveLength(0);
     expect(result.errors[0]!.messages).toContain("vatRate 0..100 oralig'ida bo'lishi kerak");
@@ -77,7 +87,7 @@ describe('parseProductsWorkbook', () => {
       ['SKU-1', 'Product', '', '', 'dona', '', '', '', ''],
       ['', '', '', '', '', '', '', '', ''],
     ]);
-    const result = await parseProductsWorkbook(buffer, new Set());
+    const result = await parseProductsWorkbook(buffer, new Set(), 12);
 
     expect(result.totalRows).toBe(1);
     expect(result.errors).toHaveLength(0);

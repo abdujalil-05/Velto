@@ -51,6 +51,22 @@ describe('ProductsService (integration, real Postgres + RLS)', () => {
     expect(product.packagings[0]?.isDefault).toBe(true);
   });
 
+  it('new product takes Company.defaultVatRate; explicit 0/12 win; other tenant default unused; existing untouched (ADR-059c)', async () => {
+    const otherTenant = await systemPrisma.tenant.create({ data: { slug: `test-vat-${Date.now()}`, name: 'VAT Other' } });
+    await systemPrisma.company.create({ data: { tenantId: otherTenant.id, name: 'VAT Other Co', defaultVatRate: 7 } });
+    const before = await tenantPrisma.run(companyId, () => products.create(dto('VAT-OLD'), user));
+    expect(Number(before.vatRate)).toBe(12);
+
+    await systemPrisma.company.update({ where: { id: companyId }, data: { defaultVatRate: 15 } });
+    const inherited = await tenantPrisma.run(companyId, () => products.create(dto('VAT-DEF'), user));
+    const zero = await tenantPrisma.run(companyId, () => products.create({ ...dto('VAT-0'), vatRate: 0 }, user));
+    const twelve = await tenantPrisma.run(companyId, () => products.create({ ...dto('VAT-12'), vatRate: 12 }, user));
+    expect([inherited, zero, twelve].map((p) => Number(p.vatRate))).toEqual([15, 0, 12]);
+
+    const old = await systemPrisma.product.findFirst({ where: { companyId, sku: 'VAT-OLD' } });
+    expect(Number(old!.vatRate)).toBe(12);
+  });
+
   it('rejects a duplicate SKU within the same tenant', async () => {
     await expect(tenantPrisma.run(companyId, () => products.create(dto('P-1'), user))).rejects.toBeInstanceOf(
       DuplicateSkuException,

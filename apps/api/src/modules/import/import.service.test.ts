@@ -85,6 +85,20 @@ describe('ImportService (integration, real Postgres + RLS)', () => {
     expect(productJobs.data.some((j) => j.id === created.id)).toBe(true);
   });
 
+  it('products upload: blank vatRate takes own Company.defaultVatRate, not another tenant (ADR-059c)', async () => {
+    const other = await systemPrisma.tenant.create({ data: { slug: `vat-imp-${randomUUID()}`, name: 'VAT Imp' } });
+    await systemPrisma.company.create({ data: { tenantId: other.id, name: 'VAT Imp Co', defaultVatRate: 7 } });
+    await systemPrisma.company.update({ where: { id: companyId }, data: { defaultVatRate: 15 } });
+    const headers = ['sku', 'name', 'categoryName', 'brand', 'baseUnit', 'vatRate', 'minPrice', 'barcode', 'externalCode'];
+    const buffer = await buildTestWorkbook(headers, [
+      ['VATIMP-1', 'P1', '', '', 'dona', '', '', '', ''],
+      ['VATIMP-2', 'P2', '', '', 'dona', 0, '', '', ''],
+    ]);
+    const job = await tenantPrisma.run(companyId, () => importService.uploadAndValidate('products', buffer, user));
+    const rows = (job.errorLog as unknown as ImportJobReport<{ vatRate: number }>).rows;
+    expect(rows!.map((r) => r.vatRate)).toEqual([15, 0]);
+  });
+
   it('getById() throws for an unknown id', async () => {
     await expect(tenantPrisma.run(companyId, () => importService.getById(randomUUID()))).rejects.toBeInstanceOf(ImportJobNotFoundException);
   });

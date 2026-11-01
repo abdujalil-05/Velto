@@ -81,7 +81,10 @@ export class ImportService {
   private async validateProducts(tx: TenantClient, buffer: Buffer): Promise<ImportJobReport<ProductImportRow>> {
     const existing = await tx.product.findMany({ where: { deletedAt: null }, select: { sku: true } });
     const existingSkus = new Set(existing.map((p) => p.sku));
-    const { totalRows, validRows, errors } = await parseProductsWorkbook(buffer, existingSkus);
+    // TZ 6.6: blank vatRate cells take the tenant's Company.defaultVatRate.
+    const company = await tx.company.findFirst({ select: { defaultVatRate: true } });
+    const defaultVatRate = company ? Number(company.defaultVatRate) : 12;
+    const { totalRows, validRows, errors } = await parseProductsWorkbook(buffer, existingSkus, defaultVatRate);
     return { totalRows, validCount: validRows.length, invalidCount: errors.length, errors: localizeRowErrors(errors), rows: validRows };
   }
 
