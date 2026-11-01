@@ -344,6 +344,31 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     expect(opList.data.map((o) => o.id)).toEqual(expect.arrayContaining([order1.id, order2.id]));
   });
 
+  /** Isolated product (own stock level in the shared warehouse — a 2nd warehouse would make order creation ambiguous) so no other test's in-flight ops can touch the rows a delta test measures. */
+  async function freshStock(price = '10000') {
+    const sfx = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ids = await tenantPrisma.run(companyId, async (tx) => {
+      const product = await tx.product.create({
+        data: { companyId, sku: `ISO-${sfx}`, name: `Iso ${sfx}`, baseUnit: 'dona', vatRate: 12 },
+      });
+      const pk = await tx.productPackaging.create({
+        data: { productId: product.id, name: 'dona', qtyInBaseUnit: 1, isDefault: true },
+      });
+      const priceList = await tx.priceList.findFirstOrThrow({ where: { isDefault: true } });
+      await tx.priceListItem.create({ data: { priceListId: priceList.id, productId: product.id, price } });
+      return { warehouseId, productId: product.id, packagingId: pk.id };
+    });
+    await tenantPrisma.run(companyId, () => stock.receive({ productId: ids.productId, warehouseId: ids.warehouseId, qty: 1000 }, user));
+    return ids;
+  }
+
+  async function reservedOf(pid: string, wid: string) {
+    const l = await tenantPrisma.run(companyId, (tx) =>
+      tx.stockLevel.findUniqueOrThrow({ where: { productId_warehouseId: { productId: pid, warehouseId: wid } } }),
+    );
+    return l.reserved;
+  }
+
   async function getReserved() {
     const level = await tenantPrisma.run(companyId, (tx) =>
       tx.stockLevel.findUnique({ where: { productId_warehouseId: { productId, warehouseId } } }),
@@ -509,17 +534,18 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
   });
 
   it('assignCourier() on a SUBMITTED order reserves stock and moves it to SHIPPED', async () => {
-    const before = await getReserved();
+    const iso = await freshStock();
+    const before = await reservedOf(iso.productId, iso.warehouseId);
     const customerId = await createCustomer();
     const order = await tenantPrisma.run(companyId, () =>
-      sales.create({ customerId, lines: [{ productId, packagingId, qty: 1 }] }, user),
+      sales.create({ customerId, lines: [{ productId: iso.productId, packagingId: iso.packagingId, qty: 1 }] }, user),
     );
     expect(order.status).toBe('SUBMITTED');
 
     const assigned = await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId }, user));
     expect(assigned.status).toBe('SHIPPED');
     expect(assigned.courierId).toBe(courierId);
-    expect((await getReserved()).minus(before).toString()).toBe('1');
+    expect((await reservedOf(iso.productId, iso.warehouseId)).minus(before).toString()).toBe('1');
   });
 
   it('assignCourier() on a CONFIRMED order does not double-reserve, and is rejected once DELIVERED', async () => {
@@ -846,18 +872,21 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     }
 
     /** CONFIRMED order: line[0] = product1 × q1 (10000), line[1] = product2 × q2 (999.99), in the given order. */
-    async function confirmedTwoLine(q1: number, q2: number, reverse = false) {
+    type Prod = { productId: string; packagingId: string };
+    async function confirmedTwoLine(q1: number, q2: number, reverse = false, pa?: Prod, pb?: Prod) {
+      const a = pa ?? { productId, packagingId };
+      const b = pb ?? { productId: product2Id, packagingId: packaging2Id };
       const customerId = await createCustomer();
       const lines = [
-        { productId, packagingId, qty: q1 },
-        { productId: product2Id, packagingId: packaging2Id, qty: q2 },
+        { ...a, qty: q1 },
+        { ...b, qty: q2 },
       ];
       const order = await tenantPrisma.run(companyId, () =>
         sales.create({ customerId, lines: reverse ? lines.reverse() : lines }, user),
       );
       await tenantPrisma.run(companyId, () => sales.confirm(order.id, user));
       const byProduct = (pid: string) => order.lines.find((l) => l.productId === pid)!.id;
-      return { order, customerId, line1: byProduct(productId), line2: byProduct(product2Id) };
+      return { order, customerId, line1: byProduct(a.productId), line2: byProduct(b.productId) };
     }
 
     async function writesFor(orderId: string) {
@@ -1089,11 +1118,13 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     });
 
     it('race: parallel confirm + partial deliver of orders with opposite line order — no deadlock, stock consistent', async () => {
-      const p1Before = await level(productId);
-      const p2Before = await level(product2Id);
+      const a = await freshStock();
+      const b = await freshStock('999.99');
+      const p1Before = await level(a.productId);
+      const p2Before = await level(b.productId);
       const N = 4;
       const orders = await Promise.all(
-        Array.from({ length: N }, (_, i) => confirmedTwoLine(3, 3, i % 2 === 1)),
+        Array.from({ length: N }, (_, i) => confirmedTwoLine(3, 3, i % 2 === 1, a, b)),
       );
       // A second wave confirmed concurrently with the deliveries below.
       const customerId = await createCustomer();
@@ -1106,12 +1137,12 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
                 lines:
                   i % 2
                     ? [
-                        { productId: product2Id, packagingId: packaging2Id, qty: 1 },
-                        { productId, packagingId, qty: 1 },
+                        { productId: b.productId, packagingId: b.packagingId, qty: 1 },
+                        { productId: a.productId, packagingId: a.packagingId, qty: 1 },
                       ]
                     : [
-                        { productId, packagingId, qty: 1 },
-                        { productId: product2Id, packagingId: packaging2Id, qty: 1 },
+                        { productId: a.productId, packagingId: a.packagingId, qty: 1 },
+                        { productId: b.productId, packagingId: b.packagingId, qty: 1 },
                       ],
               },
               user,
@@ -1136,8 +1167,8 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
       const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
       expect(failures.map((f) => String(f.reason))).toEqual([]);
 
-      const p1 = await level(productId);
-      const p2 = await level(product2Id);
+      const p1 = await level(a.productId);
+      const p2 = await level(b.productId);
       expect(p1Before.onHand.minus(p1.onHand).toString()).toBe(String(N * 1));
       expect(p2Before.onHand.minus(p2.onHand).toString()).toBe(String(N * 2));
       // Only the second wave's reservations remain.
