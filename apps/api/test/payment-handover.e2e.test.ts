@@ -195,9 +195,9 @@ describe('E2E F8.1: payment handover (ADR-029)', () => {
     expect((await dbPayment(companyB, pB.body.id)).status).toBe('PENDING_HANDOVER');
 
     const crossView = await http().get(`/payments/in-transit?customerId=${customerB}`).set(auth('CASHIER')).expect(200);
-    expect(crossView.body).toMatchObject({ amount: '0', count: 0 });
+    expect(crossView.body).toMatchObject({ amount: '0.00', count: 0 });
     const ownView = await http().get(`/payments/in-transit?customerId=${customerB}`).set(auth('CASHIER_B')).expect(200);
-    expect(ownView.body).toMatchObject({ amount: '7777', count: 1 });
+    expect(ownView.body).toMatchObject({ amount: '7777.00', count: 1 });
   });
 
   it('SEC-023: SALES_AGENT in-transit sees only own collection; office roles see the total', async () => {
@@ -207,9 +207,9 @@ describe('E2E F8.1: payment handover (ADR-029)', () => {
     const a1 = await http().get(`/payments/in-transit?customerId=${customer}`).set(auth('AGENT')).expect(200);
     const a2 = await http().get(`/payments/in-transit?customerId=${customer}`).set(auth('AGENT2')).expect(200);
     const office = await http().get(`/payments/in-transit?customerId=${customer}`).set(auth('CASHIER')).expect(200);
-    expect(a1.body).toMatchObject({ amount: '1000', count: 1 });
-    expect(a2.body).toMatchObject({ amount: '250', count: 1 });
-    expect(office.body).toMatchObject({ amount: '1250', count: 2 });
+    expect(a1.body).toMatchObject({ amount: '1000.00', count: 1 });
+    expect(a2.body).toMatchObject({ amount: '250.00', count: 1 });
+    expect(office.body).toMatchObject({ amount: '1250.00', count: 2 });
   });
 
   it('TZ §5.4.2 F-01: sync push cash => PENDING_HANDOVER, balance unchanged, reconciliation clean; accept => POSTED + FIFO, balance down', async () => {
@@ -263,7 +263,7 @@ describe('E2E F8.1: payment handover (ADR-029)', () => {
       expect(p.body.status).toBe('PENDING_HANDOVER');
       expect(await cachedBalance(companyA, customer)).toBe('9000');
       const view = await http().get(`/payments/in-transit?customerId=${customer}`).set(auth('AGENT')).expect(200);
-      expect(view.body).toMatchObject({ amount: '5000', count: 1 });
+      expect(view.body).toMatchObject({ amount: '5000.00', count: 1 });
       await accept('CASHIER', p.body.id).expect(201);
       expect((await dbPayment(companyA, p.body.id)).status).toBe('POSTED');
     }

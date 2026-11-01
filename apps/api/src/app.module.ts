@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { MoneyResponseInterceptor } from './common/serialization/money-json';
 import { MaintenanceGuard } from './common/maintenance/maintenance.guard';
 import { UserThrottlerGuard } from './common/throttle/user-throttler.guard';
 import './common/serialization/bigint-json';
@@ -76,6 +77,7 @@ import { UsersModule } from './modules/users/users.module';
     { provide: APP_GUARD, useClass: MaintenanceGuard }, // first: a write is refused before JWT/tenant tx (ADR-051)
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: UserThrottlerGuard }, // after JwtAuthGuard: buckets by userId
+    { provide: APP_INTERCEPTOR, useClass: MoneyResponseInterceptor },
     { provide: APP_INTERCEPTOR, useClass: TenantContextInterceptor },
     AuditLogService,
   ],

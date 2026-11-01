@@ -89,7 +89,7 @@ describe('E2E F2.1: payment advance allocation RBAC', () => {
       .set('Idempotency-Key', randomUUID())
       .send({ customerId: customer.id, amount: 30000, method: 'TRANSFER' })
       .expect(201);
-    expect(pay.body.advance).toBe('30000');
+    expect(pay.body.advance).toBe('30000.00');
 
     const invoice = await tenantPrisma.run(companyId, (tx) =>
       tx.invoice.create({ data: { companyId, number: `ALLOC-INV-${Date.now()}`, customerId: customer.id, total: '20000', status: 'OPEN' } }),
@@ -101,7 +101,7 @@ describe('E2E F2.1: payment advance allocation RBAC', () => {
       .set('Idempotency-Key', randomUUID())
       .send({ allocations: [{ invoiceId: invoice.id, amount: '20000' }] })
       .expect(201);
-    expect(res.body.advance).toBe('10000');
+    expect(res.body.advance).toBe('10000.00');
 
     const [inv, audits] = await tenantPrisma.run(companyId, (tx) =>
       Promise.all([

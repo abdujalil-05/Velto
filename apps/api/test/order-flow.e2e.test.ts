@@ -122,7 +122,7 @@ describe('E2E: order → confirm → deliver → payment → balance (real HTTP)
 
     expect(res.body.status).toBe('SUBMITTED');
     // 5 * 10000 * 1.12 VAT — client never sends a price (8.2).
-    expect(res.body.total).toBe('56000');
+    expect(res.body.total).toBe('56000.00');
     orderId = res.body.id;
   });
 
@@ -145,7 +145,7 @@ describe('E2E: order → confirm → deliver → payment → balance (real HTTP)
       .get(`/customers/${customerId}/balance`)
       .set('Authorization', `Bearer ${accessToken}`)
       .expect(200);
-    expect(res.body.balance).toBe('56000');
+    expect(res.body.balance).toBe('56000.00');
   });
 
   it('accepts a partial payment over HTTP and reduces the balance (8.4 FIFO)', async () => {
@@ -160,7 +160,7 @@ describe('E2E: order → confirm → deliver → payment → balance (real HTTP)
       .get(`/customers/${customerId}/balance`)
       .set('Authorization', `Bearer ${accessToken}`)
       .expect(200);
-    expect(res.body.balance).toBe('36000');
+    expect(res.body.balance).toBe('36000.00');
   });
 
   it('rejects a client-supplied price override — DTO whitelist strips unknown fields (SEC-040..048)', async () => {
