@@ -544,7 +544,8 @@
       "allocateAtLeastOne": "Kamida bitta ichki hisobga summa kiriting",
       "allocationExceedsAmount": "Taqsimlangan summa to'lov summasidan oshib ketdi",
       "submit": "To'lovni saqlash",
-      "created": "To'lov qo'shildi"
+      "created": "To'lov qo'shildi",
+      "idempotencyConflict": "Bu to'lov allaqachon boshqa ma'lumotlar bilan yuborilgan. Yangi to'lov uchun formani qaytadan oching."
     },
     "status": "Holati",
     "actions": "Amallar",

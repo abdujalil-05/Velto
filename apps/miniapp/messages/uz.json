@@ -308,7 +308,8 @@
       "amount": "Summa 2 xonadan (tiyin) ko'p kasrga ega.",
       "price": "Narx minimal narxdan past.",
       "action": "Hujjat o'z-o'zidan o'chmaydi. Uni bekor qiling va to'g'ri qiymat bilan qayta kiriting."
-    }
+    },
+    "paymentConflict": "Bu to'lov ID si serverda boshqa summa/ma'lumot bilan allaqachon ishlatilgan. To'lov QABUL QILINMADI va qayta yuborilmaydi. Hujjat telefonda saqlanadi: uni tekshiring, bekor qiling va kerak bo'lsa yangi to'lov sifatida qayta kiriting."
   },
   "Revoked": {
     "title": "Kirish huquqi bekor qilindi",

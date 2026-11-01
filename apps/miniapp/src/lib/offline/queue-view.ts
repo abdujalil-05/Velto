@@ -74,6 +74,11 @@ export function downloadJson(json: string, fileName: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/** PAYMENT_IDEMPOTENCY_CONFLICT: same clientId, different content. Terminal; user must cancel and enter a NEW payment (new clientId). */
+export function isPaymentIdempotencyConflict(e: QueueEntry): boolean {
+  return e.type === 'payment' && (e.status === 'FAILED' || e.status === 'CONFLICT') && e.lastError?.code === 'PAYMENT_IDEMPOTENCY_CONFLICT';
+}
+
 export type PrecisionHint = 'qty' | 'amount' | 'price';
 
 const PRECISION_CODES: Record<string, PrecisionHint> = {

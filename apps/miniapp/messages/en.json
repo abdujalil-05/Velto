@@ -308,7 +308,8 @@
       "amount": "Amount has more than 2 decimals (tiyin).",
       "price": "Price is below the minimum.",
       "action": "The document is never deleted automatically. Cancel it and re-enter with a valid value."
-    }
+    },
+    "paymentConflict": "This payment ID was already used on the server with a different amount/data. The payment was NOT accepted and will not be resent. The record stays on this phone: review it, cancel it and, if needed, enter a new payment."
   },
   "Revoked": {
     "title": "Access revoked",

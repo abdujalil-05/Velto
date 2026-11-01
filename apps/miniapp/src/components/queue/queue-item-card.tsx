@@ -5,7 +5,7 @@ import { useLocale, useTranslations } from 'next-intl';
 import { toast } from 'sonner';
 import type { QueueEntry } from '@/lib/offline/queue';
 import { queueRepository } from '@/lib/offline/queue';
-import { isRejectedHandover, localizedError, parsePriceChanged, precisionHint } from '@/lib/offline/queue-view';
+import { isPaymentIdempotencyConflict, isRejectedHandover, localizedError, parsePriceChanged, precisionHint } from '@/lib/offline/queue-view';
 import { formatDateTime, formatMoney } from '@/lib/format';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -78,6 +78,10 @@ export function QueueItemCard({ entry, name, productName, onChanged }: Props) {
           <p className="rounded-md bg-destructive/10 p-2 text-sm text-destructive">
             <span className="font-medium">{t('reason')}:</span> {errorText}
           </p>
+        )}
+
+        {isPaymentIdempotencyConflict(entry) && (
+          <p className="rounded-md bg-warning/20 p-2 text-sm">{t('paymentConflict')}</p>
         )}
 
         {precision && (

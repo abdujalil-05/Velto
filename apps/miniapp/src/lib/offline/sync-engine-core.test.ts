@@ -3,7 +3,8 @@ import { ApiError } from '@/lib/api/client';
 import { db } from './db';
 import { MAX_SYNC_ATTEMPTS, backoffDelayMs, queueRepository } from './queue';
 import { setOfflineSession } from './session';
-import { precisionHint } from './queue-view';
+import { isPaymentIdempotencyConflict, localizedError, precisionHint } from './queue-view';
+import { readFileSync } from 'node:fs';
 import { resetPreparedSession } from './session-bootstrap';
 
 const pushSync = vi.fn();
@@ -58,6 +59,28 @@ describe('runPush status machine (TZ 8.3/8.4)', () => {
     expect(precisionHint(eb)).toBe('price');
     expect(await db.queue.get(a)).toBeDefined(); // only an explicit user action removes it
     expect(await db.queue.get(b)).toBeDefined();
+  });
+
+  it('PAYMENT_IDEMPOTENCY_CONFLICT -> FAILED, kept, not retried, text in uz/ru/en', async () => {
+    asA();
+    const id = await queueRepository.enqueue('payment', { customerId: 'c', amount: '10.00' });
+    pushSync.mockResolvedValueOnce({ results: [{ clientId: id, status: 'REJECTED', error: { code: 'PAYMENT_IDEMPOTENCY_CONFLICT', message: 'uz-m', messages: { uz: 'u', ru: 'r', en: 'e' }, details: { clientId: id } } }] });
+    await runPush();
+    const e = (await queueRepository.listAll()).find((x) => x.clientId === id)!;
+    expect(e.status).toBe('FAILED');
+    expect(e.serverId).toBeUndefined();
+    expect(e.nextAttemptAt).toBeUndefined();
+    expect(isPaymentIdempotencyConflict(e)).toBe(true);
+    expect(['uz', 'ru', 'en'].map((l) => localizedError(e.lastError, l))).toEqual(['u', 'r', 'e']);
+    await queueRepository.pruneOld();
+    expect(await db.queue.get(id)).toBeDefined();
+    pushSync.mockClear();
+    await runPush();
+    expect(pushSync).not.toHaveBeenCalled();
+    for (const l of ['uz', 'ru', 'en']) {
+      const m = JSON.parse(readFileSync(`messages/${l}.json`, 'utf8'));
+      expect(m.Queue.paymentConflict.length).toBeGreaterThan(20);
+    }
   });
 
   it('maps all five server results to local states and keeps serverId + details', async () => {

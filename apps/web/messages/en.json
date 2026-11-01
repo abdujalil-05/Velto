@@ -544,7 +544,8 @@
       "allocateAtLeastOne": "Allocate an amount to at least one internal invoice",
       "allocationExceedsAmount": "Allocated amount exceeds the payment amount",
       "submit": "Save payment",
-      "created": "Payment added"
+      "created": "Payment added",
+      "idempotencyConflict": "This payment was already submitted with different details. Reopen the form to create a new payment."
     },
     "status": "Status",
     "actions": "Actions",

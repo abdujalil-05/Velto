@@ -62,6 +62,8 @@ export interface CreatePaymentAllocationInput {
 }
 
 export interface CreatePaymentInput {
+  /** Idempotency key (TZ 10.4): same value only for an identical retry. */
+  clientId?: string;
   customerId: string;
   amount: number;
   method: PaymentMethod;
