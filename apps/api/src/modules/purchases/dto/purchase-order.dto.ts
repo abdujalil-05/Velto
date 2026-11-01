@@ -14,7 +14,7 @@ import {
 } from 'class-validator';
 import { PurchaseOrderStatus } from '@velto/database';
 import { PaginationQueryDto } from '../../../common/pagination/pagination.dto';
-import { IsMoneyAmount, IsQuantity } from '../../../common/validators/numeric-bounds';
+import { IsMoneyAmount, type MoneyInput, IsQuantity } from '../../../common/validators/numeric-bounds';
 
 export class CreatePurchaseOrderLineDto {
   @IsUUID()
@@ -27,7 +27,7 @@ export class CreatePurchaseOrderLineDto {
 
   // Supplier's net price per base unit (excl. VAT), Decimal(18,2).
   @IsMoneyAmount({ allowZero: true })
-  unitPrice!: number;
+  unitPrice!: MoneyInput;
 }
 
 export class CreatePurchaseOrderDto {

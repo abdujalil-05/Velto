@@ -11,7 +11,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { PaginationQueryDto } from '../../../common/pagination/pagination.dto';
-import { IsMoneyAmount, IsQuantity } from '../../../common/validators/numeric-bounds';
+import { IsMoneyAmount, type MoneyInput, IsQuantity } from '../../../common/validators/numeric-bounds';
 
 /**
  * With a PO: `purchaseOrderLineId` is required and the product comes from that
@@ -33,7 +33,7 @@ export class CreateGoodsReceiptLineDto {
   // Only honoured for ad-hoc receipts; with a PO the cost is the PO line's unitPrice.
   @IsOptional()
   @IsMoneyAmount({ allowZero: true })
-  unitCost?: number;
+  unitCost?: MoneyInput;
 }
 
 export class CreateGoodsReceiptDto {

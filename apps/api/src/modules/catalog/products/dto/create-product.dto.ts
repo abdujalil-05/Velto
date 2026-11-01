@@ -9,7 +9,7 @@ import {
   MinLength,
   ValidateNested,
 } from 'class-validator';
-import { IsMoneyAmount, IsPercentage } from '../../../../common/validators/numeric-bounds';
+import { IsMoneyAmount, type MoneyInput, IsPercentage } from '../../../../common/validators/numeric-bounds';
 import { PackagingDto } from './packaging.dto';
 
 export class CreateProductDto {
@@ -48,7 +48,7 @@ export class CreateProductDto {
 
   @IsOptional()
   @IsMoneyAmount({ allowZero: true })
-  minPrice?: number;
+  minPrice?: MoneyInput;
 
   // The product's sale price — stored as a PriceListItem on the single
   // implicit default price list (see PriceListsService.getOrCreateDefault),
@@ -56,7 +56,7 @@ export class CreateProductDto {
   // is set, same as before this field existed.
   @IsOptional()
   @IsMoneyAmount({ allowZero: true })
-  price?: number;
+  price?: MoneyInput;
 
   // 1C export requires this (6.4) — service defaults it to `sku` if omitted.
   @IsOptional()

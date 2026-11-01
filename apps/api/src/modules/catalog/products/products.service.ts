@@ -91,7 +91,7 @@ export class ProductsService {
     return products.map((p) => ({ ...p, price: priceByProductId.get(p.id) ?? null }));
   }
 
-  private async setPrice(productId: string, price: number) {
+  private async setPrice(productId: string, price: Prisma.Decimal.Value) {
     const priceList = await this.priceLists.getOrCreateDefault();
     await this.tenantPrisma.client.priceListItem.upsert({
       where: { priceListId_productId: { priceListId: priceList.id, productId } },

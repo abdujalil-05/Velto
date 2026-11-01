@@ -98,4 +98,44 @@ describe('E2E ADR-059: JSON number precision (body-parser reviver)', () => {
     expect(res.body.details).toMatchObject({ path: 'amount', value: '99999999999999.99' });
     expect(await tenantPrisma.run(companyId, (tx) => tx.payment.count())).toBe(before);
   });
+
+  describe('exact decimal strings (ADR-059 follow-up)', () => {
+    const postStr = (amount: string) => postRaw(JSON.stringify(amount));
+
+    for (const [literal, expected] of [
+      ['999999999999999.99', '999999999999999.99'],
+      ['1000000000000000.00', '1000000000000000.00'],
+      ['99999999999999.99', '99999999999999.99'],
+      ['100.50', '100.50'],
+    ]) {
+      it(`persists "${literal}" exactly`, async () => {
+        const res = await postStr(literal!).expect(201);
+        expect(await stored(res.body.id)).toBe(expected);
+      });
+    }
+
+    for (const bad of ['1000000000000000.01', '100.005', '1e5', '1,5', ' 1', '1 ', 'Infinity', 'NaN', '-5', '0', '0.00', '+1', '']) {
+      it(`rejects "${bad}" with 400, nothing stored`, async () => {
+        const before = await tenantPrisma.run(companyId, (tx) => tx.payment.count());
+        await postStr(bad).expect(400);
+        expect(await tenantPrisma.run(companyId, (tx) => tx.payment.count())).toBe(before);
+      });
+    }
+
+    it('payments dedupe by clientId only (no @Idempotent on POST /payments): a queued numeric retry and its "100.5" form return the same payment', async () => {
+      const clientId = randomUUID();
+      const send = (amount: string) =>
+        request(app.getHttpServer())
+          .post('/payments')
+          .set('Authorization', `Bearer ${token}`)
+          .set('Content-Type', 'application/json')
+          .send(`{"customerId":"${customerId}","amount":${amount},"method":"TRANSFER","clientId":"${clientId}"}`);
+      const first = await send('100.5').expect(201);
+      const replay = await send('100.5').expect(201);
+      const asString = await send('"100.50"').expect(201);
+      expect(replay.body.id).toBe(first.body.id);
+      expect(asString.body.id).toBe(first.body.id);
+      expect(await stored(first.body.id)).toBe('100.50');
+    });
+  });
 });

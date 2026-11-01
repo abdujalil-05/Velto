@@ -73,12 +73,66 @@ function HasMaxScale(scale: number) {
 const decimalGuard = (scale: number) =>
   applyDecorators(strictDecimal(scale), IsNumber({ allowNaN: false, allowInfinity: false }), HasMaxScale(scale));
 
-/** Money field (`Decimal(18,2)`). Defaults to strictly positive; pass `allowZero` for balances/opening amounts. */
+/**
+ * Validated money input. After the DTO transform it is always a `Prisma.Decimal`;
+ * `number` stays in the union only for direct (non-HTTP) service callers.
+ */
+export type MoneyInput = Prisma.Decimal | number;
+
+/**
+ * ADR-059 follow-up: exact decimal string, the preferred wire format ("100.50").
+ * No exponent, no `+`, no grouping/locale separators, no whitespace, at most 2
+ * fraction digits. Range/sign are checked on the Decimal, not here.
+ */
+export const MONEY_STRING_PATTERN = /^-?\d{1,20}(\.\d{1,2})?$/;
+const MONEY_NUMBER_PATTERN = scalePattern(MONEY_SCALE);
+
+/**
+ * string -> Decimal straight from the source text (never via Number/parseFloat);
+ * number -> Decimal only when its shortest round-trip text is a plain <=2dp
+ * decimal (JSON numbers that lost precision were already rejected 400 by
+ * json-number-guard). Anything else is left raw so the validators reject it.
+ */
+export function toMoneyDecimal(value: unknown): unknown {
+  if (typeof value === 'string') return MONEY_STRING_PATTERN.test(value) ? new Prisma.Decimal(value) : value;
+  if (typeof value === 'number' && Number.isFinite(value) && MONEY_NUMBER_PATTERN.test(String(value))) {
+    return new Prisma.Decimal(String(value));
+  }
+  return value;
+}
+
+const isDec = (v: unknown): v is Prisma.Decimal => v instanceof Prisma.Decimal;
+
+// Constraint keys mirror the number-based chain (isNumber/maxScale/isPositive/min/max) so the API error contract is unchanged.
+function moneyRule(name: string, test: (d: Prisma.Decimal) => boolean, message: string) {
+  return ValidateBy({
+    name,
+    validator: {
+      validate: (value: unknown) => isDec(value) && test(value),
+      defaultMessage: buildMessage((each) => `${each}$property: ${message}`),
+    },
+  });
+}
+
+/**
+ * Money field (`Decimal(18,2)`): accepts a JSON number or an exact decimal string
+ * (preferred, e.g. "100.50") and yields a `Prisma.Decimal`. Defaults to strictly
+ * positive; pass `allowZero` for balances/opening amounts. Upper bound MAX_MONEY (inclusive).
+ */
 export function IsMoneyAmount(options: { allowZero?: boolean } = {}) {
+  const max = new Prisma.Decimal(MAX_MONEY);
   return applyDecorators(
-    decimalGuard(MONEY_SCALE),
-    ...(options.allowZero ? [Min(0)] : [IsPositive()]),
-    Max(MAX_MONEY),
+    Transform(({ value }) => toMoneyDecimal(value)),
+    moneyRule('isNumber', (d) => d.isFinite(), "son yoki aniq o'nlik satr / число или точная десятичная строка / a number or exact decimal string (\"100.50\")"),
+    moneyRule(
+      'maxScale',
+      (d) => d.decimalPlaces() <= MONEY_SCALE,
+      `eng ko'pi bilan ${MONEY_SCALE} ta kasr xona / не более ${MONEY_SCALE} знаков после запятой / at most ${MONEY_SCALE} decimal places`,
+    ),
+    options.allowZero
+      ? moneyRule('min', (d) => d.gte(0), "manfiy bo'lmasligi kerak / не может быть отрицательным / must not be negative")
+      : moneyRule('isPositive', (d) => d.gt(0), "musbat bo'lishi kerak / должно быть положительным / must be positive"),
+    moneyRule('max', (d) => d.lte(max), `${MAX_MONEY} dan oshmasin / не больше ${MAX_MONEY} / must not exceed ${MAX_MONEY}`),
   );
 }
 

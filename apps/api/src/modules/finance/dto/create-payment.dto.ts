@@ -1,7 +1,7 @@
 import { Type } from 'class-transformer';
 import { ArrayMinSize, IsArray, IsEnum, IsOptional, IsUUID, ValidateNested } from 'class-validator';
 import { PaymentMethod } from '@velto/database';
-import { IsMoneyAmount } from '../../../common/validators/numeric-bounds';
+import { IsMoneyAmount, type MoneyInput } from '../../../common/validators/numeric-bounds';
 
 /** 8.4 manual-override line: explicit invoice/amount pairs instead of FIFO. */
 export class PaymentAllocationInputDto {
@@ -9,7 +9,7 @@ export class PaymentAllocationInputDto {
   invoiceId!: string;
 
   @IsMoneyAmount()
-  amount!: number;
+  amount!: MoneyInput;
 }
 
 /** 9.2 "/payments ... yangi to'lov formasi (taqsimlash UI bilan)". */
@@ -18,7 +18,7 @@ export class CreatePaymentDto {
   customerId!: string;
 
   @IsMoneyAmount()
-  amount!: number;
+  amount!: MoneyInput;
 
   @IsEnum(PaymentMethod)
   method!: PaymentMethod;
