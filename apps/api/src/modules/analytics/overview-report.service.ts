@@ -27,7 +27,7 @@ export class OverviewReportService {
     const totalDebt = debt.total;
     const overdueDebt = debt.overdue;
 
-    const orderCount = orders.count;
+    const orderCount = orders.deliveredOrderCount; // DELIVERED/CLOSED orders only (TURNOVER_STATUSES)
     return {
       range: { from: start, to: end },
       timeZone,

@@ -90,8 +90,8 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
       line?: { qty: string; deliveredQty: string; unitPrice: string; discountPct: string; vatRate: string };
     },
   ) {
-    return tenantPrisma.run(companyId, (tx) =>
-      tx.salesOrder.create({
+    return tenantPrisma.run(companyId, async (tx) => {
+      const order = await tx.salesOrder.create({
         data: {
           companyId,
           number: `SO-TEST-${randomUUID()}`,
@@ -118,12 +118,16 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
             ],
           },
         },
-      }),
-    );
+      });
+      // Turnover date = SALE invoice createdAt (deliver() writes it); total 0 + PAID keeps debt fixtures unchanged.
+      if (opts.status === OrderStatus.DELIVERED || opts.status === OrderStatus.CLOSED)
+        await tx.invoice.create({ data: { companyId, number: `INV-TO-${randomUUID().slice(0, 8)}`, customerId: fx.customerId, orderId: order.id, total: 0, status: InvoiceStatus.PAID, createdAt: opts.createdAt } });
+      return order;
+    });
   }
 
   describe('SalesReportService', () => {
-    it('only counts orders past DRAFT and excludes CANCELLED', async () => {
+    it('F2.4/PO: DRAFT/CANCELLED/SUBMITTED/CONFIRMED are not turnover (0 sum, 0 orders)', async () => {
       const companyId = await createCompany('sales-report');
       const fx = await seedBaseFixtures(companyId);
 
@@ -133,10 +137,10 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
       await createOrder(companyId, fx, { status: OrderStatus.CONFIRMED, total: '50000' });
 
       const report = await tenantPrisma.run(companyId, () => salesReport.getSalesReport({}));
-      expect(report.summary.orderCount).toBe(2);
-      expect(report.summary.turnover.toString()).toBe('150000');
-      expect(report.byAgent.find((a) => a.agentId === fx.agentId)?.turnover.toString()).toBe('150000');
-      expect(report.topProducts.find((p) => p.productId === fx.productId)?.turnover.toString()).toBe('150000');
+      expect(report.summary.orderCount).toBe(0);
+      expect(report.summary.turnover.toString()).toBe('0');
+      expect(report.byAgent).toEqual([]);
+      expect(report.topProducts).toEqual([]);
     });
   });
 
@@ -158,10 +162,10 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
         total: '20000',
         line: { qty: '2', deliveredQty: '2', unitPrice: '10000', discountPct: '0', vatRate: '0' },
       });
-      // Not yet delivered: ordered amount (deliveredQty is still 0).
+      // Not yet delivered: not turnover at all (PO 2026-11-01).
       await createOrder(companyId, fx, { status: OrderStatus.CONFIRMED, total: '50000' });
 
-      const expected = '103600';
+      const expected = '53600'; // 33600 + 20000
       const sales = await tenantPrisma.run(companyId, () => salesReport.getSalesReport({}));
       expect(sales.summary.turnover.toString()).toBe(expected);
       expect(sales.byAgent.find((a) => a.agentId === fx.agentId)?.turnover.toString()).toBe(expected);
@@ -200,7 +204,7 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
           },
         }),
       );
-      await createOrder(companyId, fx, { status: OrderStatus.CONFIRMED, total: '200000' });
+      await createOrder(companyId, fx, { status: OrderStatus.DELIVERED, total: '200000', line: { qty: '1', deliveredQty: '1', unitPrice: '200000', discountPct: '0', vatRate: '0' } });
 
       const today = localDateString(new Date());
       const report = await tenantPrisma.run(companyId, () => agentPerformance.getAgentPerformance({ from: today, to: today }));
@@ -256,10 +260,10 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
       expect(report.totalDebt.toString()).toBe('400000');
     });
 
-    it('counts active customers from counted orders and aggregates outstanding debt', async () => {
+    it('counts active customers from delivered orders and aggregates outstanding debt', async () => {
       const companyId = await createCompany('overview');
       const fx = await seedBaseFixtures(companyId);
-      await createOrder(companyId, fx, { status: OrderStatus.CONFIRMED, total: '300000' });
+      await createOrder(companyId, fx, { status: OrderStatus.DELIVERED, total: '300000', line: { qty: '1', deliveredQty: '1', unitPrice: '300000', discountPct: '0', vatRate: '0' } });
 
       await tenantPrisma.run(companyId, (tx) =>
         tx.invoice.create({
@@ -498,7 +502,7 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
       const { companyId, query } = await setup();
       const report = await tenantPrisma.run(companyId, () => salesReport.getSalesReport(query));
       const table = salesReportTable(report, generatedAt);
-      expect(report.summary.turnover.toString()).toBe('83600'); // 50000 + 33600 (1 delivered of 4), CANCELLED/outside excluded
+      expect(report.summary.turnover.toString()).toBe('33600'); // 1 delivered of 4; CONFIRMED/CANCELLED/outside excluded (PO 2026-11-01)
       expect(table.sections[0]!.rows).toEqual(report.byDay.map((d) => [d.date, d.turnover]));
       expect(table.sections[1]!.rows).toEqual(report.byAgent.map((a) => [a.agentName, a.orderCount, a.turnover]));
       expect(table.meta).toContainEqual(['Davr (dan)', query.from]);
@@ -529,7 +533,7 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
       expect(rows.slice(headerIdx + 1)).toEqual(
         report.agents.map((a) => [a.agentName, a.plannedVisits, a.completedVisits, a.routeCompletionPct, a.effectiveVisitPct, a.orderCount, a.turnover, a.avgCheck].map(fmt)),
       );
-      expect(report.agents[0]!.turnover.toString()).toBe('83600');
+      expect(report.agents[0]!.turnover.toString()).toBe('33600');
     });
 
     it('overview: export rows == endpoint values (CSV)', async () => {
@@ -541,7 +545,7 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
       expect(find('Buyurtmalar soni')).toBe(String(report.orderCount));
       expect(find('Faol mijozlar')).toBe(String(report.activeCustomers));
       expect(find('Jami qarzdorlik')).toBe(report.totalDebt.toFixed(2));
-      expect(report.turnover.toString()).toBe('83600');
+      expect(report.turnover.toString()).toBe('33600');
     });
 
     it('CSV escapes quotes/commas/newlines and neutralises formula-leading names', () => {
@@ -560,10 +564,10 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
       const companyId = await createCompany('tz-nz', 'Pacific/Auckland');
       const fx = await seedBaseFixtures(companyId);
       // 2026-06-29T13:00Z = 2026-06-30 01:00 NZST (UTC+12); in Tashkent it would be 2026-06-29 18:00.
-      await createOrder(companyId, fx, { status: OrderStatus.CONFIRMED, total: '1000', createdAt: new Date('2026-06-29T13:00:00Z') });
+      await createOrder(companyId, fx, { status: OrderStatus.DELIVERED, total: '1000', line: { qty: '1', deliveredQty: '1', unitPrice: '1000', discountPct: '0', vatRate: '0' }, createdAt: new Date('2026-06-29T13:00:00Z') });
       // 2026-06-30T11:59Z = 2026-06-30 23:59 NZST: still the 30th. 12:00Z = next local midnight.
-      await createOrder(companyId, fx, { status: OrderStatus.CONFIRMED, total: '10', createdAt: new Date('2026-06-30T11:59:00Z') });
-      await createOrder(companyId, fx, { status: OrderStatus.CONFIRMED, total: '5', createdAt: new Date('2026-06-30T12:00:00Z') });
+      await createOrder(companyId, fx, { status: OrderStatus.DELIVERED, total: '10', line: { qty: '1', deliveredQty: '1', unitPrice: '10', discountPct: '0', vatRate: '0' }, createdAt: new Date('2026-06-30T11:59:00Z') });
+      await createOrder(companyId, fx, { status: OrderStatus.DELIVERED, total: '5', line: { qty: '1', deliveredQty: '1', unitPrice: '5', discountPct: '0', vatRate: '0' }, createdAt: new Date('2026-06-30T12:00:00Z') });
 
       const report = await tenantPrisma.run(companyId, () => salesReport.getSalesReport({ from: '2026-06-30', to: '2026-06-30' }));
       expect(report.timeZone).toBe('Pacific/Auckland');

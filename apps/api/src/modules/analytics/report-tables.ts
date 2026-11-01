@@ -1,4 +1,4 @@
-import { COUNTED_ORDER_STATUSES } from './report-utils';
+import { TURNOVER_STATUSES } from './report-utils';
 import { formatGeneratedAt, periodMeta, type ReportTable } from './report-export';
 import type { AgentPerformanceReportService } from './agent-performance.service';
 import type { OverviewReportService } from './overview-report.service';
@@ -8,12 +8,14 @@ type SalesReport = Awaited<ReturnType<SalesReportService['getSalesReport']>>;
 type AgentPerformanceReport = Awaited<ReturnType<AgentPerformanceReportService['getAgentPerformance']>>;
 type OverviewReport = Awaited<ReturnType<OverviewReportService['getOverview']>>;
 
-const AMOUNT_NOTE = "Summa: DELIVERED/CLOSED buyurtmalar yetkazilgan miqdor (ichki hisob jami), qolganlari buyurtma miqdori bo'yicha.";
+// Export is Uzbek-only (as all report-export labels). Rule: F2.4 / PO 2026-11-01.
+const AMOUNT_NOTE =
+  "Aylanma: faqat DELIVERED/CLOSED buyurtmalar, yetkazilgan miqdor bo'yicha (qisman yetkazishda faqat yetkazilgan qism). SUBMITTED/CONFIRMED/SHIPPED/CANCELLED, boshlang'ich qoldiq va to'lovlar kirmaydi. Buyurtmalar soni = yetkazilgan buyurtmalar soni. Sana: yetkazib berilgan sana (kompaniya vaqt mintaqasi).";
 
 function baseMeta(report: { range: { from: Date; to: Date }; timeZone: string }, generatedAt: Date): [string, string][] {
   return [
     ...periodMeta(report.range, report.timeZone),
-    ['Buyurtma holatlari', COUNTED_ORDER_STATUSES.join(', ')],
+    ['Buyurtma holatlari', TURNOVER_STATUSES.join(', ')],
     ['Yaratilgan vaqt', formatGeneratedAt(generatedAt, report.timeZone)],
   ];
 }

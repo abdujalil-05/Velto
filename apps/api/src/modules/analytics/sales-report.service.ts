@@ -26,7 +26,8 @@ export class SalesReportService {
       : [];
     const agentNames = new Map(agents.map((a) => [a.id, `${a.firstName} ${a.lastName}`]));
 
-    const { turnover, count: orderCount } = totals;
+    // orderCount = number of DELIVERED/CLOSED orders (TURNOVER_STATUSES), not submitted ones.
+    const { turnover, deliveredOrderCount: orderCount } = totals;
     const byDayArray = eachCompanyDay(start, end, timeZone).map((day) => ({
       date: day.date,
       turnover: byDay.get(day.date)?.turnover ?? new Prisma.Decimal(0),
@@ -42,7 +43,7 @@ export class SalesReportService {
       },
       byDay: byDayArray,
       byAgent: agentRows
-        .map((v) => ({ agentId: v.agentId, agentName: agentNames.get(v.agentId) ?? '', turnover: v.turnover, orderCount: v.count }))
+        .map((v) => ({ agentId: v.agentId, agentName: agentNames.get(v.agentId) ?? '', turnover: v.turnover, orderCount: v.deliveredOrderCount }))
         .sort((a, b) => b.turnover.comparedTo(a.turnover)),
       topProducts,
     };

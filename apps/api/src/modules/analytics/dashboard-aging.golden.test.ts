@@ -112,17 +112,23 @@ describe('F7.6 golden: dashboard compute + /receivables aging (real Postgres + R
       await tx.payment.update({ where: { id: p14.id }, data: { status: PaymentStatus.POSTED, handoverActorId: agents.A2!, handoverAt: iso('2026-06-15T06:00:00Z'), handoverCashSessionId: cs.id } });
 
       // Orders (turnover). Today window starts exactly 2026-06-14T19:00:00Z.
-      const order = (agentId: string | null, status: OrderStatus, createdAt: string, qty: number, delivered: number, price: string, disc: number, lineTotal: string) =>
-        tx.salesOrder.create({
+      // DELIVERED/CLOSED get a SALE invoice at the same instant (turnover date = SALE invoice createdAt);
+      // total 0 + PAID keeps the golden debt/aging figures unchanged.
+      const order = async (agentId: string | null, status: OrderStatus, createdAt: string, qty: number, delivered: number, price: string, disc: number, lineTotal: string) => {
+        const o = await tx.salesOrder.create({
           data: {
             companyId, number: num('SO'), customerId: d.D01!.id, agentId, warehouseId: wh.id, status, createdAt: iso(createdAt),
             ...(status === OrderStatus.CANCELLED ? { cancelReason: 'x', cancelledAt: iso(createdAt), cancelledBy: agents.A1! } : {}),
             lines: { create: [{ productId: prod.id, packagingId: pk.id, qty, deliveredQty: delivered, unitPrice: price, discountPct: disc, vatRate: 12, lineTotal }] },
           },
         });
-      await order(agents.A1!, OrderStatus.DELIVERED, '2026-06-15T05:00:00Z', 10, 4, '10000', 10, '100800.00'); // PARTIAL delivery: counts 4 of 10
-      await order(agents.A1!, OrderStatus.CONFIRMED, '2026-06-14T19:00:00Z', 3, 0, '55555.55', 0, '186666.65'); // exactly local midnight -> today
-      await order(agents.A2!, OrderStatus.SUBMITTED, '2026-06-14T18:59:59Z', 2, 0, '100000', 0, '224000.00'); // 1s before -> yesterday
+        if (status === OrderStatus.DELIVERED || status === OrderStatus.CLOSED)
+          await tx.invoice.create({ data: { companyId, number: num('INV'), customerId: d.D01!.id, orderId: o.id, total: 0, status: InvoiceStatus.PAID, kind: InvoiceKind.SALE, createdAt: iso(createdAt) } });
+        return o;
+      };
+      await order(agents.A1!, OrderStatus.DELIVERED, '2026-06-15T05:00:00Z', 10, 4, '10000', 10, '100800.00'); // PARTIAL delivery: counts 4 of 10 = 40320.00 (only turnover today)
+      await order(agents.A1!, OrderStatus.CONFIRMED, '2026-06-14T19:00:00Z', 3, 0, '55555.55', 0, '186666.65'); // exactly local midnight -> today, but CONFIRMED = not turnover (PO 2026-11-01)
+      await order(agents.A2!, OrderStatus.SUBMITTED, '2026-06-14T18:59:59Z', 2, 0, '100000', 0, '224000.00'); // 1s before -> yesterday, SUBMITTED = not turnover -> yesterday 0, change % null
       await order(agents.A2!, OrderStatus.CANCELLED, '2026-06-15T05:00:00Z', 1, 0, '999999', 0, '1119998.88'); // excluded
       await order(agents.A2!, OrderStatus.DRAFT, '2026-06-15T05:00:00Z', 1, 0, '888888', 0, '995554.56'); // excluded
       await order(null, OrderStatus.CLOSED, '2026-05-26T08:00:00Z', 5, 5, '20000', 0, '112000.00'); // inside 30d trend, no agent
@@ -295,10 +301,10 @@ describe('F7.6 golden: dashboard compute + /receivables aging (real Postgres + R
 ];
   const EXPECTED_DASH = {
   "today": {
-    "turnover": "226986.65",
-    "turnoverChangePct": 1.3,
-    "orderCount": 2,
-    "orderCountChangePct": 100,
+    "turnover": "40320",
+    "turnoverChangePct": null,
+    "orderCount": 1,
+    "orderCountChangePct": null,
     "collected": "100000",
     "collectedChangePct": -60,
     "overdueDebt": "5440000.25",
@@ -431,8 +437,8 @@ describe('F7.6 golden: dashboard compute + /receivables aging (real Postgres + R
       "agentName": "Anvar Agent",
       "plannedVisits": 2,
       "completedVisits": 1,
-      "orderCount": 2,
-      "turnover": "226986.65",
+      "orderCount": 1,
+      "turnover": "40320",
       "agentId": "Anvar"
     },
     {
@@ -453,12 +459,8 @@ describe('F7.6 golden: dashboard compute + /receivables aging (real Postgres + R
       "turnover": "112000"
     },
     {
-      "date": "2026-06-14",
-      "turnover": "224000"
-    },
-    {
       "date": "2026-06-15",
-      "turnover": "226986.65"
+      "turnover": "40320"
     }
   ]
 };

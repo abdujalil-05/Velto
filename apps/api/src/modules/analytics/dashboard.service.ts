@@ -230,7 +230,8 @@ export class DashboardService {
     const overdueYesterday = overdueDebt[1]!.overdue;
 
     // Today/yesterday cards come from the same per-day aggregation as the trend (one scan, same company-day boundaries).
-    const zero = { turnover: new Prisma.Decimal(0), count: 0 };
+    // Turnover/orderCount = DELIVERED/CLOSED orders at delivered amount (TURNOVER_STATUSES), by delivery (SALE invoice createdAt) day.
+    const zero = { turnover: new Prisma.Decimal(0), deliveredOrderCount: 0 };
     const todayOrders = dailyOrders.get(today.date) ?? zero;
     const yesterdayOrders = dailyOrders.get(yesterday.date) ?? zero;
     const turnoverLast30Days = eachCompanyDay(trendStart, todayEnd, timeZone).map((day) => ({
@@ -242,8 +243,8 @@ export class DashboardService {
       today: {
         turnover: todayOrders.turnover,
         turnoverChangePct: pctChange(todayOrders.turnover, yesterdayOrders.turnover),
-        orderCount: todayOrders.count,
-        orderCountChangePct: pctChange(todayOrders.count, yesterdayOrders.count),
+        orderCount: todayOrders.deliveredOrderCount,
+        orderCountChangePct: pctChange(todayOrders.deliveredOrderCount, yesterdayOrders.deliveredOrderCount),
         collected: todayCollected,
         collectedChangePct: pctChange(todayCollected, yesterdayCollected),
         overdueDebt: overdueNow,
@@ -295,7 +296,7 @@ export class DashboardService {
       completedByAgent.set(visit.agentId, (completedByAgent.get(visit.agentId) ?? 0) + 1);
     }
 
-    const orderStatsByAgent = new Map(ordersToday.map((o) => [o.agentId, { count: o.count, turnover: o.turnover }]));
+    const orderStatsByAgent = new Map(ordersToday.map((o) => [o.agentId, { count: o.deliveredOrderCount, turnover: o.turnover }]));
 
     return agents.map((agent) => {
       const stats = orderStatsByAgent.get(agent.id) ?? { count: 0, turnover: new Prisma.Decimal(0) };

@@ -2,7 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { Prisma, VisitOutcome } from '@velto/database';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import type { DateRangeQueryDto } from './dto/date-range.query';
-import { COUNTED_ORDER_STATUSES, companyTimeZone, eachCompanyDay, resolveDateRange, ORDER_AMOUNT_SELECT, orderTotal } from './report-utils';
+import { turnoverPerAgent } from './report-sql';
+import { companyTimeZone, eachCompanyDay, resolveDateRange } from './report-utils';
 
 /** 9.2 "agent samaradorligi (asosiy)" / 17.2 KPI: route completion and effective-visit ratio, plus order count/turnover/avg-check, per agent over the window. */
 @Injectable()
@@ -30,10 +31,8 @@ export class AgentPerformanceReportService {
         where: { agentId: { in: agentIds }, startedAt: { gte: start, lte: end } },
         select: { agentId: true, outcome: true },
       }),
-      tx.salesOrder.findMany({
-        where: { agentId: { in: agentIds }, createdAt: { gte: start, lte: end }, status: { in: COUNTED_ORDER_STATUSES } },
-        select: { agentId: true, ...ORDER_AMOUNT_SELECT },
-      }),
+      // Same SQL as /reports/sales byAgent and the dashboard: DELIVERED/CLOSED orders at delivered amount.
+      turnoverPerAgent(tx, start, end, agentIds),
     ]);
 
     // Planned visits over the whole window: every day contributes the stop
@@ -61,14 +60,8 @@ export class AgentPerformanceReportService {
       }
     }
 
-    const orderStatsByAgent = new Map<string, { count: number; turnover: Prisma.Decimal }>();
-    for (const order of orders) {
-      if (!order.agentId) continue;
-      const entry = orderStatsByAgent.get(order.agentId) ?? { count: 0, turnover: new Prisma.Decimal(0) };
-      entry.count += 1;
-      entry.turnover = entry.turnover.plus(orderTotal(order));
-      orderStatsByAgent.set(order.agentId, entry);
-    }
+    // count = delivered-order count (TURNOVER_STATUSES), exposed as orderCount.
+    const orderStatsByAgent = new Map(orders.map((o) => [o.agentId, { count: o.deliveredOrderCount, turnover: o.turnover }]));
 
     const rows = agents.map((agent) => {
       const planned = plannedByAgent.get(agent.id) ?? 0;

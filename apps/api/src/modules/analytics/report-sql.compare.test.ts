@@ -5,7 +5,7 @@ import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { AgingReportService, bucketFor, companyDate, daysPastDue } from '../finance/reports/aging-report.service';
 import { VALID_ALLOCATION_WHERE, paymentPostedAt } from '../finance/ledger-filters';
 import { invoiceDebt, invoiceDebtAsOfMany, orderTotalsInWindow, topProductsInWindow, turnoverPerAgent, turnoverPerDay } from './report-sql';
-import { COUNTED_ORDER_STATUSES, DAY_MS, ORDER_AMOUNT_SELECT, localDateString, orderTotal } from './report-utils';
+import { TURNOVER_STATUSES, DAY_MS, ORDER_AMOUNT_SELECT, localDateString, orderTotal } from './report-utils';
 
 /** Regression: the DB-side aggregation must equal the previous in-memory (findMany + orderTotal) implementation on the same data. */
 describe('report-sql == legacy JS aggregation (golden comparison)', () => {
@@ -37,7 +37,7 @@ describe('report-sql == legacy JS aggregation (golden comparison)', () => {
       const custs = [];
       for (const term of [0, 7]) custs.push(await tx.customer.create({ data: { companyId, code: `C-${randomUUID().slice(0, 8)}`, name: 'Cu', paymentTermDays: term } }));
 
-      const statuses = [OrderStatus.SUBMITTED, OrderStatus.CONFIRMED, OrderStatus.DELIVERED, OrderStatus.CLOSED, OrderStatus.DRAFT, OrderStatus.CANCELLED];
+      const statuses = [OrderStatus.SUBMITTED, OrderStatus.CONFIRMED, OrderStatus.DELIVERED, OrderStatus.CLOSED, OrderStatus.DRAFT, OrderStatus.CANCELLED, OrderStatus.SHIPPED];
       for (let i = 0; i < 36; i += 1) {
         const status = statuses[i % statuses.length]!;
         const day = 1 + (i % 28);
@@ -57,7 +57,7 @@ describe('report-sql == legacy JS aggregation (golden comparison)', () => {
             lineTotal: unitPrice.times(qty).times(i % 4 === 0 ? 0.925 : 1).times(1.12).toDecimalPlaces(2),
           };
         });
-        await tx.salesOrder.create({
+        const so = await tx.salesOrder.create({
           data: {
             companyId, number: `SO-CMP-${randomUUID()}`, customerId: custs[i % 2]!.id, agentId: i % 5 === 0 ? null : agents[i % 2]!.id,
             warehouseId: wh.id, status, createdAt,
@@ -65,6 +65,10 @@ describe('report-sql == legacy JS aggregation (golden comparison)', () => {
             lines: { create: lines },
           },
         });
+        // Turnover date = SALE invoice createdAt (as deliver() writes), 0/12/24h after the order.
+        // total 0 + PAID keeps the debt fixture below unchanged.
+        if (status === OrderStatus.DELIVERED || status === OrderStatus.CLOSED)
+          await tx.invoice.create({ data: { companyId, number: `INV-CMP-${randomUUID().slice(0, 8)}`, customerId: so.customerId, orderId: so.id, total: 0, status: InvoiceStatus.PAID, createdAt: new Date(createdAt.getTime() + (i % 3) * 12 * 3_600_000) } });
       }
       // an order without lines
       await tx.salesOrder.create({ data: { companyId, number: `SO-CMP-${randomUUID()}`, customerId: custs[0]!.id, warehouseId: wh.id, status: OrderStatus.SUBMITTED, createdAt: new Date('2026-03-05T05:00:00Z') } });
@@ -94,10 +98,13 @@ describe('report-sql == legacy JS aggregation (golden comparison)', () => {
 
     await tenantPrisma.run(companyId, async (tx) => {
       // ---- legacy reference
-      const orders = await tx.salesOrder.findMany({
-        where: { createdAt: { gte: win.start, lte: win.end }, status: { in: COUNTED_ORDER_STATUSES } },
-        select: { createdAt: true, agentId: true, customerId: true, ...ORDER_AMOUNT_SELECT, lines: { select: { ...ORDER_AMOUNT_SELECT.lines.select, productId: true } } },
+      const deliveredOrders = await tx.salesOrder.findMany({
+        where: { status: { in: [...TURNOVER_STATUSES] }, invoices: { some: { kind: 'SALE' } } },
+        select: { invoices: { where: { kind: 'SALE' }, select: { createdAt: true }, orderBy: { createdAt: 'asc' }, take: 1 }, agentId: true, customerId: true, ...ORDER_AMOUNT_SELECT, lines: { select: { ...ORDER_AMOUNT_SELECT.lines.select, productId: true } } },
       });
+      const orders = deliveredOrders
+        .map((o) => ({ ...o, createdAt: o.invoices[0]!.createdAt }))
+        .filter((o) => o.createdAt >= win.start && o.createdAt <= win.end);
       const zero = new Prisma.Decimal(0);
       let turnover = zero;
       const byDay = new Map<string, Prisma.Decimal>();
@@ -121,9 +128,10 @@ describe('report-sql == legacy JS aggregation (golden comparison)', () => {
       // ---- new
       const totals = await orderTotalsInWindow(tx, win.start, win.end);
       expect(totals.turnover.toFixed(2)).toBe(turnover.toFixed(2));
-      expect(totals.count).toBe(orders.length);
+      // F2.4/PO: only DELIVERED/CLOSED (i % 7 in {2,3} of 36 -> 10 orders); SUBMITTED/CONFIRMED/SHIPPED/DRAFT/CANCELLED excluded.
+      expect(orders.length).toBe(10);
+      expect(totals.deliveredOrderCount).toBe(orders.length);
       expect(totals.activeCustomers).toBe(new Set(orders.map((o) => o.customerId)).size);
-      expect(totals.count).toBeGreaterThan(20);
 
       const newDay = await turnoverPerDay(tx, win.start, win.end, tz);
       expect([...newDay.keys()].sort()).toEqual([...byDay.keys()].sort());
@@ -133,7 +141,7 @@ describe('report-sql == legacy JS aggregation (golden comparison)', () => {
       expect(newAgent.length).toBe(byAgent.size);
       for (const r of newAgent) {
         expect(r.turnover.toFixed(2)).toBe(byAgent.get(r.agentId)!.t.toFixed(2));
-        expect(r.count).toBe(byAgent.get(r.agentId)!.c);
+        expect(r.deliveredOrderCount).toBe(byAgent.get(r.agentId)!.c);
       }
 
       const top = await topProductsInWindow(tx, win.start, win.end, 10);

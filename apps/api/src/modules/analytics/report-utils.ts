@@ -100,15 +100,17 @@ export function pctChange(current: Prisma.Decimal | number, previous: Prisma.Dec
 }
 
 /**
- * 3.2/9.3: an order that reached at least SUBMITTED counts toward every sales
- * figure in this module — DRAFT (not yet sent) and CANCELLED are excluded.
+ * F2.4 / PO decision (2026-11-01): the ONLY order statuses that make actual
+ * turnover. Every sales figure in this module (turnover, delivered-order count,
+ * avg check, per day/agent/product, overview, dashboard, agents report) uses
+ * this set and the DELIVERED amount (Σ deliveredQty-priced lines = invoice
+ * total). DRAFT/SUBMITTED/CONFIRMED/SHIPPED/CANCELLED are not turnover; a
+ * DELIVERED→CLOSED order is one row, counted once. Payments/debt and OPENING
+ * invoices are not orders, so they never enter these figures.
+ * Date attribution (PO 2026-11-01) = delivery date = the order's SALE invoice
+ * createdAt (report-sql.ts deliveredInWindowJoin), not SalesOrder.createdAt.
  */
-export const COUNTED_ORDER_STATUSES: OrderStatus[] = [
-  OrderStatus.SUBMITTED,
-  OrderStatus.CONFIRMED,
-  OrderStatus.DELIVERED,
-  OrderStatus.CLOSED,
-];
+export const TURNOVER_STATUSES: readonly OrderStatus[] = [OrderStatus.DELIVERED, OrderStatus.CLOSED];
 
 /**
  * Prisma `select` every sales figure needs: status + line snapshot, so
