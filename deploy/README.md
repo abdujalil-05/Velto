@@ -31,6 +31,13 @@ nginx API prefiksini kesadi (`proxy_pass` oxirida `/`), Next ilovalari uchun esa
 kesmaydi (`basePath` ilovaning o'zida). Shuning uchun API kodida hech qanday
 global prefiks sozlanmagan.
 
+## Runtime requirements
+
+- Node: 22 LTS, minimum 22.12 (`engines.node` = `>=22.12 <27`, `.nvmrc` = 22, CI = 22). Tekshirilgan: 22.23.4, 24.22.1, 26.12.1. Node < 21 da API ishga tushmaydi.
+- ADR-059 pul aniqligi: `assertJsonSourceSupport()` (`json-number-guard.ts`, `bootstrap.ts`) `JSON.parse` reviver `context.source` ni sinab ko'radi; yo'q bo'lsa boot to'xtaydi (fail-closed).
+- PM2 `pm2 start` qilgan shell'dagi `node` ni ishlatadi. Serverda `node -v` tekshiring (>=22.12) va `pm2 start` ni shu node bilan ishga tushiring; kerak bo'lsa ecosystem'da `interpreter: '/abs/path/to/node'` qo'ying (yo'li serverda tasdiqlanmagan, repo'da yozilmagan).
+- Majburiy env (`apps/api/src/common/config/env.schema.ts`, default'siz): DATABASE_URL, DATABASE_SYSTEM_URL, REDIS_URL, JWT_ACCESS_SECRET (>=32), MFA_ENCRYPTION_KEY (base64, 32 bayt), S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, S3_BUCKET. Qiymatlar repo'da saqlanmaydi.
+
 ## Birinchi marta o'rnatish
 
 ```bash
