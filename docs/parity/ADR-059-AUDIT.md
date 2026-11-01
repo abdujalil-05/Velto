@@ -51,9 +51,15 @@
 - Принимаются точно: `0.01`, `100.01`, `9007199254740.99`, `9999999999999.98`, `9999999999999.99`, `12345678901234.5`. Отклоняются: `100.005` (scale), `99999999999999.99` (precision). Любое |v| < 1e13 с 2 знаками всегда точно.
 - Тест: `apps/api/test/json-number-precision.e2e.test.ts`.
 
-## План совместимости (НЕ РЕАЛИЗОВАН, нужно решение PO)
-Значения 1e13..1e15, не представимые точно в double (кроме `.00/.25/.50/.75`), сейчас отклоняются. Точный приём — аддитивно `number | string` для полей `@IsMoneyAmount`: finance create-payment `amount`; open/close cash session `openAmount`/`closeAmount`; purchases goods-receipt `unitCost` и purchase-order `unitPrice`; catalog product `price`/`minPrice`; price-list items `price`; те же поля в payload `/sync/push`. Без глобальной версии API.
+## Денежный ввод `number | string` (СДЕЛАНО, 2026-11-01, решение PO)
+Поля `@IsMoneyAmount` (только они): create-payment `amount` и `allocations[].amount`; cash session `openAmount`/`closeAmount`; goods-receipt `unitCost`; purchase-order `unitPrice`; product `price`/`minPrice`; price-list items `price`; `/sync/push` — только документ PAYMENT (тот же `CreatePaymentDto`; в ORDER/VISIT денежных полей нет).
+- **Предпочтительный формат — строка:** `"100.50"`, шаблон `^-?\d{1,20}(\.\d{1,2})?$` (`MONEY_STRING_PATTERN`, `common/validators/numeric-bounds.ts`). Строка → `Prisma.Decimal` напрямую, без Number/parseFloat.
+- Отклоняются: экспонента, `+`, пробелы, запятая/локальные разделители, `Infinity`/`NaN`, > 2 знаков, |v| > 1e15, объекты/массивы/bool. Знак — по правилам поля (positive / allowZero), ключи ошибок прежние.
+- JSON number поддерживается как раньше; `JSON_NUMBER_PRECISION_LOSS` обязателен. Диапазон: строкой — до `1000000000000000.00` включительно; числом — только значения, точно представимые в double (любое < 1e13 с 2 знаками).
+- OpenAPI в проекте нет (`@nestjs/swagger` не подключён) — контракт фиксируется здесь.
+- Совместимость: web и Mini App шлют числа — без изменений. Idempotency-Key хеширует сырое тело до валидации: `"100.5"` и `100.5` — разные хеши, повтор того же тела совпадает (семантика не менялась). Платёж дедуплицируется только по `clientId`; сумма при повторе не сравнивается (было и раньше, LOW, → PO).
 
 ## Открыто
 - Бухгалтер: подтверждение HALF_UP на реальных документах и импорт в конкретную конфигурацию 1С (XML без пилотного контракта не считается проверенным).
-- Решения PO по пунктам «→ PO» выше и по плану совместимости string-money. Исторические суммы не пересчитывались.
+- Решения PO по пунктам «→ PO» выше. Исторические суммы не пересчитывались.
+- `context.source` reviver проверен поведением (не номером версии): Node 22.23.4, 24.22.1, 26.12.1 — source сохраняется; CI `node-version: 22`; версия Node на сервере в `deploy/` не зафиксирована (engines `>=22`). Boot-проверка в `json-number-guard.ts` — feature detection.

@@ -26,7 +26,7 @@
 - Причины (`export-1c-representability.ts`): `DISCOUNT`, `VAT` (≠ 0), `QTY_X_PRICE_MISMATCH`, `UNIT` (qtyInBaseUnit ≠ 1), `TOTAL_MISMATCH`.
 - Счета без заказа (orderless): проверяются только арифметика и НДС (скидки/упаковки в InvoiceLine нет). OPENING-счета исключены фильтром kind = SALE и ложно не отклоняются.
 - Корректные документы выгружаются как прежде: `mappingVersion 2`, external IDs, checksum, audit, RBAC, idempotency, GENERATED vs ACCOUNTING_ACCEPTED без изменений.
-- **EXCEL** — информационный реестр (fallback ТЗ 11.1), не импорт в 1С: не отклоняется, лист «Eslatma» это указывает, суммы = `Invoice.total` (Decimal). ACK для EXCEL → 409 `1C_EXPORT_REGISTER_NOT_ACKNOWLEDGEABLE`. Формат по умолчанию — EXCEL.
+- **EXCEL** — информационный реестр (fallback ТЗ 11.1), не импорт в 1С: не отклоняется, лист «Eslatma» это указывает, суммы = `Invoice.total` (Decimal). ACK для EXCEL → 409 `1C_EXPORT_REGISTER_NOT_ACKNOWLEDGEABLE`. Формата по умолчанию нет (решение PO 2026-11-01): `format` обязателен, иначе 400 `1C_EXPORT_FORMAT_REQUIRED`; в web формат не выбран заранее, кнопка неактивна до выбора. **mapping v2 непригоден для большинства документов с ненулевым НДС — release blocker бухгалтерской интеграции** (mapping v3 только после образцов и согласования бухгалтера, см. `1C-ACCOUNTANT-ACCEPTANCE.md`).
 - Web (`export-1c/page.tsx`): таблица нарушений, метка «реестр» для EXCEL, кнопка ACK скрыта для EXCEL; i18n uz/ru/en.
 - Read-only диагностика исторических выгрузок: `packages/database/src/diagnostics/export-1c-unsupported.ts [--company]`.
 - Тесты: `export-1c.unsupported.test.ts`, `export-1c.consistency.golden.test.ts`, e2e `export-1c-ack-download`/`export-1c-hardening`, `packages/database/src/__tests__/export-1c-unsupported.test.ts`.
