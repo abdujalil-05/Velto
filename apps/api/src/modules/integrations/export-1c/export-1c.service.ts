@@ -6,6 +6,7 @@ import { paginate } from '../../../common/pagination/pagination.dto';
 import { TenantContext } from '../../../common/tenant/tenant-context';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import { ExportJobNotFoundException, ExportPeriodNotClosedException, InvalidExportPeriodException } from '../integrations-exceptions';
+import { ExportFormatRequiredException } from './export-1c-exceptions';
 import type { CreateExportDto } from './dto/create-export.dto';
 import type { ListExportsQueryDto } from './dto/list-exports.query';
 import { AuditLogService, toAuditJson } from '../../../common/audit/audit-log.service';
@@ -27,6 +28,7 @@ export class Export1cService {
   ) {}
 
   async create(dto: CreateExportDto, user: AuthenticatedUser) {
+    if (!dto.format) throw new ExportFormatRequiredException(); // PO: Excel is an informational register, never an implicit default
     const tx = this.tenantPrisma.client;
     // TZ §7.1: day boundaries follow Company.timezone, never the server clock.
     const company = await tx.company.findFirst({ select: { timezone: true } });
@@ -44,7 +46,7 @@ export class Export1cService {
       data: {
         companyId: user.companyId,
         type: '1c',
-        format: dto.format ?? 'EXCEL', // XML stays opt-in: CommerceML not yet validated on a pilot 1C configuration
+        format: dto.format, // PO: no implicit format; narrowed above
         periodFrom,
         periodTo,
         status: 'QUEUED',

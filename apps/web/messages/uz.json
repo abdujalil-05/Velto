@@ -1802,10 +1802,11 @@
       "from": "Davr boshi",
       "to": "Davr oxiri",
       "format": "Format",
+      "formatPlaceholder": "Formatni tanlang",
       "create": "Eksport yaratish",
       "hint": "Davr oxiri kechadan kech bo'lmasligi kerak ({date}, kompaniya vaqt zonasi).",
       "periodInvalid": "To'g'ri davr tanlang: boshi oxiridan keyin bo'lmasin, oxiri kechadan kech bo'lmasin.",
-      "xmlUnverified": "XML (CommerceML) 1C bilan pilotda hali tasdiqlanmagan. Excel afzal."
+      "xmlUnverified": "XML/CSV (mapping v2) hali haqiqiy 1C importida tekshirilmagan; chegirmali, nolga teng bo'lmagan QQS yoki qo'llab-quvvatlanmaydigan birlikli hujjatlar rad etiladi. Excel faqat axborot reestri, 1C ga import uchun emas."
     },
     "format": {
       "EXCEL": "Excel (axborot reestri, 1C importi uchun emas)",

@@ -39,7 +39,7 @@ describe('1C export under a Redis outage (real Postgres, queue test double)', ()
     process.env.QUEUE_ENQUEUE_TIMEOUT_MS = '300';
     const svc = new Export1cService(tenantPrisma, hangingQueue, new AuditLogService(), noLimit);
     const t0 = Date.now();
-    const job = await tenantPrisma.run(companyId, () => svc.create({ from: '2026-07-01', to: '2026-07-31' }, user));
+    const job = await tenantPrisma.run(companyId, () => svc.create({ from: '2026-07-01', to: '2026-07-31', format: 'EXCEL' }, user));
     expect(Date.now() - t0).toBeLessThan(1500);
     const row = await systemPrisma.exportJob.findUniqueOrThrow({ where: { id: job.id } });
     expect(row.status).toBe('QUEUED');
@@ -48,7 +48,7 @@ describe('1C export under a Redis outage (real Postgres, queue test double)', ()
   it('sweep after Redis returns enqueues a stale QUEUED job once; double enqueue dedupes by jobId', async () => {
     const svc = new Export1cService(tenantPrisma, hangingQueue, new AuditLogService(), noLimit);
     process.env.QUEUE_ENQUEUE_TIMEOUT_MS = '200';
-    const job = await tenantPrisma.run(companyId, () => svc.create({ from: '2026-06-01', to: '2026-06-30' }, user));
+    const job = await tenantPrisma.run(companyId, () => svc.create({ from: '2026-06-01', to: '2026-06-30', format: 'EXCEL' }, user));
     await systemPrisma.exportJob.update({ where: { id: job.id }, data: { updatedAt: new Date(Date.now() - 3600_000) } });
 
     const seen = new Map<string, number>(); // BullMQ semantics: same jobId is a no-op
@@ -67,7 +67,7 @@ describe('1C export under a Redis outage (real Postgres, queue test double)', ()
     process.env.ABANDONED_QUEUED_MS = '60000';
     process.env.QUEUE_ENQUEUE_TIMEOUT_MS = '100';
     const svc = new Export1cService(tenantPrisma, hangingQueue, new AuditLogService(), noLimit);
-    const job = await tenantPrisma.run(companyId, () => svc.create({ from: '2026-05-01', to: '2026-05-31' }, user));
+    const job = await tenantPrisma.run(companyId, () => svc.create({ from: '2026-05-01', to: '2026-05-31', format: 'EXCEL' }, user));
     await systemPrisma.exportJob.update({ where: { id: job.id }, data: { updatedAt: new Date(Date.now() - 3600_000) } });
     await new Export1cRecoveryService(tenantPrisma, hangingQueue).sweep();
     const row = await systemPrisma.exportJob.findUniqueOrThrow({ where: { id: job.id } });

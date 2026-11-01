@@ -122,3 +122,14 @@ export class ExportRegisterNotAcknowledgeableException extends AppException {
     });
   }
 }
+
+/** PO rule: the export format must be chosen explicitly (no implicit Excel default). */
+export class ExportFormatRequiredException extends AppException {
+  constructor() {
+    super(HttpStatus.BAD_REQUEST, '1C_EXPORT_FORMAT_REQUIRED', {
+      uz: "Eksport formatini aniq tanlang: CSV, XML yoki EXCEL (EXCEL faqat axborot reyestri)",
+      ru: 'Явно выберите формат экспорта: CSV, XML или EXCEL (EXCEL — только информационный реестр)',
+      en: 'Choose the export format explicitly: CSV, XML or EXCEL (EXCEL is an informational register only)',
+    });
+  }
+}

@@ -9,7 +9,7 @@ import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.servic
 import { ExportJobNotFoundException, ExportPeriodNotClosedException, InvalidExportPeriodException } from '../integrations-exceptions';
 import type { Export1cJobData } from './export-1c.constants';
 import { Export1cService } from './export-1c.service';
-import { ExportActiveLimitException } from './export-1c-exceptions';
+import { ExportActiveLimitException, ExportFormatRequiredException } from './export-1c-exceptions';
 import { Export1cLimitsService } from './export-1c-limits.service';
 
 describe('Export1cService (integration, real Postgres + RLS)', () => {
@@ -40,9 +40,15 @@ describe('Export1cService (integration, real Postgres + RLS)', () => {
     await systemPrisma.$disconnect();
   });
 
+  it('rejects a missing format (no implicit EXCEL default)', async () => {
+    await expect(
+      tenantPrisma.run(companyId, () => export1c.create({ from: '2026-07-01', to: '2026-07-31' }, user)),
+    ).rejects.toBeInstanceOf(ExportFormatRequiredException);
+  });
+
   it('creates a QUEUED job and enqueues it for the worker', async () => {
     const job = await runWithTraceId('known-trace-id-123', () =>
-      tenantPrisma.run(companyId, () => export1c.create({ from: '2026-07-01', to: '2026-07-31' }, user)),
+      tenantPrisma.run(companyId, () => export1c.create({ from: '2026-07-01', to: '2026-07-31', format: 'EXCEL' }, user)),
     );
     expect(job.status).toBe('QUEUED');
     expect(job.format).toBe('EXCEL'); // XML not pilot-validated
@@ -70,7 +76,7 @@ describe('Export1cService (integration, real Postgres + RLS)', () => {
       vi.useFakeTimers({ toFake: ['Date'] });
       vi.setSystemTime(new Date(iso));
       try {
-        return await tenantPrisma.run(companyId, () => export1c.create({ from, to }, user));
+        return await tenantPrisma.run(companyId, () => export1c.create({ from, to, format: 'EXCEL' }, user));
       } finally {
         vi.useRealTimers();
       }
@@ -98,12 +104,12 @@ describe('Export1cService (integration, real Postgres + RLS)', () => {
 
   it('rejects a period where "from" is after "to"', async () => {
     await expect(
-      tenantPrisma.run(companyId, () => export1c.create({ from: '2026-08-01', to: '2026-07-01' }, user)),
+      tenantPrisma.run(companyId, () => export1c.create({ from: '2026-08-01', to: '2026-07-01', format: 'EXCEL' }, user)),
     ).rejects.toBeInstanceOf(InvalidExportPeriodException);
   });
 
   it('list() and getById() round-trip a created job', async () => {
-    const created = await tenantPrisma.run(companyId, () => export1c.create({ from: '2026-06-01', to: '2026-06-30' }, user));
+    const created = await tenantPrisma.run(companyId, () => export1c.create({ from: '2026-06-01', to: '2026-06-30', format: 'EXCEL' }, user));
     const fetched = await tenantPrisma.run(companyId, () => export1c.getById(created.id));
     expect(fetched.id).toBe(created.id);
 
@@ -123,7 +129,7 @@ describe('Export1cService (integration, real Postgres + RLS)', () => {
     const u = await systemPrisma.user.create({ data: { companyId: co, firstName: 'L', lastName: 'Im', phone: `+99890${Math.floor(1_000_000 + Math.random() * 8_000_000)}` } });
     const limUser: AuthenticatedUser = { ...user, id: u.id, companyId: co };
     const results = await Promise.allSettled(
-      [1, 2, 3, 4, 5, 6].map((d) => tenantPrisma.run(co, () => limited.create({ from: `2026-05-0${d}`, to: `2026-05-0${d}` }, limUser))),
+      [1, 2, 3, 4, 5, 6].map((d) => tenantPrisma.run(co, () => limited.create({ from: `2026-05-0${d}`, to: `2026-05-0${d}`, format: 'EXCEL' }, limUser))),
     );
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(3);
     const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');

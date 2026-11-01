@@ -32,7 +32,7 @@ import { PaginationBar } from '@/components/shared/pagination-bar';
 import { ReverseDialog } from '@/components/shared/reverse-dialog';
 
 const DEFAULT_TZ = 'Asia/Tashkent';
-const FORMATS: ExportFormat[] = ['EXCEL', 'CSV', 'XML'];
+const FORMATS: ExportFormat[] = ['XML', 'CSV', 'EXCEL'];
 const STATUS_VARIANT: Record<ExportJobStatus, BadgeProps['variant']> = {
   QUEUED: 'secondary',
   PROCESSING: 'warning',
@@ -67,7 +67,7 @@ export default function Export1cPage() {
   const [page, setPage] = useState(1);
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
-  const [format, setFormat] = useState<ExportFormat>('EXCEL');
+  const [format, setFormat] = useState<ExportFormat | ''>('');
   const [createError, setCreateError] = useState<string | null>(null);
   const [ackTarget, setAckTarget] = useState<{ job: ExportJob; result: 'ACCEPTED' | 'REJECTED' } | null>(null);
   const [ackError, setAckError] = useState<string | null>(null);
@@ -97,10 +97,10 @@ export default function Export1cPage() {
     return errorMessage(err, locale);
   }
 
-  const periodInvalid = !from || !to || from > to || to > maxDate;
+  const periodInvalid = !from || !to || !format || from > to || to > maxDate;
 
   function handleCreate() {
-    if (periodInvalid) return;
+    if (periodInvalid || !format) return;
     setCreateError(null);
     createMutation.mutate(
       { from, to, format, idempotencyKey: (createKey.current ??= crypto.randomUUID()) },
@@ -194,7 +194,8 @@ export default function Export1cPage() {
             </div>
             <div className="space-y-1">
               <Label htmlFor="exportFormat">{t('form.format')}</Label>
-              <Select id="exportFormat" value={format} onChange={(e) => setFormat(e.target.value as ExportFormat)}>
+              <Select id="exportFormat" value={format} onChange={(e) => setFormat(e.target.value as ExportFormat | '')}>
+                <option value="">{t('form.formatPlaceholder')}</option>
                 {FORMATS.map((f) => (
                   <option key={f} value={f}>
                     {t(`format.${f}`)}

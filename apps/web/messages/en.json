@@ -1802,10 +1802,11 @@
       "from": "Period from",
       "to": "Period to",
       "format": "Format",
+      "formatPlaceholder": "Select format",
       "create": "Create export",
       "hint": "The period must end no later than yesterday ({date}, company time zone).",
       "periodInvalid": "Choose a valid period: start not after end, end not later than yesterday.",
-      "xmlUnverified": "XML (CommerceML) has not been verified in a pilot with 1C yet. Prefer Excel."
+      "xmlUnverified": "XML/CSV (mapping v2) is not yet verified against a real 1C import; documents with discounts, non-zero VAT or unsupported units are rejected. Excel is an informational register only, not for 1C import."
     },
     "format": {
       "EXCEL": "Excel (informational register, not a 1C import file)",

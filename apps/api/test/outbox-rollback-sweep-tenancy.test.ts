@@ -73,7 +73,7 @@ describe('ADR-064 outbox (integration, real Postgres + RLS)', () => {
     it('1C export: rollback after create() leaves no ExportJob/audit and no queue.add; commit control does enqueue', async () => {
       const q = newQueue<Export1cJobData>();
       const svc = new Export1cService(tenantPrisma, q, audit, noLimit);
-      const dto = { from: '2026-07-01', to: '2026-07-31' };
+      const dto = { from: '2026-07-01', to: '2026-07-31', format: 'EXCEL' as const };
       await expect(
         tenantPrisma.run(t.companyId, async () => {
           const job = await svc.create(dto, t.user);
