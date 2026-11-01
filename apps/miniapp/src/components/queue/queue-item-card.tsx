@@ -5,7 +5,7 @@ import { useLocale, useTranslations } from 'next-intl';
 import { toast } from 'sonner';
 import type { QueueEntry } from '@/lib/offline/queue';
 import { queueRepository } from '@/lib/offline/queue';
-import { isRejectedHandover, localizedError, parsePriceChanged } from '@/lib/offline/queue-view';
+import { isRejectedHandover, localizedError, parsePriceChanged, precisionHint } from '@/lib/offline/queue-view';
 import { formatDateTime, formatMoney } from '@/lib/format';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -30,6 +30,7 @@ export function QueueItemCard({ entry, name, productName, onChanged }: Props) {
   const [confirm, setConfirm] = useState<Pending>(null);
 
   const price = parsePriceChanged(entry);
+  const precision = precisionHint(entry);
   const errorText = localizedError(entry.lastError, locale);
   const unaccepted = (entry.status === 'FAILED' || entry.status === 'CONFLICT') && !entry.serverId;
   const unsent = entry.status !== 'SYNCED';
@@ -76,6 +77,12 @@ export function QueueItemCard({ entry, name, productName, onChanged }: Props) {
         {entry.status === 'FAILED' && errorText && (
           <p className="rounded-md bg-destructive/10 p-2 text-sm text-destructive">
             <span className="font-medium">{t('reason')}:</span> {errorText}
+          </p>
+        )}
+
+        {precision && (
+          <p className="rounded-md bg-warning/20 p-2 text-sm">
+            <span className="font-medium">{t(`precision.${precision}`)}</span> {t('precision.action')}
           </p>
         )}
 

@@ -24,7 +24,8 @@ export interface Payment {
 
 export interface CreatePaymentInput {
   customerId: string;
-  amount: number;
+  /** Decimal string, ≤2dp (ADR-059) - never a JS float. */
+  amount: string;
   method: PaymentMethod;
   clientId: string;
 }

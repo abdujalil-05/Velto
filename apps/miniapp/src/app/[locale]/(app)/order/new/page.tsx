@@ -18,7 +18,7 @@ import {
   useOfflineProducts,
   useOfflineStock,
 } from '@/lib/offline/use-offline-data';
-import { estimateOrderTotal, resolvePrice, withExpectedUnitPrices } from '@/lib/offline/pricing';
+import { checkQty, estimateOrderTotal, repeatLineQty, resolvePrice, withExpectedUnitPrices } from '@/lib/offline/pricing';
 import type { SyncPackaging } from '@/lib/api/sync';
 import { enqueue } from '@/lib/offline/queue';
 import { useSyncEngine } from '@/lib/offline/sync-engine';
@@ -168,6 +168,16 @@ export default function NewOrderPage() {
     [cartLineInputs, availableByProduct, packagingsByProduct],
   );
 
+  // ADR-059 UX mirror of the server rule: qty ≤3dp and qty × factor ≤3dp. Blocks save, never rounds.
+  const qtyIssue = useMemo(() => {
+    for (const l of cartLineInputs) {
+      const pkg = (packagingsByProduct.get(l.productId) ?? []).find((p) => p.id === l.packagingId);
+      const r = checkQty(l.qty, pkg?.qtyInBaseUnit ?? '1');
+      if (r !== 'ok') return r;
+    }
+    return null;
+  }, [cartLineInputs, packagingsByProduct]);
+
   const cartTotal = useMemo(() => {
     if (!products.data || !packagings.data || !prices.data || defaultPriceListId.data === undefined) return 0;
     return estimateOrderTotal(cartLineInputs, customer?.priceListId ?? null, defaultPriceListId.data, products.data, packagings.data, prices.data);
@@ -176,15 +186,20 @@ export default function NewOrderPage() {
   function repeatLastOrder() {
     if (!lastOrder.data || !packagings.data) return;
     const next: Record<string, CartLine> = {};
+    let manual = 0;
     for (const line of lastOrder.data.lines) {
-      const packaging = packagings.data.find((p) => p.id === line.packagingId);
-      const baseQty = Number(line.qty);
-      const displayQty = packaging ? baseQty / Number(packaging.qtyInBaseUnit) : baseQty;
-      next[line.productId] = { packagingId: line.packagingId, qty: displayQty };
+      // line.qty is in base units; exact BigInt division, else base packaging, else manual (never float/rounded).
+      const res = repeatLineQty(line.qty, line.packagingId, packagingsByProduct.get(line.productId) ?? []);
+      if (!res) {
+        manual += 1;
+        continue;
+      }
+      next[line.productId] = { packagingId: res.packagingId, qty: Number(res.qty) };
     }
     setLines(next);
     setRepeatConfirmOpen(false);
-    toast.success(t('repeated'));
+    if (manual > 0) toast.warning(t('repeatedPartial', { count: manual }));
+    else toast.success(t('repeated'));
   }
 
   async function handleSave() {
@@ -354,6 +369,11 @@ export default function NewOrderPage() {
           </div>
 
           <div className="fixed inset-x-0 bottom-0 mx-auto max-w-lg border-t border-border bg-background p-4">
+            {qtyIssue && (
+              <Alert variant="destructive" className="mb-2">
+                <AlertDescription>{qtyIssue === 'qtyScale' ? t('qtyScaleError') : t('qtyBaseScaleError')}</AlertDescription>
+              </Alert>
+            )}
             {hasStockIssues && (
               <Alert variant="destructive" className="mb-2">
                 <AlertDescription>{t('stockExceededBanner')}</AlertDescription>
@@ -365,7 +385,7 @@ export default function NewOrderPage() {
                 {formatMoney(cartTotal)} {tCommon('somUnit')}
               </span>
             </div>
-            <Button size="lg" className="w-full" disabled={cartLineInputs.length === 0 || hasStockIssues || submitting} onClick={handleSave}>
+            <Button size="lg" className="w-full" disabled={cartLineInputs.length === 0 || hasStockIssues || qtyIssue !== null || submitting} onClick={handleSave}>
               {t('save')}
             </Button>
           </div>

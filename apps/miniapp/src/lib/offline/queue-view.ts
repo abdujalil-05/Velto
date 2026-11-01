@@ -1,4 +1,5 @@
 import type { QueueEntry, QueueError } from './queue';
+import { decimalScale, MONEY_SCALE, QTY_SCALE } from './pricing';
 
 /**
  * Pure presentation logic for the queue / conflicts screen (TZ 8.4, 9.3):
@@ -71,4 +72,43 @@ export function downloadJson(json: string, fileName: string): void {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export type PrecisionHint = 'qty' | 'amount' | 'price';
+
+const PRECISION_CODES: Record<string, PrecisionHint> = {
+  ORDER_QTY_PRECISION: 'qty',
+  ORDER_PRICE_BELOW_MIN: 'price',
+};
+
+/**
+ * ADR-059: why an unaccepted FAILED/CONFLICT item needs a manual fix, from the server code
+ * or (for old queued items sent before the rule) from the payload's own decimals.
+ * Allowed action is always "cancel and re-enter" - the item is never auto-deleted or rounded.
+ */
+export function precisionHint(entry: QueueEntry): PrecisionHint | null {
+  if (entry.status !== 'FAILED' && entry.status !== 'CONFLICT') return null;
+  const byCode = entry.lastError?.code ? PRECISION_CODES[entry.lastError.code] : undefined;
+  if (byCode) return byCode;
+  const d = entry.lastError?.details;
+  if (entry.lastError?.code === 'SYNC_VALIDATION_FAILED' && Array.isArray(d)) {
+    for (const item of d as { property?: unknown; constraints?: { maxScale?: unknown } }[]) {
+      if (item?.constraints?.maxScale == null) continue;
+      const prop = String(item.property ?? '');
+      if (/amount/i.test(prop)) return 'amount';
+      if (/qty/i.test(prop)) return 'qty';
+      if (/price/i.test(prop)) return 'price';
+    }
+  }
+  if (entry.lastError?.code === 'HTTP_400' && Array.isArray(d) && d.some((x) => typeof x === 'string' && /decimal places/i.test(x))) {
+    if (entry.type === 'payment') return 'amount';
+    if (entry.type === 'order') return 'qty';
+  }
+  const p = entry.payload as { amount?: unknown; lines?: { qty?: unknown }[] };
+  if (entry.type === 'payment' && (typeof p.amount === 'number' || typeof p.amount === 'string') && decimalScale(p.amount) > MONEY_SCALE) return 'amount';
+  if (entry.type === 'order' && Array.isArray(p.lines)) {
+    const bad = p.lines.some((l) => (typeof l.qty === 'number' || typeof l.qty === 'string') && decimalScale(l.qty) > QTY_SCALE);
+    if (bad) return 'qty';
+  }
+  return null;
 }

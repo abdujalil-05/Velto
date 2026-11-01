@@ -79,7 +79,10 @@
     "repeatConfirmAction": "Replace",
     "discardConfirmTitle": "Discard the draft?",
     "discardConfirmDescription": "The {count} unsaved line(s) will be lost. The order won't be stored on the device or on the server.",
-    "discardConfirmAction": "Discard"
+    "discardConfirmAction": "Discard",
+    "qtyScaleError": "Quantity may have at most 3 decimals",
+    "qtyBaseScaleError": "Quantity × packaging factor may have at most 3 decimals",
+    "repeatedPartial": "{count} lines could not be copied exactly - enter the quantity manually"
   },
   "Payment": {
     "amount": "Amount",
@@ -97,7 +100,9 @@
     "shareReceipt": "Share receipt",
     "handoverNotice": "Waiting to be handed to the cashier. The customer's debt drops only after the cashier accepts.",
     "debtNotReducedNote": "A payment you collected does not reduce the debt until the cashier accepts it.",
-    "inTransit": "In transit (not handed to cashier)"
+    "inTransit": "In transit (not handed to cashier)",
+    "amountScaleError": "Amount may have at most 2 decimals (tiyin)",
+    "amountInvalid": "Enter the amount as a number (e.g. 100.05)"
   },
   "Visit": {
     "collectPayment": "Collect payment",
@@ -297,7 +302,13 @@
     "rateLimitedBody": "Your records are saved on this device. They will be sent automatically shortly.",
     "busy": "Server busy, will be sent shortly",
     "busyTitle": "Server busy",
-    "busyBody": "Your records are saved on this device. The server is busy; they will be sent automatically shortly."
+    "busyBody": "Your records are saved on this device. The server is busy; they will be sent automatically shortly.",
+    "precision": {
+      "qty": "Quantity has more than 3 decimals or is inexact with the packaging factor.",
+      "amount": "Amount has more than 2 decimals (tiyin).",
+      "price": "Price is below the minimum.",
+      "action": "The document is never deleted automatically. Cancel it and re-enter with a valid value."
+    }
   },
   "Revoked": {
     "title": "Access revoked",

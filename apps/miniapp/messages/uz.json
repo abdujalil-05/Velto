@@ -79,7 +79,10 @@
     "repeatConfirmAction": "Almashtirish",
     "discardConfirmTitle": "Qoralama o'chirilsinmi?",
     "discardConfirmDescription": "Saqlanmagan {count} ta qator yo'qoladi. Buyurtma na qurilmada, na serverda saqlanadi.",
-    "discardConfirmAction": "O'chirish"
+    "discardConfirmAction": "O'chirish",
+    "qtyScaleError": "Miqdorda ko'pi bilan 3 ta kasr xona bo'lishi mumkin",
+    "qtyBaseScaleError": "Miqdor × o'ram koeffitsiyenti 3 ta kasr xonadan oshmasligi kerak",
+    "repeatedPartial": "{count} ta qator aniq ko'chirilmadi — miqdorni qo'lda kiriting"
   },
   "Payment": {
     "amount": "Summa",
@@ -97,7 +100,9 @@
     "shareReceipt": "Kvitansiyani yuborish",
     "handoverNotice": "Kassirga topshirish kutilmoqda. Kassir qabul qilgandan keyingina mijoz qarzi kamayadi.",
     "debtNotReducedNote": "Siz yig'gan to'lov kassir qabul qilguncha qarzni kamaytirmaydi.",
-    "inTransit": "Yo'lda (kassirga topshirilmagan)"
+    "inTransit": "Yo'lda (kassirga topshirilmagan)",
+    "amountScaleError": "Summada ko'pi bilan 2 ta kasr xona (tiyin) bo'lishi mumkin",
+    "amountInvalid": "Summani raqam bilan kiriting (masalan 100.05)"
   },
   "Visit": {
     "collectPayment": "To'lov qabul qilish",
@@ -297,7 +302,13 @@
     "rateLimitedBody": "Yozuvlaringiz qurilmada saqlangan. Birozdan keyin avtomatik yuboriladi.",
     "busy": "Server band, birozdan keyin yuboriladi",
     "busyTitle": "Server band",
-    "busyBody": "Yozuvlaringiz qurilmada saqlangan. Server band, birozdan keyin avtomatik yuboriladi."
+    "busyBody": "Yozuvlaringiz qurilmada saqlangan. Server band, birozdan keyin avtomatik yuboriladi.",
+    "precision": {
+      "qty": "Miqdor 3 xonadan ko'p kasrga ega yoki o'ram koeffitsiyenti bilan aniq emas.",
+      "amount": "Summa 2 xonadan (tiyin) ko'p kasrga ega.",
+      "price": "Narx minimal narxdan past.",
+      "action": "Hujjat o'z-o'zidan o'chmaydi. Uni bekor qiling va to'g'ri qiymat bilan qayta kiriting."
+    }
   },
   "Revoked": {
     "title": "Kirish huquqi bekor qilindi",

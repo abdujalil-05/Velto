@@ -3,6 +3,7 @@ import { ApiError } from '@/lib/api/client';
 import { db } from './db';
 import { MAX_SYNC_ATTEMPTS, backoffDelayMs, queueRepository } from './queue';
 import { setOfflineSession } from './session';
+import { precisionHint } from './queue-view';
 import { resetPreparedSession } from './session-bootstrap';
 
 const pushSync = vi.fn();
@@ -37,6 +38,26 @@ describe('runPush status machine (TZ 8.3/8.4)', () => {
     await db.queue.clear();
     await db.meta.clear();
     asA();
+  });
+
+  it('ADR-059: REJECTED precision codes stay in the queue as FAILED and surface a precision hint', async () => {
+    const a = (await queueRepository.enqueue('order', { lines: [{ qty: 3.3333333333333335 }] })) as string;
+    const b = (await queueRepository.enqueue('order', {})) as string;
+    pushSync.mockResolvedValue({
+      results: [
+        { clientId: a, status: 'REJECTED', error: { code: 'ORDER_QTY_PRECISION', message: 'q' } },
+        { clientId: b, status: 'REJECTED', error: { code: 'ORDER_PRICE_BELOW_MIN', message: 'p' } },
+      ],
+    });
+    await runPush();
+    const ea = await entry(a);
+    const eb = await entry(b);
+    expect(ea.status).toBe('FAILED');
+    expect(eb.status).toBe('FAILED');
+    expect(precisionHint(ea)).toBe('qty');
+    expect(precisionHint(eb)).toBe('price');
+    expect(await db.queue.get(a)).toBeDefined(); // only an explicit user action removes it
+    expect(await db.queue.get(b)).toBeDefined();
   });
 
   it('maps all five server results to local states and keeps serverId + details', async () => {

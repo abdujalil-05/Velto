@@ -132,3 +132,83 @@ export function withExpectedUnitPrices<L extends { productId: string }>(
     return price === undefined ? l : { ...l, expectedUnitPrice: price };
   });
 }
+
+// ---- ADR-059: exact decimal input checks (client-side UX mirror; the server stays the authority) ----
+
+/** Max decimals: money 2 (tiyin), quantity 3. */
+export const MONEY_SCALE = 2;
+export const QTY_SCALE = 3;
+
+function decToString(int: bigint, scale: number): string {
+  const neg = int < 0n;
+  let digits = (neg ? -int : int).toString();
+  if (scale > 0) {
+    digits = digits.padStart(scale + 1, '0');
+    const frac = digits.slice(-scale).replace(/0+$/, '');
+    digits = digits.slice(0, -scale) + (frac ? `.${frac}` : '');
+  }
+  return (neg ? '-' : '') + digits;
+}
+
+/** Strict plain-decimal parse (`,` accepted as separator); null for anything else (exponent, junk, empty). Never goes through Number. */
+export function parseDecimalString(input: string): string | null {
+  const s = input.trim().replace(',', '.');
+  if (!/^\d+(\.\d+)?$|^\.\d+$/.test(s)) return null;
+  return s.startsWith('.') ? `0${s}` : s;
+}
+
+/** Number of significant decimals (trailing zeros ignored). */
+export function decimalScale(v: number | string): number {
+  return toDec(v).scale;
+}
+
+export type DecimalCheck = 'ok' | 'invalid' | 'scale';
+
+/** Plain decimal string with at most `maxScale` significant decimals. */
+export function checkDecimal(input: string, maxScale: number): DecimalCheck {
+  const s = parseDecimalString(input);
+  if (s === null) return 'invalid';
+  return decimalScale(s) > maxScale ? 'scale' : 'ok';
+}
+
+/** Order-line rule: qty ≤3dp AND qty × packagingQtyInBaseUnit ≤3dp. */
+export function checkQty(qty: number | string, packagingQtyInBaseUnit: number | string): 'ok' | 'qtyScale' | 'baseScale' {
+  if (decimalScale(qty) > QTY_SCALE) return 'qtyScale';
+  const base = mul(toDec(qty), toDec(packagingQtyInBaseUnit));
+  return toDec(decToString(base.int, base.scale)).scale > QTY_SCALE ? 'baseScale' : 'ok';
+}
+
+/** baseQty ÷ factor as an exact decimal string with ≤3dp, or null when not exact (no rounding, ever). */
+export function divideExact(baseQty: number | string, packagingQtyInBaseUnit: number | string): string | null {
+  const a = toDec(baseQty);
+  const b = toDec(packagingQtyInBaseUnit);
+  if (b.int <= 0n) return null;
+  const num = a.int * 10n ** BigInt(b.scale + QTY_SCALE);
+  const den = b.int * 10n ** BigInt(a.scale);
+  if (num % den !== 0n) return null;
+  return decToString(num / den, QTY_SCALE);
+}
+
+export type RepeatLineResult = { packagingId: string; qty: string } | null;
+
+/** Repeat-order line: exact qty in the original packaging, else the product's base packaging (factor 1), else null = needs manual qty. */
+export function repeatLineQty(
+  baseQty: number | string,
+  packagingId: string,
+  productPackagings: { id: string; qtyInBaseUnit: string }[],
+): RepeatLineResult {
+  const pkg = productPackagings.find((p) => p.id === packagingId);
+  if (pkg) {
+    const q = divideExact(baseQty, pkg.qtyInBaseUnit);
+    if (q !== null) return { packagingId, qty: q };
+  }
+  const base = productPackagings.find((p) => {
+    const d = toDec(p.qtyInBaseUnit);
+    return d.int === 1n && d.scale === 0;
+  });
+  if (base && decimalScale(baseQty) <= QTY_SCALE) {
+    const d = toDec(baseQty);
+    return { packagingId: base.id, qty: decToString(d.int, d.scale) };
+  }
+  return null;
+}

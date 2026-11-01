@@ -22,6 +22,7 @@ import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
+import { checkDecimal, MONEY_SCALE, parseDecimalString } from '@/lib/offline/pricing';
 
 const METHODS: PaymentMethod[] = ['CASH', 'CARD', 'TRANSFER'];
 
@@ -47,14 +48,17 @@ export default function NewPaymentPage() {
   const [submitting, setSubmitting] = useState(false);
   const [savedReceipt, setSavedReceipt] = useState<string | null>(null);
 
-  const amountNum = Number(amount);
-  const canSubmit = customerId && amountNum > 0 && !submitting;
+  // ADR-059: the amount stays a decimal string end-to-end (no Number round trip); >2dp is rejected, never rounded.
+  const amountCheck = amount.trim() === '' ? 'ok' : checkDecimal(amount, MONEY_SCALE);
+  const amountStr = parseDecimalString(amount);
+  const amountPositive = amountStr !== null && /[1-9]/.test(amountStr);
+  const canSubmit = customerId && amountPositive && amountCheck === 'ok' && !submitting;
 
   async function handleSave() {
-    if (!customerId || !(amountNum > 0)) return;
+    if (!customerId || !amountStr || !amountPositive || amountCheck !== 'ok') return;
     setSubmitting(true);
     try {
-      const payload: CreatePaymentInput = { customerId, amount: amountNum, method, clientId: '' };
+      const payload: CreatePaymentInput = { customerId, amount: amountStr, method, clientId: '' };
       await enqueue('payment', payload as unknown as Record<string, unknown>);
       syncEngine.notifyQueueChanged();
       toast.success(t('saved'));
@@ -62,7 +66,7 @@ export default function NewPaymentPage() {
         [
           t('receiptTitle'),
           `${t('customer')}: ${customer?.name ?? ''}`,
-          `${t('amount')}: ${formatMoney(amountNum)} ${tCommon('somUnit')}`,
+          `${t('amount')}: ${formatMoney(amountStr)} ${tCommon('somUnit')}`,
           `${t('method')}: ${tCommon(`paymentMethod.${method}`)}`,
           `${new Date().toLocaleString()}`,
         ].join('\n'),
@@ -176,7 +180,8 @@ export default function NewPaymentPage() {
 
       <div className="space-y-1.5">
         <Label htmlFor="amount">{t('amount')}</Label>
-        <Input id="amount" type="number" inputMode="decimal" min={0} step="1" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" className="h-12 text-lg" />
+        <Input id="amount" type="text" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" aria-invalid={amountCheck !== 'ok'} className="h-12 text-lg" />
+        {amountCheck !== 'ok' && <p className="text-sm text-destructive">{amountCheck === 'scale' ? t('amountScaleError') : t('amountInvalid')}</p>}
       </div>
 
       <div className="space-y-1.5">
