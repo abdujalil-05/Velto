@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { prisma, systemPrisma } from '@velto/database';
+import { Prisma, prisma, systemPrisma } from '@velto/database';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { AuditLogService } from '../../../common/audit/audit-log.service';
 import { DocumentNumberingService } from '../../../common/document-numbering/document-numbering.service';
@@ -12,6 +12,7 @@ import {
   PaymentHandoverNoOpenCashSessionException,
   PaymentHandoverRejectReasonRequiredException,
   PaymentHandoverSelfResolveException,
+  PaymentIdempotencyConflictException,
   PaymentInClosedCashSessionException,
   PaymentNotPendingHandoverException,
   PaymentNotPostedException,
@@ -117,6 +118,25 @@ describe('Payment handover (integration, real Postgres + RLS)', () => {
     const accepted = await run(() => payments.acceptHandover(card.id, cashier));
     expect(accepted.status).toBe('POSTED');
     expect(accepted.allocations.map((a) => a.amount.toString())).toEqual(['10000']);
+    expect((await balance(customerId)).toString()).toBe('20000');
+    expect(await cached(customerId)).toBe('20000');
+  });
+
+  it('10.4 clientId replay after the handover POSTED it: same content -> original POSTED payment, no re-posting; changed amount -> 409', async () => {
+    const { customerId } = await customerWithInvoices([{ total: '30000', ageDays: 2 }]);
+    const clientId = randomUUID();
+    const p = await run(() => payments.create({ customerId, amount: 10000, method: 'CASH', clientId }, agent));
+    await run(() => payments.acceptHandover(p.id, cashier));
+    const allocCount = () => run(() => tenantPrisma.client.paymentAllocation.count({ where: { paymentId: p.id } }));
+    expect(await allocCount()).toBe(1);
+
+    const replay = await run(() => payments.create({ customerId, amount: new Prisma.Decimal('10000.00'), method: 'CASH', clientId }, agent));
+    expect(replay).toMatchObject({ id: p.id, status: 'POSTED' });
+    await expect(run(() => payments.create({ customerId, amount: 10001, method: 'CASH', clientId }, agent))).rejects.toBeInstanceOf(
+      PaymentIdempotencyConflictException,
+    );
+    expect(await allocCount()).toBe(1);
+    expect(await run(() => tenantPrisma.client.payment.count({ where: { customerId } }))).toBe(1);
     expect((await balance(customerId)).toString()).toBe('20000');
     expect(await cached(customerId)).toBe('20000');
   });

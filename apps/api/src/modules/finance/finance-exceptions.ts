@@ -245,6 +245,22 @@ export class PaymentStatusesLimitException extends AppException {
   }
 }
 
+/** 10.4: clientId reused with different payment content. Details echo only the caller's own clientId — never the stored payment. */
+export class PaymentIdempotencyConflictException extends AppException {
+  constructor(clientId: string) {
+    super(
+      HttpStatus.CONFLICT,
+      'PAYMENT_IDEMPOTENCY_CONFLICT',
+      {
+        uz: "Bu clientId boshqa mazmundagi to'lov uchun allaqachon ishlatilgan",
+        ru: 'Этот clientId уже использован для платежа с другим содержимым',
+        en: 'This clientId was already used for a payment with different content',
+      },
+      { clientId },
+    );
+  }
+}
+
 export class PaymentOpeningNotReversibleException extends AppException {
   constructor() {
     super(HttpStatus.CONFLICT, 'PAYMENT_OPENING_NOT_REVERSIBLE', {

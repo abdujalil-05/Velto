@@ -137,5 +137,25 @@ describe('E2E ADR-059: JSON number precision (body-parser reviver)', () => {
       expect(asString.body.id).toBe(first.body.id);
       expect(await stored(first.body.id)).toBe('100.50');
     });
+
+    it('10.4: same clientId with a different amount -> 409 PAYMENT_IDEMPOTENCY_CONFLICT (details = clientId only), nothing written', async () => {
+      const clientId = randomUUID();
+      const send = (amount: string) =>
+        request(app.getHttpServer())
+          .post('/payments')
+          .set('Authorization', `Bearer ${token}`)
+          .set('Content-Type', 'application/json')
+          .send(`{"customerId":"${customerId}","amount":${amount},"method":"TRANSFER","clientId":"${clientId}"}`);
+      const first = await send('"100.00"').expect(201);
+      expect((await send('100').expect(201)).body.id).toBe(first.body.id);
+      const before = await tenantPrisma.run(companyId, (tx) => tx.payment.count());
+      const res = await send('"100.01"').expect(409);
+      expect(res.body).toMatchObject({
+        code: 'PAYMENT_IDEMPOTENCY_CONFLICT',
+        message: { uz: expect.any(String), ru: expect.any(String), en: expect.any(String) },
+      });
+      expect(res.body.details).toEqual({ clientId });
+      expect(await tenantPrisma.run(companyId, (tx) => tx.payment.count())).toBe(before);
+    });
   });
 });

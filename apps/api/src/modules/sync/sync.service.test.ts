@@ -435,6 +435,34 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
       expect(results[0]).toMatchObject({ status: 'DUPLICATE', id: first.results[0]?.id });
     });
 
+    it('10.4 PAYMENT clientId replay: same content ("1000.00" vs 1000) → DUPLICATE; changed amount → per-item REJECTED PAYMENT_IDEMPOTENCY_CONFLICT, rest of batch applies', async () => {
+      const pay = payDoc();
+      const first = await sync.push([pay], user);
+      expect(first.results[0]?.status).toBe('ACCEPTED');
+      const countByClientId = () => tenantPrisma.run(companyId, (tx) => tx.payment.count({ where: { clientId: pay.clientId } }));
+
+      const same = await sync.push([{ ...pay, payload: { ...pay.payload, amount: '1000.00' } }], user);
+      expect(same.results[0]).toMatchObject({ clientId: pay.clientId, status: 'DUPLICATE', id: first.results[0]?.id, paymentStatus: 'PENDING_HANDOVER' });
+
+      const other = payDoc();
+      const { results } = await sync.push([{ ...pay, payload: { ...pay.payload, amount: '1000.01' } }, other], user);
+      expect(results[0]).toEqual({
+        clientId: pay.clientId,
+        status: 'REJECTED',
+        error: { code: 'PAYMENT_IDEMPOTENCY_CONFLICT', message: expect.any(String), messages: { uz: expect.any(String), ru: expect.any(String), en: expect.any(String) }, details: { clientId: pay.clientId } },
+      });
+      expect(results[1]?.status).toBe('ACCEPTED');
+      expect(await countByClientId()).toBe(1);
+    });
+
+    it('10.4 PAYMENT P2002 lost race with different content → REJECTED PAYMENT_IDEMPOTENCY_CONFLICT (never DUPLICATE)', async () => {
+      const pay = payDoc();
+      await sync.push([pay], user);
+      vi.spyOn(payments, 'create').mockRejectedValueOnce(pgError('P2002'));
+      const { results } = await sync.push([{ ...pay, payload: { ...pay.payload, amount: 2000 } }], user);
+      expect(results[0]).toMatchObject({ status: 'REJECTED', error: { code: 'PAYMENT_IDEMPOTENCY_CONFLICT', details: { clientId: pay.clientId } } });
+    });
+
     it('P2002 with no existing doc for the clientId → RETRY (not a duplicate)', async () => {
       vi.spyOn(sales, 'createWithOutcome').mockRejectedValueOnce(pgError('P2002'));
       const { results } = await sync.push([orderDoc()], user);

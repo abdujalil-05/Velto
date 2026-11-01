@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { prisma, systemPrisma } from '@velto/database';
+import { Prisma, prisma, systemPrisma } from '@velto/database';
 import { AppException } from '../../../common/errors/app-exception';
 import { localDateString } from '../../analytics/report-utils';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
@@ -19,6 +19,7 @@ import {
   InvoiceNotFoundException,
   PaymentAlreadyReversedException,
   PaymentExportedTo1cException,
+  PaymentIdempotencyConflictException,
   PaymentInClosedCashSessionException,
   PaymentNotFoundException,
   PaymentNotPostedException,
@@ -176,19 +177,161 @@ describe('PaymentsService (integration, real Postgres + RLS)', () => {
     ).rejects.toBeInstanceOf(AllocationExceedsInvoiceException);
   });
 
-  it('resubmitting the same clientId returns the original payment (10.4 offline idempotency)', async () => {
-    const { customerId } = await createCustomerWithInvoices([{ total: '10000', ageDays: 1 }]);
-    const clientId = randomUUID();
+  describe('10.4 clientId replay content check (PAYMENT_IDEMPOTENCY_CONFLICT)', () => {
+    const D = (v: string) => new Prisma.Decimal(v);
+    const snapshot = (customerId: string) =>
+      tenantPrisma.run(companyId, async (tx) => ({
+        payments: await tx.payment.count({ where: { customerId } }),
+        allocations: await tx.paymentAllocation.count({ where: { payment: { customerId } } }),
+        invoices: (await tx.invoice.findMany({ where: { customerId }, orderBy: { id: 'asc' }, select: { status: true } })).map((i) => i.status),
+        cachedBalance: (await tx.customer.findUniqueOrThrow({ where: { id: customerId } })).cachedBalance.toString(),
+      }));
+    const expectConflict = async (p: Promise<unknown>, clientId: string) => {
+      const err = await p.catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(PaymentIdempotencyConflictException);
+      const body = (err as AppException).getResponse() as { code: string; details: unknown };
+      expect(body.code).toBe('PAYMENT_IDEMPOTENCY_CONFLICT');
+      expect((err as AppException).getStatus()).toBe(409);
+      expect(body.details).toEqual({ clientId }); // never the stored amount/customer
+    };
 
-    const first = await tenantPrisma.run(companyId, () =>
-      payments.create({ customerId, amount: 5000, method: 'CASH', clientId }, user),
-    );
-    const second = await tenantPrisma.run(companyId, () =>
-      payments.create({ customerId, amount: 999999, method: 'CASH', clientId }, user),
-    );
+    it.each([
+      ['number', 100.5, 100.5],
+      ['exact string ("100.50") vs number', D('100.50'), 100.5],
+      ['"100.00" vs 100', D('100.00'), 100],
+    ])('identical replay (%s) returns the original payment, no second effect', async (_n, firstAmount, replayAmount) => {
+      const { customerId } = await createCustomerWithInvoices([{ total: '10000', ageDays: 1 }]);
+      const clientId = randomUUID();
+      const first = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: firstAmount, method: 'CASH', clientId }, user));
+      const before = await snapshot(customerId);
+      const second = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: replayAmount, method: 'CASH', clientId }, user));
+      expect(second.id).toBe(first.id);
+      expect(await snapshot(customerId)).toEqual(before);
+    });
 
-    expect(second.id).toBe(first.id);
-    expect(second.amount.toString()).toBe(first.amount.toString());
+    it('changed amount / customer / method -> 409, nothing written, ledger + cachedBalance unchanged, rejection audited', async () => {
+      const { customerId } = await createCustomerWithInvoices([{ total: '10000', ageDays: 1 }]);
+      const other = await createCustomerWithInvoices([{ total: '10000', ageDays: 1 }]);
+      const clientId = randomUUID();
+      const first = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 5000, method: 'CASH', clientId }, user));
+      const before = await snapshot(customerId);
+      const otherBefore = await snapshot(other.customerId);
+
+      await expectConflict(tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 999999, method: 'CASH', clientId }, user)), clientId);
+      await expectConflict(tenantPrisma.run(companyId, () => payments.create({ customerId, amount: D('5000.01'), method: 'CASH', clientId }, user)), clientId);
+      await expectConflict(
+        tenantPrisma.run(companyId, () => payments.create({ customerId: other.customerId, amount: 5000, method: 'CASH', clientId }, user)),
+        clientId,
+      );
+      await expectConflict(tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 5000, method: 'CARD', clientId }, user)), clientId);
+
+      expect(await snapshot(customerId)).toEqual(before);
+      expect(await snapshot(other.customerId)).toEqual(otherBefore);
+      const rejected = await tenantPrisma.run(companyId, (tx) =>
+        tx.auditLog.count({ where: { action: 'payment.create_rejected', entityId: first.id } }),
+      );
+      expect(rejected).toBe(4);
+    });
+
+    it('manual allocations: same set in any order/split -> replay; changed set or manual<->FIFO -> 409', async () => {
+      const { customerId, invoiceIds } = await createCustomerWithInvoices([
+        { total: '10000', ageDays: 1 },
+        { total: '20000', ageDays: 30 },
+      ]);
+      const [a, b] = [invoiceIds[0]!, invoiceIds[1]!];
+      const clientId = randomUUID();
+      const base = { customerId, amount: 15000, method: 'CARD' as const, clientId };
+      const first = await tenantPrisma.run(companyId, () =>
+        payments.create({ ...base, allocations: [{ invoiceId: a, amount: 10000 }, { invoiceId: b, amount: 5000 }] }, user),
+      );
+      const before = await snapshot(customerId);
+
+      const reordered = await tenantPrisma.run(companyId, () =>
+        payments.create(
+          { ...base, allocations: [{ invoiceId: b, amount: D('2500.00') }, { invoiceId: a.toUpperCase(), amount: 10000 }, { invoiceId: b, amount: 2500 }] },
+          user,
+        ),
+      );
+      expect(reordered.id).toBe(first.id);
+      await expectConflict(
+        tenantPrisma.run(companyId, () => payments.create({ ...base, allocations: [{ invoiceId: a, amount: 5000 }, { invoiceId: b, amount: 10000 }] }, user)),
+        clientId,
+      );
+      await expectConflict(tenantPrisma.run(companyId, () => payments.create({ ...base, allocations: [{ invoiceId: a, amount: 10000 }] }, user)), clientId);
+      await expectConflict(tenantPrisma.run(companyId, () => payments.create(base, user)), clientId);
+      expect(await snapshot(customerId)).toEqual(before);
+
+      // FIFO original: a manual replay is a different request, even if it would allocate the same.
+      const fifoClientId = randomUUID();
+      const fifo = await createCustomerWithInvoices([{ total: '10000', ageDays: 1 }]);
+      await tenantPrisma.run(companyId, () => payments.create({ customerId: fifo.customerId, amount: 3000, method: 'CASH', clientId: fifoClientId }, user));
+      await expectConflict(
+        tenantPrisma.run(companyId, () =>
+          payments.create({ customerId: fifo.customerId, amount: 3000, method: 'CASH', clientId: fifoClientId, allocations: [{ invoiceId: fifo.invoiceIds[0]!, amount: 3000 }] }, user),
+        ),
+        fifoClientId,
+      );
+    });
+
+    it('a later allocate() of the advance (MANUAL_LATER) is server state: replay of the original request still matches', async () => {
+      const { customerId } = await createCustomerWithInvoices([{ total: '1000', ageDays: 2 }]);
+      const clientId = randomUUID();
+      const first = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 4000, method: 'CASH', clientId }, user));
+      const late = await tenantPrisma.run(companyId, (tx) =>
+        tx.invoice.create({ data: { companyId, number: `PAY-TEST-INV-${Date.now()}-${invoiceSeq++}`, customerId, total: '500', status: 'OPEN' } }),
+      );
+      await tenantPrisma.run(companyId, () => payments.allocate(first.id, { allocations: [{ invoiceId: late.id, amount: '500' }] }, user));
+      const replay = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 4000, method: 'CASH', clientId }, user));
+      expect(replay.id).toBe(first.id);
+      expect(replay.allocations).toHaveLength(2);
+    });
+
+    it('race: N parallel identical requests -> exactly one Payment, all return its id', async () => {
+      const { customerId } = await createCustomerWithInvoices([{ total: '10000', ageDays: 1 }]);
+      const clientId = randomUUID();
+      const results = await Promise.all(
+        [100, D('100.00'), 100, D('100'), 100].map((amount) => tenantPrisma.run(companyId, () => payments.create({ customerId, amount, method: 'CASH', clientId }, user))),
+      );
+      expect(new Set(results.map((r) => r.id)).size).toBe(1);
+      const after = await snapshot(customerId);
+      expect(after.payments).toBe(1);
+      expect(after.allocations).toBe(1);
+      expect(after.cachedBalance).toBe('9900');
+    });
+
+    it('race: parallel different requests on one clientId -> one wins, the rest 409, one Payment', async () => {
+      const { customerId } = await createCustomerWithInvoices([{ total: '10000', ageDays: 1 }]);
+      const clientId = randomUUID();
+      const amounts = [100, 200, 300, 400];
+      const settled = await Promise.allSettled(
+        amounts.map((amount) => tenantPrisma.run(companyId, () => payments.create({ customerId, amount, method: 'CASH', clientId }, user))),
+      );
+      const ok = settled.filter((s) => s.status === 'fulfilled');
+      const failed = settled.filter((s): s is PromiseRejectedResult => s.status === 'rejected');
+      expect(ok).toHaveLength(1);
+      expect(failed).toHaveLength(amounts.length - 1);
+      for (const f of failed) expect(f.reason).toBeInstanceOf(PaymentIdempotencyConflictException);
+      const after = await snapshot(customerId);
+      expect(after.payments).toBe(1);
+      const winner = (ok[0] as PromiseFulfilledResult<{ amount: Prisma.Decimal }>).value;
+      expect(after.cachedBalance).toBe(D('10000').minus(winner.amount).toString());
+    });
+
+    it('cross-tenant: the same clientId in another company is independent (no 409, no 500, no leak)', async () => {
+      const { customerId } = await createCustomerWithInvoices([{ total: '10000', ageDays: 1 }]);
+      const clientId = randomUUID();
+      const mine = await tenantPrisma.run(companyId, () => payments.create({ customerId, amount: 100, method: 'CASH', clientId }, user));
+
+      const tenant = await systemPrisma.tenant.create({ data: { slug: `test-payments-x-${Date.now()}`, name: 'Payments X Tenant' } });
+      const otherCompanyId = (await systemPrisma.company.create({ data: { tenantId: tenant.id, name: 'Payments X Co' } })).id;
+      const dbUser = await systemPrisma.user.create({ data: { companyId: otherCompanyId, firstName: 'X', lastName: 'Cash', phone: `+99894${Math.floor(1_000_000 + Math.random() * 8_000_000)}` } });
+      const otherUser: AuthenticatedUser = { ...user, id: dbUser.id, companyId: otherCompanyId };
+      const otherCustomer = await tenantPrisma.run(otherCompanyId, (tx) => tx.customer.create({ data: { companyId: otherCompanyId, code: `X-${Date.now()}`, name: 'X' } }));
+
+      const theirs = await tenantPrisma.run(otherCompanyId, () => payments.create({ customerId: otherCustomer.id, amount: 777, method: 'CARD', clientId }, otherUser));
+      expect(theirs.id).not.toBe(mine.id);
+      expect(theirs.amount.toString()).toBe('777');
+    });
   });
 
   it('clientId dedup is owner-scoped: other agent gets CLIENT_ID_CONFLICT with no leak (TZ 11.2)', async () => {

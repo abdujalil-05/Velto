@@ -3,6 +3,7 @@ import { assertClientIdReplayAllowed } from '../../../common/idempotency/client-
 import { ExportJobStatus, InvoiceStatus, PaymentMethod, PaymentSource, PaymentStatus, Prisma, withSavepoint, type TenantClient } from '@velto/database';
 import { lockExport1cShared } from '../../../common/locks/export1c-lock';
 import { AuditLogService, toAuditJson } from '../../../common/audit/audit-log.service';
+import { auditRejection } from '../../../common/audit/rejection-audit';
 import type { AppException } from '../../../common/errors/app-exception';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { DocumentNumberingService } from '../../../common/document-numbering/document-numbering.service';
@@ -28,6 +29,7 @@ import {
   PaymentHandoverNoOpenCashSessionException,
   PaymentHandoverRejectReasonRequiredException,
   PaymentHandoverSelfResolveException,
+  PaymentIdempotencyConflictException,
   PaymentNotPendingHandoverException,
   PaymentNotPostedException,
   PaymentOpeningNotReversibleException,
@@ -36,6 +38,7 @@ import {
   PaymentStatusesLimitException,
 } from '../finance-exceptions';
 import { OwnerAlertsService } from '../../notifications/owner-alerts';
+import { isSamePaymentRequest } from './payment-replay';
 import { VALID_ALLOCATION_WHERE, paymentAdvanceOf, paymentPostedAt, paymentPostedWithin } from '../ledger-filters';
 
 // customer is included alongside allocations so the web UI (9.2 "/payments")
@@ -133,19 +136,14 @@ export class PaymentsService {
    * allocated (no PaymentAllocation row): it is the payment's `advance`
    * (avans), counted in the customer balance as credit (negative balance on
    * over-payment) and never auto-applied to a later invoice — only manually.
-   * 10.4 offline idempotency: a resubmitted clientId returns the original
-   * payment instead of creating a duplicate.
+   * 10.4 offline idempotency: a resubmitted clientId with the same content
+   * returns the original payment; different content is a 409 (findReplay).
    */
   async create(dto: CreatePaymentDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
 
-    if (dto.clientId) {
-      const existing = await tx.payment.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: PAYMENT_INCLUDE });
-      if (existing) {
-        assertClientIdReplayAllowed(existing.collectedBy, user);
-        return withAdvance(existing);
-      }
-    }
+    const replay = await this.findReplay(dto, user);
+    if (replay) return replay;
 
     const amount = new Prisma.Decimal(dto.amount);
     if (!amount.greaterThan(0)) {
@@ -195,11 +193,8 @@ export class PaymentsService {
       // exists for — both requests can race past the pre-check above and the
       // loser hits this unique violation. Return the winner's payment.
       if (dto.clientId && err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-        const existing = await tx.payment.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: PAYMENT_INCLUDE });
-        if (existing) {
-          assertClientIdReplayAllowed(existing.collectedBy, user);
-          return withAdvance(existing);
-        }
+        const winner = await this.findReplay(dto, user);
+        if (winner) return winner;
       }
       throw err;
     }
@@ -223,6 +218,51 @@ export class PaymentsService {
     await this.auditAllocations(tx, user, payment.id, dto.allocations?.length ? 'MANUAL' : 'FIFO', allocations);
 
     return withAdvance(full);
+  }
+
+  /**
+   * 10.4: the ONE clientId replay gate for every payment-creation path (REST
+   * create, its P2002 race recovery, /sync/push). Company-scoped lookup (unique
+   * is (companyId, clientId), so another tenant's clientId is simply "absent").
+   * Ownership first (CLIENT_ID_CONFLICT), then content: a different essential
+   * request is PAYMENT_IDEMPOTENCY_CONFLICT (409) — thrown before any write, so
+   * the caller's tx rolls back with no Payment/allocation/balance change; the
+   * rejection is audited after rollback (ADR-061). Same content => the
+   * original payment as it is now (e.g. already POSTED), never re-posted.
+   */
+  async findReplay(dto: CreatePaymentDto, user: AuthenticatedUser): Promise<(PaymentWithIncludes & { advance: string }) | null> {
+    if (!dto.clientId) return null;
+    const tx = this.tenantPrisma.client;
+    const existing = await tx.payment.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: PAYMENT_INCLUDE });
+    if (!existing) return null;
+    assertClientIdReplayAllowed(existing.collectedBy, user);
+    const manualAllocations = await this.createTimeManualAllocations(tx, existing.id);
+    if (!isSamePaymentRequest({ ...existing, manualAllocations }, dto)) {
+      throw auditRejection(
+        this.tenantPrisma,
+        this.auditLog,
+        { companyId: user.companyId, userId: user.id, action: 'payment.create', entity: 'Payment', entityId: existing.id },
+        new PaymentIdempotencyConflictException(dto.clientId),
+      );
+    }
+    return withAdvance(existing);
+  }
+
+  /**
+   * The manual allocation lines the payment was CREATED with, from its own
+   * append-only `payment.allocate` audit row (mode MANUAL is written only by
+   * create(); FIFO/MANUAL_LATER rows are server-chosen or later advance use).
+   * null = the original request had no `allocations` (FIFO).
+   */
+  private async createTimeManualAllocations(tx: TenantClient, paymentId: string): Promise<{ invoiceId: string; amount: string }[] | null> {
+    const row = await tx.auditLog.findFirst({
+      where: { entity: 'Payment', entityId: paymentId, action: 'payment.allocate', newValue: { path: ['mode'], equals: 'MANUAL' } },
+      select: { newValue: true },
+    });
+    if (!row) return null;
+    const lines = (row.newValue as { allocations?: unknown } | null)?.allocations;
+    // Unreadable snapshot => empty set: never matches a manual request (fail closed to 409, never a silent replay).
+    return Array.isArray(lines) ? (lines as { invoiceId: string; amount: string }[]) : [];
   }
 
   /**

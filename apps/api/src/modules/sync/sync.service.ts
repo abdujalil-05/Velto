@@ -13,6 +13,7 @@ import { setWriterLockTimeout } from '../../common/tenant/lock-timeout';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { CustomersService } from '../customers/customers.service';
 import { CreatePaymentDto } from '../finance/dto/create-payment.dto';
+import { PaymentIdempotencyConflictException } from '../finance/finance-exceptions';
 import { PaymentsService } from '../finance/payments/payments.service';
 import { CreateVisitDto } from '../field/visits/dto/create-visit.dto';
 import { VisitsService } from '../field/visits/visits.service';
@@ -405,8 +406,8 @@ export class SyncService {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
       const existing = await this.tenantPrisma
         .run(user.companyId, () => this.findExistingByClientId(doc, user))
-        .catch((e: unknown) => (e instanceof ClientIdConflictException ? e : null));
-      if (existing instanceof ClientIdConflictException) return { clientId: doc.clientId, status: 'REJECTED', error: toErrorDetail(existing) };
+        .catch((e: unknown) => (e instanceof ClientIdConflictException || e instanceof PaymentIdempotencyConflictException ? e : null));
+      if (existing instanceof HttpException) return { clientId: doc.clientId, status: 'REJECTED', error: toErrorDetail(existing) };
       if (existing) return { ...existing, clientId: doc.clientId, status: 'DUPLICATE' };
       return retryResult(doc, error);
     }
@@ -444,8 +445,8 @@ export class SyncService {
         return visit ? { id: visit.id, gpsStatus: visit.gpsStatus, distanceM: visit.distanceM?.toString() ?? null } : null;
       }
       case SyncDocType.PAYMENT: {
-        const payment = await tx.payment.findUnique({ where, select: { id: true, collectedBy: true } });
-        if (payment) assertClientIdReplayAllowed(payment.collectedBy, user);
+        const dto = await validatePayload(CreatePaymentDto, { ...doc.payload, clientId: doc.clientId });
+        const payment = await this.payments.findReplay(dto, user);
         return payment ? { id: payment.id } : null;
       }
     }
