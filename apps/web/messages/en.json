@@ -413,6 +413,8 @@
       "lines": "Lines",
       "addLine": "Add line",
       "removeLine": "Remove line",
+      "qtyPrecision": "Quantity allows at most 3 decimals.",
+      "qtyPrecisionBase": "Base quantity (qty × packaging factor) must have at most 3 decimals.",
       "searchProduct": "Search product",
       "noProducts": "No products found",
       "available": "Available",

@@ -70,3 +70,29 @@ export function sumDecimal(parts: string[]): string {
   const scale = Math.max(0, ...vals.map((p) => p.scale));
   return format(vals.reduce((s, p) => s + rescale(p, scale), 0n), scale);
 }
+
+/** Significant decimals of a decimal string (trailing zeros ignored), or null if unparseable. */
+function fracDigits(value: string): number | null {
+  const v = parse(value);
+  if (!v) return null;
+  let n = v.n;
+  let scale = v.scale;
+  while (scale > 0 && n % 10n === 0n) {
+    n /= 10n;
+    scale -= 1;
+  }
+  return scale;
+}
+
+/**
+ * ADR-059a mirror: entered qty must have ≤3 decimals AND qty × factor must have ≤3 decimals.
+ * Returns which rule fails, or null when valid/unparseable. Never rounds.
+ */
+export function qtyPrecisionViolation(qty: string, qtyInBaseUnit: string): 'qty' | 'base' | null {
+  const q = fracDigits(qty);
+  if (q === null) return null;
+  if (q > 3) return 'qty';
+  const base = mulDecimal(qty, qtyInBaseUnit);
+  const b = base === null ? null : fracDigits(base);
+  return b !== null && b > 3 ? 'base' : null;
+}

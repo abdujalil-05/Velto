@@ -413,6 +413,8 @@
       "lines": "Qatorlar",
       "addLine": "Qator qo'shish",
       "removeLine": "Qatorni o'chirish",
+      "qtyPrecision": "Miqdor: verguldan keyin ko'pi bilan 3 ta raqam.",
+      "qtyPrecisionBase": "Asosiy birlikdagi miqdor (miqdor × qadoq koeffitsienti) verguldan keyin ko'pi bilan 3 ta raqam bo'lishi kerak.",
       "searchProduct": "Mahsulot qidirish",
       "noProducts": "Mahsulot topilmadi",
       "available": "Mavjud",

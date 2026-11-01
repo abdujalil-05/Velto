@@ -1,7 +1,7 @@
 'use client';
 
 import { useTranslations } from 'next-intl';
-import { Trash2 } from 'lucide-react';
+import { AlertCircle, Trash2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { SearchSelect } from '@/components/shared/search-select';
@@ -10,7 +10,7 @@ import { useProductsQuery, type Product } from '@/lib/api/products';
 import { useStockAvailabilityQuery } from '@/lib/api/stock';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
 import { formatMoney, formatQty } from '@/lib/format';
-import { lineTotalHalfUp, mulDecimal as productQty } from '@/lib/decimal-math';
+import { lineTotalHalfUp, mulDecimal as productQty, qtyPrecisionViolation } from '@/lib/decimal-math';
 import type { OrderLineDraft } from './order-form';
 
 interface OrderLineEditorProps {
@@ -32,6 +32,8 @@ export function OrderLineEditor({ line, onChange, onRemove, warehouseId, priceBy
   const selectedPackaging = line.product?.packagings.find((p) => p.id === line.packagingId);
   const unitPrice = line.product ? priceByProductId.get(line.product.id) : undefined;
   const qtyNum = Number(line.qty) || 0;
+
+  const precisionIssue = selectedPackaging ? qtyPrecisionViolation(line.qty, selectedPackaging.qtyInBaseUnit) : qtyPrecisionViolation(line.qty, '1');
 
   let estimatedTotal: string | null = null;
   if (line.product && selectedPackaging && unitPrice && qtyNum > 0) {
@@ -81,14 +83,23 @@ export function OrderLineEditor({ line, onChange, onRemove, warehouseId, priceBy
         ))}
       </Select>
 
-      <Input
-        type="number"
-        min={0}
-        step="0.001"
-        placeholder={t('qty')}
-        value={line.qty}
-        onChange={(e) => onChange({ qty: e.target.value })}
-      />
+      <div>
+        <Input
+          type="number"
+          min={0}
+          step="0.001"
+          placeholder={t('qty')}
+          value={line.qty}
+          onChange={(e) => onChange({ qty: e.target.value })}
+          aria-invalid={precisionIssue !== null}
+        />
+        {precisionIssue && (
+          <p role="alert" className="mt-1 flex items-start gap-1 text-xs text-destructive">
+            <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+            {precisionIssue === 'qty' ? t('qtyPrecision') : t('qtyPrecisionBase')}
+          </p>
+        )}
+      </div>
 
       <Input
         type="number"
