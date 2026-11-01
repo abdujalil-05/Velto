@@ -18,18 +18,16 @@ import type { Export1cJobData } from './export-1c.constants';
 import { Export1cProcessor } from './export-1c.processor';
 
 /**
- * ADR-059 stage C: 1C export consistency, CHARACTERIZATION ONLY (mappingVersion 2 unchanged, no production change).
+ * ADR-059 stage C: 1C export consistency vs the Invoice/SalesOrder snapshot (mappingVersion 2 unchanged). Originally a characterization
+ * of misleading files; now asserts the PO strict-reject behaviour: XML/CSV refuse documents they cannot represent.
  * Real Postgres + RLS. All expected values are hand-computed (lineTotal = round_HALF_UP_2dp(qty×price×(1−disc)×(1+vat))).
  *
  * What the exported file carries per line: sku/externalCode, qty (BASE units, InvoiceLine.qty), unitPrice (per BASE unit),
  * lineTotal. It does NOT carry: discount, VAT rate/amount, unit/packaging, net amount, currency per line (XML header
  * hardcodes UZS). Hence for any line with discount or VAT, qty × unitPrice != lineTotal in the file: the file is
  * internally inconsistent unless the reader knows the hidden discount/VAT. Cases marked "MISLEADING" below assert the
- * actual current output on purpose — they are not endorsements of the format.
+ * reasons the line is rejected.
  */
-/** Decimal.toString() form used in the files (no trailing zeros: "100" for 100.00). */
-const n = (s: string) => (s.includes('.') ? s.replace(/0+$/, '').replace(/\.$/, '') : s);
-
 interface Case {
   key: string;
   sku: string;
@@ -102,13 +100,16 @@ describe('ADR-059 C: 1C export vs Invoice/SalesOrder snapshot (characterization,
     await systemPrisma.$disconnect();
   });
 
-  async function run(format: 'CSV' | 'XML' | 'EXCEL'): Promise<Buffer> {
+  async function run(format: 'CSV' | 'XML' | 'EXCEL') {
     const job = await inTenant(() =>
       tenantPrisma.client.exportJob.create({ data: { companyId, type: '1c', format, periodFrom: new Date(Date.now() - 86_400_000), periodTo: new Date(Date.now() + 86_400_000) } }),
     );
     const putObject = vi.fn().mockResolvedValue('k');
-    await new Export1cProcessor(tenantPrisma, { putObject } as unknown as StorageService).process({ data: { exportJobId: job.id, companyId } } as unknown as Job<Export1cJobData>);
-    return (putObject.mock.calls[0]![0] as { buffer: Buffer }).buffer;
+    const outcome = await new Export1cProcessor(tenantPrisma, { putObject } as unknown as StorageService)
+      .process({ data: { exportJobId: job.id, companyId }, attemptsMade: 0, opts: { attempts: 3 } } as unknown as Job<Export1cJobData>)
+      .then(() => null, (e: unknown) => e);
+    const saved = await inTenant(() => tenantPrisma.client.exportJob.findUniqueOrThrow({ where: { id: job.id } }));
+    return { putObject, outcome, saved, buffer: putObject.mock.calls[0] ? (putObject.mock.calls[0][0] as { buffer: Buffer }).buffer : null };
   }
 
   const dbInvoice = () => inTenant(() => tenantPrisma.client.invoice.findUniqueOrThrow({ where: { id: invoiceId }, include: { lines: { include: { product: true } } } }));
@@ -122,54 +123,46 @@ describe('ADR-059 C: 1C export vs Invoice/SalesOrder snapshot (characterization,
       const l = inv.lines.find((x) => x.product.sku === c.sku)!;
       expect([l.qty.toString(), l.unitPrice.toFixed(2), l.vatRate.toString(), l.lineTotal.toString()]).toEqual([c.baseQty, c.price, c.vat === '0' ? '0' : c.vat, c.lineTotal]);
       expect('discountPct' in l).toBe(false); // InvoiceLine has no discount column: it lives only in SalesOrderLine
+      // what a reader of the file (qty, unitPrice, lineTotal) would recompute — the reason the line is not representable
+      expect(l.qty.times(l.unitPrice).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP).toString()).toBe(c.naive);
     }
+    expect(sum(inv.lines.map((l) => l.qty.times(l.unitPrice).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP).toString())).toFixed(2)).toBe(NAIVE_SUM);
   });
 
-  it('CSV: qty/unitPrice/lineTotal/total == Invoice snapshot, but qty×unitPrice != lineTotal (MISLEADING for discount, VAT, fractional, packaging)', async () => {
-    const inv = await dbInvoice();
-    const rows = (await run('CSV')).toString('utf8').slice(1).split('\r\n').filter(Boolean).map((r) => r.split(','));
-    expect(rows[0]).toEqual(['docType', 'Ид', 'number', 'date', 'partnerCode', 'partnerName', 'sku', 'externalCode', 'qty', 'unitPrice', 'lineTotal', 'total', 'method']);
-    const sales1c = rows.filter((r) => r[0] === 'SALE' && r[2] === inv.number);
-    expect(sales1c).toHaveLength(CASES.length);
-    expect(sum(sales1c.map((r) => r[10]!)).toFixed(2)).toBe(DOC_TOTAL); // Σ lineTotal == doc total (consistent)
-    for (const c of CASES) {
-      const r = sales1c.find((x) => x[6] === c.sku)!;
-      expect([r[8], r[9], r[10], r[11]]).toEqual([c.baseQty, n(c.price), c.lineTotal, DOC_TOTAL]);
-      const naive = new Prisma.Decimal(r[8]!).times(r[9]!).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP).toString();
-      expect(naive).toBe(c.naive); // what a consumer recomputes from the file
-      if (c.key === 'ROUND_B') expect(naive).toBe(r[10]); // only line where the file is self-consistent
-      else expect(naive).not.toBe(r[10]); // MISLEADING: qty × unitPrice does not reproduce lineTotal
-    }
-    // MISLEADING: Σ(qty×unitPrice) of the file != doc total (no VAT/discount column to reconcile)
-    expect(sum(sales1c.map((r) => new Prisma.Decimal(r[8]!).times(r[9]!).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP).toString())).toFixed(2)).toBe(NAIVE_SUM);
-    // No discount / VAT / unit / currency columns exist at all
-    expect(rows[0]!.some((h) => /disc|vat|unit(?!Price)|currency|nds/i.test(h))).toBe(false);
-  });
+  // ADR-059 strict reject (PO): XML/CSV refuse the whole job; reasons per line are exact (hand-derived); ROUND_B is the only valid line.
+  const EXPECTED_REASONS: Record<string, string[]> = {
+    C1: ['DISCOUNT', 'VAT', 'QTY_X_PRICE_MISMATCH'],
+    C2: ['VAT', 'QTY_X_PRICE_MISMATCH'],
+    C3: ['VAT', 'QTY_X_PRICE_MISMATCH', 'UNIT'],
+    C4: ['DISCOUNT', 'VAT', 'QTY_X_PRICE_MISMATCH'],
+  };
 
-  it('XML: line <Сумма>/<Количество>/<ЦенаЗаЕдиницу> == snapshot; no discount/VAT/unit element; currency hardcoded UZS', async () => {
-    const inv = await dbInvoice();
-    const xml = (await run('XML')).toString('utf8');
-    const doc = xml.split('<Документ>').find((d) => d.includes(`<Номер>${inv.number}</Номер>`))!;
-    expect(doc).toContain(`<Сумма>${DOC_TOTAL}</Сумма>\n      <Контрагенты>`); // doc-level sum == invoice.total
-    expect(doc).toContain('<Валюта>UZS</Валюта>'); // hardcoded, not from Company/Invoice
-    const goods = [...doc.matchAll(/<Товар>([\s\S]*?)<\/Товар>/g)].map((m) => m[1]!);
-    expect(goods).toHaveLength(CASES.length);
-    const tag = (g: string, t: string) => new RegExp(`<${t}>([^<]*)</${t}>`).exec(g)?.[1];
-    for (const c of CASES) {
-      const g = goods.find((x) => tag(x, 'Наименование') === `P ${c.sku}`)!;
-      expect([tag(g, 'Количество'), tag(g, 'ЦенаЗаЕдиницу'), tag(g, 'Сумма')]).toEqual([c.baseQty, n(c.price), c.lineTotal]);
-      // MISLEADING: element set is exactly Ид, Наименование, ЦенаЗаЕдиницу, Количество, Сумма
-      expect([...g.matchAll(/<([^/>]+)>/g)].map((m) => m[1]).sort()).toEqual(['Ид', 'Количество', 'Наименование', 'ЦенаЗаЕдиницу', 'Сумма'].sort());
-    }
-    expect(doc).not.toMatch(/Скидк|НДС|Налог|БазоваяЕдиница|ЕдиницаИзмерения|Ставка/);
-    expect(sum([...doc.matchAll(/<Товар>[\s\S]*?<Сумма>([^<]*)<\/Сумма>/g)].map((m) => m[1]!)).toFixed(2)).toBe(DOC_TOTAL);
-  });
+  for (const format of ['CSV', 'XML'] as const) {
+    it(`${format}: REJECTED (job FAILED, no file, no retry) with 1C_EXPORT_UNSUPPORTED_COMBINATION listing invoice/sku/reasons`, async () => {
+      const inv = await dbInvoice();
+      const { putObject, outcome, saved } = await run(format);
+      expect((outcome as Error).name).toBe('UnrecoverableError');
+      expect(putObject).not.toHaveBeenCalled(); // never a misleading file
+      expect(saved.status).toBe('FAILED');
+      expect([saved.storageKey, saved.fileHash, saved.generatedAt, saved.recordCount]).toEqual([null, null, null, null]);
+      const log = saved.errorLog as { code: string; messages: Record<string, string>; total: number; violations: Array<{ invoiceId: string; invoiceNumber: string; sku: string | null; reasons: string[] }> };
+      expect(log.code).toBe('1C_EXPORT_UNSUPPORTED_COMBINATION');
+      expect(Object.keys(log.messages).sort()).toEqual(['en', 'ru', 'uz']);
+      const mine = log.violations.filter((v) => v.invoiceId === invoiceId).sort((a, b) => a.sku!.localeCompare(b.sku!));
+      expect(mine.map((v) => [v.sku, v.reasons, v.invoiceNumber])).toEqual(Object.entries(EXPECTED_REASONS).map(([sku, reasons]) => [sku, reasons, inv.number]));
+      expect(mine.some((v) => v.sku === 'C5')).toBe(false); // the self-consistent line (VAT 0, no discount, base unit) is not flagged
+      expect(mine.some((v) => v.reasons.includes('TOTAL_MISMATCH'))).toBe(false); // Σ lineTotal == Invoice.total
+    });
+  }
 
   it('EXCEL: header-level only (number/date/customer/total/id); NO line detail at all', async () => {
     const inv = await dbInvoice();
     const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load((await run('EXCEL')) as unknown as ExcelJS.Buffer);
-    expect(wb.worksheets.map((w) => w.name)).toEqual(['Kontragentlar', 'Sotish hujjatlari', "To'lovlar"]);
+    const ex = await run('EXCEL');
+    expect(ex.saved.status).toBe('GENERATED'); // header-only: no line data to contradict, still exports
+    await wb.xlsx.load(ex.buffer as unknown as ExcelJS.Buffer);
+    expect(wb.worksheets.map((w) => w.name)).toEqual(['Kontragentlar', 'Sotish hujjatlari', "To'lovlar", 'Eslatma']);
+    expect(String(wb.getWorksheet('Eslatma')!.getRow(1).getCell(1).value)).toContain('EMAS'); // labelled: informational register, not an accounting import
     const sheet = wb.getWorksheet('Sotish hujjatlari')!;
     expect((sheet.getRow(1).values as unknown[]).slice(1)).toEqual(['Raqam', 'Sana', 'Mijoz', 'Summa', 'Ид']);
     const row = sheet.getRows(2, sheet.rowCount - 1)!.find((r) => r.getCell(1).value === inv.number)!;

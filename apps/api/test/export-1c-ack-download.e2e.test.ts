@@ -72,11 +72,11 @@ describe('E2E F5.3: 1C export download / ACK / limits', () => {
 
   let day = 0;
   /** Inserts a QUEUED job; GENERATED ones walk the legal transition QUEUED -> PROCESSING -> GENERATED. */
-  async function newJob(companyId: string, status: 'QUEUED' | 'PROCESSING' | 'GENERATED') {
+  async function newJob(companyId: string, status: 'QUEUED' | 'PROCESSING' | 'GENERATED', format: 'CSV' | 'XML' | 'EXCEL' = 'CSV') {
     const periodFrom = new Date(Date.UTC(2020, 0, 1 + day++));
     const periodTo = new Date(periodFrom.getTime() + 86_399_000);
     return tenantPrisma.run(companyId, async (tx) => {
-      const job = await tx.exportJob.create({ data: { companyId, type: '1c', format: 'CSV', periodFrom, periodTo, status: 'QUEUED' } });
+      const job = await tx.exportJob.create({ data: { companyId, type: '1c', format, periodFrom, periodTo, status: 'QUEUED' } });
       if (status === 'QUEUED') return job;
       await tx.exportJob.update({ where: { id: job.id }, data: { status: 'PROCESSING' } });
       if (status === 'PROCESSING') return job;
@@ -199,6 +199,16 @@ describe('E2E F5.3: 1C export download / ACK / limits', () => {
       const ok = await ackReq('OWNER', job.id, { result: 'REJECTED', checksum: HASH, note: 'Kontragent topilmadi' }).expect(201);
       expect(ok.body.status).toBe('FAILED_REVIEW');
       expect((await dbJob(companyA, job.id)).ackNote).toBe('Kontragent topilmadi');
+    });
+
+    it.each([['ACCEPTED'], ['REJECTED']] as const)('EXCEL (informational register) %s => 409 1C_EXPORT_REGISTER_NOT_ACKNOWLEDGEABLE, job unchanged; XML/CSV ACK still works', async (result) => {
+      const body = { result, checksum: HASH, note: 'sabab' };
+      const ex = await newJob(companyA, 'GENERATED', 'EXCEL');
+      const res = await ackReq('OWNER', ex.id, body).expect(409);
+      expect(res.body.code).toBe('1C_EXPORT_REGISTER_NOT_ACKNOWLEDGEABLE');
+      const row = await dbJob(companyA, ex.id);
+      expect([row.status, row.acknowledgedAt, row.acknowledgedBy]).toEqual(['GENERATED', null, null]);
+      for (const f of ['XML', 'CSV'] as const) await ackReq('OWNER', (await newJob(companyA, 'GENERATED', f)).id, body).expect(201);
     });
 
     it('ACK on a non-GENERATED job (PROCESSING) => 409', async () => {

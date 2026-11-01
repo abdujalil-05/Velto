@@ -75,3 +75,50 @@ export class ExportLegacyNoChecksumException extends AppException {
     });
   }
 }
+
+export const UNSUPPORTED_REASONS = ['DISCOUNT', 'VAT', 'QTY_X_PRICE_MISMATCH', 'UNIT', 'TOTAL_MISMATCH'] as const;
+export type UnsupportedReason = (typeof UNSUPPORTED_REASONS)[number];
+
+export interface UnsupportedViolation {
+  invoiceId: string;
+  invoiceNumber: string;
+  /** null for document-level reasons (TOTAL_MISMATCH). */
+  sku: string | null;
+  reasons: UnsupportedReason[];
+}
+
+/** Max violations stored in ExportJob.errorLog / exception details; `total` carries the real count. */
+export const UNSUPPORTED_DETAILS_CAP = 100;
+
+/** ADR-059: the document cannot be represented correctly in mappingVersion 2 (strict reject, PO decision). */
+export class ExportUnsupportedCombinationException extends AppException {
+  static readonly CODE = '1C_EXPORT_UNSUPPORTED_COMBINATION';
+  static readonly MESSAGES = {
+        uz: "Hujjat(lar) joriy 1C formatida to'g'ri ifodalanmaydi (chegirma, QQS, birlik yoki summa nomuvofiqligi). Bunday hujjatlarsiz davrni tanlang va buxgalter bilan tekshiring",
+        ru: 'Документ(ы) нельзя корректно представить в текущем формате 1С (скидка, НДС, единица или расхождение сумм). Исключите их из периода и проверьте с бухгалтером',
+        en: 'Document(s) cannot be represented correctly in the current 1C format (discount, VAT, unit or amount mismatch). Narrow the period to exclude them and review with the accountant',
+  };
+  readonly violations: UnsupportedViolation[];
+  readonly total: number;
+  constructor(violations: UnsupportedViolation[]) {
+    super(
+      HttpStatus.UNPROCESSABLE_ENTITY,
+      ExportUnsupportedCombinationException.CODE,
+      ExportUnsupportedCombinationException.MESSAGES,
+      { total: violations.length, violations: violations.slice(0, UNSUPPORTED_DETAILS_CAP) },
+    );
+    this.violations = violations;
+    this.total = violations.length;
+  }
+}
+
+/** PO rule: EXCEL export is an informational register (no lines/VAT), so it can never be marked accounting-confirmed. */
+export class ExportRegisterNotAcknowledgeableException extends AppException {
+  constructor() {
+    super(HttpStatus.CONFLICT, '1C_EXPORT_REGISTER_NOT_ACKNOWLEDGEABLE', {
+      uz: "Excel fayl axborot reyestri — buxgalteriya tomonidan tasdiqlanmaydi (1C importi uchun CSV/XML dan foydalaning)",
+      ru: 'Excel — информационный реестр, он не подтверждается бухгалтерией (для импорта в 1С используйте CSV/XML)',
+      en: 'The Excel file is an informational register and cannot be acknowledged as accounting-confirmed (use CSV/XML for 1C import)',
+    });
+  }
+}

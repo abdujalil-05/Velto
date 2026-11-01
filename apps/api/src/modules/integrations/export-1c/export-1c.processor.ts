@@ -1,5 +1,5 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import type { Job } from 'bullmq';
+import { UnrecoverableError, type Job } from 'bullmq';
 import { createHash } from 'node:crypto';
 import { InvoiceKind, InvoiceStatus, PaymentSource, Prisma, type ExportFormat, type PaymentMethod, type TenantClient } from '@velto/database';
 import { runJobWithTrace } from '../../../common/queue/trace-job';
@@ -8,6 +8,8 @@ import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.servic
 import { buildCommerceMlXml, type CommerceMlCustomer, type CommerceMlDocument } from './commerce-ml';
 import { buildExport1cWorkbook, type PaymentDocumentRow, type SalesDocumentRow } from './export-1c-excel';
 import { buildExport1cCsv, type CsvDocument } from './export-1c-csv';
+import { ExportUnsupportedCombinationException, UNSUPPORTED_DETAILS_CAP, type UnsupportedViolation } from './export-1c-exceptions';
+import { checkInvoiceRepresentable } from './export-1c-representability';
 import { companyDay } from '../../field/company-day';
 import { EXPORT_1C_MAPPING_VERSION, EXPORT_1C_QUEUE, export1cStorageKey, type Export1cJobData } from './export-1c.constants';
 import { paymentPostedAt, paymentPostedWithin } from '../../finance/ledger-filters';
@@ -43,6 +45,8 @@ interface ExportData {
   payments: PaymentDocumentRow[];
   csvDocuments: CsvDocument[];
   missingExternalCode: string[];
+  /** ADR-059: invoices the line-level formats (XML/CSV) cannot represent; empty for EXCEL (header-only, no line data). */
+  unsupported: UnsupportedViolation[];
 }
 
 /**
@@ -85,10 +89,13 @@ export class Export1cProcessor extends WorkerHost {
         companyId,
         async (tx) => {
           const company = await tx.company.findFirst({ select: { timezone: true } });
-          return this.loadExportData(tx, exportJob.periodFrom, exportJob.periodTo, company?.timezone ?? 'Asia/Tashkent');
+          return this.loadExportData(tx, exportJob.periodFrom, exportJob.periodTo, company?.timezone ?? 'Asia/Tashkent', exportJob.format);
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
       );
+
+      // Strict reject BEFORE any file is rendered/uploaded: never a file that looks accounting-correct but contradicts amounts.
+      if (data.unsupported.length > 0) throw new ExportUnsupportedCombinationException(data.unsupported);
 
       const { buffer, mimeType, extension } = await this.render(exportJob.format, data);
       const storageKey = export1cStorageKey(companyId, exportJobId, extension);
@@ -120,6 +127,25 @@ export class Export1cProcessor extends WorkerHost {
         }),
       );
     } catch (err) {
+      if (err instanceof ExportUnsupportedCombinationException) {
+        // Deterministic data problem: retrying cannot help -> terminal FAILED now, no BullMQ retry.
+        await this.tenantPrisma.run(companyId, (tx) =>
+          tx.exportJob.updateMany({
+            where: { id: exportJobId, status: 'PROCESSING' },
+            data: {
+              status: 'FAILED',
+              errorLog: {
+                code: ExportUnsupportedCombinationException.CODE,
+                message: `${ExportUnsupportedCombinationException.MESSAGES.uz} [${err.total}]: ${err.violations.slice(0, 5).map((v) => `${v.invoiceNumber}${v.sku ? `/${v.sku}` : ''} ${v.reasons.join('+')}`).join('; ')}${err.total > 5 ? '; ...' : ''}`,
+                messages: ExportUnsupportedCombinationException.MESSAGES,
+                total: err.total,
+                violations: err.violations.slice(0, UNSUPPORTED_DETAILS_CAP).map((v) => ({ invoiceId: v.invoiceId, invoiceNumber: v.invoiceNumber, sku: v.sku, reasons: [...v.reasons] })),
+              },
+            },
+          }),
+        );
+        throw new UnrecoverableError(ExportUnsupportedCombinationException.CODE);
+      }
       // Only the last attempt is terminal; earlier ones go back to QUEUED so BullMQ's retry can run.
       const isLastAttempt = (job.attemptsMade ?? 0) + 1 >= (job.opts?.attempts ?? 1);
       await this.tenantPrisma.run(companyId, (tx) =>
@@ -147,7 +173,7 @@ export class Export1cProcessor extends WorkerHost {
   }
 
   /** 11.1: "Eksport qilinadi: kontragentlar, sotish hujjatlari, to'lovlar" — sales documents are Invoices (6.6: "1 order = 1 invoice soddalashtirilgan"), not SalesOrders, since those are the actual accounting-facing documents. */
-  private async loadExportData(tx: TenantClient, periodFrom: Date, periodTo: Date, timeZone: string): Promise<ExportData> {
+  private async loadExportData(tx: TenantClient, periodFrom: Date, periodTo: Date, timeZone: string, format: ExportFormat): Promise<ExportData> {
     const [invoices, collected] = await Promise.all([
       // F6: OPENING invoices/payments (opening balance batch) already exist in
       // 1C — exporting them again would double-count debt/credit there.
@@ -167,6 +193,21 @@ export class Export1cProcessor extends WorkerHost {
     ]);
     // COLLECTION payments always carry a method (DB CHECK Payment_source_shape_check).
     const payments = collected.map((p) => ({ ...p, method: collectionMethod(p) }));
+
+    const orderIds = [...new Set(invoices.flatMap((i) => (i.orderId ? [i.orderId] : [])))];
+    const orderLines =
+      format === 'EXCEL' || orderIds.length === 0
+        ? []
+        : (await tx.salesOrderLine.findMany({ where: { orderId: { in: orderIds } }, select: { orderId: true, productId: true, unitPrice: true, vatRate: true, discountPct: true, packaging: { select: { qtyInBaseUnit: true } } } })).map((o) => ({
+            orderId: o.orderId,
+            productId: o.productId,
+            unitPrice: o.unitPrice,
+            vatRate: o.vatRate,
+            discountPct: o.discountPct,
+            packQtyInBase: o.packaging.qtyInBaseUnit,
+          }));
+    const unsupported =
+      format === 'EXCEL' ? [] : invoices.flatMap((i) => checkInvoiceRepresentable({ id: i.id, number: i.number, orderId: i.orderId, total: i.total, lines: i.lines.map((l) => ({ productId: l.productId, sku: l.product.sku, qty: l.qty, unitPrice: l.unitPrice, vatRate: l.vatRate, lineTotal: l.lineTotal })) }, orderLines));
 
     const customersById = new Map<string, CommerceMlCustomer>();
     const missingExternalCode = new Set<string>();
@@ -253,6 +294,7 @@ export class Export1cProcessor extends WorkerHost {
       payments: payments.map((p) => ({ id: p.id, number: p.number, date: paymentPostedAt(p), customerName: p.customer.name, amount: p.amount.toString(), method: p.method })),
       csvDocuments,
       missingExternalCode: [...missingExternalCode],
+      unsupported,
     };
   }
 }

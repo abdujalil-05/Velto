@@ -44,7 +44,7 @@ describe('Export1cProcessor (integration, real Postgres + RLS)', () => {
           customerId: customer.id,
           total: '150000',
           status: InvoiceStatus.OPEN,
-          lines: { create: [{ productId: product.id, qty: '10', unitPrice: '15000', vatRate: '12', lineTotal: '150000' }] },
+          lines: { create: [{ productId: product.id, qty: '10', unitPrice: '15000', vatRate: '0', lineTotal: '150000' }] },
         },
       });
       await tx.payment.create({
@@ -275,7 +275,7 @@ describe('Export1cProcessor (integration, real Postgres + RLS)', () => {
         await tx.invoice.create({
           data: {
             companyId, number: `INV-BULK-${i}-${randomUUID().slice(0, 6)}`, customerId, total: '100', status: InvoiceStatus.OPEN,
-            lines: { create: [{ productId, qty: '1', unitPrice: '100', vatRate: '12', lineTotal: '100' }] },
+            lines: { create: [{ productId, qty: '1', unitPrice: '100', vatRate: '0', lineTotal: '100' }] },
           },
         });
       }

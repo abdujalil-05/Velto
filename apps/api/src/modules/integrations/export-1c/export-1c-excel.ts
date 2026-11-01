@@ -22,6 +22,9 @@ export interface PaymentDocumentRow {
   method: string;
 }
 
+export const EXPORT_1C_REGISTER_NOTICE = "AXBOROT REYESTRI — 1C ga buxgalteriya importi uchun fayl EMAS. Faqat hujjat jami summalari (Invoice.total); qatorlar, QQS, chegirma, birlik yo'q.";
+export const EXPORT_1C_REGISTER_NOTICE_RU = 'ИНФОРМАЦИОННЫЙ РЕЕСТР — не файл для бухгалтерского импорта в 1С. Только итоги документов; без строк, НДС, скидок и единиц.';
+
 const safe = (v: string): string => String(sanitizeCell(v));
 
 function formatDate(d: Date): string {
@@ -66,6 +69,11 @@ export async function buildExport1cWorkbook(params: {
   paymentsSheet.addRows(
     params.payments.map((p) => ({ number: safe(p.number), date: formatDate(p.date), customer: safe(p.customerName), amount: p.amount, method: safe(p.method), id: p.id })),
   );
+
+  // ADR-059: this workbook is an informational register (header totals = Invoice.total, no lines/VAT/discount), NOT an accounting import file.
+  const noticeSheet = workbook.addWorksheet('Eslatma');
+  noticeSheet.columns = [{ header: EXPORT_1C_REGISTER_NOTICE, key: 'text', width: 110 }];
+  noticeSheet.addRow({ text: EXPORT_1C_REGISTER_NOTICE_RU });
 
   const buffer = await workbook.xlsx.writeBuffer();
   return Buffer.from(buffer);

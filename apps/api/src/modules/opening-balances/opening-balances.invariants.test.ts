@@ -216,7 +216,9 @@ describe('Opening balances invariants (integration)', () => {
     const cust3 = await customerByCode(c3!);
     const saleNumber = `INV-SALE-${tag}`;
     await run((tx) =>
-      tx.invoice.create({ data: { companyId, number: saleNumber, customerId: cust3.id, total: '1000', status: InvoiceStatus.OPEN } }),
+      tx.product
+        .create({ data: { companyId, sku: `SALE-${tag}`, name: 'Sale P', baseUnit: 'dona', vatRate: 0 } })
+        .then((p) => tx.invoice.create({ data: { companyId, number: saleNumber, customerId: cust3.id, total: '1000', status: InvoiceStatus.OPEN, lines: { create: [{ productId: p.id, qty: '1', unitPrice: '1000', vatRate: '0', lineTotal: '1000' }] } } })),
     );
 
     // Expected = SALE invoices + POSTED COLLECTION payments only; OPENING rows must not add to it.

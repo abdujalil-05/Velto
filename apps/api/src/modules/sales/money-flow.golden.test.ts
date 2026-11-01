@@ -303,41 +303,38 @@ describe('ADR-059 golden money flow: order -> confirm -> partial deliver -> invo
     expect(xlsxTurnover).toBe(498231.92);
   });
 
-  it('1C export (CSV + CommerceML XML) values == DB values == hand; reversed payment not exported', async () => {
-    const run = async (format: 'CSV' | 'XML') => {
+  it('1C export: XML/CSV strictly REJECT these discount/VAT/packaging documents (ADR-059); EXCEL header values == DB values; reversed payment not exported', async () => {
+    const run = async (format: 'CSV' | 'XML' | 'EXCEL') => {
       const job = await inTenant(() =>
         tenantPrisma.client.exportJob.create({ data: { companyId, type: '1c', format, periodFrom: new Date(Date.now() - 86_400_000), periodTo: new Date(Date.now() + 86_400_000) } }),
       );
       const putObject = vi.fn().mockResolvedValue('k');
-      await new Export1cProcessor(tenantPrisma, { putObject } as unknown as StorageService).process({ data: { exportJobId: job.id, companyId } } as unknown as Job<Export1cJobData>);
-      return (putObject.mock.calls[0]![0] as { buffer: Buffer }).buffer.toString('utf8');
+      const err = await new Export1cProcessor(tenantPrisma, { putObject } as unknown as StorageService)
+        .process({ data: { exportJobId: job.id, companyId } } as unknown as Job<Export1cJobData>)
+        .then(() => null, (e: unknown) => e as Error);
+      const saved = await inTenant(() => tenantPrisma.client.exportJob.findUniqueOrThrow({ where: { id: job.id } }));
+      return { err, saved, putObject };
     };
 
-    const dbInvoices = await inTenant(() => tenantPrisma.client.invoice.findMany({ include: { lines: { include: { product: true } } } }));
-    const csv = (await run('CSV')).slice(1).split('\r\n').filter(Boolean).map((l) => l.split(','));
-    const sales1c = csv.filter((r) => r[0] === 'SALE');
-    expect(sales1c).toHaveLength(9); // 4 + 5 invoice lines
-    for (const inv of dbInvoices) {
-      const rows = sales1c.filter((r) => r[2] === inv.number);
-      expect(rows).toHaveLength(inv.lines.length);
-      for (const r of rows) {
-        const il = inv.lines.find((x) => x.product.sku === r[6])!;
-        expect([r[8], r[9], r[10], r[11]]).toEqual([il.qty.toString(), il.unitPrice.toString(), il.lineTotal.toString(), inv.total.toString()]);
-      }
+    const dbInvoices = await inTenant(() => tenantPrisma.client.invoice.findMany());
+    for (const format of ['CSV', 'XML'] as const) {
+      const { err, saved, putObject } = await run(format);
+      expect(err?.name).toBe('UnrecoverableError');
+      expect(saved.status).toBe('FAILED');
+      expect(putObject).not.toHaveBeenCalled();
+      const log = saved.errorLog as { code: string; violations: Array<{ invoiceId: string }> };
+      expect(log.code).toBe('1C_EXPORT_UNSUPPORTED_COMBINATION');
+      expect(new Set(log.violations.map((v) => v.invoiceId))).toEqual(new Set(dbInvoices.map((i) => i.id)));
     }
-    expect([...new Set(sales1c.map((r) => r[11]))].sort()).toEqual([n(INV1_TOTAL), n(INV2_TOTAL)].sort());
-    const pays = csv.filter((r) => r[0] === 'PAYMENT');
-    expect(pays).toHaveLength(1); // payment 1 is REVERSED
-    expect([pays[0]![11], pays[0]![12]]).toEqual(['312661.07', 'TRANSFER']);
 
-    const xml = await run('XML');
-    const sums = [...xml.matchAll(/<Сумма>([^<]*)<\/Сумма>/g)].map((m) => m[1]);
-    for (const inv of dbInvoices) {
-      expect(sums).toContain(inv.total.toString());
-      for (const il of inv.lines) expect(sums).toContain(il.lineTotal.toString());
-    }
-    expect(sums).toContain('312661.07');
-    expect(sums).not.toContain('186071.35'); // reversed payment
-    for (const l of [...ORDER1, ...ORDER2].filter((x) => x.delivered2dp !== '0.00')) expect(sums).toContain(n(l.delivered2dp));
+    const ex = await run('EXCEL');
+    expect(ex.saved.status).toBe('GENERATED');
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load((ex.putObject.mock.calls[0]![0] as { buffer: Buffer }).buffer as unknown as ExcelJS.Buffer);
+    const cells = new Set<string>();
+    wb.eachSheet((ws) => ws.eachRow((r) => r.eachCell((c) => cells.add(String(c.value)))));
+    for (const inv of dbInvoices) expect(cells.has(inv.total.toString())).toBe(true);
+    expect(cells.has('312661.07')).toBe(true);
+    expect(cells.has('186071.35')).toBe(false); // reversed payment
   });
 });

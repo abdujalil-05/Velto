@@ -4,7 +4,7 @@ import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import { ExportJobNotFoundException } from '../integrations-exceptions';
 import type { AckExportDto } from './dto/ack-export.dto';
-import { ExportAckChecksumMismatchException, ExportLegacyNoChecksumException, ExportAckNoteRequiredException, ExportAckNotAllowedException } from './export-1c-exceptions';
+import { ExportAckChecksumMismatchException, ExportLegacyNoChecksumException, ExportAckNoteRequiredException, ExportAckNotAllowedException, ExportRegisterNotAcknowledgeableException } from './export-1c-exceptions';
 
 /** ADR-030: one-shot manual ACK GENERATED -> ACCOUNTING_ACCEPTED | FAILED_REVIEW (DB trigger + CHECKs back this up). */
 @Injectable()
@@ -18,6 +18,9 @@ export class Export1cAckService {
     const tx = this.tenantPrisma.client;
     const job = await tx.exportJob.findFirst({ where: { id, type: '1c' } }); // RLS: other tenant => null
     if (!job) throw new ExportJobNotFoundException();
+
+    // PO rule: the XLSX is an informational register, never an accounting-confirmable file.
+    if (job.format === 'EXCEL') throw new ExportRegisterNotAcknowledgeableException();
 
     const note = dto.note?.trim() ?? '';
     if (dto.result === 'REJECTED' && note.length < 3) throw new ExportAckNoteRequiredException();

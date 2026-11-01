@@ -93,7 +93,7 @@ describe('E2E F5.3: 1C export hardening', () => {
         const inv = await tx.invoice.create({
           data: {
             companyId, number: `INV-${i}-${rid()}`, customerId: customer.id, total: '100', status: InvoiceStatus.OPEN,
-            lines: { create: [{ productId: product.id, qty: '1', unitPrice: '100', vatRate: '12', lineTotal: '100' }] },
+            lines: { create: [{ productId: product.id, qty: '1', unitPrice: '100', vatRate: '0', lineTotal: '100' }] },
           },
         });
         invoiceIds.push(inv.id);

@@ -18,7 +18,8 @@ describe('buildExport1cWorkbook', () => {
     await workbook.xlsx.load(buffer as never);
 
     const sheetNames = workbook.worksheets.map((s) => s.name);
-    expect(sheetNames).toEqual(['Kontragentlar', 'Sotish hujjatlari', "To'lovlar"]);
+    expect(sheetNames).toEqual(['Kontragentlar', 'Sotish hujjatlari', "To'lovlar", 'Eslatma']);
+    expect(String(workbook.getWorksheet('Eslatma')!.getRow(1).getCell(1).value)).toContain('EMAS');
 
     const customersSheet = workbook.getWorksheet('Kontragentlar')!;
     expect(customersSheet.getRow(1).values).toEqual([undefined, 'Kod', 'Nomi', 'Telefon']);
