@@ -61,7 +61,7 @@ EXCEL GENERATED (9113 B) · SHA-256 скачанного = `fileHash` · ано�
 | Offsite, cron/timer, разделение доступа, алерт | **не настроено** (нет сервера) |
 
 Строки 20/21 не меняются: 21 остаётся NOT_TESTED (нет offsite, нет запуска на стенде пилота). Удалить учебные БД (не выполнялось):
-`psql postgresql://velto:velto@localhost:5433/postgres -c 'DROP DATABASE velto_restore_drill_20261102' -c 'DROP DATABASE velto_restore_drill_gpg_20261102'`
+`PGPASSFILE=<pgpass 0600> psql -h localhost -p 5433 -U velto -d postgres -c 'DROP DATABASE velto_restore_drill_20261102' -c 'DROP DATABASE velto_restore_drill_gpg_20261102'`
 
 ## 7. SEC-010, SEC-011, восстановление (Master TZ v5.0)
 
