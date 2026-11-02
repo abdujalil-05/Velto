@@ -878,6 +878,11 @@ model Invoice {
   // batch is a same-company CUSTOMER_BALANCE batch still PREVIEWED at insert.
   // kind/openingBatchId/externalDocRef immutable. Partial unique
   // (companyId, customerId, externalDocRef) WHERE kind = OPENING.
+  // SALE (20261102100000, raw SQL): partial unique "Invoice_sale_orderId_key"
+  // (companyId, orderId) WHERE kind = SALE AND orderId IS NOT NULL (max one
+  // SALE invoice per order); trigger invoice_sale_guard: a SALE invoice may only
+  // change status — companyId/number/customerId/orderId/total/kind/createdAt
+  // (= turnover date) are immutable for every role. orderId FK is RESTRICT.
   kind           InvoiceKind   @default(SALE)
   openingBatchId String?       @db.Uuid
   externalDocRef String? // 1C / legacy document reference of the opening debt
@@ -886,7 +891,7 @@ model Invoice {
 
   company      Company              @relation(fields: [companyId], references: [id])
   customer     Customer             @relation(fields: [customerId], references: [id])
-  order        SalesOrder?          @relation(fields: [orderId], references: [id])
+  order        SalesOrder?          @relation(fields: [orderId], references: [id], onDelete: Restrict)
   openingBatch OpeningBalanceBatch? @relation(fields: [openingBatchId], references: [id], onDelete: Restrict)
 
   lines       InvoiceLine[]
