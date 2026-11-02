@@ -383,6 +383,12 @@ async function ownEntry(clientId: string): Promise<QueueEntry> {
   return e;
 }
 
+/** PO decision: payments rejected as idempotency conflict/unverifiable are kept until the accountant reconciles them; never discardable on device. */
+const RECONCILIATION_HOLD_CODES = ['PAYMENT_IDEMPOTENCY_CONFLICT', 'PAYMENT_IDEMPOTENCY_UNVERIFIABLE'];
+export function isReconciliationHold(e: QueueEntry): boolean {
+  return e.type === 'payment' && (e.status === 'FAILED' || e.status === 'CONFLICT') && !!e.lastError?.code && RECONCILIATION_HOLD_CODES.includes(e.lastError.code);
+}
+
 /**
  * Explicit user discard of a document the server did NOT accept (FAILED or
  * CONFLICT, no serverId). Anything else throws; nothing is ever discarded
@@ -390,6 +396,9 @@ async function ownEntry(clientId: string): Promise<QueueEntry> {
  */
 export async function discardFailedItem(clientId: string): Promise<void> {
   const e = await ownEntry(clientId);
+  if (isReconciliationHold(e)) {
+    throw new QueueItemStateError('NOT_DISCARDABLE', `Queue item ${clientId} is held for manual reconciliation (${e.lastError?.code}); it cannot be discarded`);
+  }
   if ((e.status !== 'FAILED' && e.status !== 'CONFLICT') || e.serverId) {
     throw new QueueItemStateError('NOT_DISCARDABLE', `Queue item ${clientId} is ${e.status}; only unaccepted FAILED/CONFLICT items can be discarded`);
   }
@@ -502,6 +511,7 @@ export async function exportQuarantinedToJson(): Promise<string> {
 export async function discardQuarantinedItem(clientId: string): Promise<void> {
   const e = (await listQuarantined()).find((x) => x.clientId === clientId);
   if (!e) throw new QueueItemStateError('NOT_FOUND', `Quarantined item ${clientId} not found`);
+  if (isReconciliationHold(e)) throw new QueueItemStateError('NOT_DISCARDABLE', `Queue item ${clientId} is held for manual reconciliation`);
   await db.queue.delete(clientId);
 }
 
@@ -514,7 +524,8 @@ export async function unsyncedCountForLogout(): Promise<number> {
 /** Force-logout discard: deletes ONLY the current user's own rows. Foreign/quarantined rows stay. */
 export async function deleteOwnEntries(): Promise<void> {
   const s = getOfflineSession();
-  const mine = (await readAll()).filter((e) => ownedBy(e, s));
+  // Reconciliation-hold payments are kept (like foreign rows) even on force logout.
+  const mine = (await readAll()).filter((e) => ownedBy(e, s) && !isReconciliationHold(e));
   await Promise.all(mine.map((e) => db.queue.delete(e.clientId)));
 }
 
@@ -630,6 +641,7 @@ export const queueRepository = {
   unsyncedCountAllOwners,
   listNeedsAttention,
   discardFailedItem,
+  isReconciliationHold,
   resolveConflictResubmit,
   exportPendingToJson,
   claimLegacyEntries,

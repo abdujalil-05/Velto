@@ -4,8 +4,8 @@ import { useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { toast } from 'sonner';
 import type { QueueEntry } from '@/lib/offline/queue';
-import { queueRepository } from '@/lib/offline/queue';
-import { isPaymentIdempotencyConflict, isRejectedHandover, localizedError, parsePriceChanged, precisionHint } from '@/lib/offline/queue-view';
+import { isReconciliationHold, queueRepository } from '@/lib/offline/queue';
+import { isPaymentIdempotencyConflict, isPaymentIdempotencyUnverifiable, isRejectedHandover, localizedError, parsePriceChanged, precisionHint } from '@/lib/offline/queue-view';
 import { formatDateTime, formatMoney } from '@/lib/format';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -84,6 +84,10 @@ export function QueueItemCard({ entry, name, productName, onChanged }: Props) {
           <p className="rounded-md bg-warning/20 p-2 text-sm">{t('paymentConflict')}</p>
         )}
 
+        {isPaymentIdempotencyUnverifiable(entry) && (
+          <p className="rounded-md bg-warning/20 p-2 text-sm">{t('paymentUnverifiable')}</p>
+        )}
+
         {precision && (
           <p className="rounded-md bg-warning/20 p-2 text-sm">
             <span className="font-medium">{t(`precision.${precision}`)}</span> {t('precision.action')}
@@ -136,7 +140,7 @@ export function QueueItemCard({ entry, name, productName, onChanged }: Props) {
           </div>
         )}
 
-        {!price && unaccepted && (
+        {!price && unaccepted && !isReconciliationHold(entry) && (
           <Button type="button" size="lg" variant="outline" className="w-full" onClick={() => setConfirm('discard')}>
             {entry.status === 'CONFLICT' ? t('cancelDoc') : t('discard')}
           </Button>

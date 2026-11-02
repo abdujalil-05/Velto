@@ -310,7 +310,8 @@
       "price": "Price is below the minimum.",
       "action": "The document is never deleted automatically. Cancel it and re-enter with a valid value."
     },
-    "paymentConflict": "This payment ID was already used on the server with a different amount/data. The payment was NOT accepted and will not be resent. The record stays on this phone: review it, cancel it and, if needed, enter a new payment."
+    "paymentConflict": "This payment ID was already used on the server with a different amount/data. The payment was NOT accepted. Do not re-enter it as a new payment: contact the accountant for reconciliation. The record is kept on this phone and cannot be deleted until reconciled.",
+    "paymentUnverifiable": "The server cannot verify the original request for this payment ID, so the payment was NOT accepted. Do not re-enter it as a new payment: contact the accountant for reconciliation. The record is kept on this phone and cannot be deleted until reconciled."
   },
   "Revoked": {
     "title": "Access revoked",

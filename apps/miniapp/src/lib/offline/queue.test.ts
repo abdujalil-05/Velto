@@ -155,6 +155,20 @@ describe('queueRepository (10.3 guaranteed delivery)', () => {
     expect(counts).toMatchObject({ PENDING: 1, FAILED: 0, SYNCED: 1, unsynced: 1 });
   });
 
+  it('discard refused for payment idempotency CONFLICT/UNVERIFIABLE (kept, survives force logout); allowed for other FAILED', async () => {
+    const c = await queueRepository.enqueue('payment', { a: 1 });
+    const u = await queueRepository.enqueue('payment', { a: 2 });
+    const other = await queueRepository.enqueue('payment', { a: 3 });
+    await queueRepository.markFailed(c, { code: 'PAYMENT_IDEMPOTENCY_CONFLICT', message: 'x' });
+    await queueRepository.markFailed(u, { code: 'PAYMENT_IDEMPOTENCY_UNVERIFIABLE', message: 'x' });
+    await queueRepository.markFailed(other, { code: 'SYNC_VALIDATION_FAILED', message: 'x' });
+    await expect(queueRepository.discardFailedItem(c)).rejects.toMatchObject({ code: 'NOT_DISCARDABLE' });
+    await expect(queueRepository.discardFailedItem(u)).rejects.toMatchObject({ code: 'NOT_DISCARDABLE' });
+    await queueRepository.discardFailedItem(other);
+    await queueRepository.deleteOwnEntries();
+    expect((await queueRepository.listAllOwners()).map((e) => e.clientId).sort()).toEqual([c, u].sort());
+  });
+
   it('exportPendingToJson never includes other owners (no all scope); deleteOwnEntries keeps foreign rows', async () => {
     const mine = await queueRepository.enqueue('order', { x: 1 });
     setOfflineSession({ userId: 'u2', companyId: 'c1' });

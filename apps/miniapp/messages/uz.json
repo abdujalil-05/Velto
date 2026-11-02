@@ -310,7 +310,8 @@
       "price": "Narx minimal narxdan past.",
       "action": "Hujjat o'z-o'zidan o'chmaydi. Uni bekor qiling va to'g'ri qiymat bilan qayta kiriting."
     },
-    "paymentConflict": "Bu to'lov ID si serverda boshqa summa/ma'lumot bilan allaqachon ishlatilgan. To'lov QABUL QILINMADI va qayta yuborilmaydi. Hujjat telefonda saqlanadi: uni tekshiring, bekor qiling va kerak bo'lsa yangi to'lov sifatida qayta kiriting."
+    "paymentConflict": "Bu to'lov ID si serverda boshqa summa/ma'lumot bilan allaqachon ishlatilgan. To'lov QABUL QILINMADI. Uni yangi to'lov sifatida qayta kiritmang: solishtirish uchun buxgalterga murojaat qiling. Yozuv telefonda saqlanadi va solishtirish tugaguncha o'chirib bo'lmaydi.",
+    "paymentUnverifiable": "Server bu to'lov ID si uchun asl so'rovni tasdiqlay olmadi, shuning uchun to'lov QABUL QILINMADI. Uni yangi to'lov sifatida qayta kiritmang: solishtirish uchun buxgalterga murojaat qiling. Yozuv telefonda saqlanadi va solishtirish tugaguncha o'chirib bo'lmaydi."
   },
   "Revoked": {
     "title": "Kirish huquqi bekor qilindi",
