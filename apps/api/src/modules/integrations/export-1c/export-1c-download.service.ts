@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { Readable } from 'node:stream';
+import { auditRejection } from '../../../common/audit/rejection-audit';
+import { getTraceId } from '../../../common/trace/trace-context';
 import { AuditLogService, toAuditJson } from '../../../common/audit/audit-log.service';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { StorageService } from '../../../common/storage/storage.service';
@@ -31,7 +33,16 @@ export class Export1cDownloadService {
   async download(id: string, user: AuthenticatedUser): Promise<ExportDownload> {
     const tx = this.tenantPrisma.client;
     const job = await tx.exportJob.findFirst({ where: { id, type: '1c' } }); // RLS: other tenant => null
-    if (!job) throw new ExportJobNotFoundException();
+    if (!job) {
+      // Foreign and missing ids are indistinguishable (same 404); the denial row survives the request-tx rollback.
+      throw auditRejection(
+        this.tenantPrisma,
+        this.auditLog,
+        { companyId: user.companyId, userId: user.id, action: 'export.download', entity: 'ExportJob', entityId: id },
+        new ExportJobNotFoundException(),
+        { jobId: id, traceId: getTraceId() ?? 'n/a' },
+      );
+    }
     if (!DOWNLOADABLE.includes(job.status) || !job.storageKey) throw new ExportNotDownloadableException(job.status);
     if (!job.fileHash) throw new ExportLegacyNoChecksumException();
 

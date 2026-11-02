@@ -4,6 +4,7 @@ import { ReportConcurrencyGuard } from '../../../common/concurrency/report-concu
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { TenantTx } from '../../../common/tenant/tenant-tx-options.decorator';
+import { PrivateDownload } from '../../../common/decorators/private-download.decorator';
 import { RequirePermission } from '../../../common/decorators/require-permission.decorator';
 import { REPORT_TX_OPTIONS } from '../../analytics/report-tx.constants';
 import { CSV_MIME, XLSX_MIME } from '../../analytics/report-export';
@@ -34,6 +35,7 @@ export class AgingReportController {
   @RequirePermission('reports.export')
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Header('Content-Type', XLSX_MIME)
+  @PrivateDownload()
   @Header('Content-Disposition', 'attachment; filename="qarzdorlik.xlsx"')
   async agingExport(@Query() query: AgingAsOfQueryDto, @CurrentUser() user: AuthenticatedUser) {
     const table = agingReportTable(await this.agingReport.getAllRows(query.asOf), new Date());
@@ -45,6 +47,7 @@ export class AgingReportController {
   @RequirePermission('reports.export')
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Header('Content-Type', CSV_MIME)
+  @PrivateDownload()
   @Header('Content-Disposition', 'attachment; filename="qarzdorlik.csv"')
   async agingExportCsv(@Query() query: AgingAsOfQueryDto, @CurrentUser() user: AuthenticatedUser) {
     const table = agingReportTable(await this.agingReport.getAllRows(query.asOf), new Date());

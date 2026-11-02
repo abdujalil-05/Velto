@@ -3,6 +3,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AuditLogService } from '../../common/audit/audit-log.service';
 import { OfflineKekVersionRetiredException, SessionExpiredException } from '../../common/auth/auth-exceptions';
+import { isSessionActive } from '../../common/auth/session-active';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { parsePreviousKekSecrets } from '../../common/config/offline-kek-keyring';
 import { RateLimitedException } from '../../common/throttle/user-throttler.guard';
@@ -63,14 +64,7 @@ export class OfflineKekService {
       throw err;
     }
 
-    const active = user.sid
-      ? await this.tenantPrisma.run(user.companyId, (tx) =>
-          tx.refreshToken.findFirst({
-            where: { familyId: user.sid, userId: user.id, revokedAt: null, expiresAt: { gt: new Date() } },
-            select: { id: true },
-          }),
-        )
-      : null;
+    const active = await this.tenantPrisma.run(user.companyId, (tx) => isSessionActive(tx, user.id, user.sid));
     if (!active) {
       await this.audit(user, 'auth.offline_kek.denied', { reason: 'session_revoked' }, ip);
       throw new SessionExpiredException();

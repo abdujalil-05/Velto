@@ -3,6 +3,7 @@ import { Throttle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
+import { PrivateDownload } from '../../../common/decorators/private-download.decorator';
 import { RequirePermission } from '../../../common/decorators/require-permission.decorator';
 import { Idempotent } from '../../../common/idempotency/idempotent.decorator';
 import { AckExportDto } from './dto/ack-export.dto';
@@ -46,6 +47,7 @@ export class Export1cController {
   }
 
   @Get(':id/download')
+  @PrivateDownload()
   @RequirePermission('integrations.export1c')
   @Throttle({ default: { limit: 30, ttl: PER_MINUTE } })
   async download(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser, @Res({ passthrough: true }) res: Response) {

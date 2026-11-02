@@ -3,6 +3,7 @@ import { Throttle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { PrivateDownload } from '../../common/decorators/private-download.decorator';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { Idempotent } from '../../common/idempotency/idempotent.decorator';
 import { toExportJobView } from '../integrations/export-1c/dto/export-job.view';
@@ -42,6 +43,7 @@ export class CompanyExportController {
   }
 
   @Get(':id/download')
+  @PrivateDownload()
   @RequirePermission('company.export')
   @Throttle({ default: { limit: 30, ttl: PER_MINUTE } })
   async download(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser, @Res({ passthrough: true }) res: Response) {

@@ -13,7 +13,9 @@ import { TenantContext, handlerScopeStore } from '../tenant/tenant-context';
 import { TENANT_TX_OPTIONS_KEY, type TenantTxRouteOptions } from '../tenant/tenant-tx-options.decorator';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { REQUIRE_PERMISSION_KEY } from '../decorators/require-permission.decorator';
-import { MfaRequiredException, PermissionDeniedException } from './auth-exceptions';
+import { REQUIRE_ACTIVE_SESSION_KEY } from '../decorators/private-download.decorator';
+import { isSessionActive } from './session-active';
+import { MfaRequiredException, PermissionDeniedException, SessionExpiredException } from './auth-exceptions';
 import { isMfaSessionValid } from './mfa-policy';
 import { loadAuthenticatedUser } from './load-authenticated-user';
 import type { AccessTokenPayload, AuthenticatedUser } from './auth.types';
@@ -70,6 +72,11 @@ export class TenantContextInterceptor implements NestInterceptor {
     const handlerScope = scope === 'handler';
     let denied: AuthenticatedUser | undefined;
     let mfaDenied: AuthenticatedUser | undefined;
+    let sessionDenied: AuthenticatedUser | undefined;
+    const requireActiveSession = this.reflector.getAllAndOverride<boolean | undefined>(REQUIRE_ACTIVE_SESSION_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
 
     const result = await this.tenantPrisma.run(payload.companyId, async (tx) => {
       // Deactivated user or company -> 401 (client then tries /auth/refresh -> 403 AUTH_ACCOUNT_BLOCKED).
@@ -81,6 +88,11 @@ export class TenantContextInterceptor implements NestInterceptor {
       // ADR-058: privileged roles need a session backed by the current confirmed MFA (checked against DB roles, not the JWT).
       if (!isMfaSessionValid(actor.roles, confirmedMfaId, payload.mfa)) {
         mfaDenied = actor;
+        return undefined;
+      }
+      // Private downloads: a revoked session (logout / logout-all) must not keep working until the access token expires.
+      if (requireActiveSession && !(await isSessionActive(tx, actor.id, payload.sid))) {
+        sessionDenied = actor;
         return undefined;
       }
       const { permissions } = actor;
@@ -111,6 +123,20 @@ export class TenantContextInterceptor implements NestInterceptor {
         }),
       );
       throw new MfaRequiredException();
+    }
+    if (sessionDenied) {
+      const u = sessionDenied;
+      await this.tenantPrisma.run(payload.companyId, (auditTx) =>
+        this.auditLog.log(auditTx, {
+          companyId: payload.companyId,
+          userId: u.id,
+          action: 'auth.session_revoked_denied',
+          entity: 'User',
+          entityId: u.id,
+          newValue: { method: request.method, path: request.url },
+        }),
+      );
+      throw new SessionExpiredException();
     }
     if (denied) {
       const d = denied;

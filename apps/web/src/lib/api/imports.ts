@@ -36,7 +36,6 @@ export interface ImportJob {
   companyId: string;
   type: ImportType;
   status: ImportStatus;
-  fileUrl: string;
   errorLog: ImportErrorLog | null;
   /** 0-100, advanced by the commit worker after each chunk. */
   progress: number;

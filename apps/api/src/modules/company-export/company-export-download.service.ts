@@ -1,4 +1,6 @@
 import { Injectable } from '@nestjs/common';
+import { auditRejection } from '../../common/audit/rejection-audit';
+import { getTraceId } from '../../common/trace/trace-context';
 import { AuditLogService } from '../../common/audit/audit-log.service';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { StorageService } from '../../common/storage/storage.service';
@@ -20,7 +22,16 @@ export class CompanyExportDownloadService {
   async download(id: string, user: AuthenticatedUser): Promise<ExportDownload> {
     const tx = this.tenantPrisma.client;
     const job = await tx.exportJob.findFirst({ where: { id, type: COMPANY_EXPORT_TYPE } }); // RLS: other tenant => null
-    if (!job) throw new ExportJobNotFoundException();
+    if (!job) {
+      // Foreign and missing ids are indistinguishable (same 404); the denial row survives the request-tx rollback.
+      throw auditRejection(
+        this.tenantPrisma,
+        this.auditLog,
+        { companyId: user.companyId, userId: user.id, action: 'company.export.download', entity: 'ExportJob', entityId: id },
+        new ExportJobNotFoundException(),
+        { jobId: id, traceId: getTraceId() ?? 'n/a' },
+      );
+    }
     if (job.status !== 'GENERATED' || !job.storageKey || !job.fileHash) throw new ExportNotDownloadableException(job.status);
 
     const { stream, size } = await this.storage.getObject(job.storageKey);

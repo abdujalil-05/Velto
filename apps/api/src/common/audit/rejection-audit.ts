@@ -16,6 +16,7 @@ export function auditRejection<E extends AppException>(
   auditLog: AuditLogService,
   entry: RejectionAuditEntry,
   err: E,
+  extra?: Record<string, string | number>,
 ): E {
   const { code, details } = err.getResponse() as { code: string; details?: unknown };
   TenantContext.afterRollback(() =>
@@ -23,7 +24,7 @@ export function auditRejection<E extends AppException>(
       auditLog.log(tx, {
         ...entry,
         action: `${entry.action}_rejected`,
-        newValue: toAuditJson({ reason: code, ...(details !== undefined ? { details } : {}) }),
+        newValue: toAuditJson({ reason: code, ...extra, ...(details !== undefined ? { details } : {}) }),
       }),
     ),
   );

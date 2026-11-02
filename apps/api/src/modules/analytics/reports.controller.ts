@@ -4,6 +4,7 @@ import { Throttle } from '@nestjs/throttler';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { TenantTx } from '../../common/tenant/tenant-tx-options.decorator';
+import { PrivateDownload } from '../../common/decorators/private-download.decorator';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { ReportConcurrencyGuard } from '../../common/concurrency/report-concurrency.guard';
 import { REPORT_RETRY_AFTER_SECONDS, ReportBusyException } from '../../common/concurrency/report-concurrency.limiter';
@@ -56,6 +57,7 @@ export class ReportsController {
   @RequirePermission('reports.export')
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Header('Content-Type', XLSX_MIME)
+  @PrivateDownload()
   @Header('Content-Disposition', 'attachment; filename="sotuv-hisoboti.xlsx"')
   async exportSales(@Query() query: DateRangeQueryDto, @CurrentUser() user: AuthenticatedUser) {
     const table = salesReportTable(await this.salesReport.getSalesReport(query), new Date());
@@ -67,6 +69,7 @@ export class ReportsController {
   @RequirePermission('reports.export')
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Header('Content-Type', CSV_MIME)
+  @PrivateDownload()
   @Header('Content-Disposition', 'attachment; filename="sotuv-hisoboti.csv"')
   async exportSalesCsv(@Query() query: DateRangeQueryDto, @CurrentUser() user: AuthenticatedUser) {
     const table = salesReportTable(await this.salesReport.getSalesReport(query), new Date());
@@ -85,6 +88,7 @@ export class ReportsController {
   @RequirePermission('reports.export')
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Header('Content-Type', XLSX_MIME)
+  @PrivateDownload()
   @Header('Content-Disposition', 'attachment; filename="agentlar-hisoboti.xlsx"')
   async exportAgents(@Query() query: DateRangeQueryDto, @CurrentUser() user: AuthenticatedUser) {
     const table = agentPerformanceTable(await this.agentPerformance.getAgentPerformance(query), new Date());
@@ -96,6 +100,7 @@ export class ReportsController {
   @RequirePermission('reports.export')
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Header('Content-Type', CSV_MIME)
+  @PrivateDownload()
   @Header('Content-Disposition', 'attachment; filename="agentlar-hisoboti.csv"')
   async exportAgentsCsv(@Query() query: DateRangeQueryDto, @CurrentUser() user: AuthenticatedUser) {
     const table = agentPerformanceTable(await this.agentPerformance.getAgentPerformance(query), new Date());
@@ -115,6 +120,7 @@ export class ReportsController {
   @RequirePermission('reports.export')
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Header('Content-Type', XLSX_MIME)
+  @PrivateDownload()
   @Header('Content-Disposition', 'attachment; filename="umumiy-hisobot.xlsx"')
   async exportOverview(@Query() query: DateRangeQueryDto, @CurrentUser() user: AuthenticatedUser) {
     const table = overviewReportTable(await this.overview.getOverview(query), new Date());
@@ -126,6 +132,7 @@ export class ReportsController {
   @RequirePermission('reports.export')
   @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Header('Content-Type', CSV_MIME)
+  @PrivateDownload()
   @Header('Content-Disposition', 'attachment; filename="umumiy-hisobot.csv"')
   async exportOverviewCsv(@Query() query: DateRangeQueryDto, @CurrentUser() user: AuthenticatedUser) {
     const table = overviewReportTable(await this.overview.getOverview(query), new Date());
