@@ -71,6 +71,10 @@ export function ForgotPasswordDialog({ open, onOpenChange, initialPhoneDigits }:
       setStep('code');
       setCooldown(RESEND_COOLDOWN_SECONDS);
     } catch (err) {
+      if (err instanceof ApiError && err.code === 'SMS_NOT_CONFIGURED') {
+        setError(t('smsUnavailable'));
+        return;
+      }
       setError(errorMessage(err, locale));
     } finally {
       setSubmitting(false);

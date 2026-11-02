@@ -9,6 +9,7 @@ import {
   PasswordResetCodeExpiredException,
   PasswordResetCodeInvalidException,
 } from '../../common/auth/auth-exceptions';
+import { SmsNotConfiguredException } from '../../common/sms/sms-exceptions';
 import type { SmsService } from '../../common/sms/sms.service';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import { AuthChallengeStore } from './auth-challenge.store';
@@ -23,7 +24,7 @@ describe('ADR-057a password reset (real Postgres + Redis)', () => {
   const tenantPrisma = new TenantPrismaService();
   const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
   const sent: { phone: string; message: string }[] = [];
-  const sms = { send: async (phone: string, message: string) => void sent.push({ phone, message }) } as unknown as SmsService;
+  const sms = { assertAvailable: () => undefined, send: async (phone: string, message: string) => void sent.push({ phone, message }) } as unknown as SmsService;
   const svc = new PasswordResetService(redis, tenantPrisma, new AuditLogService(), sms, new AuthChallengeStore(redis));
   let coA: string;
   let coB: string;
@@ -66,6 +67,37 @@ describe('ADR-057a password reset (real Postgres + Redis)', () => {
     redis.disconnect();
     await prisma.$disconnect();
     await systemPrisma.$disconnect();
+  });
+
+  it('SMS not configured: known and unknown phone get the same SMS_NOT_CONFIGURED, nothing stored/sent/audited', async () => {
+    const known = `+9989${randomInt(10_000_000, 99_999_999)}`;
+    const unknown = `+9989${randomInt(10_000_000, 99_999_999)}`;
+    await mkUser(coA, known);
+    const off = new PasswordResetService(
+      redis,
+      tenantPrisma,
+      new AuditLogService(),
+      {
+        assertAvailable: () => {
+          throw new SmsNotConfiguredException();
+        },
+        send: async (phone: string, message: string) => void sent.push({ phone, message }),
+      } as unknown as SmsService,
+      new AuthChallengeStore(redis),
+    );
+    const before = sent.length;
+    const errs = [];
+    for (const phone of [known, unknown]) {
+      errs.push(await off.request(phone).then(() => null, (e: SmsNotConfiguredException) => e));
+    }
+    for (const e of errs) {
+      expect(e).toBeInstanceOf(SmsNotConfiguredException);
+      expect(e!.getStatus()).toBe(503);
+    }
+    expect(errs[0]!.getResponse()).toEqual(errs[1]!.getResponse());
+    expect(await redis.exists(`pwreset:code:${known}`, `pwreset:cooldown:${known}`)).toBe(0);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(sent.length).toBe(before);
   });
 
   it('single account: OTP confirm changes the password and revokes its sessions (204 path)', async () => {
@@ -112,7 +144,7 @@ describe('ADR-057a password reset (real Postgres + Redis)', () => {
       redis,
       tenantPrisma,
       new AuditLogService(),
-      { send: () => new Promise((r) => setTimeout(r, 1500)) } as unknown as SmsService,
+      { assertAvailable: () => undefined, send: () => new Promise((r) => setTimeout(r, 1500)) } as unknown as SmsService,
       new AuthChallengeStore(redis),
     );
     const t0 = Date.now();

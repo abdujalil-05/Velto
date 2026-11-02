@@ -94,6 +94,9 @@ export class PasswordResetService {
    * endpoint can't be used to SMS-bomb an arbitrary number.
    */
   async request(phone: string): Promise<void> {
+    // Pilot without an SMS provider: disabled uniformly (503 SMS_NOT_CONFIGURED) before any
+    // limiter/lookup, so it never reports success for an SMS that cannot be sent.
+    this.sms.assertAvailable();
     const cooldownTtl = await this.store.ttl(this.cooldownKey(phone));
     if (cooldownTtl > 0) {
       throw new PasswordResetCooldownException(cooldownTtl);

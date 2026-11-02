@@ -70,6 +70,7 @@
     "submit": "Sign in",
     "forgotPassword": "Forgot your password?",
     "reset": {
+      "smsUnavailable": "Password recovery via SMS is unavailable. Contact your company owner/administrator to reset your password.",
       "title": "Reset password",
       "phoneStepDescription": "A verification code will be sent by SMS",
       "sendCode": "Send code",

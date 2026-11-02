@@ -318,7 +318,7 @@ describe('ADR-058 TOTP MFA (real Postgres + Redis)', () => {
   it('password reset never touches MFA and never issues tokens', async () => {
     const e = await enrolled();
     const sent: string[] = [];
-    const sms = { send: async (_p: string, m: string) => void sent.push(m) } as unknown as SmsService;
+    const sms = { assertAvailable: () => undefined, send: async (_p: string, m: string) => void sent.push(m) } as unknown as SmsService;
     const reset = new PasswordResetService(redis, tenantPrisma, auditLog, sms, store);
     await redis.del(`pwreset:cooldown:${e.phone}`);
     await reset.request(e.phone);

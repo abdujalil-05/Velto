@@ -70,6 +70,7 @@
     "submit": "Kirish",
     "forgotPassword": "Parolni unutdingizmi?",
     "reset": {
+      "smsUnavailable": "Parolni SMS orqali tiklash mavjud emas. Parolni tiklash uchun kompaniya egasi/administratoriga murojaat qiling.",
       "title": "Parolni tiklash",
       "phoneStepDescription": "Tasdiqlash kodi SMS orqali yuboriladi",
       "sendCode": "Kod yuborish",

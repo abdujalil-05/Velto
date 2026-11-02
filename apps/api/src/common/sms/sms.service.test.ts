@@ -26,4 +26,10 @@ describe('SmsService without SMS_API_TOKEN', () => {
     await expect(svc.send('+998901234567', 'code 123456')).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalled();
   });
+
+  it('production: assertAvailable throws SMS_NOT_CONFIGURED; dev/with token passes', () => {
+    expect(() => make({ NODE_ENV: 'production' }).svc.assertAvailable()).toThrow(SmsNotConfiguredException);
+    expect(() => make({ NODE_ENV: 'production', SMS_API_TOKEN: 't' }).svc.assertAvailable()).not.toThrow();
+    expect(() => make({ NODE_ENV: 'development' }).svc.assertAvailable()).not.toThrow();
+  });
 });

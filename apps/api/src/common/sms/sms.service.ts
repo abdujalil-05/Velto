@@ -18,6 +18,22 @@ export class SmsService {
 
   constructor(private readonly configService: ConfigService) {}
 
+  /**
+   * True when the flow can really deliver an SMS: a token is configured, or we
+   * are outside production (dev logs instead of sending).
+   */
+  isAvailable(): boolean {
+    return Boolean(this.configService.get<string>('SMS_API_TOKEN', '')) || this.configService.get<string>('NODE_ENV') !== 'production';
+  }
+
+  /** Call BEFORE any user lookup/limiter so the answer is identical for known and unknown phones (no enumeration). */
+  assertAvailable(): void {
+    if (!this.isAvailable()) {
+      this.logger.warn('SMS_API_TOKEN is not configured; SMS-dependent flow disabled');
+      throw new SmsNotConfiguredException();
+    }
+  }
+
   async send(phone: string, message: string): Promise<void> {
     const token = this.configService.get<string>('SMS_API_TOKEN', '');
     if (!token) {
