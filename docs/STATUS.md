@@ -49,7 +49,8 @@ OCHIQ, tashqi: buxgalter sign-off (HALF_UP, QQS stavkalari, 1C mapping), real 1C
 ## Pilot infra audit (2026-11-02)
 CI 41428945051 (`0eac6bc`) yashil: api 1285, database 143+3 skip, miniapp 207, Semgrep, gitleaks. Offline security (matrix 32) PO tomonidan qabul qilindi. Audit: `docs/release/PILOT-INFRA-AUDIT-2026-11-02.md`.
 Tuzatildi: prod JWT/MFA/S3/DB/Redis placeholder rad (HIGH), `minio-policy.json` faqat `products/*` (HIGH), SMS kod logga yozilmaydi, PM2 faqat `.env.production.local`, `deploy.sh` shifrlangan `backup.sh` (SIGPIPE xatosi tuzatildi, .sha256). Lokal gpg backup + restore drill PASS (sintetik). Matrix soni o'zgarmadi (13/0/9/10).
-Ochiq: real server, offsite, monitoring/alert yo'q, signed URL va fayl retention yo'q, Redis AOF/noeviction serverda.
+Hardening (2026-11-02, commitlar `f8e3a1d` `c48275e` `9d98f44` `829d997` `9dfc0dc`): private download faol sessiya/no-store/rad audit, SMS reset fail-closed, backup pgpass + alert allowlist, monitor (least-privilege rol, non-root unit, dedup, qat'iy health). CI 41446748626 (`9dfc0dc`) yashil: api 1313, database 143+3 skip, miniapp 207, Semgrep, gitleaks; reviewer/security-auditor PASS. Matrix 33 qator: 14/0/9/10 (33 = faqat kod darajasi). `trace.test.ts`, `lock-order-deadlock.test.ts` yuk ostida beqaror tarixga ega — yashil takror yashirin race yo'qligini isbotlamaydi.
+Ochiq: real server, offsite, real alert kanali, pilot stendida drill, server Node/secrets, TLS/HSTS, Telegram, Android/iPhone, 1C buxgalter, imzolar, PD huquqiy.
 
 ## Keyingi qadamlar
 1. ADR-058/061 qo'lda tekshiruvlar (PO); ADR-059 qolgani: buxgalter paketi (`1C-ACCOUNTANT-ACCEPTANCE.md`) → namunalar → mapping v3 qarori, sign-off; pilot blockerlari: `docs/release/PILOT-RELEASE-CONDITIONS.md` §A; pilotdan oldin backfill: zarurat → dry-run → tekshiruv → rollback rejasi → alohida ruxsat → real run → API; pilot qurilmalar, 1C, perf qabul. Moderate'lar: Nest 11 / next-intl 4 migratsiyasi alohida qaror.
