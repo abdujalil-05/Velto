@@ -2,6 +2,7 @@
 
 > Состояние на 2026-11-01, ветка `feat/approved-decisions`. Источники: `docs/STATUS.md`, TZ v5.0 §16 и §16.5, `docs/PLAN.md` (раздел v0.9/v1.0 gates), `docs/release/SIGNOFF-v0.9.md` и `SIGNOFF-v1.0.md`.
 > Зелёный CI **не** подтверждает эксплуатационную готовность (TZ §16.5, Definition of release: проваленный ручной тест не перекрывается покрытием unit-тестами).
+> Статусы условий (PASS / FAIL / BLOCKED_EXTERNAL / NOT_TESTED) с доказательствами: [`PILOT-READINESS-MATRIX.md`](./PILOT-READINESS-MATRIX.md).
 
 ## A. BLOCKER для закрытого пилота (v0.9)
 

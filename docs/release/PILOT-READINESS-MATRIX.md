@@ -1,0 +1,45 @@
+# Матрица готовности: закрытый пилот v0.9 и v1.0 GA
+
+> Состояние на 2026-11-02, ветка `feat/approved-decisions`, код на `3be662f` (`5678c1d` платежи, `3be662f` turnover), CI run 41322829998 зелёный. Основа: `PILOT-RELEASE-CONDITIONS.md` (A1–A13, B1–B6), `docs/parity/HANDOFF-2026-11-01-pilot.md`, `docs/qa/E2E-SMOKE-2026-11-01.md`, `docs/qa/RESTORE-DRILL-STAND-2026-11-01.md`, `docs/qa/PILOT-MANUAL-ACCEPTANCE.md`.
+
+## Итог
+
+**v0.9 pilot: НЕ разрешён.** Строк: 30. PASS 10 · FAIL 0 · BLOCKED_EXTERNAL 9 · NOT_TESTED 11. Это счёт условий, не процент готовности продукта.
+
+Статусы: **PASS** — доказано артефактом; **FAIL** — подтверждённый неисправленный дефект; **BLOCKED_EXTERNAL** — нужен бухгалтер, устройство, доступ или внешний сервис; **NOT_TESTED** — не проверялось или нет решения.
+Правило: ручное или внешнее условие не получает PASS из-за зелёных автотестов (TZ §16.5). Синтетический стенд `velto_stand_smoke` не доказывает поведение на пилотных данных и пилотном развёртывании (B5).
+
+## Матрица
+
+| # | Условие | Pilot/GA | Статус | Доказательство | Владелец | Следующее действие |
+|---|---|---|---|---|---|---|
+| 1 | MFA ADR-058: автоматическая часть (enroll, verify, lockout, step-up reset) | Pilot (A1) | PASS | CI run 41195450245 (`462997e`); E2E шаги 2 и «wrong TOTP → 429 MFA_RATE_LIMITED» | Dev | — |
+| 2 | MFA M1: реальное приложение-аутентификатор, подключение и вход | Pilot (A1) | NOT_TESTED | `PILOT-MANUAL-ACCEPTANCE.md` §1 M1, результат пуст | PO | Пройти M1 на стенде, приложить скриншоты |
+| 3 | MFA M2: привилегированная роль в Telegram Mini App → 403 `MFA_WEB_LOGIN_REQUIRED` | Pilot (A1) | BLOCKED_EXTERNAL | нужен реальный Telegram-клиент и бот стенда | PO + QA | Получить бот/устройство, пройти M2 |
+| 4 | MFA M3: Mini App, истёкшая сессия и отзыв после сброса MFA | Pilot (A1) | BLOCKED_EXTERNAL | нужен реальный Telegram-клиент | PO + QA | Пройти M3 на устройстве |
+| 5 | MFA M4: повтор TOTP-кода в том же 30-секундном окне | Pilot (A1) | NOT_TESTED | §1 M4, результат пуст | PO | Пройти M4 в браузере |
+| 6 | Коды подключения MFA для существующих OWNER/SALES_DIRECTOR/CASHIER | Pilot (A8) | NOT_TESTED | журнал выдачи отсутствует | Ops + OWNER | `issue-mfa-enrollment-code.ts` на пилоте, журнал |
+| 7 | ADR-061 в браузере (restore, фильтр удалённых, блокеры удаления, gate movements) | Pilot (A2) | NOT_TESTED | проверены только API и e2e | PO + QA | §2 ручной приёмки, протокол в `docs/qa/` |
+| 8 | Корректность денег и склада: цены/НДС на сервере, резерв, выдача, счёт, FIFO, аванс, ledger = cachedBalance | Pilot | PASS | E2E 36 PASS / 1 BLOCKED (только S3) на синтетике; интеграционные тесты в CI run 41298257913 | Dev + QA | Повторить на пилотных данных после импорта (B5) |
+| 9 | Изоляция тенантов, RBAC 403 + аудит отказа | Pilot (§16.3) | PASS | E2E: токен A на id компании B → 404, `listLeak=false`; 403 + `auth.permission_denied`; restore drill: tenant smoke | Dev | — |
+| 10 | Идемпотентность платежей: код (CONFLICT, новый UNVERIFIABLE, `createRequest` в аудите, sync P2002 → REJECTED) | Pilot (A12) | PASS | isolated payments+sync 116/116 (5 файлов): identical replay, amount/customer/method → 409, legacy без AuditLog и без allocations → UNVERIFIABLE, 5 параллельных, cross-tenant, ledger/cachedBalance/FIFO до=после; sync REJECTED + аудит; miniapp offline 118/118 (FAILED, не удаляется); reviewer PASS, security-auditor PASS (2026-11-02) | Dev | — |
+| 11 | Идемпотентность платежей: CI на новом SHA | Pilot (A12) | PASS | `5678c1d`; CI run 41322829998 на `3be662f`: api 1239/1239, database 133+3 skip, miniapp 161/161, Semgrep, gitleaks success | Dev | — |
+| 12 | Legacy-платежи с 0 allocations, созданные между `841e56d` и фиксом → при replay `PAYMENT_IDEMPOTENCY_UNVERIFIABLE` | Pilot | NOT_TESTED | поведение безопасное (ручная сверка), объём на пилотных данных не измерен | PO | Решение PO: принять ручную сверку или иное |
+| 13 | Sales turnover: только DELIVERED/CLOSED, сумма поставленного | Pilot | PASS | дефект воспроизведён (`turnover-rule.test.ts` 218600 vs 68600) и исправлен; analytics 48/48; CI run 41322829998 | Dev | — |
+| 14 | Sales turnover по дате фактической поставки (решение PO 2026-11-01), периоды в `Company.timezone` | Pilot | PASS | `3be662f`: дата = MIN(SALE `Invoice.createdAt`), пишется в той же tx `deliver()`; без fallback на createdAt; `turnover-rule.test.ts`: создан 31.10 / доставлен 01.11 → нет в октябре, 1 раз в ноябре (sales, byDay, agents, top products, CSV, overview, dashboard); 31.10 19:30Z → 01.11 Ташкент; CLOSED 1 раз; 2 SALE-счёта → 1 раз; OPENING/CANCELLED нет; reviewer PASS (MED текст экспорта исправлен), security-auditor PASS; CI 41322829998 | Dev | Повторить на пилотных данных (B5). Нет защиты БД: unique `Invoice(orderId) WHERE kind='SALE'`, immutable `createdAt`, индекс — решение db-rls/PO. Заказы DELIVERED без SALE-счёта не попадают (на velto_dev 425 — только тестовые фикстуры, без `order.deliver`) |
+| 15 | Реальное S3/MinIO: EXCEL в bucket, SHA-256, приватность, 403 анонимно, 404 для чужой компании | Pilot (A3) | BLOCKED_EXTERNAL | Docker Hub `minio/minio` denied, `quay.io/minio/minio` — нет манифеста; 9 проверок не выполнены; in-memory stub не считается | Ops + QA | Доступ к образу/бинарнику MinIO или S3 стенда → §3 ручной приёмки |
+| 16 | EXCEL-регистр: ACK запрещён (API 409) | Pilot (A3) | PASS | E2E 16b: 409 `1C_EXPORT_REGISTER_NOT_ACKNOWLEDGEABLE` (API; UI без MinIO не проверен) | QA | Проверка UI входит в строку 15 |
+| 17 | Offline device matrix: 20 офлайн-заказов, обрыв, перезапуск, конфликт (TZ §16.2) | Pilot (A6) | BLOCKED_EXTERNAL | нет пилотных Android/iPhone; серверная часть: E2E 7-8, 7-8b, 7-8c, abort PASS | Field Ops + QA | `docs/OFFLINE-DEVICE-MATRIX.md`, §5–6 ручной приёмки |
+| 18 | 1С: реальная конфигурация и mapping v3 (v2 не подходит для НДС≠0) | Pilot (A4) | BLOCKED_EXTERNAL | E2E 16c: XML/CSV → FAILED `1C_EXPORT_UNSUPPORTED_COMBINATION`; реальных образцов нет | Бухгалтер + PO | `ACCOUNTANT-PILOT-PACK.md` → образцы → решение v3 → реальный импорт |
+| 19 | Бухгалтерская приёмка: HALF_UP, ставки НДС | Pilot (A5) | BLOCKED_EXTERNAL | `docs/parity/1C-ACCOUNTANT-ACCEPTANCE.md` не подписан | Бухгалтер клиента | Передать пакет, получить подпись |
+| 20 | Restore drill на стенде (локальный) | Pilot (A7) | PASS | `RESTORE-DRILL-STAND-2026-11-01.md`: 11/11, RTO 5 с, дамп 356K | Ops | — |
+| 21 | Ежедневный `backup.sh`: шифрование gpg, офсайт-копия, drill на стенде пилота | Pilot (A7) | NOT_TESTED | gpg нет, офсайт не настроен, `backup.sh` не запускался | Ops | Настроить gpg + офсайт, запустить, drill на пилотном стенде |
+| 22 | RPO ≤15 мин (WAL/PITR), RTO ≤4 ч на production-объёме | GA (B2) | NOT_TESTED | только `docs/ops/wal-pitr-plan.md` | Ops | Измерить на данных production-объёма |
+| 23 | Node.js на сервере ≥22.12 <27, PM2 использует этот node | Pilot (A10) | BLOCKED_EXTERNAL | версия на сервере неизвестна; стенд v24.22.1, boot guard прошёл | Ops | `node -v`, `pm2 describe velto-api` |
+| 24 | Secrets из `deploy/README.md` (`MFA_ENCRYPTION_KEY` и др.) | Pilot (A10) | NOT_TESTED | на сервере не проверялось | Ops | Сверить список secrets на сервере |
+| 25 | Permission backfill: dry-run → проверка → откат → разрешение → real run → API | Pilot (A9) | NOT_TESTED | выполнялся только на velto_dev | PO разрешает, Ops выполняет | Dry-run на пилотной БД, вывод в протокол |
+| 26 | Реальный Telegram Bot API: owner alerts, вход через initData | Pilot (A13) | BLOCKED_EXTERNAL | бот/токен стенда не предоставлены | QA | §4 ручной приёмки, лог/скриншот |
+| 27 | Уведомления OWNER (только своя компания, без reason) | Pilot | PASS | `owner-alerts.test.ts:94`, `owner-alerts-order-flow.test.ts:69`, `owner-alerts-audit.test.ts`; 0 строк в E2E ожидаемо (не было reversal/adjust) | Dev | Реальная доставка — строка 26 |
+| 28 | Защита данных TZ §11.5: data inventory, legal review, vendor register, DPA, notice, incident response | Pilot | NOT_TESTED | документов нет (gap) | PO + юрист | Составить инвентарь данных и реестр вендоров, юр. заключение |
+| 29 | F7 нагрузка на стенде, похожем на production (dashboard hit p95 <300 ms) | GA (B1, B6) | NOT_TESTED | локально warm hit p95 710 ms, стенд не измерялся | Dev + Ops | Нагрузочный прогон на стенде |
+| 30 | Подписи v0.9: Product, Accounting, Security (дата, build SHA, артефакт) | Pilot (A11) | BLOCKED_EXTERNAL | `docs/release/SIGNOFF-v0.9.md` — все UNSIGNED | PO, бухгалтер, Security | После закрытия строк выше |
