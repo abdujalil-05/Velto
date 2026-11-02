@@ -11,13 +11,16 @@ import { InvoicesController } from './invoices/invoices.controller';
 import { InvoicesService } from './invoices/invoices.service';
 import { PaymentsController } from './payments/payments.controller';
 import { PaymentsService } from './payments/payments.service';
+import { PaymentReconciliationController } from './payments/reconciliation/payment-reconciliation.controller';
+import { PaymentReconciliationService } from './payments/reconciliation/payment-reconciliation.service';
 import { AgingReportController } from './reports/aging-report.controller';
 import { AgingReportService } from './reports/aging-report.service';
 
 @Module({
   imports: [CustomersModule, NotificationsModule, DocumentNumberingModule, ReportConcurrencyModule],
-  controllers: [InvoicesController, PaymentsController, CashSessionsController, AgingReportController],
-  providers: [InvoicesService, PaymentsService, CashSessionsService, AgingReportService, AuditLogService, ReportExportService],
+  // PaymentReconciliationController before PaymentsController: literal /payments/reconciliations must win over /payments/:id.
+  controllers: [InvoicesController, PaymentReconciliationController, PaymentsController, CashSessionsController, AgingReportController],
+  providers: [InvoicesService, PaymentsService, PaymentReconciliationService, CashSessionsService, AgingReportService, AuditLogService, ReportExportService],
   // AgingReportService is reused by the Analytics module for the dashboard's
   // "top 10 qarzdor" list (9.3), per the note in aging-report.service.ts.
   exports: [PaymentsService, AgingReportService],

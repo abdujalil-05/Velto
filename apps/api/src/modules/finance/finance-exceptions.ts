@@ -290,3 +290,66 @@ export class PaymentOpeningNotReversibleException extends AppException {
     });
   }
 }
+
+/** PO 2026-11-02: no Payment with this clientId in the caller's company (RLS) — nothing to reconcile. */
+export class PaymentReconciliationPaymentNotFoundException extends AppException {
+  constructor(clientId: string) {
+    super(
+      HttpStatus.NOT_FOUND,
+      'PAYMENT_RECONCILIATION_PAYMENT_NOT_FOUND',
+      {
+        uz: "Bu clientId bilan to'lov topilmadi",
+        ru: 'Платёж с этим clientId не найден',
+        en: 'No payment found for this clientId',
+      },
+      { clientId },
+    );
+  }
+}
+
+/**
+ * PO 2026-11-02: the Payment exists but no `payment.create_rejected` audit row
+ * proves a rejected replay — nothing to reconcile. NOT_POSTED is never
+ * inferred from the absence of evidence.
+ */
+export class PaymentReconciliationNoRejectedIntentException extends AppException {
+  constructor(clientId: string) {
+    super(
+      HttpStatus.CONFLICT,
+      'PAYMENT_RECONCILIATION_NO_REJECTED_INTENT',
+      {
+        uz: "Bu clientId bo'yicha rad etilgan takroriy to'lov qayd etilmagan — solishtirish talab qilinmaydi",
+        ru: 'По этому clientId не зафиксирован отклонённый повторный платёж — сверка не требуется',
+        en: 'No rejected payment replay is recorded for this clientId — nothing to reconcile',
+      },
+      { clientId },
+    );
+  }
+}
+
+/** PO 2026-11-02: a different outcome is already recorded; decisions are append-only and never overwritten. */
+export class PaymentReconciliationContradictionException extends AppException {
+  constructor(clientId: string, existingOutcome: string) {
+    super(
+      HttpStatus.CONFLICT,
+      'PAYMENT_RECONCILIATION_CONTRADICTION',
+      {
+        uz: "Bu clientId bo'yicha boshqa qaror allaqachon qayd etilgan; uni o'zgartirib bo'lmaydi",
+        ru: 'По этому clientId уже зафиксировано другое решение; изменить его нельзя',
+        en: 'A different decision is already recorded for this clientId; it cannot be changed',
+      },
+      { clientId, existingOutcome },
+    );
+  }
+}
+
+/** PO 2026-11-02: NOT_POSTED_CONFIRMED requires an evidence reference (bank/cash document, ticket). */
+export class PaymentReconciliationEvidenceRequiredException extends AppException {
+  constructor() {
+    super(HttpStatus.BAD_REQUEST, 'PAYMENT_RECONCILIATION_EVIDENCE_REQUIRED', {
+      uz: "\"To'lov o'tkazilmagan\" qarori uchun dalil havolasi (evidenceRef) majburiy",
+      ru: 'Для решения «платёж не проведён» обязательна ссылка на подтверждение (evidenceRef)',
+      en: 'An evidence reference (evidenceRef) is required for NOT_POSTED_CONFIRMED',
+    });
+  }
+}
