@@ -96,3 +96,32 @@ describe('prisma pool vs limiter lanes', () => {
     expect(() => validateEnv({ ...base, PRISMA_POOL_SIZE: '29' })).toThrow(/PRISMA_POOL_SIZE/);
   });
 });
+
+describe('OFFLINE_KEK_SECRET placeholder guard', () => {
+  const PH = 'change-me-offline-kek-secret-min-32-characters-long';
+  const real = 'Zk3vQ9xL2mP7wR5tY8uN1bC4dF6gH0jKaS3eV9zX2cB5nM7q';
+  it.each(['production'])('rejects placeholders in %s without echoing them', (NODE_ENV) => {
+    for (const bad of [PH, 'REPLACE_ME_generate_with_openssl_rand_base64_48', 'ci-only-offline-kek-secret-min-32-chars-xx']) {
+      let msg = '';
+      try { validateEnv({ ...base, NODE_ENV, OFFLINE_KEK_SECRET: bad }); } catch (e) { msg = (e as Error).message; }
+      expect(msg).toContain('OFFLINE_KEK_SECRET');
+      expect(msg).not.toContain(bad);
+    }
+  });
+  it('rejects NODE_ENV=staging (enum, boot fails)', () => {
+    expect(() => validateEnv({ ...base, NODE_ENV: 'staging' })).toThrow();
+  });
+  it.each(['development', 'test'])('accepts placeholder in %s', (NODE_ENV) => {
+    expect(() => validateEnv({ ...base, NODE_ENV, OFFLINE_KEK_SECRET: PH })).not.toThrow();
+  });
+  it('accepts a random 48-char secret in production', () => {
+    expect(() => validateEnv({ ...base, NODE_ENV: 'production', OFFLINE_KEK_SECRET: real })).not.toThrow();
+  });
+  it('rejects a placeholder inside PREVIOUS_SECRETS in production, not echoing it', () => {
+    let msg = '';
+    try { validateEnv({ ...base, NODE_ENV: 'production', OFFLINE_KEK_SECRET: real, OFFLINE_KEK_VERSION: '2', OFFLINE_KEK_PREVIOUS_SECRETS: `1:${PH}` }); } catch (e) { msg = (e as Error).message; }
+    expect(msg).toContain('OFFLINE_KEK_PREVIOUS_SECRETS');
+    expect(msg).not.toContain(PH);
+    expect(() => validateEnv({ ...base, NODE_ENV: 'development', OFFLINE_KEK_VERSION: '2', OFFLINE_KEK_PREVIOUS_SECRETS: `1:${PH}` })).not.toThrow();
+  });
+});
