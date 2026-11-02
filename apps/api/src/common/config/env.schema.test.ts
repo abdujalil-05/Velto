@@ -18,6 +18,7 @@ const base = {
   REDIS_URL: 'redis://x',
   JWT_ACCESS_SECRET: 'x'.repeat(32),
   MFA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
+  OFFLINE_KEK_SECRET: 'k'.repeat(32),
   S3_ENDPOINT: 'http://x',
   S3_ACCESS_KEY: 'a',
   S3_SECRET_KEY: 'b',
@@ -25,6 +26,12 @@ const base = {
 };
 
 describe('env.schema queue timeouts', () => {
+  it('rejects a missing or short OFFLINE_KEK_SECRET', () => {
+    const { OFFLINE_KEK_SECRET: _omit, ...without } = base;
+    expect(() => validateEnv(without)).toThrow();
+    expect(() => validateEnv({ ...base, OFFLINE_KEK_SECRET: 'k'.repeat(31) })).toThrow();
+  });
+
   it('applies defaults', () => {
     const env = validateEnv(base);
     expect(env.QUEUE_ENQUEUE_TIMEOUT_MS).toBe(3000);

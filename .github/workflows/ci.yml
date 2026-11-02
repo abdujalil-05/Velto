@@ -17,6 +17,8 @@ env:
   DATABASE_SYSTEM_URL: postgresql://velto_system:velto_system@localhost:5432/velto_ci?schema=public
   REDIS_URL: redis://localhost:6379
   JWT_ACCESS_SECRET: ci-only-secret-not-for-real-use-min-32-chars
+  OFFLINE_KEK_SECRET: ci-only-offline-kek-secret-min-32-chars-xx
+  OFFLINE_KEK_VERSION: "1"
   SEED_DEMO_PASSWORD: Velto#CI2026
   # test/order-flow.e2e.test.ts boots the full AppModule, which fails env
   # validation (env.schema.ts) without these — no real S3 traffic happens in

@@ -227,3 +227,14 @@ export class MfaServiceUnavailableException extends AppException {
     });
   }
 }
+
+/** Requested offline KEK version is unknown or retired; the client must re-login to obtain the current wrapped vault key. */
+export class OfflineKekVersionRetiredException extends AppException {
+  constructor() {
+    super(HttpStatus.GONE, 'OFFLINE_KEK_VERSION_RETIRED', {
+      uz: "Oflayn kalit versiyasi eskirgan. Qayta kiring.",
+      ru: 'Версия офлайн-ключа устарела. Войдите снова.',
+      en: 'This offline key version is retired. Please log in again.',
+    });
+  }
+}

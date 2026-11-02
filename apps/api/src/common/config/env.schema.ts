@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { decodeEncryptionKey } from '../crypto/secret-box';
+import { parsePreviousKekSecrets } from './offline-kek-keyring';
 
 /** Single source of the defaults; trace-job.ts / export-1c.constants.ts fall back to these. */
 export const DEFAULT_QUEUE_ENQUEUE_TIMEOUT_MS = 3000;
@@ -30,6 +31,11 @@ export const envSchema = z.object({
   JWT_REFRESH_TTL: z.string().default('30d'),
   // ADR-058: AES-256-GCM key (base64 of exactly 32 bytes) sealing TOTP secrets. Required, no default.
   MFA_ENCRYPTION_KEY: z.string().refine((v) => decodeEncryptionKey(v) !== null, 'must be base64 of exactly 32 bytes'),
+  // Offline KEK root secret (HMAC key for GET /auth/offline-kek). Required, no default; rotating it invalidates every wrapped on-device DEK.
+  OFFLINE_KEK_SECRET: z.string().min(32),
+  // Keyring: OFFLINE_KEK_SECRET is the secret for OFFLINE_KEK_VERSION; older versions stay requestable via "<ver>:<secret>;..." until removed (then 410).
+  OFFLINE_KEK_VERSION: z.coerce.number().int().min(1).default(1),
+  OFFLINE_KEK_PREVIOUS_SECRETS: z.string().optional(),
   TELEGRAM_BOT_TOKEN: z.string().default(''),
   // Telegram initData replay policy — rationale next to LoginRateLimiterService.recordTelegramInitDataUse.
   TELEGRAM_INITDATA_MAX_AGE_SECONDS: z.coerce.number().int().positive().default(600),
@@ -137,6 +143,10 @@ export const envSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
 })
+  .refine((e) => !parsePreviousKekSecrets(e.OFFLINE_KEK_PREVIOUS_SECRETS, e.OFFLINE_KEK_VERSION).error, {
+    path: ['OFFLINE_KEK_PREVIOUS_SECRETS'],
+    message: 'invalid keyring (format "<ver>:<secret>;...", secrets >= 32 chars, versions < OFFLINE_KEK_VERSION, no duplicates)',
+  })
   .refine((e) => e.REPORT_TENANT_MAX_CONCURRENCY <= e.REPORT_MAX_CONCURRENCY, {
     path: ['REPORT_TENANT_MAX_CONCURRENCY'],
     message: 'must be <= REPORT_MAX_CONCURRENCY',

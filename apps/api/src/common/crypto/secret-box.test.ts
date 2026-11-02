@@ -35,7 +35,7 @@ describe('SecretBox (AES-256-GCM)', () => {
 describe('env MFA_ENCRYPTION_KEY', () => {
   const base = {
     DATABASE_URL: 'postgresql://x', DATABASE_SYSTEM_URL: 'postgresql://x', REDIS_URL: 'redis://x',
-    JWT_ACCESS_SECRET: 'x'.repeat(32), S3_ENDPOINT: 'http://x', S3_ACCESS_KEY: 'a', S3_SECRET_KEY: 'b', S3_BUCKET: 'c',
+    JWT_ACCESS_SECRET: 'x'.repeat(32), OFFLINE_KEK_SECRET: 'k'.repeat(32), S3_ENDPOINT: 'http://x', S3_ACCESS_KEY: 'a', S3_SECRET_KEY: 'b', S3_BUCKET: 'c',
   };
   it('is required and must decode to 32 bytes', () => {
     expect(() => validateEnv(base)).toThrow();

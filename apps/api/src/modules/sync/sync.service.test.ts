@@ -594,7 +594,7 @@ describe('SyncService (integration, real Postgres + RLS)', () => {
     });
 
     it('env schema: SYNC_PUSH_MAX_BATCH defaults to 20 and is bounded 1..100', () => {
-      const base = { DATABASE_URL: 'x', DATABASE_SYSTEM_URL: 'x', REDIS_URL: 'x', JWT_ACCESS_SECRET: 'x'.repeat(32), MFA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'), S3_ENDPOINT: 'x', S3_ACCESS_KEY: 'x', S3_SECRET_KEY: 'x', S3_BUCKET: 'x' };
+      const base = { DATABASE_URL: 'x', DATABASE_SYSTEM_URL: 'x', REDIS_URL: 'x', JWT_ACCESS_SECRET: 'x'.repeat(32), MFA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'), OFFLINE_KEK_SECRET: 'k'.repeat(32), S3_ENDPOINT: 'x', S3_ACCESS_KEY: 'x', S3_SECRET_KEY: 'x', S3_BUCKET: 'x' };
       expect(envSchema.parse(base).SYNC_PUSH_MAX_BATCH).toBe(20);
       expect(envSchema.parse({ ...base, SYNC_PUSH_MAX_BATCH: '50' }).SYNC_PUSH_MAX_BATCH).toBe(50);
       expect(envSchema.safeParse({ ...base, SYNC_PUSH_MAX_BATCH: '0' }).success).toBe(false);

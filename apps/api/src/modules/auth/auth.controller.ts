@@ -1,4 +1,4 @@
-import { Body, Controller, ForbiddenException, Get, Headers, HttpCode, HttpStatus, Post, Req, Res } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Headers, HttpCode, HttpStatus, Post, Query, Req, Res } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -6,6 +6,9 @@ import { Public } from '../../common/decorators/public.decorator';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { SessionExpiredException } from '../../common/auth/auth-exceptions';
 import { AuthService, type TelegramWebhookUpdate } from './auth.service';
+import { Throttle } from '@nestjs/throttler';
+import { TenantTx } from '../../common/tenant/tenant-tx-options.decorator';
+import { OfflineKekQueryDto } from './dto/offline-kek-query.dto';
 import { ConfirmPasswordResetDto } from './dto/confirm-password-reset.dto';
 import { LoginDto } from './dto/login.dto';
 import { LogoutDto } from './dto/logout.dto';
@@ -14,6 +17,7 @@ import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
 import { SelectCompanyDto } from './dto/select-company.dto';
 import { SelectResetAccountDto } from './dto/select-reset-account.dto';
 import { TelegramAuthDto } from './dto/telegram-auth.dto';
+import { OfflineKekService, type OfflineKek } from './offline-kek.service';
 import { PasswordResetService } from './password-reset.service';
 import { REFRESH_COOKIE_NAME, requestMeta, setRefreshCookie, withoutRefreshToken } from './session-http';
 import { AllowDuringMaintenance } from '../../common/maintenance/allow-during-maintenance.decorator';
@@ -24,6 +28,7 @@ export class AuthController {
     private readonly authService: AuthService,
     private readonly configService: ConfigService,
     private readonly passwordResetService: PasswordResetService,
+    private readonly offlineKekService: OfflineKekService,
   ) {}
 
   @Public()
@@ -152,5 +157,15 @@ export class AuthController {
   @Get('me')
   me(@CurrentUser() user: AuthenticatedUser) {
     return user;
+  }
+
+  // Identity comes only from the authenticated user (never query/body). Any active authenticated user;
+  // the interceptor already re-read the user from DB (RLS-bound company membership). Handler scope: no open
+  // request tx, so denial audits persist. Cache headers are set by NoStoreMiddleware (also covers errors).
+  @Get('offline-kek')
+  @TenantTx({ scope: 'handler' })
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  offlineKek(@CurrentUser() user: AuthenticatedUser, @Query() query: OfflineKekQueryDto, @Req() req: Request): Promise<OfflineKek> {
+    return this.offlineKekService.issue(user, query.version, requestMeta(req).ip);
   }
 }

@@ -3,6 +3,7 @@ import type Redis from 'ioredis';
 import { REDIS_CLIENT } from '../../common/redis/redis.module';
 import { failClosedOnRedis } from '../../common/redis/redis-unavailable';
 import { TooManyLoginAttemptsException } from '../../common/auth/auth-exceptions';
+import { RateLimitedException } from '../../common/throttle/user-throttler.guard';
 
 const WINDOW_SECONDS = 15 * 60;
 const DELAY_AFTER = 5; // SEC-010..019: kechikish 5 urinishdan keyin
@@ -84,6 +85,19 @@ export class LoginRateLimiterService {
   recordSuccess(phone: string): Promise<void> {
     return failClosedOnRedis(async () => {
       await this.redis.del(this.key(phone));
+    });
+  }
+
+  /**
+   * Fixed-window per-key limiter (atomic INCR+EXPIRE). Over `limit` within `windowSeconds` => RateLimitedException (429).
+   * Redis error => 503 (fail-closed, ADR-050).
+   */
+  hit(key: string, limit: number, windowSeconds: number): Promise<void> {
+    return failClosedOnRedis(async () => {
+      const count = Number(
+        await this.redis.eval("local c = redis.call('INCR', KEYS[1]) if c == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end return c", 1, key, windowSeconds),
+      );
+      if (count > limit) throw new RateLimitedException();
     });
   }
 }
