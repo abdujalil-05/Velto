@@ -33,13 +33,10 @@ function readEnvFile(file) {
   return out;
 }
 
-// `.env` is the developer's local file and stays pointed at the dev database;
-// `.env.production.local` (gitignored, chmod 600) holds this deployment's real
-// credentials and wins on every key it defines. Layering rather than replacing
-// means a var added to `.env.example`/`.env` later still has a value here
-// instead of failing env.schema.ts validation at boot.
+// Only `.env.production.local` (gitignored, chmod 600) is read: layering the dev
+// `.env` under it would let a key missing in production silently take the
+// dev/example value. A missing var must instead fail env.schema.ts at boot.
 const env = {
-  ...readEnvFile(path.join(root, '.env')),
   ...readEnvFile(path.join(root, '.env.production.local')),
   NODE_ENV: 'production',
 };
@@ -47,6 +44,9 @@ const env = {
 // deploy.sh) — the running API must never hold them.
 delete env.DATABASE_MIGRATE_URL;
 delete env.DATABASE_ADMIN_URL;
+// Backup key must never live in app processes (root-only file, used by deploy.sh/backup.sh only).
+delete env.BACKUP_PASSPHRASE;
+delete env.BACKUP_PASSPHRASE_FILE;
 
 // The two Next.js processes get NONE of the above. They need nothing from it:
 // every value they read is a NEXT_PUBLIC_* one, inlined into the bundle at

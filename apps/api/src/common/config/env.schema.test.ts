@@ -115,7 +115,7 @@ describe('OFFLINE_KEK_SECRET placeholder guard', () => {
     expect(() => validateEnv({ ...base, NODE_ENV, OFFLINE_KEK_SECRET: PH })).not.toThrow();
   });
   it('accepts a random 48-char secret in production', () => {
-    expect(() => validateEnv({ ...base, NODE_ENV: 'production', OFFLINE_KEK_SECRET: real })).not.toThrow();
+    expect(() => validateEnv({ ...base, NODE_ENV: 'production', OFFLINE_KEK_SECRET: real, REDIS_URL: 'redis://:Rnd0mRedisPw@x' })).not.toThrow();
   });
   it('rejects a placeholder inside PREVIOUS_SECRETS in production, not echoing it', () => {
     let msg = '';
@@ -123,5 +123,41 @@ describe('OFFLINE_KEK_SECRET placeholder guard', () => {
     expect(msg).toContain('OFFLINE_KEK_PREVIOUS_SECRETS');
     expect(msg).not.toContain(PH);
     expect(() => validateEnv({ ...base, NODE_ENV: 'development', OFFLINE_KEK_VERSION: '2', OFFLINE_KEK_PREVIOUS_SECRETS: `1:${PH}` })).not.toThrow();
+  });
+});
+
+describe('production example-credential guard', () => {
+  const real = 'Zk3vQ9xL2mP7wR5tY8uN1bC4dF6gH0jKaS3eV9zX2cB5nM7q';
+  const prod = { ...base, NODE_ENV: 'production', OFFLINE_KEK_SECRET: real, JWT_ACCESS_SECRET: real };
+  const bad: Array<[string, string]> = [
+    ['JWT_ACCESS_SECRET', 'change-me-access-secret-min-32-characters-long'],
+    ['JWT_ACCESS_SECRET', 'ci-only-secret-not-for-real-use-min-32-chars'],
+    ['S3_ACCESS_KEY', 'velto'],
+    ['S3_ACCESS_KEY', 'velto-ci'],
+    ['S3_ACCESS_KEY', 'minioadmin'],
+    ['S3_SECRET_KEY', 'velto12345'],
+    ['S3_SECRET_KEY', 'velto-ci-secret'],
+    ['S3_SECRET_KEY', 'minioadmin'],
+    ['DATABASE_URL', 'postgresql://velto_app:velto_app@localhost:5433/velto_dev'],
+    ['DATABASE_SYSTEM_URL', 'postgresql://velto_system:velto_system@localhost:5433/velto_dev'],
+    ['DATABASE_URL', 'postgresql://velto:velto@localhost:5432/velto_ci'],
+    ['REDIS_URL', 'redis://:velto@localhost:6379'],
+  ];
+  it.each(bad)('rejects %s=%s in production without echoing it', (key, value) => {
+    let msg = '';
+    try { validateEnv({ ...prod, [key]: value }); } catch (e) { msg = (e as Error).message; }
+    expect(msg).toContain(key);
+    expect(msg).not.toContain(value);
+  });
+  it.each(['development', 'test'])('accepts the same examples in %s', (NODE_ENV) => {
+    const env: Record<string, string> = { ...base, NODE_ENV };
+    for (const [k, v] of bad) env[k] = v;
+    expect(() => validateEnv(env)).not.toThrow();
+  });
+  it('accepts real values in production', () => {
+    expect(() => validateEnv({ ...prod, DATABASE_URL: 'postgresql://velto_app:Rnd0mPw@db:5432/velto', REDIS_URL: 'redis://:Rnd0mRedisPw@localhost:6379' })).not.toThrow();
+  });
+  it('rejects a REDIS_URL without a password in production', () => {
+    expect(() => validateEnv({ ...prod, REDIS_URL: 'redis://localhost:6379' })).toThrow(/REDIS_URL/);
   });
 });

@@ -20,7 +20,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 PM2_APPS=(velto-api velto-web velto-miniapp)
-BACKUP_DIR="${VELTO_BACKUP_DIR:-/root}"
+BACKUP_DIR="${VELTO_BACKUP_DIR:-/var/backups/velto}"
 
 step() { printf '\n\033[1;36m==> %s\033[0m\n' "$1"; }
 
@@ -41,12 +41,22 @@ set +a
 : "${DATABASE_MIGRATE_URL:?DATABASE_MIGRATE_URL (schema-owner role) is required for prisma migrate deploy}"
 [[ "$DATABASE_MIGRATE_URL" != "$DATABASE_URL" ]] || { echo "DATABASE_MIGRATE_URL must differ from DATABASE_URL (owner vs app role)" >&2; exit 1; }
 
-step "Backing up the database"
-# pg_dump must run as velto_system: the app role is subject to FORCE ROW LEVEL
-# SECURITY and cannot read AuditLog. Strip the ?schema=... query pg_dump rejects.
-BACKUP="$BACKUP_DIR/velto-backup-$(date +%Y%m%d-%H%M%S).sql"
-pg_dump "${DATABASE_SYSTEM_URL%%\?*}" -f "$BACKUP"
-echo "  -> $BACKUP ($(du -h "$BACKUP" | cut -f1))"
+step "Backing up the database (encrypted, verified)"
+# Delegates to deploy/backup/backup.sh: pg_dump -Fc as velto_system -> gpg AES256 -> verified + .sha256.
+# Needs BACKUP_PASSPHRASE_FILE in the deploy shell's environment: a root-only file OUTSIDE the repo
+# (e.g. /etc/velto/backup.pass, chmod 600). Do NOT put it in .env.production.local (ecosystem.config.js feeds that to PM2 apps). A failed
+# backup aborts the deploy BEFORE install/migrate (set -e + pipefail).
+[[ -n "${BACKUP_PASSPHRASE_FILE:-}" ]] || { echo "set BACKUP_PASSPHRASE_FILE (root-only file outside the repo, e.g. /etc/velto/backup.pass): plaintext backups are no longer written" >&2; exit 1; }
+unset BACKUP_PASSPHRASE
+export BACKUP_DIR
+BACKUP_LOG="$(mktemp)"
+cleanup_backup_log() { rm -f "$BACKUP_LOG"; }
+trap_prev="$(trap -p EXIT | sed -E "s/^trap -- '(.*)' EXIT$/\1/")"
+trap "${trap_prev:+$trap_prev; }cleanup_backup_log" EXIT
+bash "$ROOT/deploy/backup/backup.sh" | tee "$BACKUP_LOG"
+BACKUP="$(grep '^BACKUP_FILE=' "$BACKUP_LOG" | tail -n1)"; BACKUP="${BACKUP#BACKUP_FILE=}"
+[[ -s "$BACKUP" ]] || { echo "backup file not found after backup.sh: '$BACKUP'" >&2; exit 1; }
+echo "  -> $BACKUP (+ .sha256)"
 
 step "Installing dependencies"
 pnpm install --frozen-lockfile
@@ -90,8 +100,13 @@ if [[ $FAILED -ne 0 ]]; then
   echo "Smoke test failed — recent errors:" >&2
   pm2 logs "${PM2_APPS[@]}" --err --lines 20 --nostream 2>&1 | tail -30 >&2
   echo
-  echo "Database backup for rollback: $BACKUP" >&2
+  echo "Encrypted DB backup for rollback: $BACKUP" >&2
+  echo "Restore into a SEPARATE database (never over prod):" >&2
+  echo "  createdb velto_restore   # then: export RESTORE_DB_URL=postgresql://<owner>@<host>/velto_restore" >&2
+  echo "  gpg --batch --pinentry-mode loopback --passphrase-file \"\$BACKUP_PASSPHRASE_FILE\" --decrypt \"$BACKUP\" | pg_restore --no-owner -d \"\$RESTORE_DB_URL\"" >&2
+  echo "  Note: switching prod to the restored DB is a manual, separately approved step." >&2
+  echo "  (verify first: cd \"$(dirname "$BACKUP")\" && sha256sum -c \"$(basename "$BACKUP").sha256\")" >&2
   exit 1
 fi
 
-printf '\n\033[1;32mDeploy OK\033[0m — backup: %s\n' "$BACKUP"
+printf '\n\033[1;32mDeploy OK\033[0m — encrypted backup: %s\n' "$BACKUP"

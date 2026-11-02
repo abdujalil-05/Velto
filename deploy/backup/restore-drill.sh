@@ -36,7 +36,7 @@ TMP="$(mktemp -d)"; chmod 700 "$TMP"
 RESULTS=(); FAILS=0
 q() { psql "$1" -X -v ON_ERROR_STOP=1 -Atq -c "$2"; }
 rec() { # name status detail
-  RESULTS+=("| $1 | $2 | $3 |"); [[ "$2" == PASS ]] || FAILS=$((FAILS+1)); printf '[drill] %-4s %s %s\n' "$2" "$1" "$3"
+  RESULTS+=("| $1 | $2 | $3 |"); [[ "$2" == PASS || "$2" == SKIP ]] || FAILS=$((FAILS+1)); printf '[drill] %-4s %s %s\n' "$2" "$1" "$3"
 }
 now() { date +%s; }
 drop_db() { q "$ADMIN_URL" "DROP DATABASE IF EXISTS \"$DB\" WITH (FORCE)" >/dev/null 2>&1; }
@@ -133,6 +133,10 @@ SM="$(q "$DRILL_SYS" "$STOCK_SQL")"
 if [[ "$SM" == 0/* ]]; then rec "StockLevel = sum(StockMovement)" PASS "mismatch/total = $SM"
 elif [[ "${DRILL_ALLOW_SOURCE_DRIFT:-0}" == 1 && -s "$TMP/stock.src" && "$SM" == "$(tr -d '\r\n' < "$TMP/stock.src")" ]]; then
   rec "StockLevel = sum(StockMovement)" PASS "restore faithful: mismatch/total $SM identical to SOURCE (pre-existing drift accepted by DRILL_ALLOW_SOURCE_DRIFT=1; dev/test data only)"
+elif [[ -n "${DUMP_FILE:-}" && "${DRILL_ALLOW_SOURCE_DRIFT:-0}" == 1 ]]; then
+  # DUMP_FILE mode has no source snapshot: the check above is an internal invariant of the restored DB only.
+  rec "StockLevel = sum(StockMovement)" SKIP "mismatch/total = $SM; DUMP_FILE has no source to prove drift is pre-existing (DRILL_ALLOW_SOURCE_DRIFT=1, dev/test data only)"
+elif [[ -n "${DUMP_FILE:-}" ]]; then rec "StockLevel = sum(StockMovement)" FAIL "internal invariant violated in restored DB: mismatch/total = ${SM:-error} (no source snapshot in DUMP_FILE mode; dev data only: DRILL_ALLOW_SOURCE_DRIFT=1 -> SKIP)"
 else rec "StockLevel = sum(StockMovement)" FAIL "mismatch/total = ${SM:-error} (source: $(tr -d '\r\n' < "$TMP/stock.src" 2>/dev/null || echo n/a))"; fi
 
 # 7. allocation sums

@@ -36,26 +36,33 @@ mkdir -p "$BACKUP_DIR"; chmod 700 "$BACKUP_DIR"
 TS="$(date +%Y%m%d-%H%M%S)"
 DUMP="$BACKUP_DIR/velto-db-$TS.dump.gpg"
 GLOB="$BACKUP_DIR/velto-globals-$TS.sql.gpg"
-cleanup() { [[ "$CLEAN_PASS" == 1 ]] && rm -f "$PASSFILE"; [[ "${OK:-0}" == 1 ]] || rm -f "$DUMP" "$GLOB"; }
+cleanup() { [[ "$CLEAN_PASS" == 1 ]] && rm -f "$PASSFILE"; [[ "${OK:-0}" == 1 ]] || rm -f "$DUMP" "$GLOB" "$DUMP.sha256" "$GLOB.sha256"; }
 trap cleanup EXIT
+
+# Portable sha256 (Linux sha256sum / macOS shasum). Sidecar uses the bare file name so `sha256sum -c` works from the backup dir.
+if command -v sha256sum >/dev/null; then SHA=(sha256sum); else SHA=(shasum -a 256); fi
+seal() { local d b; d="$(dirname "$1")"; b="$(basename "$1")"; (cd "$d" && "${SHA[@]}" "$b" > "$b.sha256" && "${SHA[@]}" -c "$b.sha256" >/dev/null) || { echo "[backup] sha256 FAILED for $1" >&2; return 1; }; }
 
 enc() { gpg --batch --yes --pinentry-mode loopback --passphrase-file "$PASSFILE" --symmetric --cipher-algo AES256 -o "$1"; }
 dec() { gpg --batch --quiet --pinentry-mode loopback --passphrase-file "$PASSFILE" --decrypt "$1"; }
 
 echo "[backup] pg_dump -Fc -> $DUMP"
 pg_dump -Fc "${DATABASE_SYSTEM_URL%%\?*}" | enc "$DUMP"
-# Verify: decrypts and is a readable custom-format archive with a TOC.
-dec "$DUMP" | pg_restore -l >/dev/null || { echo "[backup] verification FAILED for $DUMP" >&2; exit 1; }
+# Verify by streaming (no plaintext on disk): pg_restore -l may stop reading early => drain stdin to avoid SIGPIPE/pipefail on dec.
+dec "$DUMP" | { pg_restore -l >/dev/null; rc=$?; cat >/dev/null; exit $rc; } || { echo "[backup] verification FAILED for $DUMP" >&2; exit 1; }
+seal "$DUMP"
 
 if [[ -n "${BACKUP_GLOBALS_URL:-}" ]]; then
   echo "[backup] pg_dumpall --globals-only -> $GLOB"
   pg_dumpall --globals-only -d "${BACKUP_GLOBALS_URL%%\?*}" | enc "$GLOB"
-  dec "$GLOB" | grep -q 'CREATE ROLE' || { echo "[backup] globals verification FAILED" >&2; exit 1; }
+  dec "$GLOB" | grep 'CREATE ROLE' >/dev/null || { echo "[backup] globals verification FAILED" >&2; exit 1; }
+  seal "$GLOB"
 else
   echo "[backup] WARN: BACKUP_GLOBALS_URL unset -> globals skipped (roles come from packages/database/scripts/provision-roles.sql)" >&2
 fi
 OK=1
 
-echo "[backup] retention: deleting velto-*.gpg older than $RETENTION days"
-find "$BACKUP_DIR" -maxdepth 1 -type f \( -name 'velto-db-*.gpg' -o -name 'velto-globals-*.gpg' \) -mtime +"$RETENTION" -print -delete
+echo "[backup] retention: deleting velto-*.gpg and .gpg.sha256 older than $RETENTION days"
+find "$BACKUP_DIR" -maxdepth 1 -type f \( -name 'velto-db-*.gpg' -o -name 'velto-globals-*.gpg' -o -name 'velto-db-*.gpg.sha256' -o -name 'velto-globals-*.gpg.sha256' \) -mtime +"$RETENTION" -print -delete
 echo "[backup] OK $(du -h "$DUMP" | cut -f1) $DUMP"
+echo "BACKUP_FILE=$DUMP"  # last line: deploy.sh parses this (path may contain spaces)

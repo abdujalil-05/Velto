@@ -1,11 +1,6 @@
 /** Parses OFFLINE_KEK_PREVIOUS_SECRETS ("<ver>:<secret>;<ver>:<secret>"). Returns error text instead of throwing; never echoes secrets. */
 export const MIN_OFFLINE_KEK_SECRET_LENGTH = 32;
 
-/** Known example/CI placeholders that must never be a production HMAC root. */
-export function isPlaceholderKekSecret(secret: string): boolean {
-  return /^change-me/i.test(secret) || secret.includes('REPLACE_ME') || /^ci-only-/i.test(secret);
-}
-
 export function parsePreviousKekSecrets(raw: string | undefined, currentVersion: number): { map: Map<number, string>; error?: string } {
   const map = new Map<number, string>();
   if (!raw || raw.trim() === '') return { map };

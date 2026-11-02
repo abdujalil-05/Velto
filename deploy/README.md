@@ -73,6 +73,20 @@ pm2 start deploy/ecosystem.config.js
 pm2 save
 ```
 
+## Pilot server prerequisites
+
+- `gpg` o'rnatilgan (`gpg --version`); zaxira shifrlash shu bilan.
+- Redis: `requirepass` bor, `appendonly yes`, `maxmemory-policy noeviction` (BullMQ kalitlari o'chirilmasligi uchun). `redis-cli CONFIG GET maxmemory-policy`.
+- `pm2-logrotate` o'rnatilgan (`pm2 install pm2-logrotate`).
+- PM2 Node >=22.12 <27 bilan ishlaydi: `pm2 describe velto-api` -> `node version`.
+- Rol nomlari: `provision-roles.sql` standarti `velto_owner`/`velto_app`/`velto_system`. Bu hostda `velto_app_system` / `velto_app_owner` ishlatiladi (pastdagi "Postgres rollari" va runbook, `sed` bilan almashtirilgan nusxa) — README to'g'ri, repo skripti boshqa hostlar uchun.
+- Zaxira (`deploy.sh` ham shuni chaqiradi): `BACKUP_DIR` (mode 700), `BACKUP_PASSPHRASE_FILE` (chmod 600, repo'dan tashqarida; ilova secret'laridan alohida), `DATABASE_SYSTEM_URL`. Har `.gpg` yonida `.sha256` bo'ladi.
+- Kunlik cron (root, repo'siz saqlanadigan env fayldan):
+  `15 2 * * * set -a; . /etc/velto/backup.env; set +a; /root/projects/parviz_aka/Velto/deploy/backup/backup.sh >>/var/log/velto-backup.log 2>&1 || echo "velto backup FAILED" | logger -p user.err`
+  (systemd timer ham bo'ladi; nol-bo'lmagan exit = alert, TZ 12.3).
+- Offsite nusxa, alohida kredensiallar bilan, provayderdan mustaqil: masalan `rclone copy /var/backups/velto offsite:velto-backups --include 'velto-*.gpg*'` yoki `aws s3 cp`. Bucket kaliti faqat yozish (PutObject) huquqli, DELETE/overwrite yo'q (o'chirish faqat lifecycle/alohida admin orqali), kalit serverdagi DB/ilova kredensiallaridan boshqa. Passphrase offsite'ga YUBORILMAYDI (alohida saqlanadi).
+- Restore sinovi: `deploy/backup/restore-drill.sh` (faqat lokal/staging).
+
 ## Yangilash (deploy)
 
 ```bash
@@ -224,7 +238,7 @@ qaytarish" va'da qilinmaydi.
 
 ## MinIO
 
-Bucket: `velto-files`. Anonim siyosat FAQAT `s3:GetObject` (`deploy/minio-policy.json`).
+Bucket: `velto-files`. Anonim siyosat FAQAT `s3:GetObject` va FAQAT `products/*` prefiksi (mahsulot rasmlari) uchun (`deploy/minio-policy.json`); `exports/`, `imports/`, `opening/` anonim o'qilmaydi (403).
 
 ⚠️ `mc anonymous set download` ISHLATMANG — u `s3:GetObject` bilan birga
 `s3:ListBucket` ni ham beradi, ya'ni `GET /velto-files/?list-type=2` butun
@@ -234,8 +248,10 @@ izolyatsiyasini obyekt qatlamida bekor qiladi. Siyosatni shunday o'rnating:
 
 ```bash
 mc anonymous set-json deploy/minio-policy.json <alias>/velto-files
-# tekshirish: ro'yxatlash 403, aniq obyekt 200 bo'lishi kerak
+# tekshirish: ro'yxatlash 403, products/* obyekti 200, exports/1c/* obyekti 403
 curl -o /dev/null -w '%{http_code}\n' 'https://auto-message.uz/velto-files/?list-type=2'   # 403
+curl -o /dev/null -w '%{http_code}\n' 'https://auto-message.uz/velto-files/products/<companyId>/<mavjud-rasm>'   # 200
+curl -o /dev/null -w '%{http_code}\n' 'https://auto-message.uz/velto-files/exports/1c/<companyId>/<mavjud-fayl>'   # 403
 ```
 
 `StorageService` imzolanmagan (presigned emas) public URL qaytaradi —

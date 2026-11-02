@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { decodeEncryptionKey } from '../crypto/secret-box';
-import { isPlaceholderKekSecret, parsePreviousKekSecrets } from './offline-kek-keyring';
+import { parsePreviousKekSecrets } from './offline-kek-keyring';
+import { hasExampleUrlPassword, hasUrlPassword, isExampleS3Credential, isPlaceholderSecret } from './secret-placeholders';
 
 /** Single source of the defaults; trace-job.ts / export-1c.constants.ts fall back to these. */
 export const DEFAULT_QUEUE_ENQUEUE_TIMEOUT_MS = 3000;
@@ -147,14 +148,46 @@ export const envSchema = z.object({
     path: ['OFFLINE_KEK_PREVIOUS_SECRETS'],
     message: 'invalid keyring (format "<ver>:<secret>;...", secrets >= 32 chars, versions < OFFLINE_KEK_VERSION, no duplicates)',
   })
-  .refine((e) => e.NODE_ENV !== 'production' || !isPlaceholderKekSecret(e.OFFLINE_KEK_SECRET), {
+  .refine((e) => e.NODE_ENV !== 'production' || !isPlaceholderSecret(e.JWT_ACCESS_SECRET), {
+    path: ['JWT_ACCESS_SECRET'],
+    message: 'must not be an example/CI placeholder in production; generate with: openssl rand -base64 48',
+  })
+  .refine((e) => e.NODE_ENV !== 'production' || !isPlaceholderSecret(e.MFA_ENCRYPTION_KEY), {
+    path: ['MFA_ENCRYPTION_KEY'],
+    message: 'must not be an example/CI placeholder in production; generate with: openssl rand -base64 32',
+  })
+  .refine((e) => e.NODE_ENV !== 'production' || !isExampleS3Credential(e.S3_ACCESS_KEY, 'access'), {
+    path: ['S3_ACCESS_KEY'],
+    message: 'must not be an example/CI credential in production',
+  })
+  .refine((e) => e.NODE_ENV !== 'production' || !isExampleS3Credential(e.S3_SECRET_KEY, 'secret'), {
+    path: ['S3_SECRET_KEY'],
+    message: 'must not be an example/CI credential in production',
+  })
+  .refine((e) => e.NODE_ENV !== 'production' || !hasExampleUrlPassword(e.DATABASE_URL), {
+    path: ['DATABASE_URL'],
+    message: 'must not use an example/CI password in production',
+  })
+  .refine((e) => e.NODE_ENV !== 'production' || !hasExampleUrlPassword(e.DATABASE_SYSTEM_URL), {
+    path: ['DATABASE_SYSTEM_URL'],
+    message: 'must not use an example/CI password in production',
+  })
+  .refine((e) => e.NODE_ENV !== 'production' || !hasExampleUrlPassword(e.REDIS_URL), {
+    path: ['REDIS_URL'],
+    message: 'must not use an example/CI password in production',
+  })
+  .refine((e) => e.NODE_ENV !== 'production' || hasUrlPassword(e.REDIS_URL), {
+    path: ['REDIS_URL'],
+    message: 'must include a password (Redis requirepass is mandatory in production)',
+  })
+  .refine((e) => e.NODE_ENV !== 'production' || !isPlaceholderSecret(e.OFFLINE_KEK_SECRET), {
     path: ['OFFLINE_KEK_SECRET'],
     message: 'must not be an example/CI placeholder in production; generate with: openssl rand -base64 48',
   })
   .refine(
     (e) =>
       e.NODE_ENV !== 'production' ||
-      [...parsePreviousKekSecrets(e.OFFLINE_KEK_PREVIOUS_SECRETS, e.OFFLINE_KEK_VERSION).map.values()].every((s) => !isPlaceholderKekSecret(s)),
+      [...parsePreviousKekSecrets(e.OFFLINE_KEK_PREVIOUS_SECRETS, e.OFFLINE_KEK_VERSION).map.values()].every((s) => !isPlaceholderSecret(s)),
     { path: ['OFFLINE_KEK_PREVIOUS_SECRETS'], message: 'contains an example/CI placeholder secret, not allowed in production' },
   )
   .refine((e) => e.REPORT_TENANT_MAX_CONCURRENCY <= e.REPORT_MAX_CONCURRENCY, {
