@@ -367,7 +367,8 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
         const hold = await lim.acquire(undefined, 'other-tenant');
         const runSpy = vi.spyOn(tenantPrisma, 'run');
         const p = get();
-        await new Promise((r) => setTimeout(r, 150));
+        // condition wait, not a fixed sleep: the timezone-read tx can exceed 150 ms under parallel forks
+        await vi.waitFor(() => expect(lim.stats.queued).toBe(1), { timeout: 1500, interval: 10 });
         // only the timezone read ran; the compute tx has not opened while queued
         expect(runSpy).toHaveBeenCalledTimes(1);
         expect(lim.stats.queued).toBe(1);
