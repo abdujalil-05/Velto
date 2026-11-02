@@ -16,6 +16,7 @@ Production commands are run by the operator (never by CI or an agent).
 | [telegram-login-failures](telegram-login-failures.md) | Mini App login failing |
 | [stock-mismatch](stock-mismatch.md) | StockLevel != sum(StockMovement) |
 | [allocation-mismatch](allocation-mismatch.md) | invoice/payment allocation or balance drift |
+| [payment-idempotency-unverifiable](payment-idempotency-unverifiable.md) | 409 `PAYMENT_IDEMPOTENCY_UNVERIFIABLE`/`CONFLICT`: same `clientId`, manual reconciliation |
 | [bot-token-leak](bot-token-leak.md) | Telegram bot token / webhook secret leaked |
 | [migration-fail](migration-fail.md) | production `prisma migrate deploy` failed |
 | [backfill-partial](backfill-partial.md) | data backfill/import stopped half-way |
