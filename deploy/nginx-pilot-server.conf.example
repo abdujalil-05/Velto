@@ -1,0 +1,51 @@
+# Velto pilot (dedicated VPS) — host-level server blocks that WRAP deploy/nginx.conf.
+# EXAMPLE ONLY: not installed by the repo, no real domain/cert. Replace <PILOT_DOMAIN> on the server.
+# Install (root, on the pilot server; see docs/release/PILOT-DEPLOYMENT-RUNBOOK.md step 8):
+#   install -m 644 deploy/nginx.conf /etc/nginx/snippets/velto.conf          # path-prefix /velto snippet, unchanged
+#   install -m 644 deploy/nginx-pilot-server.conf.example /etc/nginx/sites-available/velto-pilot
+#   sed -i 's/<PILOT_DOMAIN>/real.domain.example/g' /etc/nginx/sites-available/velto-pilot
+#   ln -s /etc/nginx/sites-available/velto-pilot /etc/nginx/sites-enabled/ && nginx -t && systemctl reload nginx
+# TLS: certbot (certonly --webroot -w /var/www/certbot or --nginx) writes the paths below; HSTS is enabled only AFTER
+# https works for the final domain (max-age is sticky in browsers; start with 300, raise to 31536000 after the check).
+# Why a wrapper and not edits in deploy/nginx.conf: that file is the snippet already used by the existing host
+# (deploy/README.md:19-32, prefix /velto is hard-wired into the Next builds via NEXT_PUBLIC_BASE_PATH).
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name <PILOT_DOMAIN>;
+
+    location ^~ /.well-known/acme-challenge/ { root /var/www/certbot; }
+    location / { return 301 https://$host$request_uri; }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name <PILOT_DOMAIN>;
+
+    ssl_certificate     /etc/letsencrypt/live/<PILOT_DOMAIN>/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/<PILOT_DOMAIN>/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    server_tokens off;
+    add_header Strict-Transport-Security "max-age=300" always;   # raise to 31536000 after verification
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    # NB: add_header in a location block REPLACES these (nginx inheritance rule); the /velto-files/ location in deploy/nginx.conf repeats HSTS/nosniff/Referrer-Policy itself (keep values in sync).
+    # CSP/frame headers for the Next apps are owned by the apps, not set here.
+
+    # Never serve dotfiles / env files (secrets checklist S8). No filesystem root is served at all.
+    location ~ /\.(?!well-known) { return 404; }
+
+    location = / { return 302 /velto/; }
+
+    include /etc/nginx/snippets/velto.conf;
+
+    # Anything not routed by the snippet is not served (no SPA fallback / static root on the pilot host).
+    location / { return 404; }
+}

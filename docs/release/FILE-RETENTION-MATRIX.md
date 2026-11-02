@@ -35,3 +35,9 @@ Status 2026-11-02. Policy approved by PO for pilot v0.9:
 1. Legal/accounting periods for 1C exports, import sources, ACK/checksums, backups, AuditLog.
 2. Unbound-temp cleanup (7d, reference check, dry-run, audit) is not built; requires an object-reference registry (schema change -> db-rls) because files are not tracked as unbound/bound.
 3. Backup local 14-day deletion conflicts with "no auto-deletion until sign-off" only if backups count as accounting evidence; PO to decide.
+
+## Дополнение 2026-11-02 (Backups / S3-префиксы; факты, сроки НЕ установлены)
+- Один bucket (`S3_BUCKET`, `storage.service.ts:37`), префиксы: `products/{companyId}/`, `imports/{customers|products}/{companyId}/`, `opening/{opening-customers|opening-stock}/{companyId}/`, `exports/1c/{companyId}/`, `exports/company/{companyId}/`. Права/lifecycle задаются на префиксах; автоудаление финансовых префиксов (`exports/`, `opening/`, `imports/`) запрещено до заключения юриста/бухгалтера.
+- Backups: локально 14 дн. (`backup.sh:18,83`, только локальная копия); offsite — Object Lock >= 30 дн. и lifecycle 60-90 дн. являются ТРЕБОВАНИЕМ К ПРОВАЙДЕРУ и вариантом для PO, не установленным сроком (BACKUP-RESTORE-RUNBOOK B.5, B.9). Бэкап самих S3-объектов отсутствует (B.6).
+- Redis: не хранилище данных; очереди восстанавливаются из PG (BACKUP-RESTORE-RUNBOOK, раздел A). Срок хранения не применим.
+- Сводка по категориям ПДн и вендорам: PILOT-DATA-INVENTORY.md.

@@ -11,6 +11,7 @@
 #   DRILL_ADMIN_USER/DRILL_ADMIN_PASSWORD  superuser creating the drill DB (default velto/velto)
 #   DRILL_DB               default velto_restore_drill (must start with velto_restore_drill)
 #   DRILL_REPORT_DIR       default <repo>/docs/ops
+#   DRILL_APP_ROLE/DRILL_OWNER_ROLE/DRILL_SYSTEM_ROLE  role names (default velto_app/velto_owner/velto_system; some hosts use others, see deploy/README.md)
 #   DRILL_KEEP_DB=1        keep the drill DB afterwards (default: dropped)
 #   DRILL_COMPARE_SOURCE=1 with DUMP_FILE: also compare row counts/AuditLog with live SOURCE_URL (valid ONLY if the source is quiescent since the backup)
 # Exit 0 = all checks PASS; 1 = any FAIL.
@@ -22,6 +23,8 @@ ADMIN_USER="${DRILL_ADMIN_USER:-velto}"; ADMIN_PW="${DRILL_ADMIN_PASSWORD:-velto
 DB="${DRILL_DB:-velto_restore_drill}"
 SOURCE_URL="${SOURCE_URL:-postgresql://velto_system:velto_system@localhost:5433/velto_dev}"
 REPORT_DIR="${DRILL_REPORT_DIR:-$ROOT/docs/ops}"
+APP_ROLE="${DRILL_APP_ROLE:-velto_app}"; OWNER_ROLE="${DRILL_OWNER_ROLE:-velto_owner}"; SYSTEM_ROLE="${DRILL_SYSTEM_ROLE:-velto_system}"
+for r in "$APP_ROLE" "$OWNER_ROLE" "$SYSTEM_ROLE"; do [[ "$r" =~ ^[a-z0-9_]+$ ]] || { echo "invalid role name" >&2; exit 1; }; done
 [[ "$DB" == velto_restore_drill* ]] || { echo "refusing: DRILL_DB must start with velto_restore_drill" >&2; exit 1; }
 [[ "$DB" =~ ^[a-z0-9_]+$ ]] || { echo "invalid DRILL_DB" >&2; exit 1; }
 case "$HOST" in localhost|127.0.0.1|::1) ;; *) [[ "${DRILL_ALLOW_REMOTE:-0}" == 1 ]] || { echo "refusing non-local DRILL_HOST without DRILL_ALLOW_REMOTE=1" >&2; exit 1; } ;; esac
@@ -32,10 +35,10 @@ trap pgc_cleanup EXIT; pgc_init
 pgc_parse "$SOURCE_URL" || { echo "SOURCE_URL is not parseable" >&2; exit 1; }; SRC="$(pgc_conninfo)"
 pgc_add "$HOST" "$PORT" postgres "$ADMIN_USER" "$ADMIN_PW"; ADMIN_URL="$(pgc_conninfo)"
 pgc_add "$HOST" "$PORT" "$DB" "$ADMIN_USER" "$ADMIN_PW"; DRILL_ADMIN="$(pgc_conninfo)"
-pgc_add "$HOST" "$PORT" "$DB" velto_system "${DRILL_SYSTEM_PASSWORD:-velto_system}"; DRILL_SYS="$(pgc_conninfo)"
-pgc_add "$HOST" "$PORT" "$DB" velto_app "${DRILL_APP_PASSWORD:-velto_app}"; DRILL_APP="$(pgc_conninfo)"
+pgc_add "$HOST" "$PORT" "$DB" "$SYSTEM_ROLE" "${DRILL_SYSTEM_PASSWORD:-velto_system}"; DRILL_SYS="$(pgc_conninfo)"
+pgc_add "$HOST" "$PORT" "$DB" "$APP_ROLE" "${DRILL_APP_PASSWORD:-velto_app}"; DRILL_APP="$(pgc_conninfo)"
 # prisma needs a URL: passed via the child's environment only (not argv)
-DRILL_OWNER="postgresql://velto_owner:${DRILL_OWNER_PASSWORD:-velto_owner}@$HOST:$PORT/$DB?schema=public"
+DRILL_OWNER="postgresql://${OWNER_ROLE}:${DRILL_OWNER_PASSWORD:-velto_owner}@$HOST:$PORT/$DB?schema=public"
 for c in psql pg_dump pg_restore; do command -v $c >/dev/null || { echo "$c not found" >&2; exit 1; }; done
 
 TMP="$(mktemp -d)"; chmod 700 "$TMP"
@@ -60,6 +63,7 @@ STOCK_SQL="WITH m AS (SELECT \"productId\",\"warehouseId\",
    FROM \"StockMovement\" GROUP BY 1,2)
  SELECT count(*) FILTER (WHERE COALESCE(l.\"onHand\",0)<>COALESCE(m.oh,0) OR COALESCE(l.reserved,0)<>COALESCE(m.rs,0)) || '/' || count(*)
  FROM \"StockLevel\" l FULL JOIN m ON m.\"productId\"=l.\"productId\" AND m.\"warehouseId\"=l.\"warehouseId\""
+SUMS_SQL="SELECT (SELECT count(*)||':'||COALESCE(sum(total),0) FROM \"Invoice\")||'|'||(SELECT count(*)||':'||COALESCE(sum(amount),0) FROM \"Payment\")||'|'||(SELECT count(*)||':'||COALESCE(sum(amount),0) FROM \"PaymentAllocation\")||'|'||(SELECT COALESCE(sum(\"cachedBalance\"),0) FROM \"Customer\")"
 if [[ -z "$DUMP" ]]; then
   # One REPEATABLE READ snapshot shared by pg_dump and the source counts, so a live (changing) source still compares exactly.
   DUMP="$TMP/source.dump"; DSRC="fresh pg_dump -Fc of source (exported snapshot)"
@@ -73,6 +77,8 @@ $CNT_SQL;
 $AUDIT_SQL;
 \\o $TMP/stock.src
 $STOCK_SQL;
+\\o $TMP/sums.src
+$SUMS_SQL;
 \\o
 \\! touch $TMP/snap.ready
 \\! while [ ! -f $TMP/snap.done ]; do sleep 0.5; done
@@ -186,6 +192,26 @@ fi
 UPD="$(psql "$DRILL_SYS" -X -Atq -c 'UPDATE "AuditLog" SET action=action WHERE id=(SELECT id FROM "AuditLog" LIMIT 1)' 2>&1 | head -n1)"
 if [[ "$AC" -eq 0 ]]; then rec "AuditLog append-only trigger" PASS "no rows to test"
 elif grep -qi 'error' <<<"$UPD"; then rec "AuditLog append-only trigger" PASS "UPDATE rejected by DB trigger"; else rec "AuditLog append-only trigger" FAIL "UPDATE was allowed"; fi
+
+# 8b. financial fingerprint: Invoice count+sum(total) | Payment count+sum(amount) | PaymentAllocation count+sum | sum(Customer.cachedBalance)
+SU="$(q "$DRILL_SYS" "$SUMS_SQL")"
+if [[ -z "${DUMP_FILE:-}" ]]; then SSRC="$(tr -d '\r\n' < "$TMP/sums.src")"
+elif [[ "${DRILL_COMPARE_SOURCE:-0}" == 1 ]]; then SSRC="$(q "$SRC" "$SUMS_SQL")"; else SSRC=""; fi
+# Report is git-tracked by default: NO sums/counts of money are written, only per-metric MATCH/MISMATCH/SKIP.
+FIN_NAMES=(invoices payments allocations cachedBalance)
+if [[ -z "$SU" ]]; then rec "financial sums" FAIL "query failed"
+elif [[ -z "$SSRC" ]]; then rec "financial sums" SKIP "no quiescent source to compare (values intentionally not recorded)"
+else
+  IFS='|' read -r -a FA <<<"$SU"; IFS='|' read -r -a FB <<<"$SSRC"; FD=(); FBAD=0
+  for i in 0 1 2 3; do
+    if [[ -n "${FA[$i]:-}" && "${FA[$i]:-}" == "${FB[$i]:-}" ]]; then FD+=("${FIN_NAMES[$i]}=MATCH"); else FD+=("${FIN_NAMES[$i]}=MISMATCH"); FBAD=1; fi
+  done
+  if [[ $FBAD -eq 0 ]]; then rec "financial sums" PASS "${FD[*]} (vs source)"; else rec "financial sums" FAIL "${FD[*]} (vs source)"; fi
+fi
+
+# 8c. roles: app/owner must be NOSUPERUSER NOBYPASSRLS (a BYPASSRLS app role would silently defeat RLS); system must be BYPASSRLS-only
+RL="$(q "$DRILL_SYS" "SELECT string_agg(r.l||':'||rolsuper||':'||rolbypassrls, ',' ORDER BY r.l) FROM pg_roles JOIN (VALUES ('$APP_ROLE','app'),('$OWNER_ROLE','owner'),('$SYSTEM_ROLE','system')) r(n,l) ON rolname=r.n")"
+[[ "$RL" == "app:false:false,owner:false:false,system:false:true" ]] && rec "roles NOBYPASSRLS (app/owner)" PASS "$RL (role:super:bypassrls)" || rec "roles NOBYPASSRLS (app/owner)" FAIL "${RL:-roles missing} (expected app/owner false:false, system false:true)"
 
 # 9. tenant isolation smoke as velto_app
 TC="$(q "$DRILL_SYS" "SELECT \"companyId\" FROM \"Customer\" GROUP BY 1 ORDER BY count(*) DESC LIMIT 1")"

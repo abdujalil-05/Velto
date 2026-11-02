@@ -1,6 +1,6 @@
 # Матрица готовности: закрытый пилот v0.9 и v1.0 GA
 
-> Состояние на 2026-11-02, ветка `feat/approved-decisions`, код на `36b239f` (строка 32: offline logout/общее устройство; ранее `43cbc20` (`5678c1d` платежи, `3be662f` turnover, `61c53d0`/`ddf0a39` SALE Invoice DB-защита, `9086e8a` удержание конфликтных офлайн-платежей)), CI run 41400737771 зелёный; CI run 41419822516 (`25798b5`) зелёный. CI run 41428945051 (`0eac6bc`) зелёный. Инфраструктура: `PILOT-INFRA-AUDIT-2026-11-02.md`. Основа: `PILOT-RELEASE-CONDITIONS.md` (A1–A13, B1–B6), `docs/parity/HANDOFF-2026-11-01-pilot.md`, `docs/qa/E2E-SMOKE-2026-11-01.md`, `docs/qa/RESTORE-DRILL-STAND-2026-11-01.md`, `docs/qa/PILOT-MANUAL-ACCEPTANCE.md`.
+> Состояние на 2026-11-02, ветка `feat/approved-decisions`, код на `36b239f` (строка 32: offline logout/общее устройство; ранее `43cbc20` (`5678c1d` платежи, `3be662f` turnover, `61c53d0`/`ddf0a39` SALE Invoice DB-защита, `9086e8a` удержание конфликтных офлайн-платежей)), CI run 41400737771 зелёный; CI run 41419822516 (`25798b5`) зелёный. CI run 41428945051 (`0eac6bc`) зелёный. Инфраструктура: `PILOT-INFRA-AUDIT-2026-11-02.md`. Основа: `PILOT-RELEASE-CONDITIONS.md` (A1–A13, B1–B6; карточки Go/No-Go — §D), доказательные документы подготовки сервера (статусы не менялись): `PILOT-SERVER-REQUIREMENTS.md`, `PILOT-DEPLOYMENT-RUNBOOK.md`, `PILOT-RUNTIME-SECRETS-CHECKLIST.md` §4, `docs/parity/HANDOFF-2026-11-01-pilot.md`, `docs/qa/E2E-SMOKE-2026-11-01.md`, `docs/qa/RESTORE-DRILL-STAND-2026-11-01.md`, `docs/qa/PILOT-MANUAL-ACCEPTANCE.md`.
 
 ## Итог
 

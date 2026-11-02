@@ -28,13 +28,7 @@
 
 ## 3. Порядок поднятия стенда S (после разрешения)
 
-1. Сервер, поддомен, TLS. Node 22 LTS, PG 16, Redis 7, MinIO, nginx, PM2, gpg.
-2. Секреты генерируются на сервере, в репо и чат не попадают (`deploy/README.md` → Runtime requirements, MFA_ENCRYPTION_KEY).
-3. `provision-roles.sql` → `prisma migrate deploy` (пустая БД, без destructive-миграций) → `bootstrap-owner.ts` для синтетической компании → выдача MFA-кода.
-4. Build SHA = HEAD ветки с зелёным CI. Сначала `deploy.sh`, затем проверка health gate.
-5. Отдельный Telegram-бот для стенда.
-6. Backup cron + первый restore drill.
-7. E2E smoke (раздел 4) и ручная приёмка.
+Порядок, команды, проверки и откат по шагам: [`PILOT-DEPLOYMENT-RUNBOOK.md`](./PILOT-DEPLOYMENT-RUNBOOK.md) (требования и бюджеты — [`PILOT-SERVER-REQUIREMENTS.md`](./PILOT-SERVER-REQUIREMENTS.md), секреты — [`PILOT-RUNTIME-SECRETS-CHECKLIST.md`](./PILOT-RUNTIME-SECRETS-CHECKLIST.md)). Здесь список не дублируется. Стенд S пилота = целевой VPS из этих документов; без разрешения PO ничего не выполняется.
 
 ## 4. Локальный стенд L: выполнено
 
