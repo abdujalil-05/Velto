@@ -12,6 +12,7 @@
 #   DRILL_DB               default velto_restore_drill (must start with velto_restore_drill)
 #   DRILL_REPORT_DIR       default <repo>/docs/ops
 #   DRILL_KEEP_DB=1        keep the drill DB afterwards (default: dropped)
+#   DRILL_COMPARE_SOURCE=1 with DUMP_FILE: also compare row counts/AuditLog with live SOURCE_URL (valid ONLY if the source is quiescent since the backup)
 # Exit 0 = all checks PASS; 1 = any FAIL.
 set -Euo pipefail
 
@@ -24,11 +25,16 @@ REPORT_DIR="${DRILL_REPORT_DIR:-$ROOT/docs/ops}"
 [[ "$DB" == velto_restore_drill* ]] || { echo "refusing: DRILL_DB must start with velto_restore_drill" >&2; exit 1; }
 [[ "$DB" =~ ^[a-z0-9_]+$ ]] || { echo "invalid DRILL_DB" >&2; exit 1; }
 case "$HOST" in localhost|127.0.0.1|::1) ;; *) [[ "${DRILL_ALLOW_REMOTE:-0}" == 1 ]] || { echo "refusing non-local DRILL_HOST without DRILL_ALLOW_REMOTE=1" >&2; exit 1; } ;; esac
-SRC="${SOURCE_URL%%\?*}"
-ADMIN_URL="postgresql://$ADMIN_USER:$ADMIN_PW@$HOST:$PORT/postgres"
-DRILL_ADMIN="postgresql://$ADMIN_USER:$ADMIN_PW@$HOST:$PORT/$DB"
-DRILL_SYS="postgresql://velto_system:${DRILL_SYSTEM_PASSWORD:-velto_system}@$HOST:$PORT/$DB"
-DRILL_APP="postgresql://velto_app:${DRILL_APP_PASSWORD:-velto_app}@$HOST:$PORT/$DB"
+# Passwords never go in argv: every connection is a password-less conninfo string; secrets live in a 0600 PGPASSFILE (pg-conn.sh).
+# shellcheck source=pg-conn.sh
+. "$(dirname "${BASH_SOURCE[0]}")/pg-conn.sh"
+trap pgc_cleanup EXIT; pgc_init
+pgc_parse "$SOURCE_URL" || { echo "SOURCE_URL is not parseable" >&2; exit 1; }; SRC="$(pgc_conninfo)"
+pgc_add "$HOST" "$PORT" postgres "$ADMIN_USER" "$ADMIN_PW"; ADMIN_URL="$(pgc_conninfo)"
+pgc_add "$HOST" "$PORT" "$DB" "$ADMIN_USER" "$ADMIN_PW"; DRILL_ADMIN="$(pgc_conninfo)"
+pgc_add "$HOST" "$PORT" "$DB" velto_system "${DRILL_SYSTEM_PASSWORD:-velto_system}"; DRILL_SYS="$(pgc_conninfo)"
+pgc_add "$HOST" "$PORT" "$DB" velto_app "${DRILL_APP_PASSWORD:-velto_app}"; DRILL_APP="$(pgc_conninfo)"
+# prisma needs a URL: passed via the child's environment only (not argv)
 DRILL_OWNER="postgresql://velto_owner:${DRILL_OWNER_PASSWORD:-velto_owner}@$HOST:$PORT/$DB?schema=public"
 for c in psql pg_dump pg_restore; do command -v $c >/dev/null || { echo "$c not found" >&2; exit 1; }; done
 
@@ -40,7 +46,7 @@ rec() { # name status detail
 }
 now() { date +%s; }
 drop_db() { q "$ADMIN_URL" "DROP DATABASE IF EXISTS \"$DB\" WITH (FORCE)" >/dev/null 2>&1; }
-cleanup() { [[ "${DRILL_KEEP_DB:-0}" == 1 ]] || drop_db; rm -rf "$TMP"; }
+cleanup() { [[ "${DRILL_KEEP_DB:-0}" == 1 ]] || drop_db; rm -rf "$TMP"; pgc_cleanup; }
 trap cleanup EXIT
 
 T0=$(now); START_ISO="$(date -u +%FT%TZ)"
@@ -109,6 +115,17 @@ if command -v pnpm >/dev/null; then
   else rec "prisma migrate status" FAIL "exit $MSRC: $(tail -n 3 <<<"$MS" | tr '\n|' '  ' | head -c 250)"; fi
 else rec "prisma migrate status" FAIL "pnpm not found"; fi
 
+# 3b. _prisma_migrations == repo migration directories (all applied, none failed, no extras)
+REPO_MIG="$(ls -1 "$ROOT/packages/database/prisma/migrations" | grep -E '^[0-9]{14}_' | sort)"
+DB_MIG="$(q "$DRILL_SYS" "SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL ORDER BY 1")"
+NFAIL="$(q "$DRILL_SYS" "SELECT count(*) FROM _prisma_migrations WHERE finished_at IS NULL OR rolled_back_at IS NOT NULL")"
+if [[ "$REPO_MIG" == "$DB_MIG" && "$NFAIL" == 0 ]]; then rec "_prisma_migrations == repo" PASS "$(wc -l <<<"$REPO_MIG" | tr -d ' ') migrations identical, 0 failed/rolled back"
+else rec "_prisma_migrations == repo" FAIL "diff: $(diff <(echo "$REPO_MIG") <(echo "$DB_MIG") | grep '^[<>]' | head -n 3 | tr '\n|' '  '); failed=$NFAIL"; fi
+
+# 3c. Invoice.total == sum(InvoiceLine.lineTotal)
+IT="$(q "$DRILL_SYS" "SELECT count(*) FILTER (WHERE COALESCE(l.s,0)<>i.total) || '/' || count(*) FROM \"Invoice\" i LEFT JOIN (SELECT \"invoiceId\", SUM(\"lineTotal\") s FROM \"InvoiceLine\" GROUP BY 1) l ON l.\"invoiceId\"=i.id")"
+[[ "$IT" == 0/* ]] && rec "invoice total = sum(lines)" PASS "mismatch/total = $IT" || rec "invoice total = sum(lines)" FAIL "mismatch/total = ${IT:-error}"
+
 # 4. RLS FORCE on every tenant table
 BAD="$(q "$DRILL_SYS" "
  SELECT string_agg(c.relname, ',') FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
@@ -125,7 +142,13 @@ if [[ -z "${DUMP_FILE:-}" ]]; then
   if [[ -s "$TMP/cnt.drill" ]] && diff -q "$TMP/cnt.src" "$TMP/cnt.drill" >/dev/null; then rec "table row counts vs source" PASS "$NT tables identical"
   else rec "table row counts vs source" FAIL "diff: $(diff "$TMP/cnt.src" "$TMP/cnt.drill" | grep '^[<>]' | head -n 4 | tr '\n|' '  ')"; fi
 else
-  [[ -s "$TMP/cnt.drill" ]] && rec "table row counts vs source" PASS "$NT tables restored (no live source comparison for DUMP_FILE; counts in report appendix)" || rec "table row counts vs source" FAIL "no counts"
+  if [[ "${DRILL_COMPARE_SOURCE:-0}" == 1 ]]; then
+    q "$SRC" "$CNT_SQL" > "$TMP/cnt.src" 2>/dev/null
+    if [[ -s "$TMP/cnt.drill" && -s "$TMP/cnt.src" ]] && diff -q "$TMP/cnt.src" "$TMP/cnt.drill" >/dev/null; then rec "table row counts vs source" PASS "$NT tables identical to live (quiescent) source"
+    else rec "table row counts vs source" FAIL "diff: $(diff "$TMP/cnt.src" "$TMP/cnt.drill" 2>&1 | grep '^[<>]' | head -n 4 | tr '\n|' '  ')"; fi
+  else
+    [[ -s "$TMP/cnt.drill" ]] && rec "table row counts vs source" PASS "$NT tables restored (no live source comparison for DUMP_FILE; counts in report appendix)" || rec "table row counts vs source" FAIL "no counts"
+  fi
 fi
 
 # 6. StockLevel == sum(StockMovement)  (formula of reconciliation.service.ts)
@@ -153,7 +176,12 @@ if [[ -z "${DUMP_FILE:-}" ]]; then
   ASRC="$(tr -d '\r\n' < "$TMP/audit.src")"
   [[ "$AU" == "$ASRC" && "$AC" == "$AD" ]] && rec "AuditLog continuity" PASS "rows=$AC unique, range $AMIN .. $AMAX equals source" || rec "AuditLog continuity" FAIL "drill=$AU source=$ASRC"
 else
-  [[ "$AC" == "$AD" ]] && rec "AuditLog continuity" PASS "rows=$AC unique, range $AMIN .. $AMAX" || rec "AuditLog continuity" FAIL "$AU"
+  if [[ "${DRILL_COMPARE_SOURCE:-0}" == 1 ]]; then
+    ASRC="$(q "$SRC" "$AUDIT_SQL")"
+    [[ "$AU" == "$ASRC" && "$AC" == "$AD" ]] && rec "AuditLog continuity" PASS "rows=$AC unique, range $AMIN .. $AMAX equals live source" || rec "AuditLog continuity" FAIL "drill=$AU source=$ASRC"
+  else
+    [[ "$AC" == "$AD" ]] && rec "AuditLog continuity" PASS "rows=$AC unique, range $AMIN .. $AMAX" || rec "AuditLog continuity" FAIL "$AU"
+  fi
 fi
 UPD="$(psql "$DRILL_SYS" -X -Atq -c 'UPDATE "AuditLog" SET action=action WHERE id=(SELECT id FROM "AuditLog" LIMIT 1)' 2>&1 | head -n1)"
 if [[ "$AC" -eq 0 ]]; then rec "AuditLog append-only trigger" PASS "no rows to test"

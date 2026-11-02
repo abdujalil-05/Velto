@@ -102,8 +102,8 @@ if [[ $FAILED -ne 0 ]]; then
   echo
   echo "Encrypted DB backup for rollback: $BACKUP" >&2
   echo "Restore into a SEPARATE database (never over prod):" >&2
-  echo "  createdb velto_restore   # then: export RESTORE_DB_URL=postgresql://<owner>@<host>/velto_restore" >&2
-  echo "  gpg --batch --pinentry-mode loopback --passphrase-file \"\$BACKUP_PASSPHRASE_FILE\" --decrypt \"$BACKUP\" | pg_restore --no-owner -d \"\$RESTORE_DB_URL\"" >&2
+  echo "  createdb velto_restore   # then: export PGPASSFILE=<0600 pgpass> PGHOST=<host> PGUSER=<owner> (no password in URL/argv)" >&2
+  echo "  gpg --batch --pinentry-mode loopback --passphrase-file \"\$BACKUP_PASSPHRASE_FILE\" --decrypt \"$BACKUP\" | pg_restore --no-owner -d velto_restore" >&2
   echo "  Note: switching prod to the restored DB is a manual, separately approved step." >&2
   echo "  (verify first: cd \"$(dirname "$BACKUP")\" && sha256sum -c \"$(basename "$BACKUP").sha256\")" >&2
   exit 1

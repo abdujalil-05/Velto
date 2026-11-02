@@ -56,7 +56,8 @@ pnpm db:generate
 #    migrate deploy DATABASE_MIGRATE_URL (schema egasi roli) talab qiladi.
 #    Mavjud production bazasi uchun pastdagi "Rol modelini production'ga
 #    o'tkazish" runbook'iga qarang.
-psql "$DATABASE_ADMIN_URL" -v ON_ERROR_STOP=1 -f packages/database/scripts/provision-roles.sql
+#    Parol buyruq satrida BO'LMASIN: PGPASSFILE (0600) + PGHOST/PGPORT/PGUSER (admin rol), URL-with-password emas.
+psql -d postgres -v ON_ERROR_STOP=1 -f packages/database/scripts/provision-roles.sql
 pnpm --filter @velto/database exec prisma migrate deploy
 
 # 3. Build (barcha workspace'lar)
@@ -178,7 +179,8 @@ o'tkazadi.
 ### 1. Zaxira (majburiy, o'zgartirishdan OLDIN)
 
 ```bash
-pg_dump "${DATABASE_SYSTEM_URL%%\?*}" -Fc -f /root/velto-pre-roles-$(date +%Y%m%d-%H%M%S).dump
+# PGPASSFILE (0600) + PGHOST/PGPORT/PGUSER sozlangan bo'lsin; parol argv'da bo'lmasin
+pg_dump -d velto -Fc -f /root/velto-pre-roles-$(date +%Y%m%d-%H%M%S).dump
 pg_dumpall --globals-only -f /root/velto-globals-$(date +%Y%m%d-%H%M%S).sql   # rollar/atributlar (superuser)
 ```
 
@@ -190,8 +192,8 @@ Dump hajmi/o'qilishini tekshiring (`pg_restore -l <dump> | head`).
 sed -e 's/velto_owner/velto_app_owner/g' -e 's/velto_system/velto_app_system/g' \
   packages/database/scripts/provision-roles.sql > /root/provision-roles.prod.sql
 grep -c 'velto_system' /root/provision-roles.prod.sql   # 0 bo'lishi shart
-psql "$DATABASE_ADMIN_URL" -v ON_ERROR_STOP=1 -f /root/provision-roles.prod.sql
-psql "$DATABASE_ADMIN_URL" -c "ALTER ROLE velto_app_owner PASSWORD '<kuchli-parol>'"
+psql -d postgres -v ON_ERROR_STOP=1 -f /root/provision-roles.prod.sql
+# parolni interaktiv o'rnating (argv/history'ga tushmaydi): psql -d postgres, so'ng  \password velto_app_owner
 rm /root/provision-roles.prod.sql
 ```
 
@@ -220,8 +222,9 @@ qaytarish" va'da qilinmaydi.
 ## Ma'lum kamchiliklar
 
 - **SMS yuborilmaydi.** `SMS_API_TOKEN` bo'sh — Eskiz.uz hisobi ulanmagan.
-  Parolni tiklash kodi SMS o'rniga API loglariga yoziladi (`pm2 logs velto-api`).
-  Bu `env.schema.ts` dagi ataylab qilingan "ixtiyoriy integratsiya" xatti-harakati.
+  Productionda telefon/kod hech qachon loglanmaydi; token yo'q bo'lsa parolni
+  tiklash so'rovi 503 `SMS_NOT_CONFIGURED` qaytaradi. Qo'lda tiklash:
+  `docs/release/ACCOUNT-RECOVERY-RUNBOOK.md`.
 - **Sentry o'chirilgan.** `SENTRY_DSN` bo'sh.
 - **Demo ma'lumotlar.** Baza `seed.ts` demo tenant'i bilan to'ldirilgan
   ("Demo Savdo MChJ"). Real mijozga topshirishdan oldin toza baza +

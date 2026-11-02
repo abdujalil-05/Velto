@@ -1,0 +1,11 @@
+# EXAMPLE, see velto-backup.service.example. Daily 02:15 server time (RPO pilot <= 24 h).
+[Unit]
+Description=Daily Velto backup
+
+[Timer]
+OnCalendar=*-*-* 02:15:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target
