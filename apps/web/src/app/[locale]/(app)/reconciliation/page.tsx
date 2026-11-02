@@ -23,6 +23,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Select } from '@/components/ui/select';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { PaymentConflictsSection } from '@/components/reconciliation/payment-conflicts-section';
 import { PaginationBar } from '@/components/shared/pagination-bar';
 import { cn } from '@/lib/utils';
 
@@ -44,6 +45,7 @@ export default function ReconciliationPage() {
   const canRead = hasPermission('reconciliation.read');
   const canFix = hasPermission('reconciliation.fix');
   const canStock = hasPermission('stock.read');
+  const canPayRead = hasPermission('payments.read');
 
   const [kind, setKind] = useState<ReconciliationKind | ''>('');
   const [status, setStatus] = useState<ReconciliationFindingStatus | ''>('OPEN');
@@ -64,6 +66,15 @@ export default function ReconciliationPage() {
   const runs = useReconciliationRunsQuery({ page: runsPage, pageSize: 5 });
   const runMutation = useRunReconciliationMutation();
   const fixMutation = useFixFindingMutation();
+
+  if (!canRead && canPayRead) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-xl font-semibold">{t('title')}</h1>
+        <PaymentConflictsSection />
+      </div>
+    );
+  }
 
   if (!canRead) {
     return (
@@ -352,6 +363,8 @@ export default function ReconciliationPage() {
           </CardContent>
         </Card>
       )}
+
+      <PaymentConflictsSection />
 
       <ConfirmDialog
         open={fixTarget !== null}

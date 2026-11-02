@@ -1743,6 +1743,41 @@
       "title": "Farqni tuzatamizmi?",
       "description": "Saqlangan qoldiq/balans proyeksiyasi jurnal asosida hisoblangan qiymat bilan qayta yoziladi. Jurnalning o'zi o'zgarmaydi. Amal audit jurnaliga yoziladi.",
       "confirm": "Jurnal qiymati bilan qayta yozish"
+    },
+    "paymentConflicts": {
+      "title": "Oflayn to'lov nizolari",
+      "subtitle": "Server rad etgan va kassir qarorini kutayotgan oflayn to'lovlar.",
+      "warning": "Tasdiqlash faqat qaroringizni qayd etadi. U hech qanday to'lovni yaratmaydi, o'zgartirmaydi va bekor qilmaydi. \"To'lov o'tkazilmagan\" uchun birlamchi hujjat (kvitansiya, bank ko'chirmasi, kassa jurnali) dalili shart.",
+      "retry": "Qayta urinish",
+      "empty": "Ochiq oflayn to'lov nizolari yo'q. Hech narsa qilish shart emas.",
+      "col": {
+        "number": "To'lov",
+        "amount": "Summa",
+        "status": "Holat",
+        "rejections": "Rad etishlar",
+        "last": "Oxirgi rad etish"
+      },
+      "confirmAction": "Qarorni qayd etish",
+      "outcome": {
+        "EXISTING_PAYMENT_CONFIRMED": "Mavjud to'lov to'g'ri",
+        "NOT_POSTED_CONFIRMED": "To'lov o'tkazilmagan"
+      },
+      "form": {
+        "title": "{number} to'lov bo'yicha qaror",
+        "outcome": "Natija",
+        "reason": "Sabab (kamida 10 belgi)",
+        "evidence": "Birlamchi hujjat havolasi",
+        "evidenceHint": "\"To'lov o'tkazilmagan\" uchun majburiy: kvitansiya, ko'chirma yoki kassa jurnali raqami.",
+        "reasonShort": "Sabab kamida {min} belgidan iborat bo'lishi kerak.",
+        "evidenceRequired": "\"To'lov o'tkazilmagan\" uchun birlamchi hujjat havolasi shart.",
+        "submit": "Qarorni qayd etish",
+        "cancel": "Bekor qilish"
+      },
+      "result": {
+        "done": "Qaror qayd etildi. Hech qanday to'lov o'zgarmadi.",
+        "replayed": "Bu qaror avval qayd etilgan. Hech qanday to'lov o'zgarmadi.",
+        "payment": "To'lov"
+      }
     }
   },
   "Visits": {

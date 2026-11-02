@@ -1743,6 +1743,41 @@
       "title": "Fix this finding?",
       "description": "This overwrites the stored stock/balance projection with the value calculated from the ledger. The ledger itself is not changed. The action is recorded in the audit log.",
       "confirm": "Overwrite with ledger value"
+    },
+    "paymentConflicts": {
+      "title": "Offline payment conflicts",
+      "subtitle": "Offline payments the server rejected and that still need a cashier decision.",
+      "warning": "Confirming only records your decision. It does not create, change or cancel any payment. \"Payment was not posted\" requires evidence from the source document (receipt, bank statement, cash log).",
+      "retry": "Retry",
+      "empty": "No open offline payment conflicts. Nothing to do here.",
+      "col": {
+        "number": "Payment",
+        "amount": "Amount",
+        "status": "Status",
+        "rejections": "Rejections",
+        "last": "Last rejected"
+      },
+      "confirmAction": "Record decision",
+      "outcome": {
+        "EXISTING_PAYMENT_CONFIRMED": "Existing payment is correct",
+        "NOT_POSTED_CONFIRMED": "Payment was not posted"
+      },
+      "form": {
+        "title": "Decision for payment {number}",
+        "outcome": "Outcome",
+        "reason": "Reason (at least 10 characters)",
+        "evidence": "Source document reference",
+        "evidenceHint": "Required for \"Payment was not posted\": receipt, bank statement or cash log number.",
+        "reasonShort": "Reason must be at least {min} characters.",
+        "evidenceRequired": "Source document reference is required for \"Payment was not posted\".",
+        "submit": "Record decision",
+        "cancel": "Cancel"
+      },
+      "result": {
+        "done": "Decision recorded. No payment was changed.",
+        "replayed": "This decision was already recorded. No payment was changed.",
+        "payment": "Payment"
+      }
     }
   },
   "Visits": {
