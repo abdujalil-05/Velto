@@ -155,7 +155,7 @@ describe('Turnover rule: DELIVERED/CLOSED at delivered amount (real Postgres + R
     expect(salesB.summary.turnover.toFixed(2)).toBe('777777.00');
     expect(salesB.summary.orderCount).toBe(1);
   });
-  it('turnover date = delivery (SALE invoice createdAt), Tashkent day; >1 SALE invoice counted once; no invoice / non-delivered excluded', async () => {
+  it('turnover date = delivery (SALE invoice createdAt), Tashkent day; second SALE invoice per order rejected; no invoice / non-delivered excluded', async () => {
     const c = await seedCompany('turnover-date');
     const line = (amount: string) => ({ qty: '1', deliveredQty: '1', unitPrice: amount, lineTotal: amount });
     // (a) created Oct 31 15:00 Tashkent, delivered Nov 1 11:00 Tashkent -> November only.
@@ -164,9 +164,10 @@ describe('Turnover rule: DELIVERED/CLOSED at delivered amount (real Postgres + R
     await c.order(OrderStatus.DELIVERED, line('20000'), { createdAt: new Date('2026-10-31T12:00:00Z'), invoiceAt: new Date('2026-10-31T19:30:00Z') });
     // control: delivered Oct 31 23:00 Tashkent -> October.
     await c.order(OrderStatus.DELIVERED, line('40000'), { createdAt: new Date('2026-10-31T10:00:00Z'), invoiceAt: new Date('2026-10-31T18:00:00Z') });
-    // (c)+(f) CLOSED order with two SALE invoices (Nov 2 and Nov 5) -> once, on the earliest (Nov 2).
+    // (c)+(f) CLOSED order -> once, on its SALE invoice day (Nov 2). A second SALE
+    // invoice for the same order is rejected by the DB (Invoice_sale_orderId_key, 20261102100000).
     const twice = await c.order(OrderStatus.CLOSED, line('80000'), { createdAt: new Date('2026-10-30T06:00:00Z'), invoiceAt: new Date('2026-11-02T06:00:00Z') });
-    await c.saleInvoice(twice.id, '80000', new Date('2026-11-05T06:00:00Z'));
+    await expect(c.saleInvoice(twice.id, '80000', new Date('2026-11-05T06:00:00Z'))).rejects.toMatchObject({ code: 'P2002' });
     // (d) non-delivered statuses excluded even with a SALE invoice in the window.
     for (const st of [OrderStatus.SUBMITTED, OrderStatus.CONFIRMED, OrderStatus.SHIPPED, OrderStatus.CANCELLED])
       await c.order(st, { qty: '1', deliveredQty: '0', unitPrice: '5000', lineTotal: '5000' }, { createdAt: new Date('2026-11-01T06:00:00Z'), invoiceAt: new Date('2026-11-03T06:00:00Z') });

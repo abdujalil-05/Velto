@@ -252,3 +252,24 @@ export class OrderPriceBelowMinException extends AppException {
     );
   }
 }
+
+/**
+ * Defence in depth for the partial unique index "Invoice_sale_orderId_key"
+ * (one SALE invoice per order, migration 20261102100000). deliver() holds the
+ * order row FOR UPDATE and checks for an existing SALE invoice before any
+ * write, so this fires with no stock movement written.
+ */
+export class OrderAlreadyInvoicedException extends AppException {
+  constructor(orderId: string) {
+    super(
+      HttpStatus.CONFLICT,
+      'ORDER_ALREADY_INVOICED',
+      {
+        uz: 'Bu buyurtma uchun ichki hisob allaqachon yaratilgan',
+        ru: 'Для этого заказа внутренний счёт уже создан',
+        en: 'An internal invoice has already been created for this order',
+      },
+      { orderId },
+    );
+  }
+}

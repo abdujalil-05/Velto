@@ -35,6 +35,7 @@ import {
   InvalidDeliveredQtyException,
   InvalidOrderTransitionException,
   OrderNotAssignedToCourierException,
+  OrderAlreadyInvoicedException,
   OverDeliveryException,
   PackagingMismatchException,
   PartialDeliveryNotAllowedException,
@@ -509,6 +510,14 @@ export class SalesService {
       throw new InvalidOrderTransitionException(order.status, OrderStatus.DELIVERED);
     }
 
+    // 1 order = 1 SALE invoice (DB: partial unique "Invoice_sale_orderId_key").
+    // Race-safe: the order row is held FOR UPDATE, so delivers serialise here.
+    const existingInvoice = await tx.invoice.findFirst({
+      where: { orderId: order.id, kind: 'SALE' },
+      select: { id: true },
+    });
+    if (existingInvoice) throw new OrderAlreadyInvoicedException(order.id);
+
     // F2.4: the courier Mini App path is full delivery only.
     if (dto?.lines && isCourierOnly(user)) throw new PartialDeliveryNotAllowedException();
 
@@ -568,6 +577,10 @@ export class SalesService {
       new Prisma.Decimal(0),
     );
     const invoiceNumber = await this.docNumbering.next(tx, user.companyId, 'INV');
+    // A P2002 on "Invoice_sale_orderId_key" is a backstop only: Prisma 6
+    // reports it with meta.target = null, indistinguishable from the
+    // (companyId, number) unique, so it is not mapped — the explicit check
+    // above is the guard; a P2002 here rolls the whole delivery back (500).
     const invoice = await tx.invoice.create({
       data: {
         companyId: user.companyId,

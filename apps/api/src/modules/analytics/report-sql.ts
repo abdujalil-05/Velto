@@ -25,10 +25,11 @@ export const LINE_AMOUNT_SQL = Prisma.sql`(CASE WHEN l."deliveredQty" <> l."qty"
 /**
  * Turnover date (PO 2026-11-01): the actual confirmed delivery = the order's
  * SALE invoice createdAt (written in the same tx as status DELIVERED by
- * SalesService.deliver()). Pre-aggregated per order (GROUP BY orderId, MIN) so
- * an order with >1 SALE invoice still yields one row, dated by the earliest;
- * one hash-join scan instead of a per-order correlated lookup (Invoice has no
- * orderId index). INNER JOIN: an order with no SALE invoice is excluded (no
+ * SalesService.deliver()). At most one SALE invoice per order is DB-enforced
+ * (partial unique index "Invoice_sale_orderId_key", migration
+ * 20261102100000); the GROUP BY orderId / MIN is kept as a harmless
+ * one-row-per-order guarantee for the join. One hash-join scan instead of a
+ * per-order correlated lookup (Invoice has no orderId index). INNER JOIN: an order with no SALE invoice is excluded (no
  * fallback to SalesOrder.createdAt/updatedAt). OPENING invoices (orderId NULL,
  * kind OPENING) never match. Window filter in HAVING; alias `d`, join on `o`.
  */
