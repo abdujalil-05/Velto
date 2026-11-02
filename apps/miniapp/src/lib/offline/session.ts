@@ -14,8 +14,29 @@ let current: OfflineSession | null = null;
 
 const OWNER_STORAGE_KEY = 'velto.sessionOwner';
 
+let syncPaused = false;
+/** Logout stops background push/resolution first; a new session (sign-in) re-enables it. */
+export function isSyncPaused(): boolean {
+  return syncPaused;
+}
+export function setSyncPaused(paused: boolean): void {
+  syncPaused = paused;
+}
+
+let syncAbort = new AbortController();
+/** Signal for every network call made by push/resolution; logout / session end aborts it (apiFetch forwards `signal` to fetch). */
+export function getSyncSignal(): AbortSignal {
+  return syncAbort.signal;
+}
+/** Aborts requests started so far; later ones get a fresh signal. */
+export function abortSyncRequests(): void {
+  syncAbort.abort();
+  syncAbort = new AbortController();
+}
+
 export function setOfflineSession(session: OfflineSession | null): void {
   current = session;
+  if (session) syncPaused = false;
   // Survives an app restart so a revoke detected at bootstrap (no in-memory
   // session yet) still knows whose documents to quarantine. Ids only, no data.
   if (session) {

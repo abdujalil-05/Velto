@@ -3,6 +3,7 @@ import { ApiError } from '@/lib/api/client';
 import { db } from './db';
 import { MAX_SYNC_ATTEMPTS, backoffDelayMs, queueRepository } from './queue';
 import { setOfflineSession } from './session';
+import { readyVault } from './vault-test-helper';
 import { isPaymentIdempotencyConflict, localizedError, precisionHint } from './queue-view';
 import { readFileSync } from 'node:fs';
 import { resetPreparedSession } from './session-bootstrap';
@@ -38,6 +39,7 @@ describe('runPush status machine (TZ 8.3/8.4)', () => {
     resetPushBatchLimit();
     await db.queue.clear();
     await db.meta.clear();
+    await readyVault(A);
     asA();
   });
 

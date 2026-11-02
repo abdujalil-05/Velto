@@ -3,6 +3,7 @@ import { db } from './db';
 import { EncryptedStore } from './encrypted-store';
 import { queueRepository, type QueueEntry } from './queue';
 import { setOfflineSession } from './session';
+import { readyVault } from './vault-test-helper';
 
 // Direct access to backdate a row's `createdAt` — real IndexedDB (even
 // fake-indexeddb) doesn't get along with vi.useFakeTimers() (Dexie's
@@ -18,6 +19,7 @@ async function backdate(clientId: string, isoDate: string): Promise<void> {
 describe('queueRepository (10.3 guaranteed delivery)', () => {
   beforeEach(async () => {
     setOfflineSession({ userId: 'u1', companyId: 'c1' });
+    await readyVault({ userId: 'u1', companyId: 'c1' });
     await db.queue.clear();
   });
 

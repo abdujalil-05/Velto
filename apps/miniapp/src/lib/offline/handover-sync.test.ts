@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from './db';
 import { queueRepository } from './queue';
 import { setOfflineSession } from './session';
+import { readyVault } from './vault-test-helper';
 import { resetPreparedSession } from './session-bootstrap';
 
 const fetchPaymentStatuses = vi.fn();
@@ -27,6 +28,7 @@ describe('refreshHandoverDecisions', () => {
     vi.clearAllMocks();
     await db.queue.clear();
     setOfflineSession({ userId: 'u1', companyId: 'c1' });
+    await readyVault({ userId: 'u1', companyId: 'c1' });
     resetPreparedSession();
   });
 

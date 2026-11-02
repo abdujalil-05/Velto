@@ -9,7 +9,11 @@ import { Check, Share2 } from 'lucide-react';
 import { useRouter } from '@/i18n/navigation';
 import { useOfflineCustomers } from '@/lib/offline/use-offline-data';
 import { useOpenInvoicesQuery } from '@/lib/api/invoices';
-import { enqueue } from '@/lib/offline/queue';
+import { enqueue, QueueQuotaError } from '@/lib/offline/queue';
+import { useLegacyPaymentRows, useVaultStatus } from '@/lib/offline/use-vault-status';
+import { bringUpVault } from '@/lib/offline/held-seal';
+import { getOfflineSession } from '@/lib/offline/session';
+import { LegacyPaymentsBlockedError, VaultUnavailableError } from '@/lib/offline/vault';
 import { useSyncEngine } from '@/lib/offline/sync-engine';
 import { useInTransitQuery, type CreatePaymentInput, type PaymentMethod } from '@/lib/api/payments';
 import { useTelegramBackButton } from '@/lib/hooks/use-telegram-back-button';
@@ -32,6 +36,9 @@ export default function NewPaymentPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const syncEngine = useSyncEngine();
+  const vaultStatus = useVaultStatus();
+  const legacyBlocked = useLegacyPaymentRows() > 0;
+  const vaultReady = vaultStatus === 'ready' && !legacyBlocked;
 
   const customerId = searchParams.get('customerId');
 
@@ -52,7 +59,7 @@ export default function NewPaymentPage() {
   const amountCheck = amount.trim() === '' ? 'ok' : checkDecimal(amount, MONEY_SCALE);
   const amountStr = parseDecimalString(amount);
   const amountPositive = amountStr !== null && /[1-9]/.test(amountStr);
-  const canSubmit = customerId && amountPositive && amountCheck === 'ok' && !submitting;
+  const canSubmit = customerId && amountPositive && amountCheck === 'ok' && !submitting && vaultReady;
 
   async function handleSave() {
     if (!customerId || !amountStr || !amountPositive || amountCheck !== 'ok') return;
@@ -71,9 +78,26 @@ export default function NewPaymentPage() {
           `${new Date().toLocaleString()}`,
         ].join('\n'),
       );
+    } catch (e) {
+      // Nothing was written in any of these cases: never "saved", always say so.
+      if (e instanceof LegacyPaymentsBlockedError) toast.error(t('legacyBlocked'));
+      else if (e instanceof VaultUnavailableError) toast.error(t('vaultBlocked'));
+      else if (e instanceof QueueQuotaError) toast.error(t('storageFull'));
+      else toast.error(t('saveFailed'));
     } finally {
       setSubmitting(false);
     }
+  }
+
+  function retryVault() {
+    const owner = getOfflineSession();
+    if (!owner) return;
+    bringUpVault(owner)
+      .then((r) => {
+        if (r.status === 'retired') toast.error(t('vaultRetired'));
+        else if (r.status === 'unavailable') toast.error(t('vaultBlocked'));
+      })
+      .catch(() => toast.error(t('vaultBlocked')));
   }
 
   async function shareReceipt() {
@@ -195,6 +219,16 @@ export default function NewPaymentPage() {
         </Select>
       </div>
 
+      {!vaultReady && (
+        <Alert>
+          <AlertDescription>
+            {t(legacyBlocked ? 'legacyBlocked' : vaultStatus === 'retired' ? 'vaultRetired' : 'vaultBlocked')}{' '}
+            <Button size="sm" variant="secondary" onClick={retryVault}>
+              {t('vaultRetry')}
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
       <Button size="lg" className="w-full" disabled={!canSubmit} onClick={handleSave}>
         {t('save')}
       </Button>

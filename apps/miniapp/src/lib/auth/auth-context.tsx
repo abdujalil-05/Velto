@@ -1,15 +1,19 @@
 'use client';
 
-import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
+import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { apiFetch, onUnauthorized } from '@/lib/api/client';
 import type { AuthenticatedUser } from '@/lib/api/types';
 import { getTelegramWebApp } from '@/lib/telegram/webapp';
-import { clearOfflineDb } from '@/lib/offline/db';
 import { clearDeviceKey } from '@/lib/offline/crypto';
 import { queueRepository } from '@/lib/offline/queue';
-import { forgetLastKnownOwner, setOfflineSession } from '@/lib/offline/session';
+import { bringUpVaultWithRetry, sealOwnerForLogout, wipeLocalAfterLogout } from '@/lib/offline/held-seal';
+import { endSessionSealing } from '@/lib/offline/session-end';
+import { countDeviceKeyRows, lockVault, refreshLegacyPaymentRows } from '@/lib/offline/vault';
+import { resumeSync, stopSyncAndWait } from '@/lib/offline/sync-engine-core';
+import { forgetLastKnownOwner, getOfflineSession, setOfflineSession } from '@/lib/offline/session';
 import { clearRevokedInfo, getRevokedInfo, handleSessionRevoked, type RevokedInfo } from '@/lib/offline/revoke-wipe';
 import { resetPreparedSession } from '@/lib/offline/session-bootstrap';
 import { clearTokens, getAccessToken, getRefreshToken } from './tokens';
@@ -49,11 +53,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const t = useTranslations('Common');
   const tAuth = useTranslations('Auth');
   const tRevoked = useTranslations('Revoked');
+  const tQueue = useTranslations('Queue');
+  const queryClient = useQueryClient();
+  const tCommonRef = useRef(t);
+  tCommonRef.current = t;
   const [user, setUser] = useState<AuthenticatedUser | null>(null);
   const [status, setStatus] = useState<AuthStatus>('loading');
   const [linking, setLinking] = useState(false);
   const [revoked, setRevoked] = useState<RevokedInfo | null>(null);
   useEffect(() => setRevoked(getRevokedInfo()), []);
+
+  // Session-ready: obtain the vault key for this user+company (needs the network once; KEK is fetched, used, zeroed).
+  // Payments are blocked, and vault rows stay locked, until this succeeds.
+  useEffect(() => {
+    if (status !== 'authenticated' || !user) return;
+    const owner = getOfflineSession();
+    if (!owner) return;
+    void refreshLegacyPaymentRows().catch(() => {}); // startup detection, independent of the network
+    void bringUpVaultWithRetry(owner, { isCurrent: () => getOfflineSession()?.userId === owner.userId && getOfflineSession()?.companyId === owner.companyId })
+      .then((r) => {
+        if (r.status === 'retired') toast.warning(tQueue('vaultRetired'), { id: 'vaultRetired' });
+        if (r.legacyFailed > 0) toast.warning(tQueue('heldSealUnrestorable'), { id: 'heldSealUnrestorable' });
+      })
+      .catch(() => {});
+  }, [status, user, tQueue]);
 
   // Shared by the initial bootstrap and the post-link retry: attempts a
   // Telegram login with the current initData, returns whether it succeeded.
@@ -183,12 +206,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             .catch(() => {});
         }
         if (sessionExpired) toast.error(tAuth('sessionExpired'));
+        const ending = getOfflineSession();
+        // Same sequence as logout: stop+abort sync, seal own rows to the vault key, THEN lock the UK.
+        void endSessionSealing(ending)
+          .then((r) => {
+            if (r.remainingPayments > 0) toast.warning(tCommonRef.current('heldSealPending', { count: r.remainingPayments }), { id: 'heldSealPending', duration: Infinity });
+          })
+          .catch(() => {});
         setOfflineSession(null);
+        queryClient.clear();
         resetPreparedSession();
         setUser(null);
         setStatus(mfaRequired ? 'mfa-web-required' : 'unauthenticated');
       }),
-    [tRevoked, tAuth],
+    [tRevoked, tAuth, queryClient],
   );
 
   const logout = useCallback(async (opts?: { force?: boolean }) => {
@@ -199,41 +230,63 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // shared device) must not start with a stale queue trying to sync
     // under the wrong session either — so logout is blocked, not silently
     // deferred, until the queue is actually empty.
-    const unsynced = await queueRepository.unsyncedCountForLogout();
-    if (unsynced > 0 && !opts?.force) {
-      toast.error(t('logoutBlockedPendingSync', { count: unsynced }));
-      return;
-    }
+    // Stop background push/resolution first so nothing races the seal/wipe below.
+    await stopSyncAndWait();
+    let sealState: 'sealed' | 'pending' = 'sealed';
+    let remainingPayments = 0;
+    let localUnconfirmed = false;
+    try {
+      // Held reconciliation payments do not count here: they stay in the queue under the owner's vault key.
+      const unsynced = await queueRepository.unsyncedCountForLogout();
+      if (unsynced > 0 && !opts?.force) {
+        resumeSync();
+        toast.error(t('logoutBlockedPendingSync', { count: unsynced }));
+        return;
+      }
 
-    // `force` (after export/confirmed discard) deletes ONLY the current user's
-    // own rows. Other owners' / quarantined unsynced documents are never
-    // destroyed by someone else.
-    if (opts?.force) await queueRepository.deleteOwnEntries();
-    const foreignRows = await queueRepository.queueRowCount();
+      // `force` (after export/confirmed discard) deletes ONLY the current user's
+      // own rows. Other owners' / quarantined unsynced documents are never
+      // destroyed by someone else.
+      if (opts?.force) await queueRepository.deleteOwnEntries();
+      // Local only, no network: the owner's rows still under the shared device key move to
+      // the owner's vault key (already in memory since login). Logout completes regardless.
+      const owner = getOfflineSession();
+      if (owner) {
+        const sealed = await sealOwnerForLogout(owner);
+        sealState = sealed.state;
+        remainingPayments = sealed.remainingPayments;
+        localUnconfirmed = !!sealed.unconfirmed;
+      }
+    } catch (err) {
+      resumeSync(); // aborted before tokens were cleared: user stays signed in, sync must not stay paused
+      throw err;
+    }
 
     const refreshToken = getRefreshToken();
     clearTokens();
-    await clearOfflineDb({ keepQueue: foreignRows > 0 });
-    // Rotate the device key only when the queue is empty: rotating it while
-    // foreign unsynced rows exist would make them undecryptable (= destroyed).
-    // Trade-off: with surviving foreign rows the next user shares the key, but
-    // they only ever see rows tagged with their own owner (queue.ts listAll).
-    if (foreignRows === 0) clearDeviceKey();
+    try {
+      await wipeLocalAfterLogout(); // cache wipe, device key only if no row needs it, UK dropped from memory
+    } catch {
+      localUnconfirmed = true; // IndexedDB failed: still end logged out; payment rows are never deleted as a fallback
+    }
+    queryClient.clear();
     setOfflineSession(null);
     forgetLastKnownOwner();
     resetPreparedSession();
     setUser(null);
     setStatus('unauthenticated');
+    if (localUnconfirmed) toast.warning(t('logoutLocalUnconfirmed'), { duration: Infinity });
+    else if (sealState === 'pending') toast.warning(t('heldSealPending', { count: remainingPayments }), { duration: Infinity });
     if (refreshToken) {
       apiFetch('/auth/logout', { method: 'POST', body: { refreshToken }, skipAuth: true }).catch(() => {});
     }
-  }, [t]);
+  }, [t, queryClient]);
 
   const resolveRevoked = useCallback(async (opts?: { hide?: boolean }) => {
     const info = getRevokedInfo();
     if (info && !opts?.hide && (await queueRepository.listRevokedFor(info)).length === 0) {
       clearRevokedInfo();
-      if ((await queueRepository.queueRowCount()) === 0) clearDeviceKey();
+      if ((await countDeviceKeyRows()) === 0) clearDeviceKey();
       setRevoked(null);
     } else if (opts?.hide) {
       setRevoked(null);

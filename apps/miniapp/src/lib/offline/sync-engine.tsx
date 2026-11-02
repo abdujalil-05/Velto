@@ -6,9 +6,10 @@ import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useAuth } from '@/lib/auth/auth-context';
 import { queueRepository } from './queue';
+import { getVaultStatus } from './vault';
 import { getLastStorageStatus, onStorageStatus, publishStorageStatus, type StorageStatus } from './storage-budget';
 import { ApiError, degradedKind, type DegradedKind } from '@/lib/api/client';
-import { runPull, runPush } from './sync-engine-core';
+import { runHeldMaintenance, runPull, runPush, unrestorableSealedCount } from './sync-engine-core';
 
 const FLUSH_INTERVAL_MS = 30_000;
 const MIN_BACKOFF_MS = 2_000;
@@ -47,6 +48,7 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
   const { status } = useAuth();
   const t = useTranslations('Common');
   const tVisit = useTranslations('Visit');
+  const tQueue = useTranslations('Queue');
   const queryClient = useQueryClient();
 
   const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine));
@@ -113,6 +115,13 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
         setSyncError(describeError(err));
         backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
       }
+      try {
+        for (const r of await runHeldMaintenance()) toast.success(tQueue(r.outcome === 'EXISTING_PAYMENT_CONFIRMED' ? 'heldResolvedExisting' : 'heldResolvedNotPosted'));
+        if (getVaultStatus() === 'retired') toast.warning(tQueue('vaultRetired'), { id: 'vaultRetired' });
+        if (unrestorableSealedCount() > 0) toast.warning(tQueue('heldSealUnrestorable'), { id: 'heldSealUnrestorable' });
+      } catch {
+        /* held rows are kept on any failure */
+      }
       if (opts.pull || (outcome?.accepted ?? 0) > 0) {
         // Freshly-confirmed docs can change stock/balances, so pull after an accepted push too.
         try {
@@ -156,7 +165,7 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
         scheduleNext();
       }
     },
-    [status, t, tVisit, refreshCounts, queryClient],
+    [status, t, tVisit, tQueue, refreshCounts, queryClient],
   );
 
   const scheduleNext = useCallback(() => {

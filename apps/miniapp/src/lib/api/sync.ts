@@ -169,6 +169,6 @@ export interface SyncPushResultItem {
 }
 
 /** 10.3: up to 20 queued documents per push — the queue engine (offline/sync-engine.tsx) enforces the batch-size cap before calling this. */
-export function pushSync(documents: SyncPushDocument[]): Promise<{ results: SyncPushResultItem[] }> {
-  return apiFetch<{ results: SyncPushResultItem[] }>('/sync/push', { method: 'POST', body: { documents } });
+export function pushSync(documents: SyncPushDocument[], signal?: AbortSignal): Promise<{ results: SyncPushResultItem[] }> {
+  return apiFetch<{ results: SyncPushResultItem[] }>('/sync/push', { method: 'POST', body: { documents }, signal });
 }

@@ -1,9 +1,10 @@
 import type { PaymentStatus } from '@/lib/api/payments';
 import type { SyncDocType } from '@/lib/api/sync';
 import { db, QUEUE_SEQ_KEY } from './db';
-import { EncryptedStore } from './encrypted-store';
+import { EncryptedStore, type RowCodec } from './encrypted-store';
 import { getOfflineSession, NoOfflineSessionError, type OfflineSession } from './session';
 import { publishStorageStatus } from './storage-budget';
+import { assertNoLegacyPayments, assertVaultReady, countDeviceKeyPaymentRows, isVaultReadyFor, openWithVault, sealWithVault, UK_FORMAT, VaultUnavailableError } from './vault';
 
 /**
  * Local sync queue (TZ 8.2/8.3). One table, the single source for the sync
@@ -84,15 +85,37 @@ export class QueueItemStateError extends Error {
   }
 }
 
-const store = new EncryptedStore<QueueEntry, string>(db.queue as never, [
-  'clientId',
-  'type',
-  'status',
-  'createdAt',
-  'userId',
-  'companyId',
-  'seq',
-], ['seq']);
+/**
+ * PAYMENT rows (incl. held ones) are encrypted under the owner's vault key (vault.ts) at write time; every
+ * other type stays under the device key until the owner's logout moves it (`sealOwnRowsToVault`). A vault row
+ * is read only while the vault is ready for its owner; otherwise it is skipped (locked), never dropped.
+ * A payment write while the vault is not ready THROWS (never a device-key fallback).
+ */
+const queueCodec: RowCodec<QueueEntry> = {
+  async encode(e, force) {
+    if (e.type !== 'payment' && !force) return null;
+    // Fail closed: a PAYMENT is never written under the device key. Without a ready vault for its owner the
+    // write throws and the existing row stays exactly as it was.
+    if (!e.userId || !e.companyId) throw new VaultUnavailableError();
+    const blob = await sealWithVault({ userId: e.userId, companyId: e.companyId }, e.clientId, e);
+    if (!blob) throw new VaultUnavailableError();
+    return blob;
+  },
+  async decode(row) {
+    if (row._enc.v !== UK_FORMAT) return null;
+    const { userId, companyId, clientId } = row as unknown as { userId?: string; companyId?: string; clientId: string };
+    if (!userId || !companyId) return {};
+    const value = await openWithVault<QueueEntry>({ userId, companyId }, clientId, row._enc);
+    return value && value.clientId === clientId && value.userId === userId && value.companyId === companyId ? { value } : {};
+  },
+};
+
+const store = new EncryptedStore<QueueEntry, string>(
+  db.queue as never,
+  ['clientId', 'type', 'status', 'createdAt', 'userId', 'companyId', 'seq'],
+  ['seq'],
+  queueCodec,
+);
 
 const NO_SEQ = Number.MAX_SAFE_INTEGER;
 /** FIFO comparator: seq, then createdAt, then clientId (legacy rows without seq sort last, stably). */
@@ -151,6 +174,11 @@ export function backoffDelayMs(attemptCount: number, random: () => number = Math
 export async function enqueue(type: SyncDocType, payload: Record<string, unknown>): Promise<string> {
   const session = getOfflineSession();
   if (!session) throw new NoOfflineSessionError();
+  // No device-key-only payments: without the vault key the payment is not created at all.
+  if (type === 'payment') {
+    assertVaultReady(session);
+    await assertNoLegacyPayments();
+  }
   const clientId = crypto.randomUUID();
   const seq = await nextSeq();
   const entry: QueueEntry = {
@@ -203,7 +231,11 @@ export async function listPending(limit = 20): Promise<QueueEntry[]> {
  * unsynced but not yet due (backoff).
  */
 export async function listPushable(limit: number, now: Date = new Date()): Promise<QueueEntry[]> {
-  const mine = (await listAll()).filter((e) => e.status === 'PENDING' && !e.quarantinedAt);
+  const sess = getOfflineSession();
+  // Payments are not pushed while the vault is down (updating a legacy row afterwards would have to be refused) nor
+  // while any legacy device-key payment row is unresolved (pilot policy: financial use stays blocked until manual resolution).
+  const paymentsOk = isVaultReadyFor(sess ?? { userId: '', companyId: '' }) && (await countDeviceKeyPaymentRows()) === 0;
+  const mine = (await listAll()).filter((e) => e.status === 'PENDING' && !e.quarantinedAt && (e.type !== 'payment' || paymentsOk));
   const nowIso = now.toISOString();
   const due = mine.filter((e) => !e.nextAttemptAt || e.nextAttemptAt <= nowIso);
   const outletOf = (e: QueueEntry) => (typeof e.payload.outletId === 'string' ? e.payload.outletId : null);
@@ -456,9 +488,10 @@ export interface PendingExport {
   items: {
     clientId: string;
     type: SyncDocType;
-    status: QueueStatus;
+    /** Omitted (with payload/lastError) for PAYMENT items of the ownerless quarantine export. */
+    status?: QueueStatus;
     createdAt: string;
-    payload: Record<string, unknown>;
+    payload?: Record<string, unknown>;
     lastError?: QueueError;
   }[];
 }
@@ -502,7 +535,8 @@ export async function exportQuarantinedToJson(): Promise<string> {
     userId: s?.userId ?? null,
     companyId: s?.companyId ?? null,
     unknownOwner: true,
-    items: toExportItems(await listQuarantined()),
+    // Unknown owner => any account could read the file: PAYMENT amounts/customers are never exported here (rows are kept).
+    items: toExportItems(await listQuarantined()).map((i) => (i.type === 'payment' ? { clientId: i.clientId, type: i.type, createdAt: i.createdAt } : i)),
   };
   return JSON.stringify(out, null, 2);
 }
@@ -518,14 +552,128 @@ export async function discardQuarantinedItem(clientId: string): Promise<void> {
 /** Unsynced rows the current user is answerable for on logout: own + quarantined (foreign owners' are untouched and not counted). */
 export async function unsyncedCountForLogout(): Promise<number> {
   const s = getOfflineSession();
-  return (await readAll()).filter((e) => UNSYNCED_STATUSES.includes(e.status) && (!e.userId || ownedBy(e, s))).length;
+  // Held payments never block logout: they stay in the queue under the owner's vault key (vault.ts).
+  return (await readAll()).filter((e) => UNSYNCED_STATUSES.includes(e.status) && (!e.userId || ownedBy(e, s)) && !isReconciliationHold(e)).length;
+}
+
+/** Current user's held (reconciliation) payments. */
+export async function listHeld(): Promise<QueueEntry[]> {
+  return (await listAll()).filter(isReconciliationHold).sort(bySeq);
+}
+
+/** Legacy `sealed` row (per-row DEK format) migrated into the queue under the vault key: back as FAILED with its original lastError (still held, never pushed). Existing row with the same clientId wins. */
+export async function restoreHeldEntry(entry: QueueEntry): Promise<void> {
+  if (!entry.userId || !entry.companyId) throw new Error('ownerless held entry');
+  assertVaultReady({ userId: entry.userId, companyId: entry.companyId });
+  if (await db.queue.get(entry.clientId)) return;
+  await store.put({ ...entry, status: 'FAILED', nextAttemptAt: undefined });
+}
+
+/**
+ * Re-encrypts the owner's rows that are still under the device key (any type) to the owner's vault key,
+ * one atomic row write each (a kill in between leaves the old, still readable row). Needs the vault ready for
+ * the owner. Used at logout (no network) and at login for legacy device-key payments/held rows.
+ * Returns how many owner rows are still under the device key afterwards.
+ */
+export async function sealOwnRowsToVault(
+  owner: OfflineSession,
+  opts: { onlyPayments?: boolean } = {},
+): Promise<{ moved: number; remaining: number; remainingPayments: number }> {
+  const raw = (await db.queue.where('userId').equals(owner.userId).toArray()).filter(
+    (r) => r.companyId === owner.companyId && r._enc?.v !== UK_FORMAT && (!opts.onlyPayments || r.type === 'payment'),
+  );
+  let moved = 0;
+  let remaining = 0;
+  let remainingPayments = 0;
+  for (const r of raw) {
+    const outcome = isVaultReadyFor(owner) ? await sealRowCas(r.clientId) : 'failed';
+    if (outcome === 'moved') moved += 1;
+    else if (outcome === 'failed') {
+      remaining += 1;
+      if (r.type === 'payment') remainingPayments += 1;
+    } // 'gone': deleted/ACKed meanwhile - never resurrected
+  }
+  return { moved, remaining, remainingPayments };
+}
+
+type CasOutcome = 'moved' | 'gone' | 'failed';
+
+function sameBlob(a: { iv: Uint8Array; ct: ArrayBuffer } | undefined, b: { iv: Uint8Array; ct: ArrayBuffer } | undefined): boolean {
+  if (!a || !b) return false;
+  const eq = (x: ArrayLike<number>, y: ArrayLike<number>) => x.length === y.length && Array.prototype.every.call(x, (v: number, i: number) => v === y[i]);
+  return eq(a.iv, b.iv) && eq(new Uint8Array(a.ct), new Uint8Array(b.ct));
+}
+
+/**
+ * Compare-and-swap move of one device-key row to the vault key. All crypto happens OUTSIDE the IndexedDB
+ * transaction (a WebCrypto await would auto-commit it); inside the rw transaction the row is re-read and
+ * written only if it still carries the very ciphertext we sealed from (any ACK delete, status change or other
+ * update since the read makes the CAS fail). One retry with a fresh read; a row that vanished is never recreated.
+ */
+async function sealRowCas(clientId: string): Promise<CasOutcome> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const before = await db.queue.get(clientId);
+    if (!before) return 'gone';
+    if (before._enc?.v === UK_FORMAT) return 'moved';
+    let entry: QueueEntry | undefined;
+    let encoded: (typeof before)[];
+    try {
+      entry = await store.get(clientId);
+      if (!entry) return 'failed'; // unreadable under the device key: left untouched
+      encoded = (await store.encodeRows([entry], true)) as unknown as (typeof before)[];
+    } catch {
+      return 'failed';
+    }
+    let written: { iv: Uint8Array; ct: ArrayBuffer } | undefined;
+    try {
+      const swapped = await db.transaction('rw', db.queue, async () => {
+        const now = await db.queue.get(clientId);
+        if (!now) return 'gone' as const;
+        if (now.status !== before.status || !sameBlob(now._enc, before._enc)) return 'changed' as const;
+        await db.queue.put(encoded[0]!);
+        written = (await db.queue.get(clientId))?._enc; // exact bytes on disk from our write, read in the same transaction
+        return 'moved' as const;
+      });
+      if (swapped === 'gone') return swapped;
+      if (swapped === 'moved') return (await verifiedOrRolledBack(clientId, entry, before, written)) ? 'moved' : 'failed';
+    } catch {
+      return 'failed'; // IndexedDB error / quota / aborted transaction: the single-row write is atomic, the original row is intact
+    }
+  }
+  return 'failed';
+}
+
+/** The legacy copy is only given up after the new ciphertext was read back and decrypted to the same entry; otherwise the original raw row is restored ONLY if the row on disk is still exactly the blob we wrote (CAS) - a legitimate concurrent update is never undone. */
+async function verifiedOrRolledBack(clientId: string, entry: QueueEntry, original: Parameters<typeof db.queue.put>[0], written: { iv: Uint8Array; ct: ArrayBuffer } | undefined): Promise<boolean> {
+  const back = await store.get(clientId).catch(() => undefined);
+  if (back && JSON.stringify(back) === JSON.stringify(entry)) return true;
+  await db
+    .transaction('rw', db.queue, async () => {
+      const now = await db.queue.get(clientId);
+      if (now && sameBlob(now._enc, written)) await db.queue.put(original);
+    })
+    .catch(() => {});
+  return false;
+}
+
+/**
+ * Server-confirmed resolution of a held payment: removes ONLY that exact
+ * clientId, and only while it is still a held row of the current user. Never
+ * creates or resends a payment.
+ */
+export async function removeResolvedHeld(clientId: string): Promise<boolean> {
+  const e = (await listAll()).find((x) => x.clientId === clientId);
+  if (!e || !isReconciliationHold(e)) return false;
+  await db.queue.delete(clientId);
+  return true;
 }
 
 /** Force-logout discard: deletes ONLY the current user's own rows. Foreign/quarantined rows stay. */
 export async function deleteOwnEntries(): Promise<void> {
   const s = getOfflineSession();
-  // Reconciliation-hold payments are kept (like foreign rows) even on force logout.
-  const mine = (await readAll()).filter((e) => ownedBy(e, s) && !isReconciliationHold(e));
+  // A PAYMENT not confirmed synced by the server is never deleted (PO criterion): it stays in the queue (vault-encrypted,
+  // owner-scoped) and is restored on the owner's next login under the same clientId, so server idempotency dedups a re-send.
+  const mine = (await readAll()).filter((e) => ownedBy(e, s) && (e.type !== 'payment' || e.status === 'SYNCED'));
   await Promise.all(mine.map((e) => db.queue.delete(e.clientId)));
 }
 
@@ -550,8 +698,13 @@ export async function quarantineOwnerEntries(owner: OfflineSession): Promise<num
     if (e.status === 'SYNCED') {
       await db.queue.delete(e.clientId);
     } else if (!e.quarantinedAt) {
-      await store.put({ ...e, quarantinedAt: now });
-      quarantined += 1;
+      try {
+        await store.put({ ...e, quarantinedAt: now });
+        quarantined += 1;
+      } catch (err) {
+        // A payment cannot be rewritten without its vault key; it is never pushed without a session anyway. Row untouched.
+        if (!(err instanceof VaultUnavailableError)) throw err;
+      }
     }
   }
   return quarantined;
@@ -613,6 +766,9 @@ export async function claimLegacyEntries(session: OfflineSession): Promise<{ cla
   let claimed = 0;
   for (const e of legacy) {
     if (creatorIdOf(e) === session.userId) {
+      // A payment is re-encrypted under the vault key: while the vault is not ready, leave the ownerless row
+      // untouched (never device-key fallback, never deleted) so a later claim after bring-up picks it up.
+      if (e.type === 'payment' && !isVaultReadyFor(session)) continue;
       await store.put({ ...e, userId: session.userId, companyId: session.companyId });
       claimed += 1;
     }
@@ -649,6 +805,10 @@ export const queueRepository = {
   exportQuarantinedToJson,
   discardQuarantinedItem,
   unsyncedCountForLogout,
+  listHeld,
+  sealOwnRowsToVault,
+  restoreHeldEntry,
+  removeResolvedHeld,
   deleteOwnEntries,
   queueRowCount,
   quarantineOwnerEntries,

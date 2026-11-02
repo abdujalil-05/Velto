@@ -72,3 +72,16 @@ export function useInTransitQuery(customerId: string | null) {
     enabled: !!customerId,
   });
 }
+
+export type ReconciliationStatus = 'OPEN' | 'EXISTING_PAYMENT_CONFIRMED' | 'NOT_POSTED_CONFIRMED' | 'UNKNOWN';
+
+export interface ReconciliationStatusItem {
+  clientId: string;
+  status: ReconciliationStatus;
+  resolvedAt?: string;
+}
+
+/** POST /payments/reconciliations/status - the server (not the client) decides whether a held payment is resolved. ≤100 ids. */
+export function fetchReconciliationStatus(clientIds: string[], signal?: AbortSignal): Promise<{ items: ReconciliationStatusItem[] }> {
+  return apiFetch<{ items: ReconciliationStatusItem[] }>('/payments/reconciliations/status', { method: 'POST', body: { clientIds }, signal });
+}

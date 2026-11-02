@@ -16,6 +16,27 @@ export interface RawRow {
   _enc: EncryptedBlob;
 }
 
+/** Sealed held row: only owner ids + code/time in plaintext; the entry itself is AES-GCM under a random DEK that is AES-KW wrapped by the KEK. */
+export interface SealedRow {
+  clientId: string;
+  ownerUserId: string;
+  ownerCompanyId: string;
+  wrappedDek: ArrayBuffer;
+  iv: Uint8Array;
+  ciphertext: ArrayBuffer;
+  kekVersion: number;
+  heldCode: string;
+  createdAt: string;
+}
+
+/** Per-(user, company) vault key, wrapped (AES-KW) by the server-issued KEK. Nothing else is persisted about it (vault.ts). */
+export interface VaultRow {
+  userId: string;
+  companyId: string;
+  kekVersion: number;
+  wrappedUK: ArrayBuffer;
+}
+
 /** meta key holding the last allocated queue sequence number. */
 export const QUEUE_SEQ_KEY = 'queue:seq';
 
@@ -35,6 +56,10 @@ class VeltoOfflineDb extends Dexie {
     string
   >;
   meta!: Table<{ key: string; value: unknown }, string>;
+  /** Held (reconciliation) payments sealed at logout under a per-row DEK wrapped by the owner's server KEK (held-seal.ts). Never cleared by clearOfflineDb; only by emergency wipe. */
+  sealed!: Table<SealedRow, string>;
+  /** Wrapped vault keys per (user, company); never cleared by clearOfflineDb (only emergency wipe). */
+  vault!: Table<VaultRow, [string, string]>;
 
   constructor() {
     super('velto-miniapp');
@@ -83,6 +108,11 @@ class VeltoOfflineDb extends Dexie {
         }
         await tx.table('meta').put({ key: QUEUE_SEQ_KEY, value: n });
       });
+    // v5 (additive): `sealed` table for held payments of logged-out users. No
+    // upgrade step - the queue table and its unsynced rows are not touched.
+    this.version(5).stores({ sealed: 'clientId, ownerUserId, ownerCompanyId' });
+    // v6 (additive): wrapped vault keys. No upgrade step - the queue/sealed tables are not touched.
+    this.version(6).stores({ vault: '[userId+companyId]' });
   }
 }
 

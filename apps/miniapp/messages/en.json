@@ -103,7 +103,13 @@
     "debtNotReducedNote": "A payment you collected does not reduce the debt until the cashier accepts it.",
     "inTransit": "In transit (not handed to cashier)",
     "amountScaleError": "Amount may have at most 2 decimals (tiyin)",
-    "amountInvalid": "Enter the amount as a number (e.g. 100.05)"
+    "amountInvalid": "Enter the amount as a number (e.g. 100.05)",
+    "vaultBlocked": "A protection key is needed to create a payment. Connect to the internet and retry - the payment was NOT saved on this device.",
+    "vaultRetired": "The payment key on this device is retired. Contact the responsible staff member; new payments cannot be created.",
+    "vaultRetry": "Retry",
+    "legacyBlocked": "This device holds unconfirmed payment records stored the old way (shared key). They are not deleted, but creating and sending payments is stopped. Have the record owner sign in online, or contact your supervisor.",
+    "storageFull": "Device storage is full - the payment was NOT saved. Free up space and retry.",
+    "saveFailed": "Storage write failed - the payment was NOT saved on this device. Retry; if it repeats, write the payment down on paper and contact your supervisor."
   },
   "Visit": {
     "collectPayment": "Collect payment",
@@ -189,6 +195,9 @@
     "syncPending": "{count} pending",
     "syncRetry": "Retry",
     "logoutBlockedPendingSync": "{count} document(s) not sent yet. Connect to the internet, wait for sync to finish, then log out.",
+    "heldSealPending": "{count} payment record(s) could not be re-encrypted and remain under the shared device key. Sign in online again - until then another account on this device could read them.",
+    "logoutLocalUnconfirmed": "Local data on this device was NOT confirmed saved (storage error). You were signed out; unsynced payments are not deleted. Sign in again online and check the queue.",
+    "heldSealUnrestorable": "Could not open the saved payment record — contact the responsible staff member",
     "all": "All",
     "done": "Done",
     "cancel": "Cancel",
@@ -274,7 +283,7 @@
     "logoutDiscard": "Discard without export and sign out",
     "logoutCancel": "Cancel",
     "logoutDiscardConfirmTitle": "Discard unsent documents?",
-    "logoutDiscardConfirmDescription": "{count} document(s) never reached the server and will be lost for good.",
+    "logoutDiscardConfirmDescription": "{count} document(s) never reached the server. Non-payment documents will be deleted from this device; unsynced payments are NOT deleted - they stay encrypted on this device.",
     "logoutDiscardConfirm": "Yes, discard and sign out",
     "quarantineTitle": "In quarantine",
     "quarantineWarning": "These documents are left over from an old version and their creator is unknown. They are not sent and are not counted as your work. You can export or discard them.",
@@ -310,8 +319,15 @@
       "price": "Price is below the minimum.",
       "action": "The document is never deleted automatically. Cancel it and re-enter with a valid value."
     },
-    "paymentConflict": "This payment ID was already used on the server with a different amount/data. The payment was NOT accepted. Do not re-enter it as a new payment: contact the accountant for reconciliation. The record is kept on this phone and cannot be deleted until reconciled.",
-    "paymentUnverifiable": "The server cannot verify the original request for this payment ID, so the payment was NOT accepted. Do not re-enter it as a new payment: contact the accountant for reconciliation. The record is kept on this phone and cannot be deleted until reconciled."
+    "paymentConflict": "This payment needs review. Do not enter it again. Contact the responsible staff member. You can sign out - the record is kept until the conflict is resolved.",
+    "paymentUnverifiable": "This payment needs review. Do not enter it again. Contact the responsible staff member. You can sign out - the record is kept until the conflict is resolved.",
+    "heldResolvedExisting": "Review finished: the server confirmed this payment already exists. The record was removed from this phone.",
+    "heldResolvedNotPosted": "Review finished: the server confirmed this payment was NOT posted. The record was removed from this phone. If you received the money, contact the responsible staff member.",
+    "wipeButton": "Emergency wipe",
+    "wipeTitle": "Erase all local data?",
+    "wipeWarning": "Warning: all unsent documents and payments needing review will be erased from this phone for good - the local evidence will be lost. This is NOT a normal sign-out. Use it only if the phone is lost or compromised.",
+    "wipeConfirm": "Yes, erase everything and sign out",
+    "vaultRetired": "Payment records on this device are locked (key version retired). They are not deleted; contact the responsible staff member."
   },
   "Revoked": {
     "title": "Access revoked",

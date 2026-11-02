@@ -103,7 +103,13 @@
     "debtNotReducedNote": "Siz yig'gan to'lov kassir qabul qilguncha qarzni kamaytirmaydi.",
     "inTransit": "Yo'lda (kassirga topshirilmagan)",
     "amountScaleError": "Summada ko'pi bilan 2 ta kasr xona (tiyin) bo'lishi mumkin",
-    "amountInvalid": "Summani raqam bilan kiriting (masalan 100.05)"
+    "amountInvalid": "Summani raqam bilan kiriting (masalan 100.05)",
+    "vaultBlocked": "To'lov yaratish uchun xavfsiz kalit kerak. Internetga ulanib, qayta urinib ko'ring — to'lov qurilmaga saqlanmadi.",
+    "vaultRetired": "Qurilmadagi to'lov kaliti eskirgan. Mas'ul xodimga murojaat qiling; yangi to'lov yaratib bo'lmaydi.",
+    "vaultRetry": "Qayta urinish",
+    "legacyBlocked": "Qurilmada eski usulda (umumiy kalit bilan) saqlangan, tasdiqlanmagan to'lov yozuvlari bor. Ular o'chirilmagan, lekin to'lov yaratish va yuborish to'xtatildi. Yozuv egasi onlayn kirsin yoki mas'ul xodimga murojaat qiling.",
+    "storageFull": "Qurilma xotirasi to'ldi — to'lov SAQLANMADI. Joy bo'shating va qayta urining.",
+    "saveFailed": "Xotiraga yozishda xatolik — to'lov qurilmaga SAQLANMADI. Qayta urinib ko'ring; takrorlansa to'lovni qog'ozga yozib qo'ying va mas'ul xodimga murojaat qiling."
   },
   "Visit": {
     "collectPayment": "To'lov qabul qilish",
@@ -189,6 +195,9 @@
     "syncPending": "{count} ta kutilmoqda",
     "syncRetry": "Qayta urinish",
     "logoutBlockedPendingSync": "{count} ta hujjat hali yuborilmagan. Internetga ulaning va sinxronizatsiya tugashini kuting, keyin chiqing.",
+    "heldSealPending": "{count} ta to'lov yozuvi hali yangi kalit bilan shifrlanmadi va umumiy qurilma kaliti ostida qoldi. Onlayn holda qayta kiring — shu paytgacha ularni boshqa kirgan hisoblar ochishi mumkin.",
+    "logoutLocalUnconfirmed": "Qurilmadagi mahalliy ma'lumotlar saqlanganligi TASDIQLANMADI (xotira xatosi). Hisobdan chiqdingiz; sinxronlanmagan to'lovlar o'chirilmadi. Onlayn qayta kiring va navbatni tekshiring.",
+    "heldSealUnrestorable": "Saqlangan to'lov yozuvini ochib bo'lmadi — mas'ul xodimga murojaat qiling",
     "all": "Hammasi",
     "done": "Tayyor",
     "cancel": "Bekor qilish",
@@ -274,7 +283,7 @@
     "logoutDiscard": "Yuklamasdan o'chirib chiqish",
     "logoutCancel": "Bekor qilish",
     "logoutDiscardConfirmTitle": "Yuborilmagan hujjatlar o'chiriladimi?",
-    "logoutDiscardConfirmDescription": "{count} ta hujjat serverga yetmagan va butunlay yo'qoladi.",
+    "logoutDiscardConfirmDescription": "{count} ta hujjat serverga yetmagan. To'lovlardan boshqa hujjatlar qurilmadan o'chiriladi; sinxronlanmagan to'lovlar O'CHIRILMAYDI - ular qurilmada shifrlangan holda qoladi.",
     "logoutDiscardConfirm": "Ha, o'chirib chiqish",
     "quarantineTitle": "Karantinda",
     "quarantineWarning": "Bu hujjatlar eski versiyadan qolgan, kim yaratgani noma'lum. Ular yuborilmaydi va sizning ishingiz hisoblanmaydi. Faylga yuklash yoki o'chirish mumkin.",
@@ -310,8 +319,15 @@
       "price": "Narx minimal narxdan past.",
       "action": "Hujjat o'z-o'zidan o'chmaydi. Uni bekor qiling va to'g'ri qiymat bilan qayta kiriting."
     },
-    "paymentConflict": "Bu to'lov ID si serverda boshqa summa/ma'lumot bilan allaqachon ishlatilgan. To'lov QABUL QILINMADI. Uni yangi to'lov sifatida qayta kiritmang: solishtirish uchun buxgalterga murojaat qiling. Yozuv telefonda saqlanadi va solishtirish tugaguncha o'chirib bo'lmaydi.",
-    "paymentUnverifiable": "Server bu to'lov ID si uchun asl so'rovni tasdiqlay olmadi, shuning uchun to'lov QABUL QILINMADI. Uni yangi to'lov sifatida qayta kiritmang: solishtirish uchun buxgalterga murojaat qiling. Yozuv telefonda saqlanadi va solishtirish tugaguncha o'chirib bo'lmaydi."
+    "paymentConflict": "To'lov tekshiruvni talab qiladi. Uni qayta kiritmang. Mas'ul xodimga murojaat qiling. Hisobdan chiqishingiz mumkin — yozuv nizo hal bo'lguncha saqlanadi",
+    "paymentUnverifiable": "To'lov tekshiruvni talab qiladi. Uni qayta kiritmang. Mas'ul xodimga murojaat qiling. Hisobdan chiqishingiz mumkin — yozuv nizo hal bo'lguncha saqlanadi",
+    "heldResolvedExisting": "Tekshiruv yakunlandi: server bu to'lov allaqachon mavjudligini tasdiqladi. Yozuv telefondan o'chirildi.",
+    "heldResolvedNotPosted": "Tekshiruv yakunlandi: server bu to'lov o'tkazilmaganini tasdiqladi. Yozuv telefondan o'chirildi. Agar pul olgan bo'lsangiz, mas'ul xodimga murojaat qiling.",
+    "wipeButton": "Favqulodda tozalash",
+    "wipeTitle": "Barcha mahalliy ma'lumotlar o'chirilsinmi?",
+    "wipeWarning": "Diqqat: yuborilmagan barcha hujjatlar va tekshiruv talab qiladigan to'lovlar bu telefondan butunlay o'chiriladi — mahalliy dalil yo'qoladi. Bu oddiy chiqish EMAS. Faqat telefon yo'qolgan yoki xavf ostida bo'lsa foydalaning.",
+    "wipeConfirm": "Ha, hammasini o'chirib chiqish",
+    "vaultRetired": "Qurilmadagi to'lov yozuvlari qulflangan (kalit versiyasi eskirgan). Ular o'chirilmagan; mas'ul xodimga murojaat qiling."
   },
   "Revoked": {
     "title": "Kirish huquqi bekor qilindi",

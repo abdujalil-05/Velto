@@ -50,6 +50,8 @@ function getDeviceKey(): Promise<CryptoKey> {
 export interface EncryptedBlob {
   iv: Uint8Array;
   ct: ArrayBuffer;
+  /** Absent = encrypted under the shared device key. 'uk1' = per-(user, company) vault key (vault.ts). */
+  v?: string;
 }
 
 /** Encrypts an arbitrary JSON-serializable value into a blob Dexie can store directly (structured clone supports ArrayBuffer/Uint8Array natively — no base64 needed at rest). */

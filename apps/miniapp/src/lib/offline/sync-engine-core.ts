@@ -3,7 +3,9 @@ import { ApiError, degradedKind, type DegradedKind } from '@/lib/api/client';
 import { pullSync, pushSync, type SyncPushResultItem } from '@/lib/api/sync';
 import { applyPull, getCursor, markPullComplete } from './repository';
 import { queueRepository, type QueueEntry, type QueueError } from './queue';
-import { getOfflineSession } from './session';
+import { bringUpVault, hasSealedFor, resolveHeldRows, restoreSealedFor, type HeldResolved } from './held-seal';
+import { getVaultStatus } from './vault';
+import { abortSyncRequests, getOfflineSession, getSyncSignal, isSyncPaused, setSyncPaused } from './session';
 import { prepareOfflineSession } from './session-bootstrap';
 import { enforceStorageBudget } from './storage-budget';
 
@@ -82,11 +84,78 @@ function toQueueError(error: SyncPushResultItem['error'], fallbackCode: string):
  * FAILED; other errors -> PENDING+backoff. Items sent without an ACK stay
  * unsent-able and are re-sent later with the SAME clientId (server dedupes).
  */
-export async function runPush(): Promise<PushOutcome> {
+export function runPush(): Promise<PushOutcome> {
+  return track(pushInner());
+}
+
+const inFlight = new Set<Promise<unknown>>();
+function track<T>(p: Promise<T>): Promise<T> {
+  inFlight.add(p);
+  const done = () => inFlight.delete(p);
+  p.then(done, done);
+  return p;
+}
+
+/** Logout step 1: no new push/resolution starts, and any running one finishes before the caller touches the queue. */
+export const STOP_SYNC_WAIT_MS = 5_000;
+
+/**
+ * Logout step 1: no new push/resolution starts, running requests are aborted, and the caller waits for them to
+ * settle - but at most `maxWaitMs`, so a hung request can never block logout. A completion after the cap
+ * cannot write a PAYMENT row (the vault is locked by then; queue.ts refuses device-key payment writes).
+ */
+export async function stopSyncAndWait(maxWaitMs: number = STOP_SYNC_WAIT_MS): Promise<void> {
+  setSyncPaused(true);
+  abortSyncRequests();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    Promise.allSettled([...inFlight]),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, maxWaitMs);
+    }),
+  ]);
+  clearTimeout(timer);
+}
+
+/** Aborts a logout that did not proceed (e.g. blocked by unsynced documents). */
+export function resumeSync(): void {
+  setSyncPaused(false);
+}
+
+/**
+ * Online + owner signed in (session comes from /auth/me): restore the owner's
+ * sealed held rows (KEK fetched, kept in memory only), then ask the server
+ * whether any held payment is resolved. Offline / errors keep everything.
+ */
+let unrestorableSealed = 0;
+/** Sealed rows the last maintenance run could not open (kept sealed); the caller warns the user. */
+export function unrestorableSealedCount(): number {
+  return unrestorableSealed;
+}
+
+export function runHeldMaintenance(): Promise<HeldResolved[]> {
+  return track(maintenanceInner());
+}
+
+async function maintenanceInner(): Promise<HeldResolved[]> {
+  const s = getOfflineSession();
+  if (!s || isSyncPaused()) return [];
+  try {
+    if (getVaultStatus() !== 'ready') unrestorableSealed = (await bringUpVault(s)).legacyFailed; // retry after an offline/failed start
+    else if (await hasSealedFor(s)) unrestorableSealed = (await restoreSealedFor(s)).failed;
+  } catch {
+    /* offline / no KEK: stays locked/sealed, retried next cycle */
+  }
+  if (isSyncPaused()) return [];
+  return resolveHeldRows();
+}
+
+async function pushInner(): Promise<PushOutcome> {
   const outcome: PushOutcome = { accepted: 0, rejected: 0, conflicts: 0, retried: 0, visitGps: [], paused: null };
-  if (!(await prepareOfflineSession()) || !getOfflineSession()) return outcome;
+  if (isSyncPaused() || !(await prepareOfflineSession()) || !getOfflineSession()) return outcome;
 
   for (let n = 0; n < MAX_BATCHES_PER_CYCLE; n++) {
+    if (isSyncPaused()) break;
     const batch = await queueRepository.listPushable(batchLimit);
     if (batch.length === 0) break;
     const ids = batch.map((e) => e.clientId);
@@ -94,8 +163,13 @@ export async function runPush(): Promise<PushOutcome> {
 
     let results: SyncPushResultItem[];
     try {
-      ({ results } = await pushSync(batch.map((e) => ({ type: e.type, clientId: e.clientId, payload: e.payload }))));
+      ({ results } = await pushSync(batch.map((e) => ({ type: e.type, clientId: e.clientId, payload: e.payload })), getSyncSignal()));
     } catch (err) {
+      if (isSyncPaused()) {
+        // Logout / session end aborted the request: no ACK, attempt not counted; same clientId is re-sent later (server dedupes).
+        await queueRepository.releaseUnsent(ids).catch(() => {});
+        break;
+      }
       const stop = await handleRequestError(err, batch, outcome);
       if (stop) break;
       continue;

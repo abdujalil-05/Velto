@@ -6,6 +6,8 @@ import { toast } from 'sonner';
 import { LogOut } from 'lucide-react';
 import { useAuth } from '@/lib/auth/auth-context';
 import { queueRepository } from '@/lib/offline/queue';
+import { emergencyWipe } from '@/lib/offline/held-seal';
+import { stopSyncAndWait } from '@/lib/offline/sync-engine-core';
 import { downloadJson, exportFileName } from '@/lib/offline/queue-view';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
@@ -23,6 +25,7 @@ export function LogoutButton() {
   const [quarantined, setQuarantined] = useState(0);
   const [guardOpen, setGuardOpen] = useState(false);
   const [discardOpen, setDiscardOpen] = useState(false);
+  const [wipeOpen, setWipeOpen] = useState(false);
 
   async function onLogoutClick() {
     const unsynced = await queueRepository.unsyncedCountForLogout();
@@ -51,6 +54,10 @@ export function LogoutButton() {
       <Button type="button" variant="outline" size="lg" className="w-full gap-2" onClick={() => void onLogoutClick()}>
         <LogOut className="h-4 w-4" aria-hidden="true" />
         {t('logout')}
+      </Button>
+      {/* Distinct from sign-out: destroys ALL local data incl. held payments, behind an explicit confirm. */}
+      <Button type="button" variant="ghost" size="sm" className="w-full text-destructive" onClick={() => setWipeOpen(true)}>
+        {t('wipeButton')}
       </Button>
 
       <Dialog open={guardOpen && !discardOpen} placement="bottom" onOpenChange={setGuardOpen}>
@@ -81,6 +88,25 @@ export function LogoutButton() {
         onConfirm={async () => {
           setDiscardOpen(false);
           setGuardOpen(false);
+          await logout({ force: true });
+        }}
+      />
+    
+      <ConfirmSheet
+        open={wipeOpen}
+        onOpenChange={setWipeOpen}
+        title={t('wipeTitle')}
+        description={t('wipeWarning')}
+        confirmLabel={t('wipeConfirm')}
+        onConfirm={async () => {
+          setWipeOpen(false);
+          try {
+            await stopSyncAndWait();
+            await emergencyWipe();
+          } catch {
+            toast.error(t('actionError'));
+            return;
+          }
           await logout({ force: true });
         }}
       />

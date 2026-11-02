@@ -1,4 +1,6 @@
 import { clearDeviceKey } from './crypto';
+import { countDeviceKeyRows, lockVault } from './vault';
+import { stopSyncAndWait } from './sync-engine-core';
 import { db } from './db';
 import { queueRepository } from './queue';
 import { wipeReferenceCache } from './repository';
@@ -61,13 +63,18 @@ export function handleSessionRevoked(): Promise<RevokedInfo | null> {
 async function run(): Promise<RevokedInfo | null> {
   const owner = getLastKnownOwner() ?? getRevokedInfo();
   const telegramId = getOwnerTelegramId() ?? getRevokedInfo()?.telegramId;
-  if (owner) await queueRepository.quarantineOwnerEntries(owner);
+  if (owner) {
+    await stopSyncAndWait(); // abort + bounded wait: nothing pushes while we quarantine/seal
+    await queueRepository.quarantineOwnerEntries(owner);
+    await queueRepository.sealOwnRowsToVault(owner); // everything of the owner still under the device key -> vault key
+  }
   await wipeReferenceCache();
   await db.meta.delete('cacheOwner');
   setOfflineSession(null);
   resetPreparedSession();
   forgetLastKnownOwner();
-  if ((await queueRepository.queueRowCount()) === 0) clearDeviceKey();
+  lockVault();
+  if ((await countDeviceKeyRows()) === 0) clearDeviceKey();
 
   const info = owner ? { userId: owner.userId, companyId: owner.companyId, at: getRevokedInfo()?.at || new Date().toISOString(), telegramId } : null;
   if (info && (await queueRepository.listRevokedFor(info)).length > 0) {

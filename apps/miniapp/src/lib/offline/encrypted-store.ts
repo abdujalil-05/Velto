@@ -3,7 +3,7 @@ import { decryptValue, encryptValue, type EncryptedBlob } from './crypto';
 import type { RawRow } from './db';
 
 /** Boxed so `Promise.all` over it stays typed as an object array rather than collapsing `T | undefined` through `Awaited<>`. */
-interface Decoded<T> {
+export interface Decoded<T> {
   value?: T;
 }
 
@@ -15,6 +15,18 @@ async function tryDecrypt<T>(blob: EncryptedBlob): Promise<Decoded<T>> {
     console.error('[offline] dropping a row that could not be decrypted');
     return {};
   }
+}
+
+/**
+ * Optional per-table codec. `encode` returns a blob to use instead of the device
+ * key (null = use the device key). `decode` returns null for rows it does not own
+ * (device-key rows), or a Decoded — empty when the row is locked/unreadable, in
+ * which case the row is skipped silently (it is never deleted).
+ */
+export interface RowCodec<T> {
+  /** Must THROW (not return null) for rows that may never be written under the device key. */
+  encode(item: T, force?: boolean): Promise<EncryptedBlob | null>;
+  decode(row: RawRow & Record<string, unknown>): Promise<Decoded<T> | null>;
 }
 
 /**
@@ -34,16 +46,22 @@ export class EncryptedStore<T extends object, Key> {
     private readonly keyFields: (keyof T & string)[],
     /** Plaintext columns that win over the encrypted copy on read when present (set by a Dexie upgrade that cannot encrypt). */
     private readonly plaintextWins: (keyof T & string)[] = [],
+    private readonly codec?: RowCodec<T>,
   ) {
     this.table = table;
   }
 
-  private toRow(item: T) {
+  private toRow(item: T, force = false) {
     return async () => {
       const plain: Record<string, unknown> = {};
       for (const field of this.keyFields) plain[field] = item[field];
-      return { ...plain, _enc: await encryptValue(item) };
+      const blob = (await this.codec?.encode(item, force)) ?? (await encryptValue(item));
+      return { ...plain, _enc: blob };
     };
+  }
+
+  private async decodeRow(row: RawRow & Record<string, unknown>): Promise<Decoded<T>> {
+    return (await this.codec?.decode(row)) ?? tryDecrypt<T>(row._enc);
   }
 
   /**
@@ -53,8 +71,8 @@ export class EncryptedStore<T extends object, Key> {
    * need an atomic clear+repopulate encode first, then write inside
    * `db.transaction` using `bulkPutRows` (see repository.ts's `applyPull`).
    */
-  async encodeRows(items: T[]): Promise<(RawRow & Record<string, unknown>)[]> {
-    return Promise.all(items.map((item) => this.toRow(item)()));
+  async encodeRows(items: T[], force = false): Promise<(RawRow & Record<string, unknown>)[]> {
+    return Promise.all(items.map((item) => this.toRow(item, force)()));
   }
 
   async bulkPutRows(rows: (RawRow & Record<string, unknown>)[]): Promise<void> {
@@ -67,8 +85,9 @@ export class EncryptedStore<T extends object, Key> {
     await this.table.bulkPut(await this.encodeRows(items));
   }
 
-  async put(item: T): Promise<void> {
-    await this.table.put(await this.toRow(item)());
+  /** `force` asks the codec to use its own key even for rows it would not normally cover (logout/login migration). */
+  async put(item: T, opts: { force?: boolean } = {}): Promise<void> {
+    await this.table.put(await this.toRow(item, opts.force)());
   }
 
   private overlay(row: RawRow & Record<string, unknown>, value: T | undefined): T | undefined {
@@ -81,7 +100,7 @@ export class EncryptedStore<T extends object, Key> {
   async get(key: Key): Promise<T | undefined> {
     const row = await this.table.get(key);
     if (!row) return undefined;
-    return this.overlay(row, (await tryDecrypt<T>(row._enc)).value);
+    return this.overlay(row, (await this.decodeRow(row)).value);
   }
 
   /**
@@ -96,7 +115,7 @@ export class EncryptedStore<T extends object, Key> {
    */
   async toArray(): Promise<T[]> {
     const rows = await this.table.toArray();
-    const decoded = await Promise.all(rows.map((row) => tryDecrypt<T>(row._enc)));
+    const decoded = await Promise.all(rows.map((row) => this.decodeRow(row)));
     const out: T[] = [];
     decoded.forEach(({ value }, i) => {
       const v = this.overlay(rows[i]!, value);
