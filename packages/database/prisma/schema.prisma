@@ -81,6 +81,7 @@ model Company {
   routeRuns              RouteRun[]
   visits                 Visit[]
   auditLogs              AuditLog[]
+  paymentIntentResolutions PaymentIntentResolution[]
   outboxEvents           OutboxEvent[]
   importJobs             ImportJob[]
   exportJobs             ExportJob[]
@@ -135,6 +136,8 @@ model User {
   courierRoutes               Route[]                 @relation("CourierRoutes")
   agentVisits                 Visit[]                 @relation("AgentVisits")
   auditLogs                   AuditLog[]
+  paymentIntentResolutionsMade  PaymentIntentResolution[] @relation("PaymentIntentResolutionActor")
+  paymentIntentResolutionsOwned PaymentIntentResolution[] @relation("PaymentIntentResolutionOriginalUser")
   exportJobs                  ExportJob[]             @relation("ExportJobRequestedBy")
   exportJobsAcknowledged      ExportJob[]             @relation("ExportJobAcknowledgedBy")
   createdImportJobs           ImportJob[]             @relation("ImportJobCreator")
@@ -990,6 +993,7 @@ model Payment {
   openingBatch        OpeningBalanceBatch? @relation(fields: [openingBatchId], references: [id], onDelete: Restrict)
 
   allocations PaymentAllocation[]
+  intentResolutions PaymentIntentResolution[]
   reversal    PaymentReversal?
 
   @@unique([companyId, number])
@@ -1005,6 +1009,47 @@ model Payment {
   @@index([handoverActorId])
   @@index([handoverCashSessionId])
   @@index([openingBatchId])
+}
+
+// Offline payment-intent reconciliation (PO 2026-11-02, migration
+// 20261102120000_payment_intent_resolution). One durable decision per rejected
+// offline intent (409 PAYMENT_IDEMPOTENCY_CONFLICT/UNVERIFIABLE). "Open" /
+// REQUIRES_INVESTIGATION = no row. Append-only (DB trigger, all roles).
+// paymentId is NOT NULL: these 409s only arise when a Payment with the same
+// (companyId, clientId) already exists, and the DB trigger requires
+// Payment.clientId = clientId in the same company. evidenceRef is required for
+// NOT_POSTED_CONFIRMED by the service, not the DB.
+enum PaymentReconciliationOutcome {
+  EXISTING_PAYMENT_CONFIRMED
+  NOT_POSTED_CONFIRMED
+}
+
+model PaymentIntentResolution {
+  id               String                       @id @default(uuid()) @db.Uuid
+  companyId        String                       @db.Uuid
+  clientId         String
+  paymentId        String                       @db.Uuid
+  outcome          PaymentReconciliationOutcome
+  reason           String
+  evidenceRef      String?
+  actorId          String                       @db.Uuid
+  originalUserId   String                       @db.Uuid
+  rejectionAuditId String?                      @db.Uuid
+  traceId          String?
+  createdAt        DateTime                     @default(now())
+
+  company        Company   @relation(fields: [companyId], references: [id])
+  payment        Payment   @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  actor          User      @relation("PaymentIntentResolutionActor", fields: [actorId], references: [id], onDelete: Restrict)
+  originalUser   User      @relation("PaymentIntentResolutionOriginalUser", fields: [originalUserId], references: [id], onDelete: Restrict)
+  rejectionAudit AuditLog? @relation(fields: [rejectionAuditId], references: [id], onDelete: Restrict)
+
+  @@unique([companyId, clientId])
+  @@index([companyId, createdAt])
+  @@index([paymentId])
+  @@index([actorId])
+  @@index([originalUserId])
+  @@index([rejectionAuditId])
 }
 
 // F2.1: append-only record of a payment reversal (OWNER/SALES_DIRECTOR via
@@ -1220,6 +1265,8 @@ model AuditLog {
 
   company Company @relation(fields: [companyId], references: [id])
   user    User?   @relation(fields: [userId], references: [id])
+
+  paymentIntentResolutions PaymentIntentResolution[]
 
   @@index([companyId, entity, entityId])
 }

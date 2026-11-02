@@ -2648,4 +2648,137 @@ describe('tenant isolation (RLS)', () => {
       expect(Number(missing!.n)).toBe(0);
     });
   });
+
+  // PO 2026-11-02: PaymentIntentResolution — durable reconciliation decision for
+  // a rejected offline payment intent. Direct-companyId, one row per
+  // (companyId, clientId), append-only, same-company guards on all references.
+  describe('PaymentIntentResolution (offline payment reconciliation)', () => {
+    let pirActorId: string;
+    let pirAgentAId: string;
+    let pirUserBId: string;
+    let pirPaymentAId: string;
+    let pirPaymentBId: string;
+    let pirAuditAId: string;
+    let pirAuditBId: string;
+    const clientA = `pir-a-${randomUUID()}`;
+    const clientB = `pir-b-${randomUUID()}`;
+    const row = (over: Record<string, unknown> = {}) => ({
+      companyId: companyAId,
+      clientId: clientA,
+      paymentId: pirPaymentAId,
+      outcome: 'EXISTING_PAYMENT_CONFIRMED' as const,
+      reason: 'matched by cashier',
+      actorId: pirActorId,
+      originalUserId: pirAgentAId,
+      ...over,
+    });
+
+    beforeAll(async () => {
+      const actor = await systemPrisma.user.create({
+        data: { companyId: companyAId, firstName: 'Pir', lastName: 'Actor', phone: `+99893${Date.now().toString().slice(-7)}` },
+      });
+      pirActorId = actor.id;
+      // Dedicated users: resolutions RESTRICT-reference users and are append-only,
+      // so they stay behind like the F2.1 reversal actor (afterAll deletes courierA/userB).
+      const tail = Date.now().toString().slice(-6);
+      pirAgentAId = (await systemPrisma.user.create({
+        data: { companyId: companyAId, firstName: 'Pir', lastName: 'Agent', phone: `+998941${tail}` },
+      })).id;
+      pirUserBId = (await systemPrisma.user.create({
+        data: { companyId: companyBId, firstName: 'Pir', lastName: 'B', phone: `+998951${tail}` },
+      })).id;
+      await withTenant(companyAId, async (tx) => {
+        const customer = await tx.customer.create({ data: { companyId: companyAId, code: 'A-PIR', name: 'Pir A' } });
+        const payment = await tx.payment.create({
+          data: { companyId: companyAId, number: 'PAY-PIR-1', customerId: customer.id, amount: '10.00', method: 'CASH', clientId: clientA },
+        });
+        pirPaymentAId = payment.id;
+        const audit = await tx.auditLog.create({
+          data: { companyId: companyAId, action: 'payment.create_rejected', entity: 'Payment', entityId: payment.id },
+        });
+        pirAuditAId = audit.id;
+      });
+      await withTenant(companyBId, async (tx) => {
+        const customer = await tx.customer.create({ data: { companyId: companyBId, code: 'B-PIR', name: 'Pir B' } });
+        const payment = await tx.payment.create({
+          data: { companyId: companyBId, number: 'PAY-PIR-1', customerId: customer.id, amount: '10.00', method: 'CASH', clientId: clientB },
+        });
+        pirPaymentBId = payment.id;
+        const audit = await tx.auditLog.create({
+          data: { companyId: companyBId, action: 'payment.create_rejected', entity: 'Payment', entityId: payment.id },
+        });
+        pirAuditBId = audit.id;
+      });
+    });
+
+    it('rejects cross-company paymentId / actorId / originalUserId / rejectionAuditId and a foreign clientId', async () => {
+      // Company B cannot reference company A's payment (even with its own clientId).
+      await expect(
+        withTenant(companyBId, (tx) =>
+          tx.paymentIntentResolution.create({
+            data: row({ companyId: companyBId, clientId: clientA, actorId: pirUserBId, originalUserId: pirUserBId }),
+          }),
+        ),
+      ).rejects.toThrow();
+      // Even velto_system (BYPASSRLS) cannot link B's row to A's payment.
+      await expect(
+        systemPrisma.paymentIntentResolution.create({
+          data: row({ companyId: companyBId, clientId: clientA, actorId: pirUserBId, originalUserId: pirUserBId }),
+        }),
+      ).rejects.toThrow(/cross-tenant/);
+      for (const over of [{ actorId: pirUserBId }, { originalUserId: pirUserBId }, { rejectionAuditId: pirAuditBId }]) {
+        await expect(withTenant(companyAId, (tx) => tx.paymentIntentResolution.create({ data: row(over) }))).rejects.toThrow();
+      }
+      // paymentId must carry the same clientId.
+      await expect(
+        withTenant(companyAId, (tx) => tx.paymentIntentResolution.create({ data: row({ clientId: `pir-x-${randomUUID()}` }) })),
+      ).rejects.toThrow();
+      await expect(withTenant(companyAId, (tx) => tx.paymentIntentResolution.create({ data: row({ reason: '  ' }) }))).rejects.toThrow();
+    });
+
+    it('a direct-companyId table (PaymentIntentResolution) is scoped per tenant; one decision per clientId', async () => {
+      const created = await withTenant(companyAId, (tx) =>
+        tx.paymentIntentResolution.create({ data: row({ rejectionAuditId: pirAuditAId, traceId: 'trace-pir' }) }),
+      );
+      expect(await withTenant(companyAId, (tx) => tx.paymentIntentResolution.count({ where: { id: created.id } }))).toBe(1);
+      expect(await withTenant(companyBId, (tx) => tx.paymentIntentResolution.count({ where: { id: created.id } }))).toBe(0);
+      // Outside withTenant: zero rows or the pooled-'' uuid cast error (see the Customer case) — never a leak.
+      try {
+        expect(await prisma.paymentIntentResolution.count({ where: { id: created.id } })).toBe(0);
+      } catch (err) {
+        expect(String(err)).toMatch(/uuid/i);
+      }
+
+      // Second, contradictory decision for the same intent loses on the unique key.
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.paymentIntentResolution.create({ data: row({ outcome: 'NOT_POSTED_CONFIRMED', evidenceRef: 'ticket-1' }) }),
+        ),
+      ).rejects.toMatchObject({ code: 'P2002' });
+
+      // B can record its own decision for its own intent.
+      const own = await withTenant(companyBId, (tx) =>
+        tx.paymentIntentResolution.create({
+          data: row({ companyId: companyBId, clientId: clientB, paymentId: pirPaymentBId, actorId: pirUserBId, originalUserId: pirUserBId }),
+        }),
+      );
+      expect(own.companyId).toBe(companyBId);
+    });
+
+    it('is append-only — UPDATE and DELETE are rejected for the app role and velto_system', async () => {
+      const r = await withTenant(companyAId, (tx) => tx.paymentIntentResolution.findUniqueOrThrow({
+        where: { companyId_clientId: { companyId: companyAId, clientId: clientA } },
+      }));
+      await expect(
+        withTenant(companyAId, (tx) => tx.paymentIntentResolution.update({ where: { id: r.id }, data: { reason: 'changed' } })),
+      ).rejects.toThrow(/append-only/i);
+      await expect(
+        withTenant(companyAId, (tx) => tx.paymentIntentResolution.delete({ where: { id: r.id } })),
+      ).rejects.toThrow(/append-only/i);
+      await expect(
+        systemPrisma.paymentIntentResolution.update({ where: { id: r.id }, data: { outcome: 'NOT_POSTED_CONFIRMED' } }),
+      ).rejects.toThrow(/append-only/i);
+      await expect(systemPrisma.paymentIntentResolution.delete({ where: { id: r.id } })).rejects.toThrow(/append-only/i);
+    });
+  });
 });
