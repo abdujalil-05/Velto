@@ -8,8 +8,12 @@ const EXAMPLE_ACCESS_KEYS = ['velto', 'velto-ci', 'minioadmin'];
 const EXAMPLE_SECRETS = ['velto12345', 'velto-ci-secret', 'minioadmin'];
 const EXAMPLE_URL_PASSWORDS = ['velto_app', 'velto_system', 'velto'];
 
-export function isExampleS3Credential(value: string, kind: 'access' | 'secret'): boolean {
-  return (kind === 'access' ? EXAMPLE_ACCESS_KEYS : EXAMPLE_SECRETS).includes(value);
+export function isExampleS3AccessKey(value: string): boolean {
+  return EXAMPLE_ACCESS_KEYS.includes(value);
+}
+
+export function isExampleS3SecretKey(value: string): boolean {
+  return EXAMPLE_SECRETS.includes(value);
 }
 
 export function hasExampleUrlPassword(url: string): boolean {

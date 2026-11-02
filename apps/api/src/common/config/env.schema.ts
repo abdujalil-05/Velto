@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { decodeEncryptionKey } from '../crypto/secret-box';
 import { parsePreviousKekSecrets } from './offline-kek-keyring';
-import { hasExampleUrlPassword, hasUrlPassword, isExampleS3Credential, isPlaceholderSecret } from './secret-placeholders';
+import { hasExampleUrlPassword, hasUrlPassword, isExampleS3AccessKey, isExampleS3SecretKey, isPlaceholderSecret } from './secret-placeholders';
 
 /** Single source of the defaults; trace-job.ts / export-1c.constants.ts fall back to these. */
 export const DEFAULT_QUEUE_ENQUEUE_TIMEOUT_MS = 3000;
@@ -156,11 +156,11 @@ export const envSchema = z.object({
     path: ['MFA_ENCRYPTION_KEY'],
     message: 'must not be an example/CI placeholder in production; generate with: openssl rand -base64 32',
   })
-  .refine((e) => e.NODE_ENV !== 'production' || !isExampleS3Credential(e.S3_ACCESS_KEY, 'access'), {
+  .refine((e) => e.NODE_ENV !== 'production' || !isExampleS3AccessKey(e.S3_ACCESS_KEY), {
     path: ['S3_ACCESS_KEY'],
     message: 'must not be an example/CI credential in production',
   })
-  .refine((e) => e.NODE_ENV !== 'production' || !isExampleS3Credential(e.S3_SECRET_KEY, 'secret'), {
+  .refine((e) => e.NODE_ENV !== 'production' || !isExampleS3SecretKey(e.S3_SECRET_KEY), {
     path: ['S3_SECRET_KEY'],
     message: 'must not be an example/CI credential in production',
   })
