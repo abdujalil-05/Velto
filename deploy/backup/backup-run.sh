@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Scheduled entrypoint (root, systemd velto-backup.service): backup.sh (DB) -> objects-backup.sh (S3 objects) -> offsite-sync.sh -> STATUS ATTESTATION -> alert on ANY failure.
+# Scheduled entrypoint (root, systemd velto-backup.service): backup.sh (DB) -> objects-backup.sh (S3 objects) -> restore-set MANIFEST -> offsite-sync.sh (upload + verify) -> STATUS ATTESTATION -> alert on ANY failure.
 # NOT activated by the repo (user action). The status file (BACKUP_STATUS_DIR/status, root:root 0644 in a root:root 0755 dir) is what deploy.sh checks;
 # on any failure a RESULT=failed status is written so a stale 'ok' can never be mistaken for a fresh backup.
 # Env file (outside repo, chmod 600, e.g. /etc/velto/backup.env) = backup.sh vars + offsite vars (see offsite-sync.sh).
@@ -108,7 +108,10 @@ fail() { # step rc  -> failed attestation (keeps the last confirmed offsite_ts/o
 }
 [[ -d "$STATUS_DIR" ]] || { echo "[backup-run] status dir $STATUS_DIR missing (create root:root 0755, see deploy/system/)" >&2; alert status-dir 1; exit 1; }
 
-# --- 1. database
+# --- 1. database. restore_point_ts = epoch captured IMMEDIATELY BEFORE pg_dump starts: the dump's snapshot is taken after it, so the set contains every
+# commit up to restore_point_ts (conservative: never later than the real snapshot). The objects snapshot starts after the DB dump (objects_snapshot_ts >= restore_point_ts),
+# so every object the DB references at restore_point_ts is already in the bucket (the app never deletes objects).
+RESTORE_POINT_TS="$(date -u +%s)"
 OUT="$(bash "$HERE/backup.sh" 2>&1)"; rc=$?
 printf '%s\n' "$OUT" | grep -Ev '^(BACKUP_FILE|GLOBALS_FILE)=' | tail -n 20 | redact
 [[ $rc -eq 0 ]] || fail backup.sh "$rc"
@@ -118,42 +121,69 @@ GFILE="$(grep '^GLOBALS_FILE=' <<<"$OUT" | tail -n1 | cut -d= -f2-)"
 resolve backup.sh; resolve backup-file-missing
 
 # --- 2. object store (default ON: the DB alone is not a restore point, see docs/release/BACKUP-RESTORE-RUNBOOK.md)
-OFILE=""; OBJ_FIELDS=("OBJECTS=disabled")
+OFILE=""; OBJ_COUNT=""; OBJ_MSHA=""; OBJ_FIELDS=("OBJECTS=disabled")
 if [[ "${OBJECTS_BACKUP_ENABLED:-1}" == 1 ]]; then
+  OBJECTS_SNAPSHOT_TS="$(date -u +%s)"
   OOUT="$(bash "$HERE/objects-backup.sh" 2>&1)"; rc=$?
   printf '%s\n' "$OOUT" | grep -Ev '^OBJECTS_' | tail -n 10 | redact
   [[ $rc -eq 0 ]] || fail objects-backup.sh "$rc"
   OFILE="$(grep '^OBJECTS_FILE=' <<<"$OOUT" | tail -n1 | cut -d= -f2-)"
   [[ -s "$OFILE" ]] || fail objects-file-missing 1
-  OBJ_FIELDS=("OBJECTS=ok" "OBJ_COUNT=$(grep '^OBJECTS_COUNT=' <<<"$OOUT" | tail -n1 | cut -d= -f2-)" "OBJ_MANIFEST_SHA256=$(grep '^OBJECTS_MANIFEST_SHA256=' <<<"$OOUT" | tail -n1 | cut -d= -f2-)")
+  OBJ_COUNT="$(grep '^OBJECTS_COUNT=' <<<"$OOUT" | tail -n1 | cut -d= -f2-)"; OBJ_MSHA="$(grep '^OBJECTS_MANIFEST_SHA256=' <<<"$OOUT" | tail -n1 | cut -d= -f2-)"
+  OBJ_FIELDS=("OBJECTS=ok" "OBJ_COUNT=$OBJ_COUNT" "OBJ_MANIFEST_SHA256=$OBJ_MSHA")
   resolve objects-backup.sh
 else
   echo "[backup-run] OBJECTS_BACKUP_ENABLED=0 -> object store NOT backed up (status says OBJECTS=disabled; deploy needs VELTO_REQUIRE_OBJECTS=0)" >&2
 fi
 
-# --- 3. offsite (credentials: backup-writer only)
-OFFSITE=skipped; OFFSITE_RC=0; OFFSITE_TS=""
-PREV_OFF_TS="$(grep -E '^offsite_ts=' "$STATUS_DIR/status" 2>/dev/null | head -n1 | cut -d= -f2-)"; export BACKUP_RUN_ACTIVE=1
-if [[ "${OFFSITE_ENABLED:-0}" == 1 ]]; then
-  bash "$HERE/offsite-sync.sh"; rc=$?
-  if [[ $rc -eq 0 ]]; then OFFSITE=ok; OFFSITE_TS="$(date -u +%s)"; resolve offsite-sync.sh; else OFFSITE=failed; OFFSITE_RC=$rc; fi   # local backup is still valid: attest it, then alert
-else
-  echo "[backup-run] OFFSITE_ENABLED!=1 -> offsite copy skipped (local only; NOT sufficient for DR)" >&2
-fi
-
-# --- 4. attestation: re-hash the final ciphertext files (what deploy.sh will hash), record names/sizes/sha256 only
-fields=("VERIFY=ok" "OFFSITE=$OFFSITE" "BACKUP_GLOBALS=$([[ "${BACKUP_GLOBALS:-1}" == 1 ]] && echo 1 || echo 0)" "${OBJ_FIELDS[@]}")   # BACKUP_GLOBALS=1 makes the globals archive mandatory in the deploy gate
-# monitor contract: offsite_ts = last CONFIRMED offsite copy (kept from the previous status when this run did not confirm one)
-[[ -n "$OFFSITE_TS" ]] || OFFSITE_TS="$PREV_OFF_TS"
-[[ -z "$OFFSITE_TS" ]] || fields+=("offsite_ts=$OFFSITE_TS")
-fields+=("offsite_result=$([[ $OFFSITE == ok ]] && echo ok || echo "$OFFSITE")")
+# --- 3. restore-set manifest: final archives hashed ONCE (the same values go to the manifest and to the status). No objects archive = NOT a restore point.
+arch=()
 add() { # PREFIX file
-  local b; b="$(basename "$2")"
-  fields+=("$1_ARCHIVE=$b" "$1_SIZE=$(bs_size "$2")" "$1_SHA256=$(bs_sha256 "$2")")
+  arch+=("$1_ARCHIVE=$(basename "$2")" "$1_SIZE=$(bs_size "$2")" "$1_SHA256=$(bs_sha256 "$2")")
 }
 add DB "$FILE"
 [[ -z "$GFILE" ]] || add GLOBALS "$GFILE"
 [[ -z "$OFILE" ]] || add OBJ "$OFILE"
+BKG="$([[ "${BACKUP_GLOBALS:-1}" == 1 ]] && echo 1 || echo 0)"   # BACKUP_GLOBALS=1 makes the globals archive mandatory (deploy gate + manifest)
+MAN=""; MANIFEST_FIELDS=()
+if [[ -n "$OFILE" ]]; then
+  MAN="$(dirname "$FILE")/velto-set-$(basename "$FILE" | sed -E 's/^velto-db-([0-9]{8}-[0-9]{6})\..*$/\1/').manifest"
+  if bsm_write "$MAN" "RUN_ID=$BS_RUN_ID" "RESTORE_POINT_TS=$RESTORE_POINT_TS" "OBJECTS_SNAPSHOT_TS=$OBJECTS_SNAPSHOT_TS" OBJECTS=ok "BACKUP_GLOBALS=$BKG" \
+       "OBJ_COUNT=${OBJ_COUNT}" "OBJ_MANIFEST_SHA256=${OBJ_MSHA}" OFFSITE_VERIFY=size-local-sha256 "${arch[@]}"; then
+    [[ -z "${BACKUP_READ_GROUP:-}" ]] || { chgrp "$BACKUP_READ_GROUP" "$MAN" && chmod 640 "$MAN"; } || fail manifest-perms 1
+    bsm_verify "$MAN" "$(dirname "$FILE")" 1 || { echo "[backup-run] manifest self-check failed: $BSM_REASON" >&2; fail manifest-verify 1; }
+    MANIFEST_FIELDS=("SET_MANIFEST=$(basename "$MAN")" "SET_MANIFEST_SHA256=$(bs_sha256 "$MAN")" "restore_point_ts=$RESTORE_POINT_TS")
+  else fail manifest-write 1; fi
+else
+  echo "[backup-run] no objects archive -> NO restore-set manifest: this run is NOT a restore point (DB-only)" >&2
+fi
+
+# --- 4. offsite (credentials: backup-writer only). Attested ONLY after offsite-sync.sh verified the set by listing (exact sizes of archives + manifest);
+# the marker line must name THIS run's restore point, so a bare exit 0 is never enough.
+OFFSITE=skipped; OFFSITE_RC=0; OFFSITE_TS=""; OFFSITE_RP=""; OFFSITE_STEP=offsite-sync.sh
+export BACKUP_RUN_ACTIVE=1
+if [[ "${OFFSITE_ENABLED:-0}" == 1 && -n "$MAN" ]]; then
+  FOUT="$(OFFSITE_MANIFEST="$MAN" bash "$HERE/offsite-sync.sh" 2>&1)"; rc=$?
+  printf '%s\n' "$FOUT" | grep -v '^OFFSITE_VERIFIED_' | tail -n 20 | redact
+  if [[ $rc -eq 0 && "$(grep '^OFFSITE_VERIFIED_RESTORE_POINT_TS=' <<<"$FOUT" | tail -n1 | cut -d= -f2-)" == "$RESTORE_POINT_TS" ]]; then
+    OFFSITE=ok; OFFSITE_TS="$(date -u +%s)"; OFFSITE_RP="$RESTORE_POINT_TS"; resolve offsite-sync.sh
+  else OFFSITE=failed; OFFSITE_RC=$rc; [[ $rc -ne 0 ]] || OFFSITE_RC=11; fi   # local backup is still valid: attest it (offsite_result=failed), then alert
+elif [[ "${OFFSITE_ENABLED:-0}" == 1 ]]; then
+  echo "[backup-run] OFFSITE_ENABLED=1 but this run has no restore set (objects backup disabled): nothing uploaded, offsite NOT attested" >&2
+  OFFSITE=failed; OFFSITE_RC=12; OFFSITE_STEP=offsite-no-restore-set   # misconfiguration, not a success: attest offsite_result=failed, alert, non-zero exit
+else
+  echo "[backup-run] OFFSITE_ENABLED!=1 -> offsite copy skipped (local only; NOT sufficient for DR)" >&2
+fi
+
+# --- 5. attestation: record names/sizes/sha256 only. Monitor contract (lowercase keys): restore_point_ts (this run's set, if a restore point),
+# offsite_restore_point_ts / offsite_ts = last VERIFIED offsite set (kept from the previous status unless this run verified one), offsite_result ok|failed.
+fields=("VERIFY=ok" "OFFSITE=$OFFSITE" "BACKUP_GLOBALS=$BKG" "${OBJ_FIELDS[@]}")
+if [[ "$OFFSITE" == ok ]]; then fields+=("offsite_restore_point_ts=$OFFSITE_RP" "offsite_ts=$OFFSITE_TS" offsite_result=ok)
+else
+  while IFS= read -r l; do [[ -z "$l" || "$l" == offsite_result=* ]] || fields+=("$l"); done < <(bs_prev_offsite "$STATUS_DIR")
+  fields+=("offsite_result=$OFFSITE")
+fi
+fields+=(${MANIFEST_FIELDS[@]+"${MANIFEST_FIELDS[@]}"} "${arch[@]}")
 bs_write "$STATUS_DIR" ok "${fields[@]}" || fail status-write 1
-if [[ $OFFSITE_RC -ne 0 ]]; then alert offsite-sync.sh "$OFFSITE_RC"; exit "$OFFSITE_RC"; fi   # local OK + attested; offsite failure is still an incident
+if [[ $OFFSITE_RC -ne 0 ]]; then alert "$OFFSITE_STEP" "$OFFSITE_RC"; exit "$OFFSITE_RC"; fi   # local OK + attested; offsite failure is still an incident
 echo "[backup-run] OK run=$BS_RUN_ID status=$STATUS_DIR/status"

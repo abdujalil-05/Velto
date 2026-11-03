@@ -17,12 +17,52 @@ bad() { fail=$((fail+1)); printf '  FAIL %s\n' "$1"; }
 sha() { bs_sha256 "$1"; }
 ZERO64="$(printf 'a%.0s' {1..64})"
 
-# fixture: $T/<n>/{status/,backup/}
-write_status() { # dir result [extra...]
-  local d="$1" r="$2"; shift 2
-  bs_write "$d" "$r" VERIFY=ok OFFSITE=skipped OBJECTS=ok \
+# fake rclone (local dir as the remote "VOFF:<bucket>" = $FAKE_REMOTE/<bucket>): copy --files-from / lsf. Fault injection via env:
+#   FAKE_RCLONE_FAIL_COPY=1 (upload errors) FAKE_RCLONE_TRUNC=<substr> (stores half the bytes: size mismatch) FAKE_RCLONE_SKIP=<substr> (exit 0, object never stored)
+#   FAKE_RCLONE_FAIL_LSF=1. Every stored name is appended to $FAKE_REMOTE/.puts (upload order).
+mkrclone() { # bindir
+  mkdir -p "$1"
+  cat > "$1/rclone" <<'FAKE'
+#!/usr/bin/env bash
+cmd="$1"; shift; pos=(); ff=""
+while [[ $# -gt 0 ]]; do case "$1" in
+  --files-from) ff="$2"; shift 2;; --include|--format|--separator|--retries|--low-level-retries|--max-age|--filter) shift 2;;
+  -*) shift;; *) pos+=("$1"); shift;; esac; done
+rdir() { local r="${1#*:}"; echo "$FAKE_REMOTE/$r"; }
+case "$cmd" in
+  copy)
+    [[ "${FAKE_RCLONE_FAIL_COPY:-0}" == 1 ]] && { echo "fake rclone: upload failed" >&2; exit 1; }
+    d="$(rdir "${pos[1]}")"; mkdir -p "$d"
+    while IFS= read -r n; do
+      [[ -n "${FAKE_RCLONE_SKIP:-}" && "$n" == *"$FAKE_RCLONE_SKIP"* ]] && continue
+      [[ -e "$d/$n" ]] && continue
+      if [[ -n "${FAKE_RCLONE_TRUNC:-}" && "$n" == *"$FAKE_RCLONE_TRUNC"* ]]; then head -c "$(( $(wc -c < "${pos[0]}/$n") / 2 ))" "${pos[0]}/$n" > "$d/$n"; else cp "${pos[0]}/$n" "$d/$n"; fi
+      echo "$n" >> "$FAKE_REMOTE/.puts"
+    done < "$ff";;
+  lsf)
+    [[ "${FAKE_RCLONE_FAIL_LSF:-0}" == 1 ]] && exit 1
+    d="$(rdir "${pos[0]}")"; [[ -d "$d" ]] || exit 0
+    for f in "$d"/*; do [[ -f "$f" ]] && printf '%s\t%s\n' "$(basename "$f")" "$(wc -c < "$f" | tr -d ' ')"; done; exit 0;;
+  *) exit 1;;
+esac
+FAKE
+  chmod +x "$1/rclone"
+}
+# fixture: $T/<n>/{status/,backup/}. Every status carries its restore-set manifest (a restore point needs one); OFFS overrides OFFSITE=
+BS_RUN_ID=gate-test; export BS_RUN_ID
+RP0=1790000000
+write_status() { # dir result [extra...]   extra GLOBALS_*/BACKUP_GLOBALS=* also go to the manifest
+  local d="$1" r="$2" kv mfx=(); shift 2
+  for kv in "$@"; do case "$kv" in GLOBALS_*|BACKUP_GLOBALS=*) mfx+=("$kv");; esac; done
+  MF="velto-set-20261102-010101.manifest"
+  bsm_write "$B/$MF" "RUN_ID=$BS_RUN_ID" "RESTORE_POINT_TS=$RP0" "OBJECTS_SNAPSHOT_TS=$((RP0+5))" OBJECTS=ok OFFSITE_VERIFY=size-local-sha256 \
     "DB_ARCHIVE=$DB" "DB_SIZE=$(bs_size "$B/$DB")" "DB_SHA256=$(sha "$B/$DB")" \
-    "OBJ_ARCHIVE=$OB" "OBJ_SIZE=$(bs_size "$B/$OB")" "OBJ_SHA256=$(sha "$B/$OB")" "$@"
+    "OBJ_ARCHIVE=$OB" "OBJ_SIZE=$(bs_size "$B/$OB")" "OBJ_SHA256=$(sha "$B/$OB")" ${mfx[@]+"${mfx[@]}"}
+  chmod 640 "$B/$MF"
+  bs_write "$d" "$r" VERIFY=ok "OFFSITE=${OFFS:-skipped}" OBJECTS=ok \
+    "DB_ARCHIVE=$DB" "DB_SIZE=$(bs_size "$B/$DB")" "DB_SHA256=$(sha "$B/$DB")" \
+    "OBJ_ARCHIVE=$OB" "OBJ_SIZE=$(bs_size "$B/$OB")" "OBJ_SHA256=$(sha "$B/$OB")" \
+    "SET_MANIFEST=$MF" "SET_MANIFEST_SHA256=$(sha "$B/$MF")" "restore_point_ts=$RP0" "$@"
 }
 mk() { # name -> sets S (status file) B (backup dir) DB OB
   local d="$T/$1"; S="$d/status/status"; B="$d/backup"
@@ -67,7 +107,7 @@ chmod 640 "$B/$DB"
 echo "== backup service failed"
 mk fail1; write_status "$T/fail1/status" failed STEP=backup.sh EXIT=1 2>/dev/null; expect_fail "RESULT=failed in status" "did not succeed"
 mk fail2; bs_write "$T/fail2/status" ok VERIFY=skipped OFFSITE=skipped OBJECTS=ok "DB_ARCHIVE=$DB" "DB_SIZE=1" "DB_SHA256=$ZERO64"; expect_fail "VERIFY!=ok" "not verified"
-mk fail3; bs_write "$T/fail3/status" ok VERIFY=ok OFFSITE=failed OBJECTS=ok "DB_ARCHIVE=$DB" "DB_SIZE=$(bs_size "$B/$DB")" "DB_SHA256=$(sha "$B/$DB")" "OBJ_ARCHIVE=$OB" "OBJ_SIZE=$(bs_size "$B/$OB")" "OBJ_SHA256=$(sha "$B/$OB")"; 
+mk fail3; OFFS=failed write_status "$T/fail3/status" ok
 if check; then ok "OFFSITE=failed alone does not block (local backup valid, alert fires separately)"; else bad "offsite failed must not block when not required"; fi
 if VELTO_REQUIRE_OFFSITE=1 check; then bad "VELTO_REQUIRE_OFFSITE=1 with OFFSITE=failed passed"; else grep -q "offsite copy required" "$T/err" && ok "VELTO_REQUIRE_OFFSITE=1 + OFFSITE=failed -> abort" || bad "offsite reason"; fi
 # systemctl start: non-zero / success-but-not-refreshed / success-and-refreshed
@@ -126,12 +166,12 @@ mk kp3; printf 'garbage\n' > /dev/null; bs_write "$T/kp3/status" ok offsite_ts='
 ! grep -q '^offsite_ts=' "$T/kp3/status/status" && ok "malformed previous offsite_ts dropped" || bad "malformed offsite_ts kept"
 
 echo "== standalone offsite-sync updates OFFSITE= (VELTO_REQUIRE_OFFSITE=1 gate)"
-mk os; bs_write "$T/os/status" ok VERIFY=ok OFFSITE=failed OBJECTS=ok "DB_ARCHIVE=$DB" "DB_SIZE=$(bs_size "$B/$DB")" "DB_SHA256=$(sha "$B/$DB")" "OBJ_ARCHIVE=$OB" "OBJ_SIZE=$(bs_size "$B/$OB")" "OBJ_SHA256=$(sha "$B/$OB")" offsite_ts=1790000000 offsite_result=failed
-mkdir -p "$T/os/bin"; printf '#!/bin/sh\nexit 0\n' > "$T/os/bin/rclone"; chmod +x "$T/os/bin/rclone"
+mk os; OFFS=failed write_status "$T/os/status" ok offsite_ts=1790000000 offsite_result=failed
+mkrclone "$T/os/bin"; FRM="$T/os/remote"
 if VELTO_REQUIRE_OFFSITE=1 check; then bad "OFFSITE=failed passed with REQUIRE_OFFSITE=1"; else ok "before sync: REQUIRE_OFFSITE=1 rejects OFFSITE=failed"; fi
-PATH="$T/os/bin:$PATH" BACKUP_DIR="$B" BACKUP_STATUS_DIR="$T/os/status" OFFSITE_BUCKET=b OFFSITE_S3_ENDPOINT=http://127.0.0.1:9 OFFSITE_S3_ACCESS_KEY_ID=k OFFSITE_S3_SECRET_ACCESS_KEY=s BACKUP_REQUIRE_KEY_SEPARATION=0 \
+FAKE_REMOTE="$FRM" PATH="$T/os/bin:$PATH" BACKUP_DIR="$B" BACKUP_STATUS_DIR="$T/os/status" OFFSITE_BUCKET=b OFFSITE_S3_ENDPOINT=http://127.0.0.1:9 OFFSITE_S3_ACCESS_KEY_ID=k OFFSITE_S3_SECRET_ACCESS_KEY=s BACKUP_REQUIRE_KEY_SEPARATION=0 \
   bash "$HERE/offsite-sync.sh" >"$T/os/out" 2>&1 || bad "offsite-sync.sh failed: $(tail -n3 "$T/os/out")"
-grep -q '^OFFSITE=ok$' "$S" && grep -q '^offsite_result=ok$' "$S" && ok "standalone offsite-sync sets OFFSITE=ok and offsite_result=ok" || bad "status not updated: $(tr '\n' ' ' < "$S")"
+grep -q '^OFFSITE=ok$' "$S" && grep -q '^offsite_result=ok$' "$S" && grep -q "^offsite_restore_point_ts=$RP0\$" "$S" && ok "standalone offsite-sync (upload + listing verification) sets OFFSITE=ok, offsite_result=ok, offsite_restore_point_ts" || bad "status not updated: $(tr '\n' ' ' < "$S")"
 VELTO_REQUIRE_OFFSITE=1 check && ok "REQUIRE_OFFSITE=1 gate passes after the standalone sync" || bad "gate falsely rejects: $(cat "$T/err")"
 
 echo "== backup-run.sh trust checks (sourced: functions only)"
@@ -172,6 +212,131 @@ if [[ "$ME" != 0 ]]; then
   out="$(VELTO_MONITOR_BIN="$T/ac/mon" BACKUP_STATUS_DIR="$T/os/status" bash "$T/sc/backup-run.sh" 2>&1)"; rc=$?
   [[ $rc -ne 0 && "$out" == *"REFUSING TO RUN"* ]] && ok "executing the copy as a non-root user refuses to run" || bad "script ran from non-root-owned dir (rc=$rc)"
   grep -q "backup-self-check" "$T/mon.log" 2>/dev/null && ok "refusal raises the alert backup-self-check" || bad "no alert on self-check refusal"
+fi
+
+
+echo "== restore point + VERIFIED offsite (backup-run.sh: stub backup/objects, fake rclone)"
+sv() { grep -E "^$1=" "$RS/status" | head -n1 | cut -d= -f2-; }
+mkrun() { # name -> R (script dir) RB (backups) RS (status dir) RR (fake remote) RBIN RM (alert log) RO (output)
+  local d="$T/$1"; R="$d/run"; RB="$d/backup"; RS="$d/status"; RR="$d/remote"; RBIN="$d/bin"; RO="$d/out"; RM="$d/alerts.log"
+  mkdir -p "$R" "$RB" "$RS" "$RR"; chmod 755 "$d" "$R" "$RS"; chmod 750 "$RB"; mkrclone "$RBIN"
+  cp "$HERE/backup-run.sh" "$HERE/backup-status-lib.sh" "$HERE/offsite-sync.sh" "$HERE/backup-common.sh" "$R/"
+  sed -i.bak "s/^BK_ROOT_UID=0\$/BK_ROOT_UID=$ME/" "$R/backup-run.sh" && rm -f "$R/backup-run.sh.bak"
+  printf '%s\n' '#!/usr/bin/env bash' 'TS="${STUB_TS:?}"' 'head -c 3000 /dev/urandom > "$BACKUP_DIR/velto-db-$TS.dump.gpg"; head -c 500 /dev/urandom > "$BACKUP_DIR/velto-globals-$TS.sql.gpg"' \
+    'echo "GLOBALS_FILE=$BACKUP_DIR/velto-globals-$TS.sql.gpg"; echo "BACKUP_FILE=$BACKUP_DIR/velto-db-$TS.dump.gpg"' > "$R/backup.sh"
+  printf '%s\n' '#!/usr/bin/env bash' 'TS="${STUB_TS:?}"; [[ "${STUB_OBJ_FAIL:-0}" == 1 ]] && { echo "objects boom" >&2; exit 7; }' \
+    'head -c 4000 /dev/urandom > "$BACKUP_DIR/velto-objects-$TS.tar.gpg"' 'echo "OBJECTS_COUNT=3"; echo "OBJECTS_MANIFEST_SHA256=$(printf "b%.0s" {1..64})"; echo "OBJECTS_FILE=$BACKUP_DIR/velto-objects-$TS.tar.gpg"' > "$R/objects-backup.sh"
+  chmod 755 "$R"/*.sh
+  printf '#!/bin/sh\necho "$@" >> "%s"\n' "$RM" > "$d/mon"; chmod 755 "$d/mon"
+}
+runbk() { # STUB_TS-and-fault env as args
+  env PATH="$RBIN:$PATH" FAKE_REMOTE="$RR" BACKUP_DIR="$RB" BACKUP_STATUS_DIR="$RS" OFFSITE_ENABLED=1 OFFSITE_BUCKET=bkt OFFSITE_S3_ENDPOINT=http://127.0.0.1:9 \
+    OFFSITE_S3_ACCESS_KEY_ID=AKIDFAKE123 OFFSITE_S3_SECRET_ACCESS_KEY=SECRETFAKE123 BACKUP_REQUIRE_KEY_SEPARATION=0 BACKUP_GLOBALS=1 VELTO_MONITOR_BIN="$d_mon" "$@" bash "$R/backup-run.sh" > "$RO" 2>&1
+  RC=$?
+}
+if [[ "$ME" == 0 ]]; then ok "restore-point run tests skipped (running as root: BK_ROOT_UID stand-in not applicable)"; else
+mkrun rp; d_mon="$(dirname "$RM")/mon"; : > "$RM"
+T_A0=$(date -u +%s); STUB_TS=20261102-010101 runbk STUB_TS=20261102-010101; T_A1=$(date -u +%s)
+[[ $RC -eq 0 ]] && ok "run A: backup-run.sh exit 0" || bad "run A rc=$RC: $(tail -n 5 "$RO")"
+RP_A="$(sv restore_point_ts)"
+[[ "$RP_A" =~ ^[0-9]{10}$ ]] && (( RP_A >= T_A0 && RP_A <= T_A1 )) && ok "ok status: restore_point_ts = epoch captured at run start (before pg_dump)" || bad "restore_point_ts=$RP_A"
+[[ "$(sv offsite_restore_point_ts)" == "$RP_A" && "$(sv offsite_result)" == ok && "$(sv offsite_ts)" =~ ^[0-9]{10}$ ]] && ok "verified upload: offsite_restore_point_ts == restore_point_ts, offsite_ts set, offsite_result=ok" || bad "offsite fields: $(tr '\n' ' ' < "$RS/status")"
+OFF_TS_A="$(sv offsite_ts)"
+[[ "$(tail -n 1 "$RR/.puts")" == velto-set-20261102-010101.manifest && -f "$RR/bkt/velto-set-20261102-010101.manifest" ]] && ok "manifest uploaded LAST (after every archive)" || bad "upload order: $(tr '\n' ' ' < "$RR/.puts")"
+B="$RB"; S="$RS/status"; check && ok "deploy gate accepts the run's status + manifest (objects required)" || bad "gate: $(cat "$T/err")"
+grep -qE '^RESTORE_POINT_TS=[0-9]+$' "$RB/velto-set-20261102-010101.manifest" && grep -qE '^OBJECTS_SNAPSHOT_TS=[0-9]+$' "$RB/velto-set-20261102-010101.manifest" && grep -q '^OFFSITE_VERIFY=size-local-sha256$' "$RB/velto-set-20261102-010101.manifest" && ok "manifest: restore point + objects snapshot ts + sizes/sha256 + verify method" || bad "manifest content"
+for k in DB OBJ GLOBALS; do grep -qE "^${k}_SHA256=[0-9a-f]{64}\$" "$RB/velto-set-20261102-010101.manifest" || bad "manifest lacks ${k}_SHA256"; done
+
+fault() { # label ts expected-rc alert-pattern [ENV=..]   (run B..E: previous verified offsite point must survive)
+  local lbl="$1" ts="$2" erc="$3" apat="$4"; shift 4; sleep 1; : > "$RM"
+  runbk "STUB_TS=$ts" "$@"
+  [[ $RC -eq $erc ]] && ok "$lbl: exit $erc" || bad "$lbl: rc=$RC (want $erc): $(tail -n 4 "$RO")"
+  [[ "$(sv offsite_result)" == failed && "$(sv OFFSITE)" == failed ]] && ok "$lbl: offsite_result=failed" || bad "$lbl: result=$(sv offsite_result)"
+  [[ "$(sv offsite_restore_point_ts)" == "$RP_A" && "$(sv offsite_ts)" == "$OFF_TS_A" ]] && ok "$lbl: previous offsite_restore_point_ts/offsite_ts KEPT" || bad "$lbl: lost previous: $(tr '\n' ' ' < "$RS/status")"
+  [[ "$(sv restore_point_ts)" =~ ^[0-9]{10}$ && "$(sv restore_point_ts)" -gt "$RP_A" ]] && ok "$lbl: local restore_point_ts advanced, offsite one did not" || bad "$lbl: restore_point_ts=$(sv restore_point_ts)"
+  grep -qE "$apat" "$RM" && ok "$lbl: alert with structured fields ($apat)" || bad "$lbl: alert log: $(cat "$RM")"
+}
+fault "upload fails" 20261102-020202 10 'backup-offsite-sync.sh VELTO-BACKUP-FAILED host=[^ ]+ step=offsite-sync.sh exit=10 ts=' FAKE_RCLONE_FAIL_COPY=1
+fault "size mismatch offsite (objects truncated)" 20261102-030303 11 'step=offsite-sync.sh exit=11' FAKE_RCLONE_TRUNC=objects
+[[ ! -e "$RR/bkt/velto-set-20261102-030303.manifest" ]] && ok "size mismatch: manifest NOT uploaded for the unverified set" || bad "manifest uploaded despite failed archive verification"
+fault "manifest missing offsite" 20261102-040404 11 'step=offsite-sync.sh exit=11' FAKE_RCLONE_SKIP=.manifest
+fault "listing unavailable" 20261102-050505 11 'step=offsite-sync.sh exit=11' FAKE_RCLONE_FAIL_LSF=1
+
+PUTS_BEFORE="$(wc -l < "$RR/.puts" | tr -d ' ')"; sleep 1; : > "$RM"
+runbk STUB_TS=20261102-060606 STUB_OBJ_FAIL=1
+[[ $RC -eq 7 && "$(sv RESULT)" == failed && "$(sv STEP)" == objects-backup.sh ]] && ok "objects backup failure: run failed (RESULT=failed STEP=objects-backup.sh)" || bad "objects fail: rc=$RC $(tr '\n' ' ' < "$RS/status")"
+[[ -z "$(sv restore_point_ts)" && -z "$(sv SET_MANIFEST)" && ! -e "$RB/velto-set-20261102-060606.manifest" ]] && ok "objects failure: no restore point, no manifest" || bad "restore point despite objects failure"
+[[ "$(sv offsite_restore_point_ts)" == "$RP_A" && "$(wc -l < "$RR/.puts" | tr -d ' ')" == "$PUTS_BEFORE" ]] && ok "objects failure: nothing uploaded, previous offsite point kept" || bad "objects failure side effects"
+grep -q 'step=objects-backup.sh exit=7' "$RM" && ok "objects failure alerted" || bad "no alert for objects failure"
+if VELTO_REQUIRE_OFFSITE=0 check; then bad "gate accepted a failed status"; else ok "gate rejects the failed (no restore point) status"; fi
+
+sleep 1; : > "$RM"; runbk STUB_TS=20261102-070707 OBJECTS_BACKUP_ENABLED=0
+[[ $RC -eq 12 && -z "$(sv restore_point_ts)" && -z "$(sv SET_MANIFEST)" && "$(sv OBJECTS)" == disabled && "$(sv offsite_restore_point_ts)" == "$RP_A" ]] && ok "objects disabled + OFFSITE_ENABLED=1: DB-only run is NOT a restore point and NOT success (exit 12)" || bad "objects disabled: rc=$RC $(tr '\n' ' ' < "$RS/status")"
+[[ "$(sv offsite_result)" == failed ]] && grep -q 'step=offsite-no-restore-set exit=12' "$RM" && ok "objects disabled + offsite enabled: offsite_result=failed and structured alert sent" || bad "offsite-enabled-without-objects not alerted/attested: $(tr '\n' ' ' < "$RS/status") :: $(cat "$RM")"
+check && bad "gate accepted a DB-only status with objects required" || { grep -q "no object-store archive" "$T/err" && ok "gate: DB-only status rejected when objects required" || bad "gate reason: $(cat "$T/err")"; }
+
+echo "== manifest missing / tampered / corrupted status = not a restore point"
+mkrun mp; d_mon="$(dirname "$RM")/mon"; : > "$RM"; STUB_TS=20261102-080808 runbk STUB_TS=20261102-080808; B="$RB"; S="$RS/status"; MP="$RB/velto-set-20261102-080808.manifest"
+[[ $RC -eq 0 ]] && check && ok "fresh ok set accepted" || bad "fresh set: $(cat "$T/err")"
+cp "$MP" "$T/mp.save"; rm -f "$MP"; expect_fail "set manifest deleted" "manifest missing"
+cp "$T/mp.save" "$MP"; chmod 640 "$MP"; sed -i.bak 's/^OBJ_COUNT=.*/OBJ_COUNT=9/' "$MP" && rm -f "$MP.bak"; expect_fail "manifest content altered (status pins its sha256)" "manifest sha256 mismatch"
+cp "$T/mp.save" "$MP"; chmod 640 "$MP"; check && ok "restored manifest accepted again" || bad "restore manifest: $(cat "$T/err")"
+cp "$S" "$T/mp.status"; grep -vE '^(SET_MANIFEST|SET_MANIFEST_SHA256|restore_point_ts)=' "$T/mp.status" > "$S.n" && mv "$S.n" "$S"; chmod 644 "$S"; expect_fail "status without SET_MANIFEST" "not a restore point"
+cp "$T/mp.status" "$S"; printf 'offsite_result=failed\n' >> "$S"; expect_fail "corrupted status: duplicate key" "duplicate"
+cp "$T/mp.status" "$S"; printf 'offsite_ts=$(id)\n' >> "$S"; expect_fail "corrupted status: injected shell syntax" "malformed"
+cp "$T/mp.status" "$S"; sed -i.bak 's/^restore_point_ts=.*/restore_point_ts=1790000999/' "$S" && rm -f "$S.bak"; expect_fail "status/manifest restore_point_ts disagree" "disagree"
+cp "$T/mp.status" "$S"; check && ok "intact status accepted again" || bad "intact: $(cat "$T/err")"
+printf '%s\n' VELTO_SET_MANIFEST=1 RESTORE_POINT_TS=1790000000 OBJECTS_SNAPSHOT_TS=1790000005 OBJECTS=failed > "$T/velto-set-20261102-090909.manifest"
+bsm_verify "$T/velto-set-20261102-090909.manifest" "$RB" 0 && bad "manifest with OBJECTS!=ok accepted" || ok "manifest with failed objects backup is NOT a restore point"
+bs_update "$RS" 'offsite_ts=$(id)' && bad "bs_update accepted a malformed value" || ok "bs_update refuses malformed values"
+bs_write "$RS" ok offsite_ts=abc offsite_restore_point_ts=12abc; bs_write_failed "$RS" x 1
+! grep -qE '^offsite_(ts|restore_point_ts)=' "$RS/status" && ok "malformed previous offsite_ts / offsite_restore_point_ts dropped (not copied forward)" || bad "malformed offsite values kept"
+
+echo "== no secrets in outputs"
+if grep -rqE 'AKIDFAKE123|SECRETFAKE123' "$T/rp/out" "$T/rp/alerts.log" "$T/rp/status/status" "$T/mp/out" "$RB"/*.manifest "$T/rp/backup"/*.manifest 2>/dev/null; then bad "secret found in run output/status/manifest/alerts"; else ok "no access key/secret in run output, status, manifests or alerts"; fi
+fi
+
+
+echo "== restore drill: set selection, objects consistency, verdict (restore-drill.sh uses these functions; the DB part needs Postgres and is not run here)"
+[[ "$(bs_verdict 0 1 1)" == PASS ]] && ok "verdict: verified set + consistent objects + 0 fails = PASS" || bad "verdict PASS"
+bs_verdict 0 0 0 >/dev/null; [[ $? -eq 2 ]] && ok "verdict: DB-only (no set) = PARTIAL (rc 2), never PASS" || bad "verdict PARTIAL rc"
+[[ "$(bs_verdict 0 1 0)" == PARTIAL ]] && ok "verdict: set but objects unproven = PARTIAL" || bad "verdict set/objects"
+[[ "$(bs_verdict 2 1 1)" == FAIL ]] && ok "verdict: any failed check = FAIL" || bad "verdict FAIL"
+grep -q 'bs_verdict "\$FAILS" "\$SET_OK" "\$OBJ_OK"' "$HERE/restore-drill.sh" && grep -q 'DUMP_FILE and DRILL_SET_MANIFEST' "$HERE/restore-drill.sh" && ok "restore-drill.sh wired to the verdict + set selection" || bad "drill wiring"
+if ! command -v gpg >/dev/null; then ok "objects-archive tests skipped (no gpg)"; else
+  PF="$T/pass"; printf 'drillpass' > "$PF"; chmod 600 "$PF"
+  mkobj() { # name keys... -> $T/<name>/ with velto-objects-*.tar.gpg, MANIFEST.tsv; sets OA OM OC
+    local n="$1" k; shift; local d="$T/$n"; mkdir -p "$d/w/data"; OA="$d/velto-objects-20261102-010101.tar.gpg"
+    printf '# velto-objects-manifest v1\n' > "$d/w/MANIFEST.tsv"
+    for k in "$@"; do mkdir -p "$d/w/data/$(dirname "$k")"; printf 'content-%s' "$k" > "$d/w/data/$k"
+      printf '%s\t%s\t%s\n' "$(sha "$d/w/data/$k")" "$(bs_size "$d/w/data/$k")" "$k" >> "$d/w/MANIFEST.tsv"; done
+    tar -C "$d/w" -cf - MANIFEST.tsv data | gpg --batch --yes --pinentry-mode loopback --passphrase-file "$PF" --symmetric --cipher-algo AES256 -o "$OA" 2>/dev/null
+    OM="$(sha "$d/w/MANIFEST.tsv")"; OC=$#
+  }
+  mkobj o1 products/c1/a.png exports/1c/c1/j1.xml
+  bsm_objects_extract "$OA" "$PF" "$OM" "$OC" "$T/o1x" && ok "objects archive: decrypts, embedded manifest + every object verified" || bad "objects extract: $BSM_REASON"
+  bsm_objects_extract "$OA" "$PF" "$ZERO64" "$OC" "$T/o1y" && bad "wrong manifest hash accepted" || ok "objects archive: embedded manifest hash != set manifest rejected"
+  bsm_objects_extract "$OA" "$PF" "$OM" 5 "$T/o1z" && bad "wrong count accepted" || ok "objects archive: object count mismatch rejected"
+  printf 'x' | dd of="$OA" bs=1 seek=50 conv=notrunc 2>/dev/null; bsm_objects_extract "$OA" "$PF" "$OM" "$OC" "$T/o1w" && bad "corrupt objects archive accepted" || ok "corrupted objects archive rejected"
+  printf 'products/c1/a.png\t\nexports/1c/c1/j1.xml\t%s\n' "$(sha "$T/o1/w/data/exports/1c/c1/j1.xml")" > "$T/db1.keys"
+  bsm_keys_check "$T/db1.keys" "$T/o1/w/MANIFEST.tsv" && ok "DB-referenced keys all in the archive (missing=0, stale=0)" || bad "keys ok: missing=$BSM_MISSING stale=$BSM_STALE"
+  printf 'products/c1/a.png\t\nproducts/c1/gone.png\t\n' > "$T/db2.keys"
+  bsm_keys_check "$T/db2.keys" "$T/o1/w/MANIFEST.tsv"; [[ "$BSM_MISSING" == 1 ]] && ok "DB references an object absent from the archive -> missing=1 (FAIL)" || bad "missing not detected: $BSM_MISSING"
+  printf 'exports/1c/c1/j1.xml\t%s\n' "$ZERO64" > "$T/db3.keys"
+  bsm_keys_check "$T/db3.keys" "$T/o1/w/MANIFEST.tsv"; [[ "$BSM_STALE" == 1 && "$BSM_MISSING" == 0 ]] && ok "overwritten 1C export key (fileHash != archived sha256) -> stale=1 (FAIL)" || bad "stale not detected: $BSM_STALE"
+  # set selection: manifest required, corrupted newest set skipped, loose archives ignored
+  sd="$T/sel"; mkdir -p "$sd"; BS_RUN_ID=sel
+  mkset() { # TS corrupt(0|1)
+    local ts="$1" db="velto-db-$1.dump.gpg" ob="velto-objects-$1.tar.gpg"
+    head -c 700 /dev/urandom > "$sd/$db"; head -c 900 /dev/urandom > "$sd/$ob"
+    bsm_write "$sd/velto-set-$ts.manifest" RUN_ID=sel RESTORE_POINT_TS=1790000000 OBJECTS_SNAPSHOT_TS=1790000001 OBJECTS=ok \
+      "DB_ARCHIVE=$db" "DB_SIZE=700" "DB_SHA256=$(sha "$sd/$db")" "OBJ_ARCHIVE=$ob" "OBJ_SIZE=900" "OBJ_SHA256=$(sha "$sd/$ob")"
+    [[ "$2" == 0 ]] || printf 'Z' | dd of="$sd/$ob" bs=1 seek=10 conv=notrunc 2>/dev/null
+  }
+  mkset 20261101-010101 0; mkset 20261102-010101 1
+  head -c 700 /dev/urandom > "$sd/velto-db-20261103-010101.dump.gpg"   # newest DB archive, NO manifest
+  bsm_select "$sd" && [[ "$BSM_SELECTED" == "$sd/velto-set-20261101-010101.manifest" && "$BSM_REJECTED" == 1 ]] && ok "drill selection: newest set with matching checksums (corrupted newer set + manifest-less archive skipped)" || bad "selection: '$BSM_SELECTED' rejected=$BSM_REJECTED"
+  rm -f "$sd/velto-set-20261101-010101.manifest"; bsm_select "$sd" && bad "set chosen with no valid manifest" || ok "drill selection: no valid manifest -> no set (archives alone are never a restore point)"
 fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"; [[ $fail -eq 0 ]]

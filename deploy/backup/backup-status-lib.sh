@@ -40,15 +40,26 @@ bs_write() {
   mv -f "$tmp" "$dir/status"
 }
 
-# bs_write_failed <status_dir> <step> <rc>: failed attestation that KEEPS offsite_ts/offsite_result of the previous status (monitor contract:
-# offsite_ts = last CONFIRMED offsite copy), so a local failure is not misread as "offsite missing".
-bs_write_failed() {
-  local dir="$1" ts res keep=()
+# bs_prev_offsite <status_dir>: prints the offsite attestation lines of the PREVIOUS status that must survive a failed/unconfirmed run
+# (monitor contract: offsite_ts / offsite_restore_point_ts = last CONFIRMED + VERIFIED offsite restore set). Values are re-validated ([0-9]{9,11}),
+# a malformed previous value is dropped. offsite_ts and offsite_result are kept together (as before); offsite_restore_point_ts independently.
+bs_prev_offsite() {
+  local dir="$1" ts rp res
   ts="$(grep -E '^offsite_ts=' "$dir/status" 2>/dev/null | head -n1 | cut -d= -f2-)"
+  rp="$(grep -E '^offsite_restore_point_ts=' "$dir/status" 2>/dev/null | head -n1 | cut -d= -f2-)"
   res="$(grep -E '^offsite_result=' "$dir/status" 2>/dev/null | head -n1 | cut -d= -f2-)"
   [[ "$ts" =~ ^[0-9]{9,11}$ ]] || ts=""
+  [[ "$rp" =~ ^[0-9]{9,11}$ ]] || rp=""
   [[ "$res" =~ ^[a-z]+$ ]] || res=unknown
-  [[ -z "$ts" ]] || keep=("offsite_ts=$ts" "offsite_result=$res")
+  if [[ -n "$ts" ]]; then echo "offsite_ts=$ts"; echo "offsite_result=$res"; fi
+  if [[ -n "$rp" ]]; then echo "offsite_restore_point_ts=$rp"; fi
+  return 0
+}
+
+# bs_write_failed <status_dir> <step> <rc>: failed attestation that KEEPS the previous offsite_* fields, so a local failure is not misread as "offsite missing".
+bs_write_failed() {
+  local dir="$1" l keep=()
+  while IFS= read -r l; do [[ -z "$l" ]] || keep+=("$l"); done < <(bs_prev_offsite "$dir")
   bs_write "$dir" failed "STEP=$2" "EXIT=$3" ${keep[@]+"${keep[@]}"}
 }
 
@@ -63,6 +74,115 @@ bs_update() {
     k="${kv%%=*}"; grep -v "^$k=" "$tmp" > "$tmp.n" || true; echo "$kv" >> "$tmp.n"; mv "$tmp.n" "$tmp"
   done
   chmod 0644 "$tmp"; sync 2>/dev/null || true; mv -f "$tmp" "$dir/status"
+}
+
+# ---------------------------------------------------------------- restore-set manifest
+# velto-set-<TS>.manifest = the RESTORE POINT record of one run: same strict KEY=VALUE grammar as the status (data, never sourced, no secrets):
+#   VELTO_SET_MANIFEST=1 RUN_ID RESTORE_POINT_TS OBJECTS_SNAPSHOT_TS OBJECTS=ok  DB_/OBJ_/GLOBALS_ {ARCHIVE,SIZE,SHA256}  OBJ_COUNT OBJ_MANIFEST_SHA256 OFFSITE_VERIFY
+# Written AFTER every archive is final and uploaded LAST: a set without its manifest (or with OBJECTS!=ok) is NOT a restore point.
+BS_ARCHIVE_RE='^velto-(db|objects|globals)-[0-9]{8}-[0-9]{6}\.(dump|tar|sql)\.gpg$'
+BS_MANIFEST_RE='^velto-set-[0-9]{8}-[0-9]{6}\.manifest$'
+BSM_REASON=""; BSM_TEXT=""; BSM_OBJ_NUM=""
+export BSM_REASON BSM_TEXT BSM_OBJ_NUM
+bsm_get() { grep -E "^$1=" <<<"$BSM_TEXT" | head -n1 | cut -d= -f2-; }
+bsm_fail() { BSM_REASON="$1"; return 1; }
+
+# bsm_write <manifest_file> KEY=VALUE ...: atomic (temp in the same dir + rename), refuses malformed fields
+bsm_write() {
+  local out="$1" tmp kv body; shift
+  [[ "$(basename "$out")" =~ $BS_MANIFEST_RE ]] || { echo "[manifest] bad manifest name" >&2; return 1; }
+  body="VELTO_SET_MANIFEST=1"
+  for kv in "$@"; do
+    [[ "$kv" =~ ^[A-Za-z][A-Za-z0-9_]*=[A-Za-z0-9._:-]*$ ]] || { echo "[manifest] refusing malformed field" >&2; return 1; }
+    body+=$'\n'"$kv"
+  done
+  tmp="$(umask 022; mktemp "$(dirname "$out")/.manifest.XXXXXX")" || return 1
+  printf '%s\n' "$body" > "$tmp"
+  chmod 0644 "$tmp"
+  sync 2>/dev/null || true; mv -f "$tmp" "$out"
+}
+
+# bsm_verify <manifest_file> <archive_dir> <check_files 1|0>: structure + (check_files=1) every listed archive exists, regular, exact size and sha256.
+# Required: OBJECTS=ok, DB + OBJ archives, GLOBALS iff BACKUP_GLOBALS=1. Sets BSM_TEXT (getter bsm_get) and BSM_REASON.
+bsm_verify() {
+  local mf="$1" dir="$2" chk="$3" f name size sha p
+  BSM_REASON=""
+  [[ "$(basename "$mf")" =~ $BS_MANIFEST_RE ]] || { bsm_fail "manifest name not allowed"; return 1; }
+  [[ -f "$mf" && ! -L "$mf" ]] || { bsm_fail "set manifest missing: no restore point"; return 1; }
+  BSM_TEXT="$(cat "$mf")" || { bsm_fail "cannot read manifest"; return 1; }
+  if grep -vqE '^[A-Za-z][A-Za-z0-9_]*=[A-Za-z0-9._:-]*$' <<<"$BSM_TEXT"; then bsm_fail "manifest has malformed lines"; return 1; fi
+  if [[ -n "$(cut -d= -f1 <<<"$BSM_TEXT" | sort | uniq -d)" ]]; then bsm_fail "manifest has duplicate keys"; return 1; fi
+  [[ "$(bsm_get VELTO_SET_MANIFEST)" == 1 ]] || { bsm_fail "unknown manifest format version"; return 1; }
+  [[ "$(bsm_get OBJECTS)" == ok ]] || { bsm_fail "set has no verified objects backup (OBJECTS!=ok): not a restore point"; return 1; }
+  for p in RESTORE_POINT_TS OBJECTS_SNAPSHOT_TS; do
+    [[ "$(bsm_get $p)" =~ ^[0-9]{9,11}$ ]] || { bsm_fail "manifest $p malformed"; return 1; }
+  done
+  (( $(bsm_get RESTORE_POINT_TS) <= $(bsm_get OBJECTS_SNAPSHOT_TS) )) || { bsm_fail "manifest: objects snapshot is older than the DB restore point"; return 1; }
+  for f in DB OBJ GLOBALS; do
+    name="$(bsm_get ${f}_ARCHIVE)"
+    if [[ -z "$name" ]]; then
+      [[ $f == GLOBALS && "$(bsm_get BACKUP_GLOBALS)" != 1 ]] && continue
+      bsm_fail "manifest has no $f archive"; return 1
+    fi
+    [[ "$name" =~ $BS_ARCHIVE_RE ]] || { bsm_fail "$f archive name not allowed"; return 1; }
+    size="$(bsm_get ${f}_SIZE)"; sha="$(bsm_get ${f}_SHA256)"
+    [[ "$size" =~ ^[0-9]+$ && "$sha" =~ ^[0-9a-f]{64}$ ]] || { bsm_fail "$f size/sha256 malformed in manifest"; return 1; }
+    [[ "$chk" == 1 ]] || continue
+    [[ -f "$dir/$name" && ! -L "$dir/$name" ]] || { bsm_fail "$f archive missing: $name"; return 1; }
+    [[ "$(bs_size "$dir/$name")" == "$size" ]] || { bsm_fail "$f archive size mismatch: $name"; return 1; }
+    [[ "$(bs_sha256 "$dir/$name")" == "$sha" ]] || { bsm_fail "$f archive sha256 mismatch: $name"; return 1; }
+  done
+  return 0
+}
+
+# bsm_select <dir>: newest set whose manifest exists AND verifies (OBJECTS=ok, exact size + sha256 of every archive). Sets BSM_SELECTED (path) and BSM_REJECTED (count).
+# A set without a manifest is invisible here: loose archives are never a restore point.
+BSM_SELECTED=""; BSM_REJECTED=0
+export BSM_SELECTED BSM_REJECTED
+bsm_select() {
+  local m; BSM_SELECTED=""; BSM_REJECTED=0
+  while IFS= read -r m; do
+    if bsm_verify "$m" "$1" 1; then BSM_SELECTED="$m"; return 0; fi
+    BSM_REJECTED=$((BSM_REJECTED+1))
+  done < <(find "$1" -maxdepth 1 -type f -name 'velto-set-*.manifest' | sort -r)
+  return 1
+}
+
+# bsm_objects_extract <objects.tar.gpg> <passphrase_file> <expected_manifest_sha256> <expected_count> <workdir>: decrypt + untar into <workdir>/obj, require the embedded
+# MANIFEST.tsv to hash to the SET manifest's OBJ_MANIFEST_SHA256 and every object to match its sha256/size and the count. 0 = intact; reason in BSM_REASON.
+bsm_objects_extract() {
+  local arch="$1" pf="$2" msha="$3" cnt="$4" w="$5" osha osize okey n=0 bad=0
+  BSM_REASON=""; mkdir -p "$w/obj"
+  gpg --batch --quiet --pinentry-mode loopback --passphrase-file "$pf" --decrypt "$arch" 2>/dev/null | tar -xf - -C "$w/obj" 2>/dev/null \
+    || { bsm_fail "objects archive: decrypt/extract failed"; return 1; }
+  [[ -f "$w/obj/MANIFEST.tsv" && "$(bs_sha256 "$w/obj/MANIFEST.tsv")" == "$msha" ]] || { bsm_fail "objects archive: embedded manifest hash differs from the set manifest"; return 1; }
+  while IFS=$'\t' read -r osha osize okey; do
+    n=$((n+1))
+    [[ -f "$w/obj/data/$okey" && "$(bs_size "$w/obj/data/$okey")" == "$osize" && "$(bs_sha256 "$w/obj/data/$okey")" == "$osha" ]] || bad=$((bad+1))
+  done < <(grep -v '^#' "$w/obj/MANIFEST.tsv")
+  [[ $bad -eq 0 && "$n" == "$cnt" ]] || { bsm_fail "objects archive: bad objects=$bad listed=$n expected=${cnt:-?}"; return 1; }
+  BSM_OBJ_NUM="$n"
+}
+
+# bsm_keys_check <db.keys (key<TAB>fileHash-or-empty)> <MANIFEST.tsv>: DB-referenced object keys missing from the objects archive (BSM_MISSING) and
+# ExportJob.fileHash != archived sha256, i.e. another version of an overwritten key (BSM_STALE). Both must be 0. BSM_DBKEYS = distinct keys referenced.
+BSM_MISSING=0; BSM_STALE=0; BSM_DBKEYS=0
+export BSM_MISSING BSM_STALE BSM_DBKEYS
+bsm_keys_check() {
+  local dk="$1" mt="$2" ak; ak="$(mktemp)" || return 1
+  grep -v '^#' "$mt" | awk -F'\t' '{print $3 "\t" $1}' | LC_ALL=C sort -t $'\t' -k1,1 > "$ak"
+  BSM_DBKEYS="$(cut -f1 "$dk" | LC_ALL=C sort -u | wc -l | tr -d ' ')"
+  BSM_MISSING="$(cut -f1 "$dk" | LC_ALL=C sort -u | LC_ALL=C comm -23 - <(cut -f1 "$ak") | wc -l | tr -d ' ')"
+  BSM_STALE="$(awk -F'\t' 'NR==FNR{a[$1]=$2; next} ($2 != "" && ($1 in a) && a[$1] != $2){n++} END{print n+0}' "$ak" "$dk")"
+  rm -f "$ak"
+  [[ "$BSM_MISSING" == 0 && "$BSM_STALE" == 0 ]]
+}
+
+# bs_verdict <fails> <set_ok 1|0> <objects_consistent 1|0>: PASS (rc 0) only for a verified set with consistent objects and 0 failed checks; FAIL (1); DB-only/unproven = PARTIAL (2).
+bs_verdict() {
+  if [[ "$1" -ne 0 ]]; then echo FAIL; return 1
+  elif [[ "$2" == 1 && "$3" == 1 ]]; then echo PASS; return 0
+  else echo PARTIAL; return 2; fi
 }
 
 # ---------------------------------------------------------------- checker (deploy user)
@@ -87,7 +207,7 @@ vbs_dir_ok() {
 # calls this function directly with another uid, because the sandbox cannot create root-owned files. Exports VBS_* on success.
 vbs_check() {
   local sf="$1" bd="$2" maxmin="$3" uid="$4" reqobj="$5" now="${6:-$(date -u +%s)}"
-  local p ts age name size sha f f_path
+  local p ts age name size sha f f_path mname
   VBS_REASON=""
   [[ "$maxmin" =~ ^[0-9]+$ && "$uid" =~ ^[0-9]+$ ]] || { vbs_fail "bad parameters"; return 1; }
   [[ -e "$sf" ]] || { vbs_fail "no backup status attestation ($sf): no backup has been recorded"; return 1; }
@@ -119,7 +239,7 @@ vbs_check() {
       if [[ $f == GLOBALS && "$(vbs_get BACKUP_GLOBALS)" == 1 ]]; then vbs_fail "status says globals are backed up (BACKUP_GLOBALS=1) but has no GLOBALS archive"; return 1; fi
       continue
     fi
-    [[ "$name" =~ ^velto-(db|objects|globals)-[0-9]{8}-[0-9]{6}\.(dump|tar|sql)\.gpg$ && "$name" != */* ]] || { vbs_fail "$f archive name not allowed"; return 1; }
+    [[ "$name" =~ $BS_ARCHIVE_RE && "$name" != */* ]] || { vbs_fail "$f archive name not allowed"; return 1; }
     f_path="$bd/$name"
     [[ -f "$f_path" && ! -L "$f_path" ]] || { vbs_fail "$f archive missing: $name"; return 1; }
     [[ "$(bs_uid "$f_path")" == "$uid" ]] || { vbs_fail "$f archive not owned by uid $uid: $name"; return 1; }
@@ -130,6 +250,22 @@ vbs_check() {
     [[ "$(bs_sha256 "$f_path")" == "$sha" ]] || { vbs_fail "$f archive sha256 mismatch (corrupted or replaced): $name"; return 1; }
     export "VBS_${f}_ARCHIVE=$name"
   done
+  # restore set: with objects required a RESTORE POINT needs its manifest (pinned by sha256 in the root-written status) consistent with the status
+  mname="$(vbs_get SET_MANIFEST)"
+  if [[ -z "$mname" ]]; then
+    [[ "$reqobj" == 1 ]] && { vbs_fail "status has no restore-set manifest (SET_MANIFEST): not a restore point"; return 1; }
+  else
+    [[ "$mname" =~ $BS_MANIFEST_RE ]] || { vbs_fail "manifest name not allowed"; return 1; }
+    f_path="$bd/$mname"
+    [[ -f "$f_path" && ! -L "$f_path" ]] || { vbs_fail "restore-set manifest missing: $mname"; return 1; }
+    [[ "$(bs_uid "$f_path")" == "$uid" ]] || { vbs_fail "manifest not owned by uid $uid: $mname"; return 1; }
+    [[ "$(bs_sha256 "$f_path")" == "$(vbs_get SET_MANIFEST_SHA256)" ]] || { vbs_fail "manifest sha256 mismatch (replaced or corrupted): $mname"; return 1; }
+    bsm_verify "$f_path" "$bd" 0 || { vbs_fail "$BSM_REASON"; return 1; }
+    for f in RUN_ID DB_ARCHIVE DB_SHA256 OBJ_ARCHIVE OBJ_SHA256 GLOBALS_ARCHIVE GLOBALS_SHA256; do
+      [[ "$(bsm_get $f)" == "$(vbs_get $f)" ]] || { vbs_fail "manifest and status disagree on $f"; return 1; }
+    done
+    [[ "$(bsm_get RESTORE_POINT_TS)" == "$(vbs_get restore_point_ts)" ]] || { vbs_fail "manifest and status disagree on restore_point_ts"; return 1; }
+  fi
   VBS_RUN_ID="$(vbs_get RUN_ID)"
   export VBS_RUN_ID VBS_TIMESTAMP_EPOCH="$ts" VBS_AGE_MIN="$age"
   return 0

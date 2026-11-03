@@ -2,7 +2,7 @@
 # End-to-end test of the object-store backup against a THROWAWAY MinIO container used purely as a synthetic S3 (not the binding provider choice).
 # Needs: docker, rclone, gpg. No root, no real servers; the container, its volume and the temp dir are removed on exit.
 # Image: MINIO_TEST_IMAGE (default bitnamilegacy/minio:latest; any image whose entrypoint serves S3 on :9000 and has `mc` in PATH works).
-# Covers: 2 companies x 5 prefix groups (+1 object outside them), backup -> encrypted archive + sha256 + manifest, offsite put-only identity
+# Covers: 2 companies x 5 prefix groups (+1 object outside them: must FAIL the backup), backup -> encrypted archive + sha256 + manifest, offsite put-only identity
 # (put OK / read denied / delete denied / Object Lock retention), key-separation refusal, restore into an EMPTY bucket, manifest + byte comparison,
 # tamper detection, non-empty destination refusal.
 set -uo pipefail
@@ -66,11 +66,16 @@ printf 'S3_ACCESS_KEY=%s\nS3_SECRET_KEY=x\n' "$APP_ID" > "$T/app.env"
 mkdir -p "$T/bk"; chmod 750 "$T/bk"
 export BACKUP_DIR="$T/bk" BACKUP_PASSPHRASE_FILE="$T/pass" VELTO_APP_ENV_FILE="$T/app.env" \
   OBJECTS_SRC_ENDPOINT="$EP" OBJECTS_SRC_BUCKET=velto-files OBJECTS_SRC_ACCESS_KEY_ID="$SRC_ID" OBJECTS_SRC_SECRET_ACCESS_KEY="$SRC_SECRET" OBJECTS_SRC_PROVIDER=Minio
+# fail-closed: an object outside the 5 prefix groups = NO restore point (no archive, non-zero exit)
+out="$(bash "$HERE/objects-backup.sh" 2>"$T/oberr")"; rc=$?
+[[ $rc -ne 0 ]] && grep -q "outside the 5 prefix groups" "$T/oberr" && ok "object outside the 5 prefixes FAILS the objects backup" || bad "outside-prefix object did not fail (rc=$rc)"
+[[ -z "$(find "$T/bk" -name 'velto-objects-*')" ]] && ok "no archive left after the failed run" || bad "archive produced despite failure"
+rclone deletefile "ADM:velto-files/misc/outside-prefixes.txt" >/dev/null 2>&1 && ok "foreign object removed (admin identity)" || bad "could not remove foreign object"
+KEYS=("${KEYS[@]:0:$(( ${#KEYS[@]} - 1 ))}")
 out="$(bash "$HERE/objects-backup.sh" 2>"$T/oberr")"; rc=$?
 [[ $rc -eq 0 ]] && ok "objects-backup.sh exit 0" || bad "objects-backup.sh rc=$rc: $(tail -n 3 "$T/oberr")"
-EXPECT=$(( ${#KEYS[@]} - 1 ))   # misc/outside-prefixes.txt is not one of the 5 prefix groups
-grep -q "^OBJECTS_COUNT=$EXPECT\$" <<<"$out" && ok "manifest counts $EXPECT objects (outside-prefix object excluded)" || bad "count: $(grep OBJECTS_COUNT <<<"$out")"
-grep -q "outside the 5 prefix groups" "$T/oberr" && ok "object outside the 5 prefixes reported as NOT backed up" || bad "outside-prefix warning missing"
+EXPECT=${#KEYS[@]}
+grep -q "^OBJECTS_COUNT=$EXPECT\$" <<<"$out" && ok "manifest counts $EXPECT objects" || bad "count: $(grep OBJECTS_COUNT <<<"$out")"
 ARCH="$(grep '^OBJECTS_FILE=' <<<"$out" | cut -d= -f2-)"; [[ -s "$ARCH" && -s "$ARCH.sha256" ]] && ok "encrypted archive + sha256 sidecar written" || bad "archive missing"
 ( cd "$BACKUP_DIR" && b="$(basename "$ARCH")" && [[ "$(cut -d' ' -f1 "$b.sha256")" == "$(shasum -a 256 "$b" | cut -d' ' -f1)" ]] ) && ok "sidecar sha256 matches" || bad "sidecar sha mismatch"
 head -c 2000 "$ARCH" | grep -aq "velto-objects-manifest\|MANIFEST" && bad "archive is NOT encrypted" || ok "archive is ciphertext (no plaintext manifest header)"
@@ -87,7 +92,15 @@ OFFENV=(BACKUP_DIR="$T/bk" OFFSITE_BUCKET=velto-offsite-backups OFFSITE_S3_ENDPO
 echo "== offsite (backup-writer: put-only, Object Lock)"
 echo "decoy-db" > "$T/bk/velto-db-20261102-000000.dump.gpg"; ( cd "$T/bk" && shasum -a 256 velto-db-20261102-000000.dump.gpg > velto-db-20261102-000000.dump.gpg.sha256 )
 echo "PLAINTEXT-SHOULD-NOT-UPLOAD" > "$T/bk/plain.sql"
-env "${OFFENV[@]}" OFFSITE_S3_ACCESS_KEY_ID="$OFF_ID" OFFSITE_S3_SECRET_ACCESS_KEY="$OFF_SECRET" bash "$HERE/offsite-sync.sh" >"$T/o" 2>&1 && ok "offsite-sync.sh with writer key exit 0" || bad "offsite-sync failed: $(tail -n 3 "$T/o" | tr -d '\r')"
+# the set manifest (what backup-run.sh writes): offsite-sync.sh uploads ONLY the set it lists, then verifies it by listing
+# shellcheck source=../backup-status-lib.sh
+. "$HERE/backup-status-lib.sh"
+DBN=velto-db-20261102-000000.dump.gpg; OBN="$(basename "$ARCH")"; MAN="$T/bk/velto-set-20261102-000000.manifest"
+bsm_write "$MAN" RUN_ID=minio-test RESTORE_POINT_TS=1790000000 OBJECTS_SNAPSHOT_TS=1790000005 OBJECTS=ok BACKUP_GLOBALS=0 OFFSITE_VERIFY=size-local-sha256 \
+  "DB_ARCHIVE=$DBN" "DB_SIZE=$(bs_size "$T/bk/$DBN")" "DB_SHA256=$(bs_sha256 "$T/bk/$DBN")" "OBJ_ARCHIVE=$OBN" "OBJ_SIZE=$(bs_size "$ARCH")" "OBJ_SHA256=$(bs_sha256 "$ARCH")" \
+  && ok "set manifest written" || bad "set manifest"
+OFFENV+=(OFFSITE_MANIFEST="$MAN")
+env "${OFFENV[@]}" OFFSITE_S3_ACCESS_KEY_ID="$OFF_ID" OFFSITE_S3_SECRET_ACCESS_KEY="$OFF_SECRET" bash "$HERE/offsite-sync.sh" >"$T/o" 2>&1 && grep -q '^OFFSITE_VERIFIED_RESTORE_POINT_TS=1790000000$' "$T/o" && ok "offsite-sync.sh with writer key: uploaded + verified by listing (marker printed)" || bad "offsite-sync failed: $(tail -n 3 "$T/o" | tr -d '\r')"
 [[ "$(rclone lsf ADM:velto-offsite-backups -R --files-only | grep -c 'velto-objects-.*\.tar\.gpg$')" == 1 ]] && ok "objects archive reached offsite" || bad "objects archive not offsite"
 rclone lsf ADM:velto-offsite-backups -R --files-only | grep -q 'plain.sql' && bad "plaintext uploaded" || ok "non-backup file (plain.sql) not uploaded"
 OBJNAME="$(basename "$ARCH")"

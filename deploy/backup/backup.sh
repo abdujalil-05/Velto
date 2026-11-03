@@ -96,8 +96,8 @@ if [[ -n "${BACKUP_READ_GROUP:-}" ]]; then
 fi
 OK=1
 
-echo "[backup] retention: deleting velto-*.gpg and .gpg.sha256 older than $RETENTION days"
-find "$BACKUP_DIR" -maxdepth 1 -type f \( -name 'velto-db-*.gpg' -o -name 'velto-globals-*.gpg' -o -name 'velto-objects-*.gpg' -o -name 'velto-db-*.gpg.sha256' -o -name 'velto-globals-*.gpg.sha256' -o -name 'velto-objects-*.gpg.sha256' \) -mtime +"$RETENTION" -print -delete
+echo "[backup] retention: deleting velto-*.gpg, .gpg.sha256 and velto-set-*.manifest older than $RETENTION days"
+find "$BACKUP_DIR" -maxdepth 1 -type f \( -name 'velto-db-*.gpg' -o -name 'velto-globals-*.gpg' -o -name 'velto-objects-*.gpg' -o -name 'velto-db-*.gpg.sha256' -o -name 'velto-globals-*.gpg.sha256' -o -name 'velto-objects-*.gpg.sha256' -o -name 'velto-set-*.manifest' \) -mtime +"$RETENTION" -print -delete
 echo "[backup] OK $(du -h "$DUMP" | cut -f1) $DUMP"
 [[ -z "$GLOB" ]] || echo "GLOBALS_FILE=$GLOB"
 echo "BACKUP_FILE=$DUMP"  # last line: backup-run.sh parses this (path may contain spaces)

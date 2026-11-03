@@ -14,7 +14,12 @@
 #   DRILL_APP_ROLE/DRILL_OWNER_ROLE/DRILL_SYSTEM_ROLE  role names (default velto_app/velto_owner/velto_system; some hosts use others, see deploy/README.md)
 #   DRILL_KEEP_DB=1        keep the drill DB afterwards (default: dropped)
 #   DRILL_COMPARE_SOURCE=1 with DUMP_FILE: also compare row counts/AuditLog with live SOURCE_URL (valid ONLY if the source is quiescent since the backup)
-# Exit 0 = all checks PASS; 1 = any FAIL.
+#   DRILL_SET_MANIFEST     path of a velto-set-<TS>.manifest: the drill restores THAT set (DB + objects) after verifying manifest structure, OBJECTS=ok and the
+#                          exact size + sha256 of every archive next to it. Mutually exclusive with DUMP_FILE.
+#   DRILL_BACKUP_DIR       directory of sets (e.g. a downloaded offsite copy): the NEWEST set whose manifest exists and whose checksums all match is used.
+# Verdict: PASS only for a verified restore set whose objects archive is intact AND every object key referenced by the restored DB (ExportJob.storageKey, ImportJob.fileUrl,
+# Product.imageUrl) is in the archive (ExportJob.fileHash must also equal the archived sha256). A DB-only drill (DUMP_FILE / fresh dump, no set) is PARTIAL, never PASS.
+# Exit 0 = PASS; 1 = any FAIL; 2 = PARTIAL (all executed checks passed but DB-only: not a proven restore point).
 set -Euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -31,6 +36,8 @@ case "$HOST" in localhost|127.0.0.1|::1) ;; *) [[ "${DRILL_ALLOW_REMOTE:-0}" == 
 # Passwords never go in argv: every connection is a password-less conninfo string; secrets live in a 0600 PGPASSFILE (pg-conn.sh).
 # shellcheck source=pg-conn.sh
 . "$(dirname "${BASH_SOURCE[0]}")/pg-conn.sh"
+# shellcheck source=backup-status-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/backup-status-lib.sh"
 trap pgc_cleanup EXIT; pgc_init
 pgc_parse "$SOURCE_URL" || { echo "SOURCE_URL is not parseable" >&2; exit 1; }; SRC="$(pgc_conninfo)"
 pgc_add "$HOST" "$PORT" postgres "$ADMIN_USER" "$ADMIN_PW"; ADMIN_URL="$(pgc_conninfo)"
@@ -51,6 +58,22 @@ now() { date +%s; }
 drop_db() { q "$ADMIN_URL" "DROP DATABASE IF EXISTS \"$DB\" WITH (FORCE)" >/dev/null 2>&1; }
 cleanup() { [[ "${DRILL_KEEP_DB:-0}" == 1 ]] || drop_db; rm -rf "$TMP"; pgc_cleanup; }
 trap cleanup EXIT
+
+# 0. restore set selection: only a set with a manifest whose checksums match counts (bsm_verify: OBJECTS=ok, exact sizes + sha256 of DB/objects/globals)
+SET_OK=0; OBJ_ARCH=""; SETM=""
+if [[ -n "${DRILL_SET_MANIFEST:-}" || -n "${DRILL_BACKUP_DIR:-}" ]]; then
+  [[ -z "${DUMP_FILE:-}" ]] || { echo "DUMP_FILE and DRILL_SET_MANIFEST/DRILL_BACKUP_DIR are mutually exclusive" >&2; exit 1; }
+  if [[ -n "${DRILL_SET_MANIFEST:-}" ]]; then
+    bsm_verify "$DRILL_SET_MANIFEST" "$(dirname "$DRILL_SET_MANIFEST")" 1 || { rec "restore set" FAIL "$BSM_REASON"; exit 1; }
+    SETM="$DRILL_SET_MANIFEST"
+  else
+    bsm_select "$DRILL_BACKUP_DIR" || { rec "restore set" FAIL "no valid set in DRILL_BACKUP_DIR ($BSM_REJECTED manifest(s) rejected; archives without a manifest are never used)"; exit 1; }
+    SETM="$BSM_SELECTED"; bsm_verify "$SETM" "$DRILL_BACKUP_DIR" 1 || exit 1   # reload BSM_TEXT of the selected set
+  fi
+  SETD="$(dirname "$SETM")"; DUMP_FILE="$SETD/$(bsm_get DB_ARCHIVE)"; OBJ_ARCH="$SETD/$(bsm_get OBJ_ARCHIVE)"
+  OBJ_MSHA="$(bsm_get OBJ_MANIFEST_SHA256)"; OBJ_COUNT="$(bsm_get OBJ_COUNT)"; SET_OK=1
+  rec "restore set manifest" PASS "$(basename "$SETM"): archives match manifest sizes + sha256, objects backup ok"
+fi
 
 T0=$(now); START_ISO="$(date -u +%FT%TZ)"
 # 1. dump
@@ -92,7 +115,7 @@ SQL
   touch "$TMP/snap.done"; wait "$SNAP_PID" 2>/dev/null
   [[ $DRC -eq 0 ]] || { rec "dump" FAIL "pg_dump failed"; exit 1; }
 else
-  DSRC="DUMP_FILE $(basename "$DUMP")"
+  DSRC="$([[ $SET_OK == 1 ]] && echo "restore set" || echo DUMP_FILE) $(basename "$DUMP")"
   if [[ "$DUMP" == *.gpg ]]; then
     [[ -s "${BACKUP_PASSPHRASE_FILE:-}" ]] || { echo "BACKUP_PASSPHRASE_FILE required for .gpg dump" >&2; exit 1; }
     gpg --batch --quiet --pinentry-mode loopback --passphrase-file "$BACKUP_PASSPHRASE_FILE" --decrypt "$DUMP" > "$TMP/source.dump" || { rec "decrypt" FAIL "gpg failed"; exit 1; }
@@ -122,7 +145,7 @@ if command -v pnpm >/dev/null; then
 else rec "prisma migrate status" FAIL "pnpm not found"; fi
 
 # 3b. _prisma_migrations == repo migration directories (all applied, none failed, no extras)
-REPO_MIG="$(ls -1 "$ROOT/packages/database/prisma/migrations" | grep -E '^[0-9]{14}_' | sort)"
+REPO_MIG="$(for d in "$ROOT"/packages/database/prisma/migrations/*/; do b="${d%/}"; b="${b##*/}"; [[ "$b" =~ ^[0-9]{14}_ ]] && echo "$b"; done | sort)"
 DB_MIG="$(q "$DRILL_SYS" "SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL ORDER BY 1")"
 NFAIL="$(q "$DRILL_SYS" "SELECT count(*) FROM _prisma_migrations WHERE finished_at IS NULL OR rolled_back_at IS NOT NULL")"
 if [[ "$REPO_MIG" == "$DB_MIG" && "$NFAIL" == 0 ]]; then rec "_prisma_migrations == repo" PASS "$(wc -l <<<"$REPO_MIG" | tr -d ' ') migrations identical, 0 failed/rolled back"
@@ -225,11 +248,35 @@ else
     && rec "tenant isolation smoke (velto_app)" PASS "bare select=0, foreign tenant=0, own tenant=$SCOPED of $TOTAL" \
     || rec "tenant isolation smoke (velto_app)" FAIL "bare=$BARE foreign=$OTHER own=${SCOPED:-?} total=$TOTAL"
 fi
+
+# 10. objects: archive integrity + DB <-> objects consistency (only for a verified restore set)
+OBJ_OK=0
+if [[ $SET_OK == 1 ]]; then
+  for c in gpg tar; do command -v $c >/dev/null || { echo "$c not found" >&2; exit 1; }; done
+  if bsm_objects_extract "$OBJ_ARCH" "$BACKUP_PASSPHRASE_FILE" "$OBJ_MSHA" "$OBJ_COUNT" "$TMP"; then
+    rec "objects archive" PASS "$BSM_OBJ_NUM object(s): embedded manifest + every object sha256/size verified"; OBJ_OK=1
+  else rec "objects archive" FAIL "$BSM_REASON"; fi
+  if [[ $OBJ_OK == 1 ]]; then
+    RX='(?:^|/)((?:products|imports|opening|exports)/.+)$'
+    psql "$DRILL_SYS" -X -v ON_ERROR_STOP=1 -Atq -F $'\t' -c "SELECT k, h FROM (
+        SELECT \"storageKey\" AS k, COALESCE(\"fileHash\",'') AS h FROM \"ExportJob\" WHERE \"storageKey\" IS NOT NULL
+        UNION ALL SELECT substring(\"fileUrl\" from '$RX'), '' FROM \"ImportJob\"
+        UNION ALL SELECT substring(\"imageUrl\" from '$RX'), '' FROM \"Product\" WHERE \"imageUrl\" IS NOT NULL) t
+      WHERE k IS NOT NULL ORDER BY 1" > "$TMP/db.keys" 2>"$TMP/keys.err" || OBJ_OK=0
+    if [[ $OBJ_OK == 1 ]]; then
+      if bsm_keys_check "$TMP/db.keys" "$TMP/obj/MANIFEST.tsv"; then rec "DB-referenced objects in archive" PASS "$BSM_DBKEYS key(s) referenced by the DB: missing=0, fileHash mismatch=0 (keys not under the 5 prefixes, e.g. external image URLs, are out of scope)"
+      else OBJ_OK=0; rec "DB-referenced objects in archive" FAIL "$BSM_DBKEYS key(s) referenced by the DB: missing=$BSM_MISSING, fileHash mismatch (overwritten key / other version)=$BSM_STALE"; fi
+    else rec "DB-referenced objects in archive" FAIL "key query failed: $(head -c 200 "$TMP/keys.err" | tr '\n|' '  ')"; fi
+  fi
+else
+  rec "restore set (DB + objects)" SKIP "DB-only drill: no verified restore-set manifest (set DRILL_SET_MANIFEST or DRILL_BACKUP_DIR) -> verdict PARTIAL, objects NOT proven"
+fi
 T3=$(now)
 
 # report
 D="$(date +%F)"; mkdir -p "$REPORT_DIR"; OUT="$REPORT_DIR/restore-drill-$D.md"
-[[ $FAILS -eq 0 ]] && VERDICT="PASS" || VERDICT="FAIL ($FAILS)"
+VERDICT="$(bs_verdict "$FAILS" "$SET_OK" "$OBJ_OK")"; RC=$?
+case "$VERDICT" in FAIL) VERDICT="FAIL ($FAILS)";; PARTIAL) VERDICT="PARTIAL (DB only: objects not verified, not a proven restore point)";; esac
 {
   echo "# Restore drill $D"; echo
   echo "- Verdict: **$VERDICT**"
@@ -242,4 +289,4 @@ D="$(date +%F)"; mkdir -p "$REPORT_DIR"; OUT="$REPORT_DIR/restore-drill-$D.md"
   echo; echo "## Row counts (table=rows, restored DB)"; echo '```'; cat "$TMP/cnt.drill"; echo '```'
 } > "$OUT"
 echo "[drill] report: $OUT  verdict: $VERDICT  RTO(restore)=$((T2-T1))s total=$((T3-T0))s"
-[[ $FAILS -eq 0 ]]
+exit "$RC"

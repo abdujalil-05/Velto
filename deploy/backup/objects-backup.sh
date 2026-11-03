@@ -26,7 +26,7 @@ bk_remote VSRC "$OBJECTS_SRC_ENDPOINT" "$OBJECTS_SRC_ACCESS_KEY_ID" "$OBJECTS_SR
 unset OBJECTS_SRC_SECRET_ACCESS_KEY OBJECTS_SRC_ACCESS_KEY_ID
 SRC="VSRC:$OBJECTS_SRC_BUCKET"
 
-# The five prefix groups (everything else in the bucket is reported, not copied)
+# The five prefix groups (an object anywhere else in the bucket FAILS the run: no silent omission)
 FILTER=(--filter '+ products/**' --filter '+ imports/customers/**' --filter '+ imports/products/**'
         --filter '+ opening/opening-customers/**' --filter '+ opening/opening-stock/**'
         --filter '+ exports/1c/**' --filter '+ exports/company/**' --filter '- *')
@@ -44,8 +44,15 @@ rclone lsf "$SRC" -R --files-only --format ps --separator $'\t' "${FILTER[@]}" |
 # sizes: lsf prints "path<TAB>size"; keys with control chars are refused (they cannot be represented in the manifest)
 if grep -q $'\r' "$WORK/pre.tsv"; then echo "[objects] key with control characters: refusing" >&2; exit 1; fi
 PRE_COUNT="$(wc -l < "$WORK/pre.tsv" | tr -d ' ')"
-OTHER="$(rclone lsf "$SRC" -R --files-only 2>/dev/null | grep -Evc '^(products/|imports/(customers|products)/|opening/(opening-customers|opening-stock)/|exports/(1c|company)/)' || true)"
-[[ "${OTHER:-0}" == 0 ]] || echo "[objects] WARN: $OTHER object(s) outside the 5 prefix groups are NOT backed up" >&2
+# FAIL-CLOSED: the app writes ONLY these 5 prefix groups (apps/api: products/, imports/{type}/, opening/{type}/, exports/1c/, exports/company/ via StorageService).
+# An object anywhere else means a new writer was added without extending this backup (or a foreign object): a "restore point" that silently omits it would be false.
+OUTSIDE_RE='^(products/|imports/(customers|products)/|opening/(opening-customers|opening-stock)/|exports/(1c|company)/)'
+rclone lsf "$SRC" -R --files-only > "$WORK/all.lst" || { echo "[objects] listing the bucket failed" >&2; exit 1; }
+OTHER="$(grep -Evc "$OUTSIDE_RE" "$WORK/all.lst" || true)"
+if [[ "${OTHER:-0}" != 0 ]]; then
+  echo "[objects] FAILED: $OTHER object(s) outside the 5 prefix groups (top-level names: $(grep -Ev "$OUTSIDE_RE" "$WORK/all.lst" | cut -d/ -f1 | sort -u | head -n 5 | tr -c 'A-Za-z0-9._\n-' '?' | tr '\n' ' ')): extend objects-backup.sh + restore-drill.sh or remove them; no restore point is produced" >&2
+  exit 1
+fi
 if [[ -n "${OBJECTS_MIN_FREE_MB:-}" ]]; then
   free="$(df -Pk "$BACKUP_DIR" | awk 'NR==2{print int($4/1024)}')"
   (( free >= OBJECTS_MIN_FREE_MB )) || { echo "[objects] only ${free} MB free, need ${OBJECTS_MIN_FREE_MB}" >&2; exit 1; }
