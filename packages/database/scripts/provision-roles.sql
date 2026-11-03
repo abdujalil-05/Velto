@@ -24,31 +24,92 @@
 --                 cross-tenant background jobs. Append-only triggers still
 --                 apply to it.
 --
--- Passwords below are local-dev/CI defaults. In any shared environment set
--- real ones afterwards: ALTER ROLE <name> PASSWORD '...';
+-- Mode (psql variable `velto_env`, values `dev` | `production`):
+--   dev         NEW roles get the guessable local defaults (password = role
+--               name) and velto_owner keeps CREATEDB (only `prisma migrate
+--               dev` needs it, for its shadow database).
+--   production  NEW roles are created WITHOUT a password (login impossible
+--               until an operator sets one interactively: `\password <role>`
+--               in psql — never in argv/history), and velto_owner is
+--               NOCREATEDB. Existing roles' passwords are never touched.
+-- If `velto_env` is not passed, it is `dev` only when the target database
+-- name ends in _dev/_ci/_test/_load (docker init `velto_dev`, CI `velto_ci`,
+-- load `velto_load` — these keep working unchanged); ANY other name
+-- (e.g. the pilot `velto`) is `production`. Fail-safe: an unknown name never
+-- gets a guessable password, and autodetected dev aborts if the cluster also
+-- holds a non-dev database (see guard below).
 --
 -- Usage (as superuser, e.g. the docker bootstrap role `velto`):
 --   psql "postgresql://velto:velto@localhost:5433/velto_dev" -v ON_ERROR_STOP=1 \
 --     -f packages/database/scripts/provision-roles.sql
+--   production: psql -d <prod_db> -v ON_ERROR_STOP=1 -v velto_env=production -f ...
 -- (psql rejects Prisma's `?schema=public` URL parameter — strip it.)
+-- Backup role velto_backup: separate opt-in script provision-backup-role.sql.
 
+-- Fail fast even when the caller forgot -v ON_ERROR_STOP=1: the guard below
+-- must abort the script, not let it continue in dev mode.
+\set ON_ERROR_STOP on
+\if :{?velto_env}
+\else
+SELECT CASE WHEN current_database() ~ '_(dev|ci|test|load)$' THEN 'dev' ELSE 'production' END AS velto_env \gset
+-- Roles are CLUSTER-wide, the name heuristic is per-database: a *_dev DB in a
+-- production cluster must not get password=rolname roles / CREATEDB. So an
+-- AUTODETECTED dev mode also requires every other non-template database
+-- (except `postgres`) to look non-production, i.e. carry a dev/scratch token
+-- (velto_ci_20261102, velto_mfa_smoke, velto_restore_drill_*, ...). Any other
+-- name (e.g. the pilot `velto`) aborts before anything is changed. An
+-- explicit `-v velto_env=dev` stays allowed: deliberate operator choice.
+DO $$
+DECLARE bad text;
+BEGIN
+  IF current_database() ~ '_(dev|ci|test|load)$' THEN
+    SELECT string_agg(datname, ', ' ORDER BY datname) INTO bad
+    FROM pg_catalog.pg_database
+    WHERE NOT datistemplate AND datname <> 'postgres'
+      AND datname !~ '(^|_)(dev|ci|test|load|local|smoke|drill|synth|scratch|tmp)(_|$)';
+    IF bad IS NOT NULL THEN
+      RAISE EXCEPTION 'refusing autodetected dev mode: cluster has non-dev database(s): %', bad
+        USING HINT = 'production cluster: pass -v velto_env=production; dev-only cluster: pass -v velto_env=dev explicitly';
+    END IF;
+  END IF;
+END
+$$;
+\endif
+SELECT set_config('velto.provision_env', :'velto_env', false) AS env \gset provision_
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'velto_owner') THEN
-    CREATE ROLE velto_owner LOGIN PASSWORD 'velto_owner';
+  IF current_setting('velto.provision_env') NOT IN ('dev', 'production') THEN
+    RAISE EXCEPTION 'velto_env must be dev or production, got %', current_setting('velto.provision_env');
   END IF;
-  IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'velto_app') THEN
-    CREATE ROLE velto_app LOGIN PASSWORD 'velto_app';
-  END IF;
-  IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'velto_system') THEN
-    CREATE ROLE velto_system LOGIN PASSWORD 'velto_system';
+END
+$$;
+
+DO $$
+DECLARE
+  dev boolean := current_setting('velto.provision_env') = 'dev';
+  r text;
+BEGIN
+  FOREACH r IN ARRAY ARRAY['velto_owner', 'velto_app', 'velto_system'] LOOP
+    IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = r) THEN
+      IF dev THEN
+        EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L', r, r);
+      ELSE
+        EXECUTE format('CREATE ROLE %I LOGIN PASSWORD NULL', r);
+        RAISE NOTICE 'created % without password: set it with \password %', r, r;
+      END IF;
+    END IF;
+  END LOOP;
+  -- CREATEDB on the owner only in dev, for `prisma migrate dev`'s shadow DB.
+  IF dev THEN
+    ALTER ROLE velto_owner CREATEDB;
+  ELSE
+    ALTER ROLE velto_owner NOCREATEDB;
   END IF;
 END
 $$;
 
 -- Enforce attributes even for pre-existing roles (fail closed on drift).
--- CREATEDB on the owner only so `prisma migrate dev` can create its shadow DB.
-ALTER ROLE velto_owner  NOSUPERUSER NOBYPASSRLS NOCREATEROLE CREATEDB;
+ALTER ROLE velto_owner  NOSUPERUSER NOBYPASSRLS NOCREATEROLE;
 ALTER ROLE velto_app    NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB;
 ALTER ROLE velto_system NOSUPERUSER BYPASSRLS   NOCREATEROLE NOCREATEDB;
 
