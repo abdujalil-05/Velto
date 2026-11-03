@@ -68,7 +68,12 @@ export const PERMISSION_DEFS: { module: string; actions: string[] }[] = [
   // Split from `update` so WAREHOUSE can dispatch without confirm/close/delete
   // rights. OWNER, SALES_DIRECTOR, WAREHOUSE. Existing tenants: run
   // backfill-assign-courier.ts.
-  { module: 'orders', actions: ['read', 'create', 'update', 'cancel', 'deliver', 'assignCourier'] },
+  // `dispatch` (PO decision, 2026-11): physical handover of goods to the
+  // courier, CONFIRMED -> SHIPPED. OWNER, WAREHOUSE.
+  // `returnToWarehouse` (PO decision, 2026-11): physical return of goods,
+  // SHIPPED -> CONFIRMED. OWNER, SALES_DIRECTOR, WAREHOUSE.
+  // Existing tenants: run backfill-assign-courier.ts (provisions all three).
+  { module: 'orders', actions: ['read', 'create', 'update', 'cancel', 'deliver', 'assignCourier', 'dispatch', 'returnToWarehouse'] },
   { module: 'invoices', actions: ['read'] },
   // `allocate` (F2.1): manually apply an advance (unallocated) payment to
   // invoices (POST /payments/:id/allocate). Separate from `create` so a sales
@@ -131,6 +136,7 @@ export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
     'customers.read', 'customers.update', 'catalog.read', 'stock.read', 'stock.movements.read',
     'purchases.read', 'purchases.create',
     'orders.read', 'orders.update', 'orders.cancel', 'orders.deliver', 'orders.assignCourier',
+    'orders.returnToWarehouse',
     'invoices.read', 'payments.read',
     'payments.reverse', 'stock.reverse', 'payments.allocate',
     'routes.read', 'routes.create', 'routes.update', 'routes.finish', 'field.read',
@@ -157,6 +163,8 @@ export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
     'orders.read',
     'orders.deliver', // marks CONFIRMED orders as DELIVERED
     'orders.assignCourier',
+    'orders.dispatch', // physical handover to courier, CONFIRMED -> SHIPPED
+    'orders.returnToWarehouse', // physical return, SHIPPED -> CONFIRMED
   ],
   CASHIER: [
     'customers.read', 'invoices.read', 'payments.read', 'payments.create', 'payments.allocate',

@@ -16,7 +16,7 @@ describe('rbac-catalog: F1.4 role grants', () => {
     const keys = permissionKeysForRole('ACCOUNTANT');
     const forbidden = [
       'payments.create', 'cash.open', 'cash.close', 'orders.create', 'orders.update', 'orders.cancel',
-      'orders.deliver', 'stock.receive', 'stock.adjust', 'stock.reverse', 'payments.reverse', 'payments.allocate', 'payments.handover', 'purchases.create', 'purchases.receive',
+      'orders.deliver', 'orders.assignCourier', 'orders.dispatch', 'orders.returnToWarehouse', 'stock.receive', 'stock.adjust', 'stock.reverse', 'payments.reverse', 'payments.allocate', 'payments.handover', 'purchases.create', 'purchases.receive',
       'reconciliation.fix', 'opening.preview', 'opening.post', 'opening.void', 'company.export',
       'users.create', 'users.update', 'users.delete', 'settings.update',
       'catalog.create', 'catalog.update', 'catalog.delete',
@@ -52,6 +52,13 @@ describe('rbac-catalog: F1.4 role grants', () => {
     expect(holders('orders.assignCourier')).toEqual(['OWNER', 'SALES_DIRECTOR', 'WAREHOUSE']);
     expect(holders('orders.update')).toEqual(['OWNER', 'SALES_DIRECTOR']);
     expect(holders('orders.cancel')).toEqual(['OWNER', 'SALES_DIRECTOR']);
+  });
+
+  it('PO 2026-11: orders.dispatch → OWNER, WAREHOUSE; orders.returnToWarehouse → OWNER, SALES_DIRECTOR, WAREHOUSE', () => {
+    const holders = (key: string) =>
+      SYSTEM_ROLES.filter((r) => permissionKeysForRole(r.code).includes(key)).map((r) => r.code).sort();
+    expect(holders('orders.dispatch')).toEqual(['OWNER', 'WAREHOUSE']);
+    expect(holders('orders.returnToWarehouse')).toEqual(['OWNER', 'SALES_DIRECTOR', 'WAREHOUSE']);
   });
 
   it('F2.1: payments.allocate granted only to OWNER, SALES_DIRECTOR and CASHIER', () => {

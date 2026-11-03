@@ -1,21 +1,26 @@
-// One-off, idempotent data fix (PO decision, 2026-11): courier assignment got
-// its own permission `orders.assignCourier`, split from `orders.update`.
-// rbac-catalog.ts now grants it to OWNER (ALL), SALES_DIRECTOR and WAREHOUSE,
-// adds `orders.cancel` to SALES_DIRECTOR and takes `orders.update` away from
-// WAREHOUSE. seed.ts / bootstrap-owner.ts only reach fresh databases and
+// One-off, idempotent data fix (PO decisions, 2026-11): order hand-off got
+// granular permissions split from `orders.update`:
+//   - `orders.assignCourier`     -> OWNER (ALL), SALES_DIRECTOR, WAREHOUSE
+//   - `orders.dispatch`          -> OWNER (ALL), WAREHOUSE  (CONFIRMED -> SHIPPED)
+//   - `orders.returnToWarehouse` -> OWNER (ALL), SALES_DIRECTOR, WAREHOUSE (SHIPPED -> CONFIRMED)
+// plus `orders.cancel` for SALES_DIRECTOR and WAREHOUSE losing `orders.update`.
+// seed.ts / bootstrap-owner.ts only reach fresh databases and
 // backfill-permissions.ts is purely additive (never revokes), so tenants that
 // were already provisioned need this script.
 //
-// Scope is hard-coded (CHANGES below) and cross-checked against the catalog at
-// run time. `--apply` performs only: ensure the `orders.assignCourier`
-// Permission row, add the listed grants, revoke WAREHOUSE -> orders.update.
-// Any other difference between a system role's grants and the catalog is a
-// DIVERGENCE: reported, never modified (no-overwrite policy for manual or
-// unknown grants). Each company's writes run in one transaction together with
-// an append-only AuditLog row. Second run = 0 changes.
+// Scope is data-driven (NEW_PERMISSION_GRANTS / EXTRA_GRANTS / REVOCATIONS
+// below) and cross-checked against the catalog at run time: every new key must
+// be held by exactly the listed system roles. `--apply` performs only: ensure
+// the new Permission rows, add the listed grants, revoke WAREHOUSE ->
+// orders.update. Any other difference between a system role's grants and the
+// catalog is a DIVERGENCE: reported, never modified (no-overwrite policy for
+// manual or unknown grants). Each company's writes run in one transaction
+// (under a per-company advisory lock) together with an append-only AuditLog
+// row. Second run = 0 changes.
 //
-// Cross-tenant by definition -> `systemPrisma` (velto_system, BYPASSRLS), same
-// as backfill-permissions.ts; every query is still scoped by companyId / roleId.
+// Cross-tenant by definition -> `systemPrisma` (velto_system, BYPASSRLS,
+// DATABASE_SYSTEM_URL), same as backfill-permissions.ts; every query is still
+// scoped by companyId / roleId.
 //
 // Run:
 //   pnpm --filter @velto/database exec tsx src/backfill-assign-courier.ts            (dry run, default)
@@ -31,27 +36,41 @@ import { ROLE_PERMISSIONS, permissionKeysForRole } from './rbac-catalog';
 type Db = TenantClient;
 type Grant = { role: string; key: string };
 
-export const NEW_PERMISSION = 'orders.assignCourier';
+/** New permission keys -> the exact system roles that must hold them (catalog-checked). */
+export const NEW_PERMISSION_GRANTS: Readonly<Record<string, readonly string[]>> = {
+  'orders.assignCourier': ['OWNER', 'SALES_DIRECTOR', 'WAREHOUSE'],
+  'orders.dispatch': ['OWNER', 'WAREHOUSE'],
+  'orders.returnToWarehouse': ['OWNER', 'SALES_DIRECTOR', 'WAREHOUSE'],
+};
+/** Grants of pre-existing keys added by the same PO decision. */
+export const EXTRA_GRANTS: readonly Grant[] = [{ role: 'SALES_DIRECTOR', key: 'orders.cancel' }];
+export const REVOCATIONS: readonly Grant[] = [{ role: 'WAREHOUSE', key: 'orders.update' }];
+
+export const NEW_PERMISSIONS: readonly string[] = Object.keys(NEW_PERMISSION_GRANTS);
 export const CHANGES: { add: Grant[]; revoke: Grant[] } = {
   add: [
-    { role: 'OWNER', key: NEW_PERMISSION },
-    { role: 'SALES_DIRECTOR', key: 'orders.cancel' },
-    { role: 'SALES_DIRECTOR', key: NEW_PERMISSION },
-    { role: 'WAREHOUSE', key: NEW_PERMISSION },
+    ...EXTRA_GRANTS,
+    ...Object.entries(NEW_PERMISSION_GRANTS).flatMap(([key, roles]) => roles.map((role) => ({ role, key }))),
   ],
-  revoke: [{ role: 'WAREHOUSE', key: 'orders.update' }],
+  revoke: [...REVOCATIONS],
 };
 
 const SYSTEM_ROLE_CODES = Object.keys(ROLE_PERMISSIONS);
 const fmt = (g: Grant) => `${g.role}:${g.key}`;
 
-/** Refuses to run if the catalog no longer agrees with the hard-coded change set. */
+/** Refuses to run if the catalog no longer agrees with the declared change set. */
 export function assertCatalogMatchesChanges(): void {
   for (const g of CHANGES.add) {
     if (!permissionKeysForRole(g.role).includes(g.key)) throw new Error(`rbac-catalog.ts does not grant ${fmt(g)} — refusing.`);
   }
   for (const g of CHANGES.revoke) {
     if (permissionKeysForRole(g.role).includes(g.key)) throw new Error(`rbac-catalog.ts still grants ${fmt(g)} — refusing.`);
+  }
+  for (const [key, roles] of Object.entries(NEW_PERMISSION_GRANTS)) {
+    const holders = SYSTEM_ROLE_CODES.filter((code) => permissionKeysForRole(code).includes(key)).sort();
+    if (holders.join(',') !== [...roles].sort().join(',')) {
+      throw new Error(`rbac-catalog.ts grants ${key} to [${holders.join(', ')}], expected [${[...roles].sort().join(', ')}] — refusing.`);
+    }
   }
 }
 
@@ -110,7 +129,7 @@ export async function backfillAssignCourier(db: Db, opts: AssignCourierOptions):
   const { dryRun } = opts;
   const transact = opts.transact ?? (<T>(fn: (tx: Db) => Promise<T>) => fn(db));
 
-  const { idByKey, created } = await ensurePermissions(db, dryRun, [NEW_PERMISSION]);
+  const { idByKey, created } = await ensurePermissions(db, dryRun, NEW_PERMISSIONS);
   const companies = await db.company.findMany({
     where: opts.companyIds ? { id: { in: opts.companyIds } } : undefined,
     select: { id: true, name: true },
@@ -148,7 +167,7 @@ export async function backfillAssignCourier(db: Db, opts: AssignCourierOptions):
           entity: 'Company',
           entityId: company.id,
           oldValue: { revoked: report.toRevoke.map(fmt) },
-          newValue: { granted: report.toAdd.map(fmt), reason: 'PO 2026-11: orders.assignCourier split from orders.update' },
+          newValue: { granted: report.toAdd.map(fmt), reason: `PO 2026-11: ${NEW_PERMISSIONS.join(', ')} split from orders.update` },
         },
       });
       result.grantsAdded += added.count;
