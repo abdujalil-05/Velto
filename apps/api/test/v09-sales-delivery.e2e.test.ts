@@ -14,7 +14,7 @@ import { loginWithMfa } from './mfa-login';
 
 /**
  * v0.9 sales -> delivery -> money E2E over real HTTP, real Postgres + RLS, all 7 system roles, two tenants.
- * Flow: agent /sync/push order -> director confirm (reserve) -> warehouse assign-courier (SHIPPED, no ISSUE/Invoice)
+ * Flow: agent /sync/push order -> director confirm (reserve) -> warehouse assign-courier (stays CONFIRMED) -> warehouse handover (SHIPPED, no ISSUE/Invoice)
  * -> courier deliver -> Invoice + ISSUE only now -> agent payment (PENDING_HANDOVER) -> cashier accept -> balance/reports.
  * TZ §6.3-6.6 (order/stock/invoice/payment), §8.5 (offline idempotency, price conflict), §16.1/16.3 (P0, RBAC, isolation).
  */
@@ -130,12 +130,19 @@ describe('E2E v0.9 sales -> delivery -> payment (7 roles, 2 tenants)', () => {
   const confirm = (co: Co, id: string, key?: string) => post(`/orders/${id}/confirm`, co.a.SALES_DIRECTOR, {}, key);
   const assign = (co: Co, id: string, courier: Actor = co.a.COURIER, key?: string) =>
     post(`/orders/${id}/assign-courier`, co.a.WAREHOUSE, { courierId: courier.userId }, key);
+  const handover = (co: Co, id: string, key?: string) => post(`/orders/${id}/handover`, co.a.WAREHOUSE, {}, key);
   const confirmed = async (co: Co, cust: string, qty = 10) => {
     const id = await agentOrder(co, cust, qty);
     await confirm(co, id).expect(201);
     return id;
   };
   const shipped = async (co: Co, cust: string, qty = 10) => {
+    const id = await confirmed(co, cust, qty);
+    await assign(co, id).expect(201);
+    await handover(co, id).expect(201);
+    return id;
+  };
+  const assigned = async (co: Co, cust: string, qty = 10) => {
     const id = await confirmed(co, cust, qty);
     await assign(co, id).expect(201);
     return id;
@@ -177,12 +184,24 @@ describe('E2E v0.9 sales -> delivery -> payment (7 roles, 2 tenants)', () => {
       expect(await mv(A, orderId, 'RESERVE')).toBe(1);
       expect(await mv(A, orderId, 'ISSUE')).toBe(0);
     });
-    it('warehouse assign-courier => SHIPPED, courier set, still no ISSUE, no Invoice, onHand untouched', async () => {
+    it('warehouse assign-courier => stays CONFIRMED, courier set; courier deliver before handover => 409; no ISSUE/Invoice', async () => {
       const before = await stock(A);
       const res = await assign(A, orderId);
       expect(res.status, JSON.stringify(res.body)).toBe(201);
-      expect(res.body.status).toBe('SHIPPED');
+      expect(res.body.status).toBe('CONFIRMED');
       expect((await orderRow(A, orderId)).courierId).toBe(A.a.COURIER.userId);
+      const early = await post(`/orders/${orderId}/deliver`, A.a.COURIER);
+      expect(early.status).toBe(409);
+      expect(early.body.code).toBe('SALES_ORDER_HANDOVER_REQUIRED');
+      expect(await mv(A, orderId, 'ISSUE')).toBe(0);
+      expect(await invoicesOf(A, orderId)).toHaveLength(0);
+      expect(await stock(A)).toEqual(before);
+    });
+    it('warehouse handover => SHIPPED, still no ISSUE, no Invoice, onHand/reserved untouched', async () => {
+      const before = await stock(A);
+      const res = await handover(A, orderId);
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      expect(res.body.status).toBe('SHIPPED');
       expect(await mv(A, orderId, 'ISSUE')).toBe(0);
       expect(await invoicesOf(A, orderId)).toHaveLength(0);
       expect(await stock(A)).toEqual(before);
@@ -270,6 +289,7 @@ describe('E2E v0.9 sales -> delivery -> payment (7 roles, 2 tenants)', () => {
       await post(`/orders/${id}/cancel`, A.a.SALES_DIRECTOR, {}).expect(400);
       expect((await orderRow(A, id)).status).toBe('CONFIRMED');
       await assign(A, id).expect(201);
+      await handover(A, id).expect(201);
       const r = await post(`/orders/${id}/cancel`, A.a.SALES_DIRECTOR, { reason: 'too late' });
       expect(r.status).toBeGreaterThanOrEqual(400);
       expect((await orderRow(A, id)).status).toBe('SHIPPED');
@@ -316,7 +336,8 @@ describe('E2E v0.9 sales -> delivery -> payment (7 roles, 2 tenants)', () => {
       expect(await mv(A, id, 'RESERVE')).toBe(1);
       expect(D((await stock(A)).reserved).minus(before.reserved).toString()).toBe('10');
     });
-    it('assign-courier repeat (same key, new key, parallel) => stays SHIPPED, no ISSUE, no Invoice', async () => {
+    const auditCount = (id: string, action: string) => tp.run(A.id, () => tp.client.auditLog.count({ where: { entityId: id, action } }));
+    it('assign-courier repeat (same key, new key, parallel) => stays CONFIRMED, one assign audit, no ISSUE, no Invoice', async () => {
       const cust = await newCustomer(A);
       const id = await confirmed(A, cust);
       const key = randomUUID();
@@ -324,10 +345,25 @@ describe('E2E v0.9 sales -> delivery -> payment (7 roles, 2 tenants)', () => {
       expect((await assign(A, id, A.a.COURIER, key)).status).toBe(201);
       await Promise.all([assign(A, id), assign(A, id)]);
       const o = await orderRow(A, id);
-      expect(o.status).toBe('SHIPPED');
+      expect(o.status).toBe('CONFIRMED');
       expect(o.courierId).toBe(A.a.COURIER.userId);
+      expect(await auditCount(id, 'order.assignCourier')).toBe(1);
       expect(await mv(A, id, 'ISSUE')).toBe(0);
       expect(await invoicesOf(A, id)).toHaveLength(0);
+    });
+    it('handover repeat (same key, new key, parallel) => SHIPPED once, one handover audit, no ISSUE, no Invoice', async () => {
+      const cust = await newCustomer(A);
+      const id = await assigned(A, cust);
+      const before = await stock(A);
+      const key = randomUUID();
+      expect((await handover(A, id, key)).status).toBe(201);
+      expect((await handover(A, id, key)).status).toBe(201);
+      await Promise.all([handover(A, id), handover(A, id)]);
+      expect((await orderRow(A, id)).status).toBe('SHIPPED');
+      expect(await auditCount(id, 'order.handover')).toBe(1);
+      expect(await mv(A, id, 'ISSUE')).toBe(0);
+      expect(await invoicesOf(A, id)).toHaveLength(0);
+      expect(await stock(A)).toEqual(before);
     });
     it('deliver repeat (same key replay, new key, parallel) => exactly 1 ISSUE, 1 Invoice, stock moved once', async () => {
       const cust = await newCustomer(A);
@@ -431,11 +467,13 @@ describe('E2E v0.9 sales -> delivery -> payment (7 roles, 2 tenants)', () => {
     let sub: string;
     let conf: string;
     let ship: string;
+    let asg: string;
     beforeAll(async () => {
       cust = await newCustomer(A);
       sub = await agentOrder(A, cust);
       conf = await confirmed(A, cust);
       ship = await shipped(A, cust);
+      asg = await assigned(A, cust);
     });
     const status = async (id: string) => (await orderRow(A, id)).status;
     const row: [RoleCode, string, (a: Actor) => request.Test, () => string, string][] = [
@@ -457,6 +495,15 @@ describe('E2E v0.9 sales -> delivery -> payment (7 roles, 2 tenants)', () => {
       ['ACCOUNTANT', 'deliver', (a) => post(`/orders/${ship}/deliver`, a), () => ship, 'SHIPPED'],
       ['ACCOUNTANT', 'cancel', (a) => post(`/orders/${conf}/cancel`, a, { reason: 'nope nope' }), () => conf, 'CONFIRMED'],
       ['ACCOUNTANT', 'create payment', (a) => post('/payments', a, { customerId: cust, amount: '1.00', method: 'CASH' }), () => sub, 'SUBMITTED'],
+      ['SALES_AGENT', 'handover', (a) => post(`/orders/${asg}/handover`, a), () => asg, 'CONFIRMED'],
+      ['COURIER', 'handover', (a) => post(`/orders/${asg}/handover`, a), () => asg, 'CONFIRMED'],
+      ['CASHIER', 'handover', (a) => post(`/orders/${asg}/handover`, a), () => asg, 'CONFIRMED'],
+      ['ACCOUNTANT', 'handover', (a) => post(`/orders/${asg}/handover`, a), () => asg, 'CONFIRMED'],
+      ['SALES_DIRECTOR', 'handover', (a) => post(`/orders/${asg}/handover`, a), () => asg, 'CONFIRMED'],
+      ['SALES_AGENT', 'return-to-warehouse', (a) => post(`/orders/${ship}/return-to-warehouse`, a, { reason: 'nope nope' }), () => ship, 'SHIPPED'],
+      ['COURIER', 'return-to-warehouse', (a) => post(`/orders/${ship}/return-to-warehouse`, a, { reason: 'nope nope' }), () => ship, 'SHIPPED'],
+      ['CASHIER', 'return-to-warehouse', (a) => post(`/orders/${ship}/return-to-warehouse`, a, { reason: 'nope nope' }), () => ship, 'SHIPPED'],
+      ['ACCOUNTANT', 'return-to-warehouse', (a) => post(`/orders/${ship}/return-to-warehouse`, a, { reason: 'nope nope' }), () => ship, 'SHIPPED'],
       ['SALES_DIRECTOR', 'create order', (a) => post('/orders', a, { customerId: cust, lines: [] }), () => sub, 'SUBMITTED'],
       ['SALES_DIRECTOR', 'create payment', (a) => post('/payments', a, { customerId: cust, amount: '1.00', method: 'CASH' }), () => sub, 'SUBMITTED'],
     ];

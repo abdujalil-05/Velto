@@ -290,16 +290,16 @@ export class OrderAlreadyInvoicedException extends AppException {
   }
 }
 
-/** PO decision A: a courier is handed a CONFIRMED order (→ SHIPPED) or re-pointed on a SHIPPED one — nothing else. */
+/** ADR-069/070: a courier is assigned (or re-assigned) only on a CONFIRMED order. */
 export class CourierAssignInvalidStatusException extends AppException {
   constructor(status: string) {
     super(
       HttpStatus.CONFLICT,
       'SALES_ORDER_COURIER_ASSIGN_INVALID_STATUS',
       {
-        uz: `Kuryer faqat tasdiqlangan (CONFIRMED) yoki yo'ldagi (SHIPPED) buyurtmaga biriktiriladi; joriy holat: "${status}"`,
-        ru: `Курьера можно назначить только подтверждённому (CONFIRMED) или отгруженному (SHIPPED) заказу; текущий статус: "${status}"`,
-        en: `A courier can only be assigned to a CONFIRMED or SHIPPED order; current status: "${status}"`,
+        uz: `Kuryer faqat tasdiqlangan (CONFIRMED) buyurtmaga biriktiriladi; joriy holat: "${status}"`,
+        ru: `Курьера можно назначить только подтверждённому (CONFIRMED) заказу; текущий статус: "${status}"`,
+        en: `A courier can only be assigned to a CONFIRMED order; current status: "${status}"`,
       },
       { status },
     );
@@ -329,6 +329,66 @@ export class OrderShippedRequiresReturnException extends AppException {
       uz: "Buyurtma kuryerda (SHIPPED). Bekor qilishdan oldin uni omborga qaytaring",
       ru: 'Заказ у курьера (SHIPPED). Перед отменой верните его на склад',
       en: 'The order is with the courier (SHIPPED). Return it to the warehouse before cancelling',
+    });
+  }
+}
+
+/** ADR-069/070: the goods are already with the courier (SHIPPED) — return to the warehouse before re-assigning. */
+export class OrderAlreadyHandedOverException extends AppException {
+  constructor() {
+    super(HttpStatus.CONFLICT, 'SALES_ORDER_ALREADY_HANDED_OVER', {
+      uz: "Buyurtma allaqachon kuryerga topshirilgan (SHIPPED). Kuryerni almashtirishdan oldin uni omborga qaytaring",
+      ru: 'Заказ уже передан курьеру (SHIPPED). Перед сменой курьера верните его на склад',
+      en: 'The order is already handed over to the courier (SHIPPED). Return it to the warehouse first',
+    });
+  }
+}
+
+/** ADR-069/070: handover is CONFIRMED → SHIPPED only (SHIPPED = idempotent no-op). */
+export class HandoverInvalidStatusException extends AppException {
+  constructor(status: string) {
+    super(
+      HttpStatus.CONFLICT,
+      'SALES_ORDER_HANDOVER_INVALID_STATUS',
+      {
+        uz: `Kuryerga faqat tasdiqlangan (CONFIRMED) buyurtma topshiriladi; joriy holat: "${status}"`,
+        ru: `Передать курьеру можно только подтверждённый (CONFIRMED) заказ; текущий статус: "${status}"`,
+        en: `Only a CONFIRMED order can be handed over to a courier; current status: "${status}"`,
+      },
+      { status },
+    );
+  }
+}
+
+/** ADR-069/070: handover needs an assigned courier. */
+export class HandoverCourierRequiredException extends AppException {
+  constructor() {
+    super(HttpStatus.CONFLICT, 'SALES_ORDER_HANDOVER_NO_COURIER', {
+      uz: 'Topshirishdan oldin buyurtmaga kuryer biriktiring',
+      ru: 'Перед передачей назначьте заказу курьера',
+      en: 'Assign a courier to the order before handing it over',
+    });
+  }
+}
+
+/** ADR-069/070: handover body named a courier other than the one assigned (stale screen / concurrent reassign). */
+export class HandoverCourierMismatchException extends AppException {
+  constructor() {
+    super(HttpStatus.CONFLICT, 'SALES_ORDER_HANDOVER_COURIER_MISMATCH', {
+      uz: "Buyurtmaga boshqa kuryer biriktirilgan. Sahifani yangilang",
+      ru: 'Заказу назначен другой курьер. Обновите страницу',
+      en: 'A different courier is assigned to this order. Refresh and try again',
+    });
+  }
+}
+
+/** ADR-069/070: a CONFIRMED order with a courier must be handed over (→ SHIPPED) before delivery. */
+export class OrderHandoverRequiredException extends AppException {
+  constructor() {
+    super(HttpStatus.CONFLICT, 'SALES_ORDER_HANDOVER_REQUIRED', {
+      uz: "Buyurtmaga kuryer biriktirilgan, lekin hali topshirilmagan. Avval kuryerga topshiring",
+      ru: 'Заказу назначен курьер, но он ещё не передан. Сначала передайте заказ курьеру',
+      en: 'A courier is assigned but the order has not been handed over yet. Hand it over first',
     });
   }
 }

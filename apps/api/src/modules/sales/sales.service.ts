@@ -23,6 +23,7 @@ import type { CancelOrderDto } from './dto/cancel-order.dto';
 import type { CreateOrderDto } from './dto/create-order.dto';
 import type { DeliverOrderDto, DeliverOrderLineDto } from './dto/deliver-order.dto';
 import type { ListOrdersQueryDto } from './dto/list-orders.query';
+import type { HandoverOrderDto } from './dto/handover-order.dto';
 import type { ReturnToWarehouseDto } from './dto/return-to-warehouse.dto';
 import { isDeliveredQtyCheckViolation } from './delivered-qty-check';
 import { assertNotBelowMinPrice, assertQtyPrecision } from './order-line-guards';
@@ -32,6 +33,11 @@ import {
   CourierNotFoundException,
   CourierAssignmentForbiddenException,
   CourierAssignInvalidStatusException,
+  HandoverCourierMismatchException,
+  HandoverCourierRequiredException,
+  HandoverInvalidStatusException,
+  OrderAlreadyHandedOverException,
+  OrderHandoverRequiredException,
   CustomerBlockedException,
   DeliveryLinesMismatchException,
   EmptyDeliveryException,
@@ -264,8 +270,9 @@ export class SalesService {
   async createWithOutcome(dto: CreateOrderDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
 
-    // P0: courierId ⇒ SHIPPED + reservation, i.e. confirm()'s effect (needs
-    // `orders.update`) plus the courier hand-over (needs `orders.assignCourier`).
+    // P0: courierId ⇒ CONFIRMED + reservation + courier attached, i.e. confirm()'s
+    // effect (needs `orders.update`) plus the courier assignment (needs
+    // `orders.assignCourier`). Never SHIPPED: that is handover() only (ADR-069/070).
     // BOTH are required; checked before any read/write (covers /sync/push).
     if (
       dto.courierId &&
@@ -302,10 +309,9 @@ export class SalesService {
     const outletId = await this.resolveOutlet(tx, dto.customerId, dto.outletId);
     const warehouseId = await this.resolveWarehouse(tx, dto.warehouseId);
     const agentId = user.roles.includes('SALES_AGENT') ? user.id : await this.resolveAgent(tx, dto.agentId);
-    // A courierId known up front means the order is handed to a kuryer the
-    // moment it's created — it goes straight to "yetkazilmoqda" (SHIPPED)
-    // instead of the usual SUBMITTED, same as assignCourier() does for an
-    // order that gets one attached later.
+    // A courierId known up front = confirm() + assignCourier() in one step:
+    // CONFIRMED with the courier attached and stock reserved. The physical
+    // hand-over (→ SHIPPED) is a separate handover() by `orders.dispatch` (ADR-069/070).
     const courierId = dto.courierId ? await this.resolveCourier(tx, dto.courierId) : null;
 
     const priceListId = customer.priceListId ?? (await this.defaultPriceListId(tx));
@@ -420,7 +426,7 @@ export class SalesService {
             agentId,
             warehouseId,
             courierId,
-            status: courierId ? OrderStatus.SHIPPED : OrderStatus.SUBMITTED,
+            status: courierId ? OrderStatus.CONFIRMED : OrderStatus.SUBMITTED,
             clientId: dto.clientId,
             note: dto.note,
             lines: { create: lines },
@@ -445,10 +451,9 @@ export class SalesService {
     }
 
     if (courierId) {
-      // Jumping straight to SHIPPED skips confirm()'s usual reservation
+      // Jumping straight to CONFIRMED skips confirm()'s usual reservation
       // step, but deliver() still expects one to consume (stock.issue()
-      // decrements `reserved`) — reserve here so that invariant holds
-      // regardless of which path got the order to SHIPPED.
+      // decrements `reserved`) — reserve here so that invariant holds.
       await this.reserveOrderStock(tx, order, user);
     }
 
@@ -511,11 +516,12 @@ export class SalesService {
   }
 
   /**
-   * CONFIRMED → DELIVERED, or SHIPPED → DELIVERED for a courier-delivered
-   * order ("yetkazilmoqda" → "yetkazildi") — the plain PICKING step is still
-   * skipped in MVP (8.7), SHIPPED only exists as the courier-assignment
-   * state. Issues stock (consumes the reservation, made either by confirm()
-   * or up front by create()/assignCourier() for a courier order) and
+   * CONFIRMED (no courier) → DELIVERED, or SHIPPED → DELIVERED for a
+   * courier-delivered order ("yetkazilmoqda" → "yetkazildi") — the plain
+   * PICKING step is still skipped in MVP (8.7). A CONFIRMED order with a
+   * courier attached must be handed over first (ADR-069/070) → 409.
+   * Issues stock (consumes the reservation, made either by confirm()
+   * or up front by create() for a courier order) and
    * creates the invoice — 6.6: "MVP'da 1 order = 1 invoice soddalashtirilgan".
    */
   async deliver(id: string, user: AuthenticatedUser, dto?: DeliverOrderDto) {
@@ -531,6 +537,9 @@ export class SalesService {
 
     if (order.status !== OrderStatus.CONFIRMED && order.status !== OrderStatus.SHIPPED) {
       throw new InvalidOrderTransitionException(order.status, OrderStatus.DELIVERED);
+    }
+    if (order.status === OrderStatus.CONFIRMED && order.courierId !== null) {
+      throw new OrderHandoverRequiredException();
     }
 
     // 1 order = 1 SALE invoice (DB: partial unique "Invoice_sale_orderId_key").
@@ -740,27 +749,26 @@ export class SalesService {
   }
 
   /**
-   * Hand-over to a courier (PO decision A): CONFIRMED → SHIPPED, or re-pointing
-   * an already-SHIPPED order at another courier (stays SHIPPED). Pure
-   * logistics: the reservation was taken by confirm() and is never touched
-   * here — no RESERVE/RELEASE/ISSUE, no invoice. Any other status → 409.
-   * Same courier again on a SHIPPED order → idempotent no-op (no audit).
+   * Courier assignment (ADR-069/070: assigning ≠ shipping). CONFIRMED only;
+   * status and reservation are untouched — no RESERVE/RELEASE/ISSUE, no
+   * invoice. Same courier again → idempotent no-op (no audit); another
+   * courier → reassign, audited old/new. SHIPPED → 409 (goods are already
+   * with the courier: return to warehouse first); any other status → 409.
    */
   async assignCourier(id: string, dto: AssignCourierDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
     const order = await this.getRawOrderForUpdate(tx, id);
 
-    if (order.status !== OrderStatus.CONFIRMED && order.status !== OrderStatus.SHIPPED) {
-      throw new CourierAssignInvalidStatusException(order.status);
-    }
+    if (order.status === OrderStatus.SHIPPED) throw new OrderAlreadyHandedOverException();
+    if (order.status !== OrderStatus.CONFIRMED) throw new CourierAssignInvalidStatusException(order.status);
 
     const courierId = await this.resolveCourier(tx, dto.courierId);
-    if (order.status === OrderStatus.SHIPPED && order.courierId === courierId) return withTotal(order);
+    if (order.courierId === courierId) return withTotal(order);
 
-    const reassign = order.status === OrderStatus.SHIPPED;
+    const reassign = order.courierId !== null;
     const updated = await tx.salesOrder.update({
       where: { id },
-      data: { courierId, status: OrderStatus.SHIPPED },
+      data: { courierId },
       include: ORDER_INCLUDE,
     });
 
@@ -771,7 +779,7 @@ export class SalesService {
       entity: 'SalesOrder',
       entityId: id,
       oldValue: toAuditJson({ status: order.status, courierId: order.courierId }),
-      newValue: toAuditJson({ status: OrderStatus.SHIPPED, courierId }),
+      newValue: toAuditJson({ status: order.status, courierId }),
     });
 
     await this.scheduleCourierAssignedNotification(tx, courierId, updated.number, user.companyId);
@@ -780,16 +788,61 @@ export class SalesService {
   }
 
   /**
+   * Physical hand-over to the assigned courier (ADR-069/070): CONFIRMED +
+   * courier → SHIPPED. Pure logistics — the reservation stays, no stock
+   * movement, no invoice (both happen only at DELIVERED). No courier → 409.
+   * Already SHIPPED (with the same courier, if the caller named one) →
+   * idempotent no-op, no second audit. `dto.courierId`, when sent, is a
+   * compare-and-set guard: it must match the currently assigned courier.
+   */
+  async handover(id: string, dto: HandoverOrderDto, user: AuthenticatedUser) {
+    const tx = this.tenantPrisma.client;
+    const order = await this.getRawOrderForUpdate(tx, id);
+
+    if (order.status !== OrderStatus.CONFIRMED && order.status !== OrderStatus.SHIPPED) {
+      throw new HandoverInvalidStatusException(order.status);
+    }
+    if (order.courierId === null) throw new HandoverCourierRequiredException();
+    if (dto.courierId !== undefined && dto.courierId !== order.courierId) {
+      throw new HandoverCourierMismatchException();
+    }
+    if (order.status === OrderStatus.SHIPPED) return withTotal(order);
+
+    const updated = await tx.salesOrder.update({
+      where: { id },
+      data: { status: OrderStatus.SHIPPED },
+      include: ORDER_INCLUDE,
+    });
+
+    await this.auditLog.log(tx, {
+      companyId: user.companyId,
+      userId: user.id,
+      action: 'order.handover',
+      entity: 'SalesOrder',
+      entityId: id,
+      oldValue: toAuditJson({ status: order.status, courierId: order.courierId }),
+      newValue: toAuditJson({
+        status: OrderStatus.SHIPPED,
+        courierId: order.courierId,
+        handedOverAt: new Date().toISOString(),
+        ...(dto.note ? { note: dto.note } : {}),
+      }),
+    });
+
+    return withTotal(updated);
+  }
+
+  /**
    * PO decision C: goods came back from the courier — SHIPPED → CONFIRMED and
    * the courier is detached. The reservation stays as is (SHIPPED carries only
    * RESERVE, never ISSUE), so no stock movement. Reason mandatory, audited.
-   * Already CONFIRMED without a courier → idempotent no-op; other statuses → 409.
+   * Only from SHIPPED: any other status (incl. a repeat after a successful
+   * return, absent an idempotency-key replay) → 409, never a second change.
    */
   async returnToWarehouse(id: string, dto: ReturnToWarehouseDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
     const order = await this.getRawOrderForUpdate(tx, id);
 
-    if (order.status === OrderStatus.CONFIRMED && order.courierId === null) return withTotal(order);
     if (order.status !== OrderStatus.SHIPPED) throw new ReturnToWarehouseInvalidStatusException(order.status);
 
     const updated = await tx.salesOrder.update({

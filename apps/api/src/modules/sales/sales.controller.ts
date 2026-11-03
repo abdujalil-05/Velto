@@ -7,6 +7,7 @@ import { AssignCourierDto } from './dto/assign-courier.dto';
 import { CancelOrderDto } from './dto/cancel-order.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { DeliverOrderDto } from './dto/deliver-order.dto';
+import { HandoverOrderDto } from './dto/handover-order.dto';
 import { ListOrdersQueryDto } from './dto/list-orders.query';
 import { ReturnToWarehouseDto } from './dto/return-to-warehouse.dto';
 import { SalesService } from './sales.service';
@@ -63,7 +64,7 @@ export class SalesController {
     return this.sales.deliver(id, user, dto);
   }
 
-  /** Hand-over to a courier: CONFIRMED → SHIPPED or reassign on SHIPPED; never touches stock — see SalesService.assignCourier(). */
+  /** Courier (re)assignment on a CONFIRMED order; status/stock unchanged — see SalesService.assignCourier(). */
   @Post(':id/assign-courier')
   @Idempotent()
   @RequirePermission('orders.assignCourier')
@@ -75,10 +76,22 @@ export class SalesController {
     return this.sales.assignCourier(id, dto, user);
   }
 
+  /** Physical hand-over to the assigned courier: CONFIRMED → SHIPPED, no stock/invoice — see SalesService.handover(). */
+  @Post(':id/handover')
+  @Idempotent()
+  @RequirePermission('orders.dispatch')
+  handover(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: HandoverOrderDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.sales.handover(id, dto, user);
+  }
+
   /** Goods back from the courier: SHIPPED → CONFIRMED, courier detached, reservation kept — see SalesService.returnToWarehouse(). */
   @Post(':id/return-to-warehouse')
   @Idempotent()
-  @RequirePermission('orders.assignCourier')
+  @RequirePermission('orders.returnToWarehouse')
   returnToWarehouse(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: ReturnToWarehouseDto,

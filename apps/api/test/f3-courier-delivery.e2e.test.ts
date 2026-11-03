@@ -76,11 +76,13 @@ describe('E2E: courier delivery — own order, full only', () => {
     await app.close();
   });
 
-  /** Confirmed order (qty 4, one line) assigned to the given courier. */
+  /** Confirmed order (qty 4, one line) assigned to the given courier and handed over (SHIPPED). */
   async function confirmedOrderFor(courierKey: string) {
     const created = await http().post('/orders').set(auth('OWNER')).send({ customerId, lines: [{ productId, packagingId, qty: 4 }] }).expect(201);
     await http().post(`/orders/${created.body.id}/confirm`).set(auth('OWNER')).expect(201);
     await tenantPrisma.run(companyId, (tx) => tx.salesOrder.update({ where: { id: created.body.id }, data: { courierId: tokens[courierKey]!.userId } }));
+    // ADR-069/070: a courier delivers only after the physical handover (→ SHIPPED).
+    await http().post(`/orders/${created.body.id}/handover`).set(auth('OWNER')).send({}).expect(201);
     return { id: created.body.id as string, lineId: created.body.lines[0].id as string };
   }
   const orderStatus = (id: string) => tenantPrisma.run(companyId, async (tx) => (await tx.salesOrder.findUniqueOrThrow({ where: { id } })).status);
@@ -89,7 +91,7 @@ describe('E2E: courier delivery — own order, full only', () => {
     const o = await confirmedOrderFor('COURIER1');
     const res = await http().post(`/orders/${o.id}/deliver`).set(auth('COURIER1')).send({ lines: [{ lineId: o.lineId, deliveredQty: '2' }] }).expect(403);
     expect(res.body.code).toBe('SALES_PARTIAL_DELIVERY_NOT_ALLOWED');
-    expect(await orderStatus(o.id)).toBe('CONFIRMED');
+    expect(await orderStatus(o.id)).toBe('SHIPPED');
     const full = await http().post(`/orders/${o.id}/deliver`).set(auth('COURIER1')).expect(201);
     expect(full.body.status).toBe('DELIVERED');
   });
@@ -97,13 +99,13 @@ describe('E2E: courier delivery — own order, full only', () => {
   it('courier: even a "full" explicit lines array is refused (courier path is body-less full delivery only)', async () => {
     const o = await confirmedOrderFor('COURIER1');
     await http().post(`/orders/${o.id}/deliver`).set(auth('COURIER1')).send({ lines: [{ lineId: o.lineId, deliveredQty: '4' }] }).expect(403);
-    expect(await orderStatus(o.id)).toBe('CONFIRMED');
+    expect(await orderStatus(o.id)).toBe('SHIPPED');
   });
 
   it('courier cannot deliver an order assigned to another courier (SEC-023)', async () => {
     const o = await confirmedOrderFor('COURIER2');
     await http().post(`/orders/${o.id}/deliver`).set(auth('COURIER1')).expect(403);
-    expect(await orderStatus(o.id)).toBe('CONFIRMED');
+    expect(await orderStatus(o.id)).toBe('SHIPPED');
   });
 
   it('courier cannot GET /routes (no routes.read)', async () => {

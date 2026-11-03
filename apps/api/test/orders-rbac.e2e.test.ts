@@ -15,7 +15,7 @@ import { loginWithMfa } from './mfa-login';
 /**
  * Order RBAC split over real HTTP (SEC-054, §16.3 "unauthorised => 403 + audit"):
  * orders.update (confirm/close/DELETE), orders.cancel, orders.assignCourier
- * (assign-courier, return-to-warehouse, GET assignable-couriers), orders.deliver.
+ * (assign-courier, GET assignable-couriers), orders.dispatch (handover), orders.returnToWarehouse, orders.deliver.
  * Real seeded system roles of the catalog (permissionKeysForRole), real Postgres + RLS.
  */
 describe('E2E orders RBAC split (orders.update / cancel / assignCourier / deliver)', () => {
@@ -178,12 +178,16 @@ describe('E2E orders RBAC split (orders.update / cancel / assignCourier / delive
       await expectDenied(A, 'WAREHOUSE', conf, 'orders.cancel', (t) => post(`/orders/${conf}/cancel`, wh, { reason: 'not allowed' }, t));
     });
 
-    it('WAREHOUSE assign-courier (CONFIRMED => SHIPPED, no ISSUE, no invoice) and return-to-warehouse => 2xx', async () => {
+    it('WAREHOUSE assign-courier (stays CONFIRMED) => handover (SHIPPED, no ISSUE, no invoice) => return-to-warehouse => 2xx', async () => {
       const wh = A.actors.WAREHOUSE!;
       const id = await confirmed(A);
       const res = await post(`/orders/${id}/assign-courier`, wh, { courierId: A.actors.COURIER!.userId });
       expect(res.status, JSON.stringify(res.body)).toBeLessThan(300);
-      expect(res.body.status).toBe('SHIPPED');
+      expect(res.body.status).toBe('CONFIRMED');
+      expect(res.body.courierId).toBe(A.actors.COURIER!.userId);
+      const ho = await post(`/orders/${id}/handover`, wh, { note: 'ramp 1' });
+      expect(ho.status, JSON.stringify(ho.body)).toBe(201);
+      expect(ho.body.status).toBe('SHIPPED');
       expect(await movements(A, id, 'ISSUE')).toBe(0);
       expect(await invoices(A, id)).toBe(0);
       const back = await post(`/orders/${id}/return-to-warehouse`, wh, { reason: 'customer closed' });
@@ -192,26 +196,36 @@ describe('E2E orders RBAC split (orders.update / cancel / assignCourier / delive
       expect((await snapshot(A, id)).courierId).toBeNull();
     });
 
-    it.each(['SALES_AGENT', 'COURIER'])('%s => 403 + audit on assign-courier, return-to-warehouse, assignable-couriers, cancel, confirm', async (roleCode) => {
+    it.each(['SALES_AGENT', 'COURIER'])('%s => 403 + audit on assign-courier, handover, return-to-warehouse, assignable-couriers, cancel, confirm', async (roleCode) => {
       const actor = A.actors[roleCode]!;
+      const courierId = A.actors.COURIER!.userId;
+      const assigned = await confirmed(A);
+      await post(`/orders/${assigned}/assign-courier`, A.actors.WAREHOUSE!, { courierId }).expect(201);
       const shipped = await confirmed(A);
-      await post(`/orders/${shipped}/assign-courier`, A.actors.WAREHOUSE!, { courierId: A.actors.COURIER!.userId }).expect(201);
+      await post(`/orders/${shipped}/assign-courier`, A.actors.WAREHOUSE!, { courierId }).expect(201);
+      await post(`/orders/${shipped}/handover`, A.actors.WAREHOUSE!).expect(201);
       const conf = await confirmed(A);
       const sub = await newOrder(A);
-      const courierId = A.actors.COURIER!.userId;
       await expectDenied(A, roleCode, conf, 'orders.assignCourier', (t) => post(`/orders/${conf}/assign-courier`, actor, { courierId }, t));
-      await expectDenied(A, roleCode, shipped, 'orders.assignCourier', (t) => post(`/orders/${shipped}/return-to-warehouse`, actor, { reason: 'nope nope' }, t));
+      await expectDenied(A, roleCode, assigned, 'orders.dispatch', (t) => post(`/orders/${assigned}/handover`, actor, {}, t));
+      await expectDenied(A, roleCode, shipped, 'orders.returnToWarehouse', (t) => post(`/orders/${shipped}/return-to-warehouse`, actor, { reason: 'nope nope' }, t));
       await expectDenied(A, roleCode, null, 'orders.assignCourier', (t) => get('/orders/assignable-couriers', actor).set('x-request-id', t));
       await expectDenied(A, roleCode, conf, 'orders.cancel', (t) => post(`/orders/${conf}/cancel`, actor, { reason: 'not allowed' }, t));
       await expectDenied(A, roleCode, sub, 'orders.update', (t) => post(`/orders/${sub}/confirm`, actor, {}, t));
     });
 
-    it('SALES_DIRECTOR: cancel OK (reserve released once), assign OK', async () => {
+    it('SALES_DIRECTOR: cancel OK (reserve released once), assign OK, handover 403 (SoD), return-to-warehouse OK', async () => {
       const dir = A.actors.SALES_DIRECTOR!;
       const id = await confirmed(A);
       const assigned = await post(`/orders/${id}/assign-courier`, dir, { courierId: A.actors.COURIER!.userId });
       expect(assigned.status, JSON.stringify(assigned.body)).toBe(201);
-      expect(assigned.body.status).toBe('SHIPPED');
+      expect(assigned.body.status).toBe('CONFIRMED');
+      await expectDenied(A, 'SALES_DIRECTOR', id, 'orders.dispatch', (t) => post(`/orders/${id}/handover`, dir, {}, t));
+      await post(`/orders/${id}/handover`, A.actors.WAREHOUSE!).expect(201);
+      const back = await post(`/orders/${id}/return-to-warehouse`, dir, { reason: 'director recall' });
+      expect(back.status, JSON.stringify(back.body)).toBe(201);
+      expect(back.body.status).toBe('CONFIRMED');
+      expect((await snapshot(A, id)).courierId).toBeNull();
       const id2 = await confirmed(A);
       const cancelled = await post(`/orders/${id2}/cancel`, dir, { reason: 'director cancel' });
       expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(201);
@@ -256,6 +270,45 @@ describe('E2E orders RBAC split (orders.update / cancel / assignCourier / delive
       expect(res.status).toBe(404);
       expect(res.body.code).toBe('COURIER_NOT_FOUND');
       expect(await snapshot(B, id)).toEqual(before);
+    });
+
+    it("company B warehouse/director handover + return-to-warehouse on A's SHIPPED order => 404, no status/movement/invoice effect", async () => {
+      const id = await confirmed(A);
+      await post(`/orders/${id}/assign-courier`, A.actors.WAREHOUSE!, { courierId: A.actors.COURIER!.userId }).expect(201);
+      await post(`/orders/${id}/handover`, A.actors.WAREHOUSE!).expect(201);
+      const before = await snapshot(A, id);
+      const [issue, release] = [await movements(A, id, 'ISSUE'), await movements(A, id, 'RELEASE')];
+      expect((await post(`/orders/${id}/handover`, B.actors.WAREHOUSE!)).status).toBe(404);
+      expect((await post(`/orders/${id}/return-to-warehouse`, B.actors.WAREHOUSE!, { reason: 'cross tenant' })).status).toBe(404);
+      expect((await post(`/orders/${id}/return-to-warehouse`, B.actors.SALES_DIRECTOR!, { reason: 'cross tenant' })).status).toBe(404);
+      expect(await snapshot(A, id)).toEqual(before);
+      expect([await movements(A, id, 'ISSUE'), await movements(A, id, 'RELEASE')]).toEqual([issue, release]);
+      expect(await invoices(A, id)).toBe(0);
+    });
+
+    it('return-to-warehouse without / blank / too-short reason => 400, order stays SHIPPED (reason mandatory)', async () => {
+      const id = await confirmed(A);
+      await post(`/orders/${id}/assign-courier`, A.actors.WAREHOUSE!, { courierId: A.actors.COURIER!.userId }).expect(201);
+      await post(`/orders/${id}/handover`, A.actors.WAREHOUSE!).expect(201);
+      const before = await snapshot(A, id);
+      for (const body of [{}, { reason: '   ' }, { reason: 'ab' }]) {
+        expect((await post(`/orders/${id}/return-to-warehouse`, A.actors.WAREHOUSE!, body)).status).toBe(400);
+      }
+      expect(await snapshot(A, id)).toEqual(before);
+      expect(before.status).toBe('SHIPPED');
+    });
+
+    it('director (orders.update) cannot physically ship: confirm/close/delete leave an assigned CONFIRMED order unshipped, no ISSUE/invoice', async () => {
+      const dir = A.actors.SALES_DIRECTOR!;
+      const id = await confirmed(A);
+      await post(`/orders/${id}/assign-courier`, A.actors.WAREHOUSE!, { courierId: A.actors.COURIER!.userId }).expect(201);
+      await expectDenied(A, 'SALES_DIRECTOR', id, 'orders.dispatch', (t) => post(`/orders/${id}/handover`, dir, {}, t));
+      await post(`/orders/${id}/confirm`, dir);
+      await post(`/orders/${id}/close`, dir, {});
+      await del(`/orders/${id}`, dir);
+      expect((await snapshot(A, id)).status).not.toBe('SHIPPED');
+      expect(await movements(A, id, 'ISSUE')).toBe(0);
+      expect(await invoices(A, id)).toBe(0);
     });
 
     it('company A order with inactive courier / non-courier user => 404 COURIER_NOT_FOUND', async () => {
@@ -411,7 +464,7 @@ describe('E2E orders RBAC split (orders.update / cancel / assignCourier / delive
   });
 
   describe('6. full flows over HTTP', () => {
-    it('agent create => director confirm => warehouse assign (SHIPPED, no ISSUE, no invoice) => courier partial deliver => invoice only after DELIVERED', async () => {
+    it('agent create => director confirm => warehouse assign (CONFIRMED) => handover (SHIPPED, no ISSUE, no invoice) => courier partial deliver => invoice only after DELIVERED', async () => {
       const agent = A.actors.SALES_AGENT!;
       const created = await post('/orders', agent, { customerId: A.customerId, lines: [{ productId: A.productId, packagingId: A.packagingId, qty: 10 }] });
       expect(created.status, JSON.stringify(created.body)).toBe(201);
@@ -425,7 +478,14 @@ describe('E2E orders RBAC split (orders.update / cancel / assignCourier / delive
       expect(await movements(A, id, 'RESERVE')).toBeGreaterThan(0);
 
       const courier = A.actors.COURIER!;
-      const ship = await post(`/orders/${id}/assign-courier`, A.actors.WAREHOUSE!, { courierId: courier.userId });
+      const asg = await post(`/orders/${id}/assign-courier`, A.actors.WAREHOUSE!, { courierId: courier.userId });
+      expect(asg.status, JSON.stringify(asg.body)).toBe(201);
+      expect(asg.body.status).toBe('CONFIRMED');
+      // Assigned but not handed over: deliver => 409 SALES_ORDER_HANDOVER_REQUIRED, nothing issued.
+      const early = await post(`/orders/${id}/deliver`, courier);
+      expect(early.status).toBe(409);
+      expect(early.body.code).toBe('SALES_ORDER_HANDOVER_REQUIRED');
+      const ship = await post(`/orders/${id}/handover`, A.actors.WAREHOUSE!);
       expect(ship.status, JSON.stringify(ship.body)).toBe(201);
       expect(ship.body.status).toBe('SHIPPED');
       expect(await movements(A, id, 'ISSUE')).toBe(0);
@@ -474,6 +534,7 @@ describe('E2E orders RBAC split (orders.update / cancel / assignCourier / delive
       const r0 = Number(await reserved(A));
       await post(`/orders/${id}/confirm`, dir).expect(201);
       await post(`/orders/${id}/assign-courier`, A.actors.WAREHOUSE!, { courierId: A.actors.COURIER!.userId }).expect(201);
+      await post(`/orders/${id}/handover`, A.actors.WAREHOUSE!).expect(201);
       const blocked = await post(`/orders/${id}/cancel`, dir, { reason: 'too late' });
       expect(blocked.status).toBe(409);
       expect(blocked.body.code).toBe('SALES_ORDER_SHIPPED_REQUIRES_RETURN');
@@ -485,6 +546,91 @@ describe('E2E orders RBAC split (orders.update / cancel / assignCourier / delive
       expect(Number(await reserved(A))).toBe(r0);
       expect(await movements(A, id, 'RELEASE')).toBe(1);
       expect(await invoices(A, id)).toBe(0);
+    });
+
+    it('ADR-069/070: assign repeat no-op; handover repeat no-op (one audit); reassign in SHIPPED 409; handover without courier 409; return from DELIVERED 409', async () => {
+      const wh = A.actors.WAREHOUSE!;
+      const courierId = A.actors.COURIER!.userId;
+      const audits = (id: string, action: string) => tenantPrisma.run(A.id, () => tenantPrisma.client.auditLog.count({ where: { entityId: id, action } }));
+      const id = await confirmed(A, 2);
+
+      const noCourier = await post(`/orders/${id}/handover`, wh);
+      expect(noCourier.status).toBe(409);
+      expect(noCourier.body.code).toBe('SALES_ORDER_HANDOVER_NO_COURIER');
+
+      await post(`/orders/${id}/assign-courier`, wh, { courierId }).expect(201);
+      await post(`/orders/${id}/assign-courier`, wh, { courierId }).expect(201);
+      expect(await audits(id, 'order.assignCourier')).toBe(1);
+
+      await post(`/orders/${id}/handover`, wh).expect(201);
+      const again = await post(`/orders/${id}/handover`, wh, { courierId });
+      expect(again.status).toBe(201);
+      expect(again.body.status).toBe('SHIPPED');
+      expect(await audits(id, 'order.handover')).toBe(1);
+
+      const reassign = await post(`/orders/${id}/assign-courier`, wh, { courierId: courier2A.userId });
+      expect(reassign.status).toBe(409);
+      expect(reassign.body.code).toBe('SALES_ORDER_ALREADY_HANDED_OVER');
+      expect((await snapshot(A, id)).courierId).toBe(courierId);
+      expect(await movements(A, id, 'ISSUE')).toBe(0);
+      expect(await invoices(A, id)).toBe(0);
+
+      await post(`/orders/${id}/deliver`, A.actors.COURIER!).expect(201);
+      expect(await movements(A, id, 'ISSUE')).toBe(1);
+      expect(await invoices(A, id)).toBe(1);
+      const ret = await post(`/orders/${id}/return-to-warehouse`, wh, { reason: 'too late now' });
+      expect(ret.status).toBe(409);
+      expect(ret.body.code).toBe('SALES_ORDER_RETURN_INVALID_STATUS');
+      expect((await snapshot(A, id)).status).toBe('DELIVERED');
+    });
+
+    it('return-to-warehouse: same Idempotency-Key replays, a new key => 409, one audit', async () => {
+      const wh = A.actors.WAREHOUSE!;
+      const id = await confirmed(A, 1);
+      await post(`/orders/${id}/assign-courier`, wh, { courierId: A.actors.COURIER!.userId }).expect(201);
+      await post(`/orders/${id}/handover`, wh).expect(201);
+      const key = randomUUID();
+      const send = () => http().post(`/orders/${id}/return-to-warehouse`).set(bearer(wh)).set('Idempotency-Key', key).send({ reason: 'came back' });
+      const r1 = await send();
+      expect(r1.status, JSON.stringify(r1.body)).toBe(201);
+      const r2 = await send();
+      expect(r2.status).toBe(201);
+      expect(r2.body.status).toBe('CONFIRMED');
+      const r3 = await post(`/orders/${id}/return-to-warehouse`, wh, { reason: 'came back' });
+      expect(r3.status).toBe(409);
+      expect(await tenantPrisma.run(A.id, () => tenantPrisma.client.auditLog.count({ where: { entityId: id, action: 'order.returnToWarehouse' } }))).toBe(1);
+    });
+
+    it('POST /orders with courierId (office) => CONFIRMED + courier + reserved, not SHIPPED', async () => {
+      const phone = uniquePhone();
+      const u = await systemPrisma.user.create({
+        data: { companyId: A.id, firstName: 'OwnerCreate', lastName: 'Rbac', phone, passwordHash: await argon2.hash(password, { type: argon2.argon2id }) },
+      });
+      const perms = await Promise.all(
+        permissionKeysForRole('OWNER').map((k) => {
+          const [module, code] = k.split('.');
+          return systemPrisma.permission.upsert({ where: { module_code: { module: module!, code: code! } }, update: {}, create: { module: module!, code: code! } });
+        }),
+      );
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT set_config('app.current_company_id', ${A.id}, true)`;
+        const role = await tx.role.create({ data: { companyId: A.id, code: 'OWNER', name: 'OWNER', isSystem: true } });
+        await tx.rolePermission.createMany({ data: perms.map((p) => ({ roleId: role.id, permissionId: p.id })) });
+        await tx.userRole.create({ data: { userId: u.id, roleId: role.id } });
+      });
+      const owner: Actor = { token: (await loginWithMfa(app, phone, password)).accessToken, userId: u.id, phone };
+      const r0 = Number(await reserved(A));
+      const res = await post('/orders', owner, {
+        customerId: A.customerId,
+        agentId: A.actors.SALES_AGENT!.userId,
+        courierId: A.actors.COURIER!.userId,
+        lines: [{ productId: A.productId, packagingId: A.packagingId, qty: 3 }],
+      });
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      expect(res.body.status).toBe('CONFIRMED');
+      expect(res.body.courierId).toBe(A.actors.COURIER!.userId);
+      expect(Number(await reserved(A))).toBe(r0 + 3);
+      expect(await movements(A, res.body.id as string, 'ISSUE')).toBe(0);
     });
   });
 });

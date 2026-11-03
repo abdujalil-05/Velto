@@ -28,6 +28,11 @@ import {
   SalesOrderNotFoundException,
   CourierAssignmentForbiddenException,
   CourierAssignInvalidStatusException,
+  HandoverCourierMismatchException,
+  HandoverCourierRequiredException,
+  HandoverInvalidStatusException,
+  OrderAlreadyHandedOverException,
+  OrderHandoverRequiredException,
   OrderShippedRequiresReturnException,
   ReturnToWarehouseInvalidStatusException,
 } from './sales-exceptions';
@@ -521,23 +526,26 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     );
   });
 
-  it('creating with a courierId skips straight to SHIPPED, reserves stock, and deliver() works from there', async () => {
+  it('ADR-069: creating with a courierId => CONFIRMED + reserved + courier attached (never SHIPPED); deliver needs handover first', async () => {
     const before = await getReserved();
     const customerId = await createCustomer();
     const order = await tenantPrisma.run(companyId, () =>
       sales.create({ customerId, courierId, lines: [{ productId, packagingId, qty: 2 }] }, user),
     );
-    expect(order.status).toBe('SHIPPED');
+    expect(order.status).toBe('CONFIRMED');
     expect(order.courierId).toBe(courierId);
     expect(order.courier?.id).toBe(courierId);
     expect((await getReserved()).minus(before).toString()).toBe('2');
 
+    await expect(tenantPrisma.run(companyId, () => sales.deliver(order.id, user))).rejects.toBeInstanceOf(OrderHandoverRequiredException);
+    const shipped = await tenantPrisma.run(companyId, () => sales.handover(order.id, {}, user));
+    expect(shipped.status).toBe('SHIPPED');
     const delivered = await tenantPrisma.run(companyId, () => sales.deliver(order.id, user));
     expect(delivered.status).toBe('DELIVERED');
     expect((await getReserved()).toString()).toBe(before.toString());
   });
 
-  it('P0: SALES_AGENT (orders.create only) + courierId is rejected 403 — no order, no reservation; OWNER/SALES_DIRECTOR still go to SHIPPED', async () => {
+  it('P0: SALES_AGENT (orders.create only) + courierId is rejected 403 — no order, no reservation; OWNER/SALES_DIRECTOR get CONFIRMED + courier', async () => {
     const mk = async (roles: string[], permissions: string[]): Promise<AuthenticatedUser> => {
       const u = await systemPrisma.user.create({
         data: { companyId, firstName: 'P0', lastName: roles[0]!, phone: `+99894${Math.floor(1_000_000 + Math.random() * 8_000_000)}` },
@@ -579,7 +587,7 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
       const order = await tenantPrisma.run(companyId, () =>
         sales.create({ customerId, agentId: agent.id, courierId, lines: [{ productId, packagingId, qty: 1 }] }, office),
       );
-      expect(order.status).toBe('SHIPPED');
+      expect(order.status).toBe('CONFIRMED');
       expect(order.courierId).toBe(courierId);
       expect((await getReserved()).minus(start).toString()).toBe('1');
     }
@@ -627,43 +635,100 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     expect(row.courierId).toBeNull();
   });
 
-  it('PO-A: assignCourier() CONFIRMED => SHIPPED keeps the reservation as is, no StockMovement, no Invoice; audited', async () => {
+  it('ADR-069: assignCourier() CONFIRMED keeps status CONFIRMED and the reservation, no StockMovement/Invoice; same courier => no-op; audited', async () => {
     const { iso, order } = await isoOrder(2);
     const before = await sideEffects(order.id, iso);
     expect(before.movements).toEqual(['RECEIVE:1000', 'RESERVE:2']);
 
     const assigned = await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId }, user));
-    expect(assigned.status).toBe('SHIPPED');
+    expect(assigned.status).toBe('CONFIRMED');
     expect(assigned.courierId).toBe(courierId);
     expect(await sideEffects(order.id, iso)).toEqual(before);
     const [a] = await audits(order.id, 'order.assignCourier');
     expect(a?.oldValue).toMatchObject({ status: 'CONFIRMED', courierId: null });
-    expect(a?.newValue).toMatchObject({ status: 'SHIPPED', courierId });
+    expect(a?.newValue).toMatchObject({ status: 'CONFIRMED', courierId });
+
+    const again = await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId }, user));
+    expect(again.status).toBe('CONFIRMED');
+    expect(await audits(order.id, 'order.assignCourier')).toHaveLength(1);
+    expect(await audits(order.id, 'order.reassignCourier')).toHaveLength(0);
   });
 
-  it('PO-A: reassign on SHIPPED stays SHIPPED (audited prev/new); same courier again => no-op, no duplicate audit; DELIVERED => 409', async () => {
+  it('ADR-069: reassign in CONFIRMED audited old/new; reassign in SHIPPED => 409 SALES_ORDER_ALREADY_HANDED_OVER; DELIVERED => 409', async () => {
     const { iso, order } = await isoOrder(1);
     await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId }, user));
-    const before = await sideEffects(order.id, iso);
     const second = await makeCourier(companyId);
 
     const re = await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId: second.id }, user));
-    expect(re.status).toBe('SHIPPED');
+    expect(re.status).toBe('CONFIRMED');
     expect(re.courierId).toBe(second.id);
     const [r] = await audits(order.id, 'order.reassignCourier');
-    expect(r?.oldValue).toMatchObject({ status: 'SHIPPED', courierId });
-    expect(r?.newValue).toMatchObject({ status: 'SHIPPED', courierId: second.id });
+    expect(r?.oldValue).toMatchObject({ status: 'CONFIRMED', courierId });
+    expect(r?.newValue).toMatchObject({ status: 'CONFIRMED', courierId: second.id });
 
-    const again = await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId: second.id }, user));
-    expect(again.courierId).toBe(second.id);
-    expect(await audits(order.id, 'order.reassignCourier')).toHaveLength(1);
-    expect(await audits(order.id, 'order.assignCourier')).toHaveLength(1);
+    await tenantPrisma.run(companyId, () => sales.handover(order.id, {}, user));
+    const before = await sideEffects(order.id, iso);
+    const err = await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId }, user)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(OrderAlreadyHandedOverException);
+    expect((err as AppException).getStatus()).toBe(409);
     expect(await sideEffects(order.id, iso)).toEqual(before);
+    const row = await tenantPrisma.run(companyId, (tx) => tx.salesOrder.findUniqueOrThrow({ where: { id: order.id } }));
+    expect(row.courierId).toBe(second.id);
 
     await tenantPrisma.run(companyId, () => sales.deliver(order.id, user));
     await expect(
       tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId }, user)),
     ).rejects.toBeInstanceOf(CourierAssignInvalidStatusException);
+  });
+
+  it('ADR-070: handover CONFIRMED+courier => SHIPPED, audited once with courierId/note; repeat => no-op; no stock/invoice until DELIVERED', async () => {
+    const { iso, order } = await isoOrder(2);
+    await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId }, user));
+    const before = await sideEffects(order.id, iso);
+
+    const shipped = await tenantPrisma.run(companyId, () => sales.handover(order.id, { note: 'rampa 2' }, user));
+    expect(shipped.status).toBe('SHIPPED');
+    expect(shipped.courierId).toBe(courierId);
+    expect(await sideEffects(order.id, iso)).toEqual(before);
+    const [h] = await audits(order.id, 'order.handover');
+    expect(h?.userId).toBe(user.id);
+    expect(h?.oldValue).toMatchObject({ status: 'CONFIRMED', courierId });
+    expect(h?.newValue).toMatchObject({ status: 'SHIPPED', courierId, note: 'rampa 2' });
+
+    const again = await tenantPrisma.run(companyId, () => sales.handover(order.id, { courierId }, user));
+    expect(again.status).toBe('SHIPPED');
+    expect(await audits(order.id, 'order.handover')).toHaveLength(1);
+    await expect(
+      tenantPrisma.run(companyId, () => sales.handover(order.id, { courierId: randomUUID() }, user)),
+    ).rejects.toBeInstanceOf(HandoverCourierMismatchException);
+    expect(await sideEffects(order.id, iso)).toEqual(before);
+
+    await tenantPrisma.run(companyId, () => sales.deliver(order.id, user));
+    const after = await sideEffects(order.id, iso);
+    expect(after.movements).toEqual(['RECEIVE:1000', 'RESERVE:2', 'ISSUE:2']);
+    expect(after.invoices).toBe(1);
+    await expect(tenantPrisma.run(companyId, () => sales.handover(order.id, {}, user))).rejects.toBeInstanceOf(HandoverInvalidStatusException);
+  });
+
+  it('ADR-070: handover without courier => 409 NO_COURIER; SUBMITTED => 409; CONFIRMED without courier still delivers directly', async () => {
+    const { iso, order } = await isoOrder(1);
+    const err = await tenantPrisma.run(companyId, () => sales.handover(order.id, {}, user)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(HandoverCourierRequiredException);
+    expect((err as AppException).getStatus()).toBe(409);
+    const sub = await isoOrder(1, false);
+    await expect(tenantPrisma.run(companyId, () => sales.handover(sub.order.id, {}, user))).rejects.toBeInstanceOf(HandoverInvalidStatusException);
+
+    const delivered = await tenantPrisma.run(companyId, () => sales.deliver(order.id, user));
+    expect(delivered.status).toBe('DELIVERED');
+    expect((await sideEffects(order.id, iso)).invoices).toBe(1);
+  });
+
+  it('ADR-070: concurrent handovers => one SHIPPED transition, one audit', async () => {
+    const { order } = await isoOrder(1);
+    await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId }, user));
+    const res = await Promise.all(Array.from({ length: 4 }, () => tenantPrisma.run(companyId, () => sales.handover(order.id, {}, user))));
+    expect(res.every((o) => o.status === 'SHIPPED')).toBe(true);
+    expect(await audits(order.id, 'order.handover')).toHaveLength(1);
   });
 
   it('PO-A: non-courier, inactive courier and another tenant\'s courier => COURIER_NOT_FOUND 404, order untouched', async () => {
@@ -690,9 +755,13 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     expect(Object.keys(list[0]!).sort()).toEqual(['firstName', 'id', 'lastName']);
   });
 
-  it('PO-C: return-to-warehouse SHIPPED => CONFIRMED, courier cleared, reservation untouched, audited with reason; repeat => no-op; SUBMITTED => 409', async () => {
+  it('PO-C: return-to-warehouse SHIPPED => CONFIRMED, courier cleared, reservation untouched, audited with reason; repeat/SUBMITTED/assigned-only => 409', async () => {
     const { iso, order } = await isoOrder(3);
     await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId }, user));
+    await expect(
+      tenantPrisma.run(companyId, () => sales.returnToWarehouse(order.id, { reason: 'erta' }, user)),
+    ).rejects.toBeInstanceOf(ReturnToWarehouseInvalidStatusException);
+    await tenantPrisma.run(companyId, () => sales.handover(order.id, {}, user));
     const before = await sideEffects(order.id, iso);
 
     const back = await tenantPrisma.run(companyId, () => sales.returnToWarehouse(order.id, { reason: 'mijoz yopiq' }, user));
@@ -703,8 +772,9 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     expect(a?.oldValue).toMatchObject({ status: 'SHIPPED', courierId });
     expect(a?.newValue).toMatchObject({ status: 'CONFIRMED', courierId: null, reason: 'mijoz yopiq' });
 
-    const again = await tenantPrisma.run(companyId, () => sales.returnToWarehouse(order.id, { reason: 'mijoz yopiq' }, user));
-    expect(again.status).toBe('CONFIRMED');
+    await expect(
+      tenantPrisma.run(companyId, () => sales.returnToWarehouse(order.id, { reason: 'mijoz yopiq' }, user)),
+    ).rejects.toBeInstanceOf(ReturnToWarehouseInvalidStatusException);
     expect(await audits(order.id, 'order.returnToWarehouse')).toHaveLength(1);
 
     // back in CONFIRMED, cancel now releases the reservation once
@@ -717,9 +787,22 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     ).rejects.toBeInstanceOf(ReturnToWarehouseInvalidStatusException);
   });
 
+  it('ADR-070: return-to-warehouse from DELIVERED => 409, nothing changes', async () => {
+    const { iso, order } = await isoOrder(1);
+    await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId }, user));
+    await tenantPrisma.run(companyId, () => sales.handover(order.id, {}, user));
+    await tenantPrisma.run(companyId, () => sales.deliver(order.id, user));
+    const before = await sideEffects(order.id, iso);
+    const err = await tenantPrisma.run(companyId, () => sales.returnToWarehouse(order.id, { reason: 'kech' }, user)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ReturnToWarehouseInvalidStatusException);
+    expect((err as AppException).getStatus()).toBe(409);
+    expect(await sideEffects(order.id, iso)).toEqual(before);
+  });
+
   it('PO-D: cancel SHIPPED => 409 SALES_ORDER_SHIPPED_REQUIRES_RETURN, nothing released', async () => {
     const { iso, order } = await isoOrder(2);
     await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId }, user));
+    await tenantPrisma.run(companyId, () => sales.handover(order.id, {}, user));
     const before = await sideEffects(order.id, iso);
     const err = await tenantPrisma.run(companyId, () => sales.cancel(order.id, { reason: 'bekor' }, user)).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(OrderShippedRequiresReturnException);
@@ -765,6 +848,7 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     const mine = await tenantPrisma.run(companyId, () =>
       sales.create({ customerId, courierId, lines: [{ productId, packagingId, qty: 1 }] }, user),
     );
+    await tenantPrisma.run(companyId, () => sales.handover(mine.id, {}, user));
     const someoneElses = await tenantPrisma.run(companyId, () =>
       sales.create({ customerId, lines: [{ productId, packagingId, qty: 1 }] }, user),
     );
@@ -1268,6 +1352,7 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
       const order = await tenantPrisma.run(companyId, () =>
         sales.create({ customerId, courierId, lines: [{ productId, packagingId, qty: 2 }] }, user),
       );
+      await tenantPrisma.run(companyId, () => sales.handover(order.id, {}, user));
       await expect(
         tenantPrisma.run(companyId, () =>
           sales.deliver(order.id, courierUser, {
