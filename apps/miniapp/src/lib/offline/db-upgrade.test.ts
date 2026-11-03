@@ -21,7 +21,7 @@ describe('Dexie v2 -> v3 upgrade', () => {
     const { prepareOfflineSession, resetPreparedSession } = await import('./session-bootstrap');
 
     await db.open();
-    expect(db.verno).toBe(6);
+    expect(db.verno).toBe(7);
     expect(await db.queue.count()).toBe(1);
 
     setOfflineSession({ userId: 'u1', companyId: 'c1' });
