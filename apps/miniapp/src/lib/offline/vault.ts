@@ -57,6 +57,8 @@ let legacyPaymentRows = 0;
 let foreignLegacyRows = 0;
 let active: { userId: string; companyId: string; key: CryptoKey } | null = null;
 let generation = 0;
+/** True while the in-memory UK came from an Offline Unlock passphrase (ADR-071), not from the server KEK: the next online bring-up must still go through the KEK path (rotation, retired). */
+let adoptedLocal = false;
 let pending: { userId: string; companyId: string } | null = null;
 const listeners = new Set<() => void>();
 
@@ -129,10 +131,16 @@ async function openOrCreate(session: OfflineSession, getKek: (version?: number) 
  * server KEK moved on. Never deletes anything; on any failure the vault stays
  * locked and the reason is the returned status.
  */
+/** True when the owner's UK is already in memory from a previous bring-up (no network was needed to get it). */
+export function isVaultActiveFor(session: OfflineSession): boolean {
+  return !adoptedLocal && !!active && active.userId === session.userId && active.companyId === session.companyId;
+}
+
 export async function ensureVault(session: OfflineSession, getKek: (version?: number) => Promise<OfflineKek> = fetchOfflineKek): Promise<VaultStatus> {
-  if (active && active.userId === session.userId && active.companyId === session.companyId) return 'ready';
+  if (!adoptedLocal && active && active.userId === session.userId && active.companyId === session.companyId) return 'ready';
   const gen = ++generation;
   active = null;
+  adoptedLocal = false;
   pending = { userId: session.userId, companyId: session.companyId };
   setStatus('locked');
   let key: CryptoKey | null = null;
@@ -141,12 +149,26 @@ export async function ensureVault(session: OfflineSession, getKek: (version?: nu
     key = await openOrCreate(session, getKek);
   } catch (e) {
     next = e instanceof OfflineKekRetiredError ? 'retired' : 'unavailable';
+    // ADR-071: a retired KEK version means the server no longer vouches for this vault: the offline-unlock entry goes too.
+    if (next === 'retired') await db.offlineUnlock.delete([session.userId, session.companyId]).catch(() => {});
   }
   if (gen !== generation) return status; // logout / another session took over meanwhile
   pending = null;
   if (key) active = { userId: session.userId, companyId: session.companyId, key };
   setStatus(next);
   return next;
+}
+
+/**
+ * Offline Unlock (ADR-071): puts a UK unwrapped with the offline passphrase into memory for `owner`
+ * (non-extractable). No network, nothing persisted. Replaces any other owner's key.
+ */
+export function adoptUnlockedKey(owner: OfflineSession, key: CryptoKey): void {
+  generation += 1;
+  pending = null;
+  active = { userId: owner.userId, companyId: owner.companyId, key };
+  adoptedLocal = true;
+  setStatus('ready');
 }
 
 /** Account/company switch without a logout in between: the previous owner's UK must not stay in memory. */
@@ -156,6 +178,7 @@ onSessionOwnerChange(() => lockVault());
 export function lockVault(): void {
   generation += 1;
   active = null;
+  adoptedLocal = false;
   pending = null;
   setStatus('locked');
 }
@@ -253,4 +276,5 @@ export async function assertNoLegacyPayments(): Promise<void> {
 export async function wipeVaultKeys(): Promise<void> {
   lockVault();
   await db.vault.clear();
+  await db.offlineUnlock.clear(); // ADR-071: the passphrase-wrapped copy of the UK goes with the server-wrapped one
 }

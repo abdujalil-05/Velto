@@ -17,7 +17,12 @@ import { guardTokenOwner } from '@/lib/offline/sync-engine-core';
 import { forgetLastKnownOwner, getOfflineSession, setOfflineSession } from '@/lib/offline/session';
 import { clearRevokedInfo, getRevokedInfo, handleSessionRevoked, type RevokedInfo } from '@/lib/offline/revoke-wipe';
 import { resetPreparedSession } from '@/lib/offline/session-bootstrap';
-import { clearTokens, getAccessToken, getRefreshToken } from './tokens';
+import { clearTokens, decodeTokenOwner, getAccessToken, getRefreshToken } from './tokens';
+import { isLocalMode, leaveLocalMode } from '@/lib/offline/local-mode';
+import { deleteEntry, hasEntry, touchOnline, unlockOffline, type UnlockResult } from '@/lib/offline/unlock/entry';
+import { offlineUnlockSupported } from '@/lib/offline/unlock/capabilities';
+import { reconnectFromLocal, type ReconnectResult } from '@/lib/offline/unlock/reconnect';
+import { getLastKnownOwner, type OfflineSession } from '@/lib/offline/session';
 import { resumeSession, telegramLogin } from './auth-flow';
 
 // 'no-telegram-context': no stored session AND no Telegram initData —
@@ -28,7 +33,17 @@ import { resumeSession, telegramLogin } from './auth-flow';
 // linkPhone() below). Distinct from 'unauthenticated' (had a session, e.g.
 // logout or an expired/revoked refresh token) so the UI can tell these
 // apart from a normal logged-out state.
-type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated' | 'mfa-web-required' | 'no-telegram-context' | 'needs-phone-link';
+// 'offline-locked' (ADR-071): stored tokens exist but the server cannot be reached; the offline
+// passphrase (if the agent enabled it) unlocks local mode. 'offline-local': unlocked, zero network, queue-only.
+type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated' | 'mfa-web-required' | 'no-telegram-context' | 'needs-phone-link' | 'offline-locked' | 'offline-local';
+
+/** Owner of the stored session while offline: token claims, else the last signed-in owner; null when they disagree/unknown. */
+function storedOwner(): OfflineSession | null {
+  const fromToken = decodeTokenOwner(getAccessToken());
+  const last = getLastKnownOwner();
+  if (fromToken && last && (fromToken.userId !== last.userId || fromToken.companyId !== last.companyId)) return null;
+  return fromToken ?? last;
+}
 
 interface AuthContextValue {
   user: AuthenticatedUser | null;
@@ -42,6 +57,11 @@ interface AuthContextValue {
   revoked: RevokedInfo | null;
   /** Called after export/discard (re-evaluates) or "continue" (hides the notice). */
   resolveRevoked: (opts?: { hide?: boolean }) => Promise<void>;
+  /** 'offline-locked' only: an Offline Unlock entry exists for the stored session owner and this device supports it. */
+  offlineUnlockAvailable: boolean;
+  unlockOffline: (passphrase: string) => Promise<UnlockResult>;
+  /** 'offline-local' only: leave local mode through a fresh online /auth/me of the same owner. */
+  reconnect: () => Promise<ReconnectResult>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -58,10 +78,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient();
   const tCommonRef = useRef(t);
   tCommonRef.current = t;
+  // useTranslations() returns a NEW function whenever the intl provider gets new props (e.g. a full-tree RSC payload served by the
+  // service worker while offline). Effects/callbacks must never list those functions as deps: that re-ran bootstrap (offline -> "no connection")
+  // and the vault bring-up. They read the latest function through these refs instead.
+  const tAuthRef = useRef(tAuth);
+  tAuthRef.current = tAuth;
+  const tRevokedRef = useRef(tRevoked);
+  tRevokedRef.current = tRevoked;
+  const tQueueRef = useRef(tQueue);
+  tQueueRef.current = tQueue;
   const [user, setUser] = useState<AuthenticatedUser | null>(null);
   const [status, setStatus] = useState<AuthStatus>('loading');
   const [linking, setLinking] = useState(false);
   const [revoked, setRevoked] = useState<RevokedInfo | null>(null);
+  // Set once an offline unlock succeeded: a late bootstrap result (resumeSession still in flight after the watchdog) must not overwrite the local session.
+  const localSettledRef = useRef(false);
+  const [offlineUnlockAvailable, setOfflineUnlockAvailable] = useState(false);
   useEffect(() => setRevoked(getRevokedInfo()), []);
 
   // Cross-tab: another tab of this origin signed in as a different user (shared localStorage tokens) -> end this tab's session now.
@@ -83,11 +115,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     void refreshLegacyPaymentRows(owner).catch(() => {}); // startup detection, independent of the network
     void bringUpVaultWithRetry(owner, { isCurrent: () => getOfflineSession()?.userId === owner.userId && getOfflineSession()?.companyId === owner.companyId })
       .then((r) => {
-        if (r.status === 'retired') toast.warning(tQueue('vaultRetired'), { id: 'vaultRetired' });
-        if (r.legacyFailed > 0) toast.warning(tQueue('heldSealUnrestorable'), { id: 'heldSealUnrestorable' });
+        if (r.status === 'retired') toast.warning(tQueueRef.current('vaultRetired'), { id: 'vaultRetired' });
+        if (r.legacyFailed > 0) toast.warning(tQueueRef.current('heldSealUnrestorable'), { id: 'heldSealUnrestorable' });
+        if (r.status === 'ready') void touchOnline(owner, user).catch(() => {}); // ADR-071: TTL anchor = last online authentication
       })
       .catch(() => {});
-  }, [status, user, tQueue]);
+  }, [status, user]);
 
   // Shared by the initial bootstrap and the post-link retry: attempts a
   // Telegram login with the current initData, returns whether it succeeded.
@@ -100,10 +133,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setStatus('mfa-web-required');
     } else if (res.kind === 'blocked') {
       setRevoked(res.revoked);
-      if (!res.revoked) toast.error(tRevoked('wipedToast'));
+      if (!res.revoked) toast.error(tRevokedRef.current('wipedToast'));
     }
     return res.kind;
-  }, [tRevoked]);
+  }, []);
 
   // Bootstrap can only leave 'loading' when a fetch settles, and a fetch to an
   // unreachable host does not settle quickly — a phone inside Telegram hitting
@@ -114,6 +147,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // fallback screen, which offers the bot deep link and a retry.
   const BOOTSTRAP_TIMEOUT_MS = 15_000;
 
+  const refreshOfflineAvailability = useCallback(async () => {
+    const owner = storedOwner();
+    setOfflineUnlockAvailable(!!owner && offlineUnlockSupported() && (await hasEntry(owner)));
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -121,7 +159,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (cancelled) return;
       // Only downgrade a still-unresolved bootstrap; never clobber a status a
       // settled request already set.
-      setStatus((current) => (current === 'loading' ? 'unauthenticated' : current));
+      if (localSettledRef.current || isLocalMode()) return;
+      setStatus((current) => (current === 'loading' ? (getAccessToken() || getRefreshToken() ? 'offline-locked' : 'unauthenticated') : current));
+      void refreshOfflineAvailability();
     }, BOOTSTRAP_TIMEOUT_MS);
 
     async function bootstrap() {
@@ -132,12 +172,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // initData again.
       if (getAccessToken() || getRefreshToken()) {
         const res = await resumeSession();
-        if (!cancelled) {
+        if (!cancelled && !localSettledRef.current && !isLocalMode()) {
           if (res.kind === 'ok') {
             setUser(res.user);
             setStatus('authenticated');
           } else if (res.kind === 'mfa-web-required') {
             setStatus('mfa-web-required');
+          } else if (res.kind === 'offline') {
+            // Tokens kept, server unreachable: NOT a session expiry (ADR-071). Unlock screen or an honest "no offline access" message.
+            await refreshOfflineAvailability();
+            if (!cancelled && !localSettledRef.current && !isLocalMode()) setStatus('offline-locked');
           } else {
             setStatus('unauthenticated');
           }
@@ -168,7 +212,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       cancelled = true;
       clearTimeout(watchdog);
     };
-  }, [tryTelegramLogin]);
+  }, [tryTelegramLogin, refreshOfflineAvailability]);
 
   // Prompts the native "share phone number" popup, then polls /auth/telegram
   // for a few seconds — the number itself lands on the bot as a message and
@@ -195,11 +239,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // see linkTelegramContact() server-side, which messages the user in
       // the bot chat with the specific reason). Without this, the button
       // silently resets with zero indication anything happened.
-      toast.error(tAuth('linkTimeout'));
+      toast.error(tAuthRef.current('linkTimeout'));
     } finally {
       setLinking(false);
     }
-  }, [tryTelegramLogin, tAuth]);
+  }, [tryTelegramLogin]);
 
   useEffect(
     () =>
@@ -212,11 +256,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           void handleSessionRevoked()
             .then((info) => {
               setRevoked(info);
-              if (!info) toast.error(tRevoked('wipedToast'));
+              if (!info) toast.error(tRevokedRef.current('wipedToast'));
             })
             .catch(() => {});
         }
-        if (sessionExpired) toast.error(tAuth('sessionExpired'));
+        if (sessionExpired) toast.error(tAuthRef.current('sessionExpired'));
+        leaveLocalMode(); // ADR-071: any session end (incl. cross-tab owner change) ends local mode
         const ending = getOfflineSession();
         // Same sequence as logout: stop+abort sync, seal own rows to the vault key, THEN lock the UK.
         void endSessionSealing(ending)
@@ -231,7 +276,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(null);
         setStatus(mfaRequired ? 'mfa-web-required' : 'unauthenticated');
       }),
-    [tRevoked, tAuth, queryClient],
+    [queryClient],
   );
 
   const logout = useCallback(async (opts?: { force?: boolean }) => {
@@ -281,6 +326,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     const refreshToken = getRefreshToken();
+    const entryOwner = getOfflineSession() ?? storedOwner();
     clearTokens();
     try {
       await wipeLocalAfterLogout(); // cache wipe, device key only if no row needs it, UK dropped from memory
@@ -288,6 +334,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       localUnconfirmed = true; // IndexedDB failed: still end logged out; payment rows are never deleted as a fallback
     }
     queryClient.clear();
+    await deleteEntry(entryOwner); // explicit logout removes this owner's offline-unlock entry (no hidden re-login)
+    setOfflineUnlockAvailable(false);
+    leaveLocalMode(); // so the best-effort /auth/logout below can reach the server
     setOfflineSession(null);
     forgetLastKnownOwner();
     resetPreparedSession();
@@ -311,10 +360,39 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const unlock = useCallback(async (passphrase: string): Promise<UnlockResult> => {
+    const owner = storedOwner();
+    if (!owner) return { kind: 'no-entry' };
+    const res = await unlockOffline(owner, passphrase);
+    if (res.kind === 'ok') {
+      localSettledRef.current = true;
+      setUser(res.user);
+      setStatus('offline-local');
+    } else {
+      await refreshOfflineAvailability(); // 'wiped' removes the entry
+    }
+    return res;
+  }, [refreshOfflineAvailability]);
+
+  const reconnect = useCallback(async (): Promise<ReconnectResult> => {
+    const res = await reconnectFromLocal();
+    if (res.kind === 'ok' || res.kind === 'mismatch') {
+      setUser(res.user);
+      setStatus('authenticated');
+    } else if (res.kind === 'mfa-web-required') {
+      setUser(null);
+      setStatus('mfa-web-required');
+    } else if (res.kind === 'rejected') {
+      setUser(null);
+      setStatus('unauthenticated');
+    }
+    return res;
+  }, []);
+
   const hasPermission = useCallback((code: string) => user?.permissions.includes(code) ?? false, [user]);
 
   return (
-    <AuthContext.Provider value={{ user, status, logout, hasPermission, linkPhone, linking, revoked, resolveRevoked }}>
+    <AuthContext.Provider value={{ user, status, logout, hasPermission, linkPhone, linking, revoked, resolveRevoked, offlineUnlockAvailable, unlockOffline: unlock, reconnect }}>
       {children}
     </AuthContext.Provider>
   );

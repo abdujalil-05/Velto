@@ -37,6 +37,37 @@ export interface VaultRow {
   wrappedUK: ArrayBuffer;
 }
 
+/** Argon2id parameters stored per entry (so a stronger/weaker device setting never breaks an old entry). m = KiB. */
+export interface UnlockKdfParams {
+  m: number;
+  t: number;
+  p: number;
+  v: 19;
+}
+
+/**
+ * Opt-in Offline Unlock entry (ADR-071). Holds ONLY: the UK wrapped (AES-KW) by a key derived from the passphrase
+ * (Argon2id), the random salt, the KDF params and counters. Never the passphrase, the derived key or the raw UK.
+ * `profile` = minimal AuthenticatedUser sealed under the UK (uk1 format) so the shell can render offline.
+ */
+export interface OfflineUnlockRow {
+  userId: string;
+  companyId: string;
+  fmt: 'pw1';
+  wrappedUK: ArrayBuffer;
+  /** 16 random bytes (ArrayBuffer: survives IndexedDB read/write round trips in every implementation). */
+  salt: ArrayBuffer;
+  params: UnlockKdfParams;
+  /** Vault KEK version current when the entry was created/refreshed (informational; rotation keeps the entry). */
+  kekVersion: number;
+  enrolledAt: number;
+  /** Device clock at the last successful online authentication. TTL + clock-rollback anchor. */
+  lastOnlineAt: number;
+  failCount: number;
+  nextAttemptAt: number;
+  profile?: EncryptedBlob;
+}
+
 /** meta key holding the last allocated queue sequence number. */
 export const QUEUE_SEQ_KEY = 'queue:seq';
 
@@ -60,6 +91,8 @@ class VeltoOfflineDb extends Dexie {
   sealed!: Table<SealedRow, string>;
   /** Wrapped vault keys per (user, company); never cleared by clearOfflineDb (only emergency wipe). */
   vault!: Table<VaultRow, [string, string]>;
+  /** Opt-in Offline Unlock entries (ADR-071): UK wrapped by a passphrase-derived key. Never cleared by clearOfflineDb (only logout of the owner, revoke, emergency wipe, retired vault). */
+  offlineUnlock!: Table<OfflineUnlockRow, [string, string]>;
 
   constructor() {
     super('velto-miniapp');
@@ -113,6 +146,8 @@ class VeltoOfflineDb extends Dexie {
     this.version(5).stores({ sealed: 'clientId, ownerUserId, ownerCompanyId' });
     // v6 (additive): wrapped vault keys. No upgrade step - the queue/sealed tables are not touched.
     this.version(6).stores({ vault: '[userId+companyId]' });
+    // v7 (additive, ADR-071): opt-in Offline Unlock entries. No upgrade step - queue/sealed/vault are not touched.
+    this.version(7).stores({ offlineUnlock: '[userId+companyId]' });
   }
 }
 

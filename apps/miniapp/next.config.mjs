@@ -39,7 +39,8 @@ const securityHeaders = [
       // https://api-maps.yandex.ru/yastatic.net: the Yandex Maps JS SDK
       // (components/shared/yandex-map.tsx) — script-loaded only when
       // NEXT_PUBLIC_YANDEX_MAPS_API_KEY is set.
-      `script-src 'self' 'unsafe-inline' https://telegram.org https://api-maps.yandex.ru https://yastatic.net${isDev ? " 'unsafe-eval'" : ''}`,
+      // 'wasm-unsafe-eval': WebAssembly.compile only (Argon2id in the Offline Unlock worker, ADR-071); does NOT allow eval().
+      `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://telegram.org https://api-maps.yandex.ru https://yastatic.net${isDev ? " 'unsafe-eval'" : ''}`,
       "style-src 'self' 'unsafe-inline' https://yastatic.net",
       `connect-src 'self' ${apiUrlIsAbsolute ? apiUrl + ' ' : ''}https://api-maps.yandex.ru https://*.maps.yandex.net https://*.maps.yandex.ru`,
       // Product images come from whatever S3-compatible endpoint this

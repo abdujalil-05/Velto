@@ -191,7 +191,7 @@ export default function RoutePage() {
         {stops.map((stop) => (
           <Card key={stop.stopId} className="transition-colors">
             <CardContent className="flex items-center gap-3 py-3">
-              <Link href={`/visit/${stop.outletId}`} className="flex min-w-0 flex-1 items-center gap-3">
+              <Link href={{ pathname: '/visit', query: { outletId: stop.outletId } }} className="flex min-w-0 flex-1 items-center gap-3">
                 {stop.visited ? (
                   <CheckCircle2 className="h-5 w-5 shrink-0 text-success" />
                 ) : (

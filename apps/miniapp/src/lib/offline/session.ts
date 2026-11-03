@@ -1,3 +1,5 @@
+import { isLocalMode } from './local-mode';
+
 /**
  * The identity the offline layer acts for. Set synchronously by
  * auth-context.tsx the moment /auth/me resolves (and cleared on logout /
@@ -17,7 +19,7 @@ const OWNER_STORAGE_KEY = 'velto.sessionOwner';
 let syncPaused = false;
 /** Logout stops background push/resolution first; a new session (sign-in) re-enables it. */
 export function isSyncPaused(): boolean {
-  return syncPaused;
+  return syncPaused || isLocalMode();
 }
 export function setSyncPaused(paused: boolean): void {
   syncPaused = paused;
@@ -44,7 +46,7 @@ export function setOfflineSession(session: OfflineSession | null): void {
   const prev = current;
   current = session;
   if (session && prev && (prev.userId !== session.userId || prev.companyId !== session.companyId)) for (const l of [...ownerChangeListeners]) l();
-  if (session) syncPaused = false;
+  if (session && !isLocalMode()) syncPaused = false;
   // Survives an app restart so a revoke detected at bootstrap (no in-memory
   // session yet) still knows whose documents to quarantine. Ids only, no data.
   if (session) {

@@ -46,9 +46,14 @@ const SyncEngineContext = createContext<SyncEngineValue | null>(null);
 
 export function SyncEngineProvider({ children }: { children: React.ReactNode }) {
   const { status } = useAuth();
-  const t = useTranslations('Common');
+  // Translators are read through refs: their identity changes with every intl provider update (e.g. a full-tree RSC payload),
+  // and listing them as deps would restart the sync cycle effects on a plain navigation.
   const tVisit = useTranslations('Visit');
   const tQueue = useTranslations('Queue');
+  const tVisitRef = useRef(tVisit);
+  tVisitRef.current = tVisit;
+  const tQueueRef = useRef(tQueue);
+  tQueueRef.current = tQueue;
   const queryClient = useQueryClient();
 
   const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine));
@@ -109,16 +114,16 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
       try {
         outcome = await runPush();
         for (const v of outcome.visitGps) {
-          if (v.gpsStatus !== 'VERIFIED') toast.warning(tVisit(`gpsStatus.${v.gpsStatus}`));
+          if (v.gpsStatus !== 'VERIFIED') toast.warning(tVisitRef.current(`gpsStatus.${v.gpsStatus}`));
         }
       } catch (err) {
         setSyncError(describeError(err));
         backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
       }
       try {
-        for (const r of await runHeldMaintenance()) toast.success(tQueue(r.outcome === 'EXISTING_PAYMENT_CONFIRMED' ? 'heldResolvedExisting' : 'heldResolvedNotPosted'));
-        if (getVaultStatus() === 'retired') toast.warning(tQueue('vaultRetired'), { id: 'vaultRetired' });
-        if (unrestorableSealedCount() > 0) toast.warning(tQueue('heldSealUnrestorable'), { id: 'heldSealUnrestorable' });
+        for (const r of await runHeldMaintenance()) toast.success(tQueueRef.current(r.outcome === 'EXISTING_PAYMENT_CONFIRMED' ? 'heldResolvedExisting' : 'heldResolvedNotPosted'));
+        if (getVaultStatus() === 'retired') toast.warning(tQueueRef.current('vaultRetired'), { id: 'vaultRetired' });
+        if (unrestorableSealedCount() > 0) toast.warning(tQueueRef.current('heldSealUnrestorable'), { id: 'heldSealUnrestorable' });
       } catch {
         /* held rows are kept on any failure */
       }
@@ -165,7 +170,7 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
         scheduleNext();
       }
     },
-    [status, t, tVisit, tQueue, refreshCounts, queryClient],
+    [status, refreshCounts, queryClient],
   );
 
   const scheduleNext = useCallback(() => {

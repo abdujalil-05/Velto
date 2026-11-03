@@ -68,6 +68,7 @@ async function run(): Promise<RevokedInfo | null> {
     await queueRepository.quarantineOwnerEntries(owner);
     await queueRepository.sealOwnRowsToVault(owner); // everything of the owner still under the device key -> vault key
   }
+  if (owner) await db.offlineUnlock.delete([owner.userId, owner.companyId]).catch(() => {}); // ADR-071: revoked => no offline unlock
   await wipeReferenceCache();
   await db.meta.delete('cacheOwner');
   setOfflineSession(null);

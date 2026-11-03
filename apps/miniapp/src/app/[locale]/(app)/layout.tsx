@@ -12,6 +12,10 @@ import { useForeignLegacyRows } from '@/lib/offline/use-vault-status';
 import { RevokedNotice } from '@/components/revoked-notice';
 import { TelegramFallback } from '@/components/telegram-fallback';
 import { Button } from '@/components/ui/button';
+import { OfflineUnlockScreen } from '@/components/offline-unlock/unlock-screen';
+import { LocalModeBanner } from '@/components/offline-unlock/local-banner';
+import { Link } from '@/i18n/navigation';
+import { Settings } from 'lucide-react';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { user, status, linkPhone, linking, revoked } = useAuth();
@@ -43,6 +47,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       </div>
     );
   }
+  // ADR-071: tokens kept but the server is unreachable - never the "session expired" fallback.
+  if (status === 'offline-locked') return <OfflineUnlockScreen />;
   if (status === 'unauthenticated' && revoked) return <RevokedNotice />;
   if (status === 'no-telegram-context' || status === 'unauthenticated') {
     return <TelegramFallback reason={status} />;
@@ -67,6 +73,11 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     <div className="mx-auto flex min-h-screen max-w-lg flex-col">
       <header className="flex items-center justify-between border-b border-border px-4 py-3">
         <span className="text-sm font-semibold">Velto</span>
+        {status === 'authenticated' && (
+          <Link href="/settings" aria-label={t('settings')} className="ml-auto mr-2 inline-flex min-h-[44px] items-center px-2">
+            <Settings className="h-4 w-4" aria-hidden />
+          </Link>
+        )}
         {!courierOnly && (
           <div className="flex items-center gap-2">
             <QueueNavLink />
@@ -75,6 +86,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         )}
       </header>
       <main className="flex-1 space-y-4 p-4">
+        {status === 'offline-local' && <LocalModeBanner />}
         {!courierOnly && <SyncBanners />}
         {children}
       </main>

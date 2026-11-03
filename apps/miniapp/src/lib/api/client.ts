@@ -1,4 +1,5 @@
 import { TokenOwnerMismatchError, clearTokens, getAccessToken, getRefreshToken, setTokens, tokenIsForeign, type TokenOwner } from '@/lib/auth/tokens';
+import { assertNetworkAllowed } from '@/lib/offline/local-mode';
 import type { ApiErrorBody, LocalizedMessage, TokenPair } from './types';
 
 // Copied from apps/web/src/lib/api/client.ts — same shape (see the plan's
@@ -83,6 +84,7 @@ type RefreshResult = { token: string } | { rejected: boolean; revoked: boolean }
 export const REVOKE_ERROR_CODES: readonly string[] = ['AUTH_ACCOUNT_BLOCKED'];
 
 async function refreshAccessToken(): Promise<RefreshResult> {
+  assertNetworkAllowed('/auth/refresh');
   const refreshToken = getRefreshToken();
   if (!refreshToken) return { rejected: false, revoked: false };
 
@@ -126,6 +128,7 @@ async function unauthorizedCode(res: Response): Promise<string | undefined> {
 }
 
 export async function apiFetch<T = void>(path: string, options: ApiFetchOptions = {}): Promise<T> {
+  assertNetworkAllowed(path); // Offline Unlock local mode (ADR-071): zero requests
   const { body, skipAuth, owner, headers, ...rest } = options;
   const isFormData = body instanceof FormData;
 

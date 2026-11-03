@@ -2,9 +2,10 @@ import { fetchOfflineKek, type OfflineKek } from '@/lib/api/offline-kek';
 import { fetchReconciliationStatus } from '@/lib/api/payments';
 import { clearDeviceKey, hasDeviceKey } from './crypto';
 import { clearOfflineDb, db } from './db';
-import { countDeviceKeyPaymentRows, countDeviceKeyRows, ensureVault, lockVault, refreshLegacyPaymentRows, wipeVaultKeys, type VaultStatus } from './vault';
+import { countDeviceKeyPaymentRows, countDeviceKeyRows, ensureVault, isVaultActiveFor, lockVault, refreshLegacyPaymentRows, wipeVaultKeys, type VaultStatus } from './vault';
 import { queueRepository, type QueueEntry } from './queue';
 import { getSyncSignal, type OfflineSession } from './session';
+import { isLocalMode } from './local-mode';
 
 /**
  * Held payments (PAYMENT_IDEMPOTENCY_CONFLICT/UNVERIFIABLE) live in the queue
@@ -95,8 +96,9 @@ export interface VaultBringUp {
  * the same key, so it is wiped first (queue untouched) and refilled by the next pull; runs also when nothing was moved
  * (no orphaned cache under a key about to disappear).
  */
-async function dropDeviceKeyIfUnused(): Promise<boolean> {
-  if (!hasDeviceKey() || (await countDeviceKeyRows()) !== 0) return false;
+async function dropDeviceKeyIfUnused(canRefill: boolean): Promise<boolean> {
+  // The wipe is only safe while the cache can be re-pulled: with no network (or in local mode) it would leave the agent with an empty catalog. Fail-safe: skip, retry on a later online bring-up.
+  if (!canRefill || !hasDeviceKey() || (await countDeviceKeyRows()) !== 0) return false;
   await clearOfflineDb({ keepQueue: true });
   clearDeviceKey();
   return true;
@@ -108,6 +110,7 @@ async function dropDeviceKeyIfUnused(): Promise<boolean> {
  * deleted at once. Rows of another user/company are never touched (counted, see vault.ts). Safe to repeat.
  */
 export async function bringUpVault(owner: OfflineSession, getKek: (version?: number) => Promise<OfflineKek> = fetchOfflineKek): Promise<VaultBringUp> {
+  const alreadyActive = isVaultActiveFor(owner); // UK already in memory => this call proves nothing about connectivity
   const status = await ensureVault(owner, getKek);
   if (status !== 'ready') {
     await refreshLegacyPaymentRows(owner);
@@ -115,7 +118,7 @@ export async function bringUpVault(owner: OfflineSession, getKek: (version?: num
   }
   await queueRepository.sealOwnRowsToVault(owner);
   const legacyFailed = (await hasSealedFor(owner)) ? (await restoreSealedFor(owner, getKek)).failed : 0;
-  const deviceKeyDropped = await dropDeviceKeyIfUnused();
+  const deviceKeyDropped = await dropDeviceKeyIfUnused(!alreadyActive && !isLocalMode() && (typeof navigator === 'undefined' || navigator.onLine !== false));
   await refreshLegacyPaymentRows(owner);
   return { status, legacyFailed, deviceKeyDropped };
 }
