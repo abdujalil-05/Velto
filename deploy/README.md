@@ -57,7 +57,8 @@ pnpm db:generate
 #    Mavjud production bazasi uchun pastdagi "Rol modelini production'ga
 #    o'tkazish" runbook'iga qarang.
 #    Parol buyruq satrida BO'LMASIN: PGPASSFILE (0600) + PGHOST/PGPORT/PGUSER (admin rol), URL-with-password emas.
-psql -d postgres -v ON_ERROR_STOP=1 -f packages/database/scripts/provision-roles.sql
+# DIQQAT: skript current_database() ustida ishlaydi -> -d <ilova bazasi> (postgres EMAS); production: -v velto_env=production
+psql -d <ilova_bazasi> -v ON_ERROR_STOP=1 -v velto_env=production -f packages/database/scripts/provision-roles.sql
 pnpm --filter @velto/database exec prisma migrate deploy
 
 # 3. Build (barcha workspace'lar)
@@ -81,12 +82,51 @@ pm2 save
 - `pm2-logrotate` o'rnatilgan (`pm2 install pm2-logrotate`).
 - PM2 Node >=22.12 <27 bilan ishlaydi: `pm2 describe velto-api` -> `node version`.
 - Rol nomlari: `provision-roles.sql` standarti `velto_owner`/`velto_app`/`velto_system`. Bu hostda `velto_app_system` / `velto_app_owner` ishlatiladi (pastdagi "Postgres rollari" va runbook, `sed` bilan almashtirilgan nusxa) — README to'g'ri, repo skripti boshqa hostlar uchun.
-- Zaxira (`deploy.sh` ham shuni chaqiradi): `BACKUP_DIR` (mode 700), `BACKUP_PASSPHRASE_FILE` (chmod 600, repo'dan tashqarida; ilova secret'laridan alohida), `DATABASE_SYSTEM_URL`. Har `.gpg` yonida `.sha256` bo'ladi.
-- Kunlik cron (root, repo'siz saqlanadigan env fayldan):
-  `15 2 * * * set -a; . /etc/velto/backup.env; set +a; /root/projects/parviz_aka/Velto/deploy/backup/backup.sh >>/var/log/velto-backup.log 2>&1 || echo "velto backup FAILED" | logger -p user.err`
-  (systemd timer ham bo'ladi; nol-bo'lmagan exit = alert, TZ 12.3).
-- Offsite nusxa, alohida kredensiallar bilan, provayderdan mustaqil: masalan `rclone copy /var/backups/velto offsite:velto-backups --include 'velto-*.gpg*'` yoki `aws s3 cp`. Bucket kaliti faqat yozish (PutObject) huquqli, DELETE/overwrite yo'q (o'chirish faqat lifecycle/alohida admin orqali), kalit serverdagi DB/ilova kredensiallaridan boshqa. Passphrase offsite'ga YUBORILMAYDI (alohida saqlanadi).
+- Zaxira (D-3, variant A): `deploy.sh` endi `backup.sh`ni CHAQIRMAYDI va `BACKUP_PASSPHRASE_FILE` TALAB QILMAYDI. Zaxirani root'ning `velto-backup.service` (soatlik timer) oladi: DB (`velto_backup` roli) + S3 obyektlar + offsite + tekshiruv, so'ng `/var/lib/velto-backup/status` (root:root 0644, katalog root:root 0755) attestatsiyasini atomik yozadi. `deploy.sh` (velto-deploy) uni tekshiradi: root egasi, g/o yozish yo'q, `result=ok`, yosh <= `VELTO_BACKUP_MAX_AGE_MIN` (60), arxivlar mavjud, o'lcham va ciphertext sha256 mos. Har qanday xato = deploy install/migrate'dan OLDIN to'xtaydi; avtomatik restore YO'Q. O'rnatish: `backup/velto-backup.{service,timer}.example`, `system/`.
+- Nima uchun ciphertext'ni deploy guruhi o'qiy oladi (0640 root:velto-deploy): sha256 ni deploy O'ZI qayta hisoblaydi (status/sidecar'ga ishonmaydi: ular arxiv almashtirilgandan keyin ham mos qolishi mumkin). Arxiv AES256 bilan shifrlangan, passphrase deploy'da yo'q; katalog deploy uchun yozilmaydi (o'chira/almashtira olmaydi). O'qib bo'lmasa — gate YIQILADI (sidecar'ga fallback yo'q).
+- Kunlik cron o'rniga soatlik timer (RPO <= 1 soat maqsadi): `backup/velto-backup.timer.example`. Tanlov/o'lchov: `docs/release/RPO-RTO-ASSESSMENT.md`.
+- Offsite nusxa (alohida kredensiallar, put-only, versioning + Object Lock 30 kun): `backup/policies/README.md`, `backup/offsite-sync.sh` (ilova kaliti bilan ishlamaydi — tekshiradi).
 - Restore sinovi: `deploy/backup/restore-drill.sh` (faqat lokal/staging).
+
+## Foydalanuvchilar va kim nimani o'qiydi (D-2)
+
+Rollar: `velto-deploy` (release), `velto` (PM2 runtime, imtiyozsiz), `root` (backup xizmati), `velto-monitor`. Provision namunasi: `deploy/system/` (`provision-users.sh.example`, `velto-deploy.sudoers`, `velto-tmpfiles.conf`, `pg_hba.velto_backup.example`). Hozirgi hostda hammasi root bilan ishlaydi — o'tish alohida, rejalashtirilgan o'zgarish (downtime + oldindan zaxira); jarayon nomlari va portlar (velto-api 3101 / web 3100 / miniapp 3102) O'ZGARMAYDI.
+
+| Resurs | root (backup) | velto-deploy | velto (runtime) | velto-monitor |
+|---|---|---|---|---|
+| `/etc/velto/app.env` (DATABASE_URL, SYSTEM_URL, JWT, S3 app kaliti) | o'qiydi (faqat S3_ACCESS_KEY solishtirish) | fayl o'qiy olmaydi, LEKIN `ecosystem.config.js` (uning kodi) velto sifatida ishlaydi -> amalda runtime secret'larga yetadi (ishonchli rol, pastdagi "Residual risks") | o'qiydi (0600 velto) | YO'Q |
+| `/etc/velto/migrate.env` (faqat DATABASE_MIGRATE_URL) | o'qiydi | o'qiydi (0640 root:velto-deploy), yozolmaydi | YO'Q | YO'Q |
+| `/etc/velto/backup.env`, `backup.pass` (DB backup roli, S3 read-only, offsite put-only, passphrase) | o'qiydi | YO'Q | YO'Q | YO'Q |
+| `/var/backups/velto/*.gpg` ciphertext | yozadi | o'qiydi (guruh, 0640), yozolmaydi | YO'Q | katalog ACL (faylsiz) |
+| `/var/lib/velto-backup/status` | yozadi | o'qiydi (soxtalashtira olmaydi) | o'qiydi (0644) | o'qiydi |
+| checkout (kod, build) | o'qiydi | yozadi (egasi) | o'qiydi, yozolmaydi | YO'Q |
+| `apps/{web,miniapp}/.env.production.local` (faqat NEXT_PUBLIC_*) | - | yozadi/o'qiydi | o'qiydi (0640 velto-deploy:velto) | YO'Q |
+| PM2 (`~velto/.pm2`) | - | faqat sudoers qoidasi orqali | egasi | YO'Q |
+| sudo | - | FAQAT: `systemctl start velto-backup.service`; `sudo -u velto pm2 startOrReload <checkout>/deploy/ecosystem.config.js --update-env` va `pm2 save --force` | yo'q | yo'q |
+
+Qarorlar: (1) runtime env checkout'dan tashqarida (`/etc/velto/app.env`, `ecosystem.config.js` avtomatik topadi; `VELTO_ENV_FILE` bilan almashtiriladi) — deploy fayl sifatida uni o'qiy olmaydi, lekin baribir ishonchli (3-band). (2) migratsiya `DATABASE_MIGRATE_URL`ni faqat `migrate.env`dan oladi (`deploy.sh` split rejimi; `DATABASE_URL`ga schema talabi uchun vaqtincha shu URL qo'yiladi, `directUrl` migrate'da ishlatiladi), runtime bu faylni o'qimaydi. (3) deploy = kod yetkazuvchi: `ecosystem.config.js` velto sifatida ishlaydi, shuning uchun velto-deploy runtime secret'lar (`app.env`) bilan ISHONCHLI rol (u baribir velto kodini yozadi, demak ularni o'qiy oladi); u backup secret'lariga (`backup.env`, passphrase, offsite kalit) ishonilMAGAN va yeta olmaydi. Himoya: velto-deploy SSH kaliti + MFA; kompromat velto -> deploy'ga o'tolmaydi (checkout velto uchun read-only). (4) `.env` parsing: `ecosystem.config.js` va `deploy.sh` bitta qoidadan foydalanadi (`deploy/env-file.js`): satr oxiridagi `# izoh` TAQIQ (xato beradi), `$`/backtick kengaytirilmaydi, bitta juft qo'shtirnoq olib tashlanadi. Regression: `deploy/tests/env-parse.test.sh`.
+Tekshirilmagan (serverda sinash kerak): `pm2 startOrReload` sudo ostida `always_set_home` bilan; `.next/cache` ga velto yoza oladimi (Next image/ISR keshi, kod velto uchun read-only); `prisma generate` DATABASE_URL=owner URL bilan.
+
+### Backup skriptlarini root nusxasiga o'rnatish (velto-deploy yoza oladigan checkout'dan EMAS)
+
+velto-deploy checkout'ga yozadi; root uni to'g'ridan-to'g'ri nusxalasa, deploy foydalanuvchisi root kodini almashtira oladi. Faqat tekshirilgan manbadan o'rnating (root sifatida):
+
+```bash
+# variant A: imzolangan teg -> root'ning o'z katalogiga archive
+git -C /srv/velto/app verify-tag <teg> && install -d -m 700 -o root -g root /root/velto-src \
+  && git -C /srv/velto/app archive <teg> deploy | tar -x -C /root/velto-src
+# variant B: diff -r bilan ko'rib chiqish (o'zgarishlarni o'qing), so'ng nusxalash
+diff -r /srv/velto/app/deploy /opt/velto/deploy
+install -d -m 755 -o root -g root /opt/velto /opt/velto/deploy /opt/velto/deploy/backup /opt/velto/deploy/monitoring
+install -m 755 -o root -g root /root/velto-src/deploy/backup/*.sh /opt/velto/deploy/backup/
+```
+
+`/opt/velto` va ichidagi hamma narsa root:root, katalog 0755, fayl 0755 (yoki 0644 kutubxona), group/world-writable EMAS. `backup-run.sh` boshida o'z katalogi va source qilinadigan kutubxonalar uid 0 egaligida va g/o-yozilmaydigan ekanini tekshiradi, aks holda ishlamaydi. `BACKUP_ALERT_CMD` ham root egaligida va g/o-yozilmaydigan katalogda bo'lishi shart.
+
+## Residual risks
+
+- Backup gate (`verify-backup-status.sh`) xavfsizlik to'sig'i (xato/eskirgan zaxira bilan deploy'ni to'xtatadi), kompromat qilingan velto-deploy'ga qarshi nazorat EMAS: velto-deploy runtime secret'larga yetadi va `migrate.env` orqali `prisma migrate`ni gate'siz to'g'ridan-to'g'ri ishga tushira oladi.
+- velto-deploy SSH kaliti va MFA himoyasi — asosiy nazorat; kalit kompromati = runtime secret'lar + sxema ustidan nazorat.
 
 ## Yangilash (deploy)
 
@@ -192,7 +232,7 @@ Dump hajmi/o'qilishini tekshiring (`pg_restore -l <dump> | head`).
 sed -e 's/velto_owner/velto_app_owner/g' -e 's/velto_system/velto_app_system/g' \
   packages/database/scripts/provision-roles.sql > /root/provision-roles.prod.sql
 grep -c 'velto_system' /root/provision-roles.prod.sql   # 0 bo'lishi shart
-psql -d postgres -v ON_ERROR_STOP=1 -f /root/provision-roles.prod.sql
+psql -d <ilova_bazasi> -v ON_ERROR_STOP=1 -v velto_env=production -f /root/provision-roles.prod.sql
 # parolni interaktiv o'rnating (argv/history'ga tushmaydi): psql -d postgres, so'ng  \password velto_app_owner
 rm /root/provision-roles.prod.sql
 ```

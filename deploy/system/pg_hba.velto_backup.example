@@ -1,0 +1,7 @@
+# Add ABOVE the general rules in pg_hba.conf (first match wins), then `SELECT pg_reload_conf();`. <db> = the Velto database name.
+# velto_backup (read-only, BYPASSRLS) may connect only locally; any other origin is rejected. Port 5432 is never exposed publicly.
+local   <db>   velto_backup                    scram-sha-256
+local   all    velto_backup                    reject
+host    <db>   velto_backup   127.0.0.1/32     scram-sha-256
+host    all    velto_backup   0.0.0.0/0        reject
+host    all    velto_backup   ::/0             reject

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# EXAMPLE for the pilot server (D-2). NOT executed by the repo, NOT run on any server by an agent. Read it, adapt paths, run line by line as root.
+# Roles: velto-deploy = releases | velto = PM2 runtime (unprivileged) | root = backup service | velto-monitor = alerts (deploy/monitoring/README.md)
+# Migration of the CURRENT host (runs as root from /root/projects/parviz_aka/Velto) to this layout is a separate change: plan downtime, backup first,
+# and keep the existing process names (velto-api/web/miniapp) and ports (3101/3100/3102). Nothing below renames them.
+set -euo pipefail
+APP=/srv/velto/app        # checkout; must match deploy/system/velto-deploy.sudoers
+
+# --- users (no password, no sudo group; ssh key for velto-deploy goes in ~velto-deploy/.ssh/authorized_keys)
+groupadd --system velto-deploy
+useradd --system --gid velto-deploy --create-home --home-dir /home/velto-deploy --shell /bin/bash velto-deploy
+groupadd --system velto
+useradd --system --gid velto --home-dir /var/lib/velto --no-create-home --shell /usr/sbin/nologin velto
+# velto-monitor: see deploy/monitoring/README.md (it must NOT be in velto / velto-deploy)
+
+# --- directories (or: systemd-tmpfiles --create deploy/system/velto-tmpfiles.conf after copying it to /etc/tmpfiles.d/velto.conf)
+install -d -m 0755 -o root        -g root         /etc/velto
+install -d -m 0750 -o root        -g velto-deploy /var/backups/velto      # ciphertext readable by the deploy group, NOT writable by it
+install -d -m 0755 -o root        -g root         /var/lib/velto-backup   # status attestation; deploy can read, never write
+install -d -m 0750 -o velto       -g velto        /var/lib/velto          # PM2_HOME (~/.pm2), runtime state
+install -d -m 0755 -o velto-deploy -g velto-deploy "$APP"                 # code: owned by the releaser; runtime can read, not modify
+
+# --- secret files (create EMPTY with the right owner/mode first, then fill as root; never paste values in tickets/chat)
+install -m 0600 -o velto      -g velto        /dev/null /etc/velto/app.env       # runtime env: DATABASE_URL, DATABASE_SYSTEM_URL, JWT, S3 app key, bot token ...
+install -m 0640 -o root       -g velto-deploy /dev/null /etc/velto/migrate.env   # ONLY DATABASE_MIGRATE_URL (+ nothing else): deploy reads, cannot edit
+install -m 0600 -o root       -g root         /dev/null /etc/velto/backup.env    # DATABASE_BACKUP_URL, S3 read-only key, offsite put-only key
+install -m 0600 -o root       -g root         /dev/null /etc/velto/backup.pass   # gpg passphrase (+ offline copy in the PO password manager)
+# NEXT_PUBLIC_* only (public by construction, inlined into the browser bundle): readable by deploy (build) and velto (next start)
+for a in web miniapp; do install -m 0640 -o velto-deploy -g velto "/dev/null" "$APP/apps/$a/.env.production.local"; done
+
+# --- sudoers: exactly the two rules, nothing else
+install -m 0440 -o root -g root deploy/system/velto-deploy.sudoers /etc/sudoers.d/velto-deploy
+visudo -cf /etc/sudoers.d/velto-deploy
+
+# --- PM2 as velto, survives reboot (creates pm2-velto.service; run as root, then start the apps once via deploy.sh)
+#   env PATH=$PATH:/usr/bin pm2 startup systemd -u velto --hp /var/lib/velto
+# deploy.sh then runs with:  VELTO_PM2_RUN_AS=velto  (export in ~velto-deploy/.profile or the ssh command)
+
+# --- postgres: velto_backup role (packages/database/scripts/provision-backup-role.sql) + pg_hba lines from deploy/system/pg_hba.velto_backup.example
+# --- backup scripts: root-owned copy in /opt/velto (see header of deploy/backup/velto-backup.service.example)

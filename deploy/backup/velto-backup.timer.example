@@ -1,10 +1,13 @@
-# EXAMPLE, see velto-backup.service.example. Daily 02:15 server time (RPO pilot <= 24 h).
+# EXAMPLE, see velto-backup.service.example. HOURLY (PO target RPO <= 1 h; the old daily 02:15 timer gave up to 24 h).
+# NOT enabled by the repo. DB dump + object archive + offsite copy run every hour; measure duration first (docs/release/RPO-RTO-ASSESSMENT.md):
+# if a run takes longer than ~40 min the hourly cadence cannot hold -> WAL archiving (option B) instead.
+# Missed runs after downtime are caught up once (Persistent=true). A run that is still active is never started twice (oneshot unit).
 [Unit]
-Description=Daily Velto backup
+Description=Hourly Velto backup
 
 [Timer]
-OnCalendar=*-*-* 02:15:00
-RandomizedDelaySec=300
+OnCalendar=*-*-* *:07:00
+RandomizedDelaySec=120
 Persistent=true
 
 [Install]
