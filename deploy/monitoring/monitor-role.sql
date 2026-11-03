@@ -6,9 +6,13 @@ ALTER ROLE velto_monitor SET default_transaction_read_only = on;
 ALTER ROLE velto_monitor SET statement_timeout = '5s';
 GRANT CONNECT ON DATABASE velto TO velto_monitor;  -- adjust DB name to the real pilot DB
 GRANT USAGE ON SCHEMA public TO velto_monitor;
-GRANT SELECT (id, status, "updatedAt", "createdAt") ON "ImportJob" TO velto_monitor;
-GRANT SELECT (id, status, "updatedAt", "createdAt") ON "ExportJob" TO velto_monitor;
-GRANT SELECT (id, "telegramStatus", "updatedAt", "createdAt") ON "Notification" TO velto_monitor;
+-- Column-level SELECT only: status/timestamps/attemptCount/type + id (id is used ONLY in memory to test "does the BullMQ job key exist", never printed).
+-- NOT granted: companyId (the monitor cannot even attribute a row to a tenant), fileUrl, errorLog, payload, recipient/body/telegramLastError, any finance table.
+-- BYPASSRLS is therefore only reachable through these columns = status counts and uuids.
+GRANT SELECT (id, status, "updatedAt", "createdAt", "attemptCount") ON "ImportJob" TO velto_monitor;
+GRANT SELECT (id, status, type, "updatedAt", "createdAt") ON "ExportJob" TO velto_monitor;
+GRANT SELECT (id, "telegramStatus", "telegramNextAttemptAt", "telegramClaimedAt", "updatedAt", "createdAt") ON "Notification" TO velto_monitor;
+-- Already-provisioned pilot DB: re-running this whole file fails on CREATE ROLE; apply only the three GRANT lines above (idempotent, additive).
 -- Connection count WITHOUT pg_monitor/pg_read_all_stats: a SECURITY DEFINER function owned by a NOLOGIN role with NO extra privileges.
 -- count(*) over pg_stat_activity works for any role (rows of other users are listed, only their query/details are masked as
 -- '<insufficient privilege>'). It returns ONE integer (no query text, no per-tenant/per-user data).

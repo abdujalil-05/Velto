@@ -70,17 +70,20 @@ if [[ -L "$ENV_FILE" || -r "$ENV_FILE" ]]; then load_env_file "$ENV_FILE"; fi
 : "${MONITOR_5XX_WINDOW_LINES:=2000}" "${MONITOR_5XX_MIN_COUNT:=5}" "${MONITOR_5XX_MIN_PERCENT:=5}"
 : "${BACKUP_DIR:=/var/backups/velto}" "${MONITOR_BACKUP_MAX_AGE_HOURS:=26}"
 : "${MONITOR_DISK_PATHS:=/}" "${MONITOR_DISK_WARN_PERCENT:=80}"
-: "${MONITOR_JOB_STUCK_MINUTES:=30}" "${MONITOR_NOTIF_STUCK_MINUTES:=30}"
 : "${MONITOR_JOB_FAILED_WINDOW_MINUTES:=60}" "${MONITOR_JOB_FAILED_MAX:=5}"
 : "${MONITOR_STATE_DIR:=/var/lib/velto-monitor}" "${MONITOR_REPEAT_MINUTES:=360}"
 : "${MONITOR_ALERT_COOLDOWN_SECONDS:=3600}" "${MONITOR_5XX_PATH_PREFIX:=/velto/api/}"
 # Extended checks (all optional: unset target = SKIP, never a silent PASS of something unconfigured).
 : "${MONITOR_TLS_CRIT_DAYS:=7}" "${MONITOR_DISK_CRIT_PERCENT:=90}" "${MONITOR_MEM_MIN_AVAIL_PERCENT:=10}" "${MONITOR_MEMINFO:=/proc/meminfo}"
 : "${MONITOR_PUBLIC_URL:=}" "${MONITOR_S3_PUBLIC_URL:=}"
-: "${MONITOR_BACKUP_STATUS_FILE:=}" "${MONITOR_BACKUP_MAX_AGE_MINUTES:=100}" "${MONITOR_OFFSITE_MAX_AGE_MINUTES:=180}"
-: "${MONITOR_REDIS_HOST:=127.0.0.1}" "${MONITOR_REDIS_PORT:=6379}" "${MONITOR_REDIS_USER:=}" "${MONITOR_BULLMQ_PREFIX:=bull}"
+: "${MONITOR_BACKUP_STATUS_FILE:=}" "${MONITOR_BACKUP_MAX_AGE_MINUTES:=100}"
+: "${MONITOR_OFFSITE_RPO_WARN_MINUTES:=40}" "${MONITOR_OFFSITE_RPO_CRIT_MINUTES:=50}"
+: "${MONITOR_REDIS_HOST:=127.0.0.1}" "${MONITOR_REDIS_PORT:=6379}" "${MONITOR_REDIS_USER:=}" "${MONITOR_BULLMQ_PREFIX:=}"
 : "${MONITOR_QUEUES:=idempotency-cleanup reconciliation-daily company-export 1c-export import-commit notification-telegram}"
-: "${MONITOR_QUEUE_FAILED_MAX:=10}" "${MONITOR_QUEUE_WAIT_MAX:=100}"
+: "${MONITOR_QUEUE_FAILED_DELTA_WARN:=1}" "${MONITOR_QUEUE_FAILED_DELTA_CRIT:=10}" "${MONITOR_NOWORKER_PROBE_SECONDS:=3}"
+: "${MONITOR_QUEUE_WAIT_AGE_WARN_MINUTES:=10}" "${MONITOR_QUEUE_WAIT_AGE_CRIT_MINUTES:=30}" "${MONITOR_QUEUE_DELAYED_OVERDUE_MINUTES:=15}"
+: "${MONITOR_QUEUE_ACTIVE_LIMIT_MINUTES:=30}" "${MONITOR_QUEUE_ACTIVE_LIMITS:=notification-telegram=5 1c-export=15 company-export=30 import-commit=30}"
+: "${MONITOR_STALE_NOTIF_MINUTES:=15}" "${MONITOR_STALE_SENDING_MINUTES:=10}" "${MONITOR_STALE_IMPORT_GRACE_MINUTES:=10}" "${MONITOR_STALE_EXPORT_MINUTES:=25}"
 : "${MONITOR_PM2_STATUS_FILE:=}" "${MONITOR_PM2_PROCESS:=velto-api}" "${MONITOR_PM2_RESTART_SPIKE:=3}" "${MONITOR_PM2_STATUS_MAX_AGE_SECONDS:=600}"
 : "${MONITOR_ALERT_WEBHOOK_URL:=}" "${MONITOR_ALERT_EMAIL:=}" "${MONITOR_APP_ENV_FILE:=}"
 # VELTO_API_HEALTH_URL: REQUIRED, no default (full URL of the API health route reaching the BACKEND, e.g. https://host/velto/api/health/ready).
@@ -88,10 +91,14 @@ if [[ -L "$ENV_FILE" || -r "$ENV_FILE" ]]; then load_env_file "$ENV_FILE"; fi
 # replaced by its safe default AND reported loudly (stderr + a FAIL "config" check in run mode) - never a silent pass.
 BADNUM=""
 for kv in MONITOR_ALERT_COOLDOWN_SECONDS=3600 MONITOR_TLS_WARN_DAYS=14 MONITOR_5XX_WINDOW_LINES=2000 MONITOR_5XX_MIN_COUNT=5 \
-  MONITOR_5XX_MIN_PERCENT=5 MONITOR_BACKUP_MAX_AGE_HOURS=26 MONITOR_DISK_WARN_PERCENT=80 MONITOR_JOB_STUCK_MINUTES=30 \
-  MONITOR_NOTIF_STUCK_MINUTES=30 MONITOR_JOB_FAILED_WINDOW_MINUTES=60 MONITOR_JOB_FAILED_MAX=5 MONITOR_REPEAT_MINUTES=360 MONITOR_DB_PORT=5432 \
+  MONITOR_5XX_MIN_PERCENT=5 MONITOR_BACKUP_MAX_AGE_HOURS=26 MONITOR_DISK_WARN_PERCENT=80 \
+  MONITOR_JOB_FAILED_WINDOW_MINUTES=60 MONITOR_JOB_FAILED_MAX=5 MONITOR_REPEAT_MINUTES=360 MONITOR_DB_PORT=5432 \
   MONITOR_TLS_CRIT_DAYS=7 MONITOR_DISK_CRIT_PERCENT=90 MONITOR_MEM_MIN_AVAIL_PERCENT=10 MONITOR_BACKUP_MAX_AGE_MINUTES=100 \
-  MONITOR_OFFSITE_MAX_AGE_MINUTES=180 MONITOR_REDIS_PORT=6379 MONITOR_QUEUE_FAILED_MAX=10 MONITOR_QUEUE_WAIT_MAX=100 \
+  MONITOR_OFFSITE_RPO_WARN_MINUTES=40 MONITOR_OFFSITE_RPO_CRIT_MINUTES=50 MONITOR_REDIS_PORT=6379 \
+  MONITOR_QUEUE_FAILED_DELTA_WARN=1 MONITOR_QUEUE_FAILED_DELTA_CRIT=10 MONITOR_NOWORKER_PROBE_SECONDS=3 \
+  MONITOR_QUEUE_WAIT_AGE_WARN_MINUTES=10 MONITOR_QUEUE_WAIT_AGE_CRIT_MINUTES=30 MONITOR_QUEUE_DELAYED_OVERDUE_MINUTES=15 \
+  MONITOR_QUEUE_ACTIVE_LIMIT_MINUTES=30 MONITOR_STALE_NOTIF_MINUTES=15 MONITOR_STALE_SENDING_MINUTES=10 \
+  MONITOR_STALE_IMPORT_GRACE_MINUTES=10 MONITOR_STALE_EXPORT_MINUTES=25 \
   MONITOR_PM2_RESTART_SPIKE=3 MONITOR_PM2_STATUS_MAX_AGE_SECONDS=600; do
   nv="${kv%%=*}"; dv="${kv#*=}"; cur="${!nv:-$dv}"
   if [[ "$cur" =~ ^[0-9]{1,9}$ ]]; then printf -v "$nv" '%s' "$((10#$cur))"   # 10# = decimal even for "08"
@@ -229,8 +236,11 @@ if [[ -r "$NGINX_ACCESS_LOG" ]]; then
 else add api_5xx SKIP "log unreadable"; fi
 
 # 4. backup freshness. Preferred: root-owned attestation file MONITOR_BACKUP_STATUS_FILE (key=value lines, parsed with grep, NEVER sourced):
-#    ts=<epoch UTC of last fully verified local backup>  result=ok  offsite_ts=<epoch of last confirmed offsite copy>  offsite_result=ok
-#    Crit if missing/unreadable, result!=ok, ts older than MONITOR_BACKUP_MAX_AGE_MINUTES (100) or in the future. Offsite likewise vs MONITOR_OFFSITE_MAX_AGE_MINUTES.
+#    ts=<epoch of last fully verified local backup>  result=ok   (local: crit if result!=ok, older than MONITOR_BACKUP_MAX_AGE_MINUTES (100) or future)
+#    offsite_restore_point_ts=<restore point (epoch before pg_dump start) of the newest set CONFIRMED offsite by listing incl. manifest; kept on failure>
+#    offsite_ts=<when confirmed>  offsite_result=ok|failed (last upload attempt)   [restore_point_ts = local set's restore point, informational]
+#    backup_offsite_rpo = now - offsite_restore_point_ts: WARN > MONITOR_OFFSITE_RPO_WARN_MINUTES (40), CRIT > ..._CRIT_MINUTES (50; must stay < RPO 60 - run interval - delivery);
+#    missing/invalid/future = CRIT "no confirmed restore point". backup_offsite_upload: offsite_result=failed = CRIT (separate incident from the RPO one).
 #    Legacy fallback (status file var empty): newest velto-db-*.dump.gpg in BACKUP_DIR with .sha256, age in hours.
 sfield() { grep -m1 -E "^$1=" "$MONITOR_BACKUP_STATUS_FILE" 2>/dev/null | cut -d= -f2- | tr -d ' \r\t'; }
 age_check() { # name tsvalue resultvalue max_minutes
@@ -242,12 +252,30 @@ age_check() { # name tsvalue resultvalue max_minutes
   age=$(( (nowt - tsv) / 60 ))
   if (( age <= mx )); then add "$nm" OK "age ${age}m"; else add "$nm" FAIL "age ${age}m (> $mx)"; fi
 }
+offsite_check() { # restore_point_ts result confirmed_ts
+  local rp="$1" rs="$2" ct="$3" nowt age cinfo=""
+  nowt="$(date +%s)"; [[ "$ct" =~ ^[0-9]{1,12}$ ]] && (( ct <= nowt )) && cinfo=", confirmed $(( (nowt - 10#$ct) / 60 ))m ago"
+  if [[ ! "$rp" =~ ^[0-9]{1,12}$ ]]; then add backup_offsite_rpo FAIL "no confirmed restore point (missing/invalid offsite_restore_point_ts)"
+  elif (( 10#$rp > nowt + 60 )); then add backup_offsite_rpo FAIL "no confirmed restore point (offsite_restore_point_ts in the future)"
+  else
+    age=$(( (nowt - 10#$rp) / 60 ))
+    if (( age > MONITOR_OFFSITE_RPO_CRIT_MINUTES )); then add backup_offsite_rpo FAIL "restore point age ${age}m (> $MONITOR_OFFSITE_RPO_CRIT_MINUTES crit)$cinfo"
+    elif (( age > MONITOR_OFFSITE_RPO_WARN_MINUTES )); then add backup_offsite_rpo WARN "restore point age ${age}m (> $MONITOR_OFFSITE_RPO_WARN_MINUTES warn)$cinfo"
+    else add backup_offsite_rpo OK "restore point age ${age}m$cinfo"; fi
+  fi
+  case "$rs" in
+    ok) add backup_offsite_upload OK "last upload ok" ;;
+    failed) add backup_offsite_upload FAIL "last offsite upload attempt failed" ;;
+    *) add backup_offsite_upload FAIL "offsite_result missing/invalid" ;;
+  esac
+}
 if [[ -n "$MONITOR_BACKUP_STATUS_FILE" ]]; then
   if [[ -r "$MONITOR_BACKUP_STATUS_FILE" ]]; then
     age_check backup "$(sfield ts)" "$(sfield result)" "$MONITOR_BACKUP_MAX_AGE_MINUTES"
-    age_check backup_offsite "$(sfield offsite_ts)" "$(sfield offsite_result)" "$MONITOR_OFFSITE_MAX_AGE_MINUTES"
-  else add backup FAIL "status file missing/unreadable"; add backup_offsite FAIL "status file missing/unreadable"; fi
+    offsite_check "$(sfield offsite_restore_point_ts)" "$(sfield offsite_result)" "$(sfield offsite_ts)"
+  else add backup FAIL "status file missing/unreadable"; add backup_offsite_rpo FAIL "status file missing/unreadable"; add backup_offsite_upload FAIL "status file missing/unreadable"; fi
 elif [[ -d "$BACKUP_DIR" ]]; then
+  add backup_offsite_rpo SKIP "MONITOR_BACKUP_STATUS_FILE unset (offsite state unknown)"
   newest="$(ls -t "$BACKUP_DIR"/velto-db-*.dump.gpg 2>/dev/null | head -n1)"
   if [[ -z "$newest" ]]; then add backup FAIL "no backup file"
   elif [[ ! -s "$newest.sha256" ]]; then add backup FAIL "newest has no .sha256"
@@ -291,21 +319,129 @@ if [[ -n "$MONITOR_S3_PUBLIC_URL" ]]; then
   esac
 else add s3_anon_denied SKIP "MONITOR_S3_PUBLIC_URL unset"; fi
 
-# 5e. Redis + BullMQ: PING, then per queue failed (ZSET) and wait (LIST) counts. Read-only ACL user (README); password via REDISCLI_AUTH, never argv.
+# 5e. Redis + BullMQ, STRICTLY read-only (PING ACL-WHOAMI EXISTS LLEN LINDEX LRANGE ZCARD ZRANGE HGET XRANGE XREVRANGE; README ACL). Password via REDISCLI_AUTH, never argv.
+#     Keys: $MONITOR_BULLMQ_PREFIX:<queue>:{meta,wait,active,delayed,paused,failed,events,stalled-check,<jobId>}. Only fixed fields are parsed
+#     (timestamp, delay, processedOn, stc, stream "event"/"jobId"); job data/returnvalue/failedReason are never requested, parsed or printed;
+#     job ids are used only to build keys. Output = queue names + numbers. Per-queue state (last stream id; failed = `failed` events since it): $MONITOR_STATE_DIR/q.<queue>.*
+REDIS_UP=0; NWC=()
+st_get() { [[ "$MODE" == dry ]] && return 0; head -n1 "$MONITOR_STATE_DIR/$1" 2>/dev/null | tr -cd '0-9-'; }
+st_put() { [[ "$MODE" == dry ]] && return 0; ( umask 077; mkdir -p "$MONITOR_STATE_DIR" && t="$(mktemp "$MONITOR_STATE_DIR/.$1.XXXXXX")" && { { printf '%s\n' "$2" > "$t" && mv -f "$t" "$MONITOR_STATE_DIR/$1"; } || { rm -f "$t"; false; }; } ) 2>/dev/null || echo "WARN: cannot persist $1 in $MONITOR_STATE_DIR" >&2; }
+id_lt() { local a="$1" b="$2"; (( 10#${a%-*} < 10#${b%-*} || ( 10#${a%-*} == 10#${b%-*} && 10#${a#*-} < 10#${b#*-} ) )); } # stream ids "ms-seq"
+active_limit() { local t v; for t in $MONITOR_QUEUE_ACTIVE_LIMITS; do
+    if [[ "$t" == "$1="* ]]; then v="${t#*=}"; if [[ "$v" =~ ^[0-9]{1,6}$ ]]; then echo $((10#$v)); return; fi; fi; done
+  echo "$MONITOR_QUEUE_ACTIVE_LIMIT_MINUTES"; }
+qadd() { add "$1" "$2" "$3"; QISSUE=1; }
+scan_events() { # $1 queue $2 key-prefix $3 ZCARD failed (informational): stalled / retries-exhausted / failed events since the stored stream id
+  local q="$1" k="$2" ftot="$3" stored last first cur out parsed sn=0 en=0 fn=0 jids="" l v j stc hi=0 rrc
+  SCAN_FD=0
+  stored="$(st_get "q.$q.evid")"
+  if [[ ! "$stored" =~ ^[0-9]+-[0-9]+$ ]]; then   # first run (or dry-run): baseline only, old events are not alerts
+    last="$(rcli XREVRANGE "$k:events" + - COUNT 1)"; rrc=$?; last="${last%%$'\n'*}"
+    if (( rrc != 0 )); then qadd "queue_events:$q" FAIL "cannot read events stream (redis error)"; return   # error: never baseline 0-0
+    elif [[ -z "$last" ]]; then last="0-0"; elif [[ ! "$last" =~ ^[0-9]+-[0-9]+$ ]]; then qadd "queue_events:$q" FAIL "cannot read events stream (ACL?)"; return; fi
+    st_put "q.$q.evid" "$last"; return
+  fi
+  first="$(rcli XRANGE "$k:events" - + COUNT 1 | head -n1)"
+  if [[ "$first" =~ ^[0-9]+-[0-9]+$ ]] && [[ "$stored" != 0-0 ]] && id_lt "$stored" "$first"; then
+    qadd "queue_events_gap:$q" WARN "events stream trimmed past last seen id - stalled/exhausted events may have been missed"
+  elif [[ -n "$first" && ! "$first" =~ ^[0-9]+-[0-9]+$ ]]; then qadd "queue_events:$q" FAIL "cannot read events stream (ACL?)"; return; fi
+  cur="$stored"
+  for _ in 1 2 3 4 5; do
+    out="$(rcli XRANGE "$k:events" "($cur" + COUNT 1000)"; [[ -n "$out" ]] || break
+    parsed="$(printf '%s\n' "$out" | awk '
+      { line=$0
+        if (want==2) { want=(line=="jobId")?1:0 }
+        else if (want==1) { if (nj<20 && length(line)<=100 && line ~ /^[A-Za-z0-9_-]+$/) { print "J " line; nj++ } want=0 }
+        if (line ~ /^[0-9]+-[0-9]+$/) last=line
+        if (prev=="event") { if (line=="stalled") { s++; want=2 } else if (line=="retries-exhausted") e++; else if (line=="failed") f++ }
+        prev=line }
+      END { print "L " last; print "S " s+0; print "E " e+0; print "F " f+0 }')"
+    last=""
+    while read -r l v; do
+      case "$l" in L) last="$v" ;; S) sn=$((sn + v)) ;; E) en=$((en + v)) ;; F) fn=$((fn + v)) ;; J) jids+="$v "; esac
+    done <<<"$parsed"
+    if [[ ! "$last" =~ ^[0-9]+-[0-9]+$ ]] || ! id_lt "$cur" "$last"; then break; fi
+    cur="$last"
+  done
+  st_put "q.$q.evid" "$cur"
+  for j in $jids; do   # job stall counter (stc) >= 2: same job stalled repeatedly
+    stc="$(rcli HGET "$k:$j" stc)"; [[ "$stc" =~ ^[0-9]{1,6}$ ]] && (( 10#$stc >= 2 )) && hi=$((hi + 1))
+  done
+  if (( sn >= 3 || hi > 0 )); then qadd "queue_stalled:$q" FAIL "stalled events +$sn since last run, jobs with stc>=2: $hi"
+  elif (( sn > 0 )); then qadd "queue_stalled:$q" WARN "stalled events +$sn since last run"; fi
+  (( en > 0 )) && qadd "queue_exhausted:$q" FAIL "retries-exhausted events +$en since last run"
+  SCAN_FD=$fn   # failed events (not the capped ZCARD, which is blind once removeOnFail trims the set)
+  if (( fn >= MONITOR_QUEUE_FAILED_DELTA_CRIT )); then qadd "queue_failed:$q" FAIL "failed events +$fn since last run (failed set size $ftot)"
+  elif (( fn >= MONITOR_QUEUE_FAILED_DELTA_WARN )); then qadd "queue_failed:$q" WARN "failed events +$fn since last run (failed set size $ftot)"; fi
+  return 0
+}
+qcheck() { # one queue; $1 = sane name
+  local q="$1" k="$MONITOR_BULLMQ_PREFIX:$1" nowm w a d p f oid ts dl wage lim aid pt amax=0 aover=0 sc am atm fo po ref
+  QISSUE=0; nowm=$(( $(date +%s) * 1000 ))
+  if [[ "$(rcli EXISTS "$k:meta")" != 1 ]]; then add "queue_meta:$q" FAIL "no $MONITOR_BULLMQ_PREFIX:$q:meta - BullMQ prefix mismatch (MONITOR_BULLMQ_PREFIX) or queue never created"; return; fi
+  w="$(rcli LLEN "$k:wait")"; a="$(rcli LLEN "$k:active")"; d="$(rcli ZCARD "$k:delayed")"; p="$(rcli LLEN "$k:paused")"; f="$(rcli ZCARD "$k:failed")"
+  if [[ ! "$w" =~ ^[0-9]+$ || ! "$a" =~ ^[0-9]+$ || ! "$d" =~ ^[0-9]+$ || ! "$p" =~ ^[0-9]+$ || ! "$f" =~ ^[0-9]+$ ]]; then add "queue:$q" FAIL "bad redis reply (ACL?)"; return; fi
+  (( p > 0 )) && qadd "queue_paused:$q" WARN "queue paused ($p waiting in paused list)"
+  if (( w > 0 )); then   # oldest waiting job = list tail; effective wait start = timestamp + delay (promoted delayed/backoff jobs)
+    oid="$(rcli LINDEX "$k:wait" -1)"
+    if [[ "$oid" =~ ^[A-Za-z0-9_-]{1,100}$ ]]; then
+      ts="$(rcli HGET "$k:$oid" timestamp)"; dl="$(rcli HGET "$k:$oid" delay)"; [[ "$dl" =~ ^[0-9]{1,12}$ ]] || dl=0
+      if [[ "$ts" =~ ^[0-9]{10,16}$ ]]; then
+        ref=$(( 10#$ts + 10#$dl ))
+        atm="$(rcli HGET "$k:$oid" atm)"; [[ "$atm" =~ ^[0-9]{1,6}$ ]] || atm="$(rcli HGET "$k:$oid" attemptsMade)"
+        if [[ "$atm" =~ ^[0-9]{1,6}$ ]] && (( 10#$atm > 0 )); then   # retried job back in wait after backoff: age from its last attempt, not from creation
+          po="$(rcli HGET "$k:$oid" processedOn)"; fo="$(rcli HGET "$k:$oid" finishedOn)"; ref=0
+          [[ "$po" =~ ^[0-9]{10,16}$ ]] && ref=$((10#$po)); [[ "$fo" =~ ^[0-9]{10,16}$ ]] && (( 10#$fo > ref )) && ref=$((10#$fo))
+          (( ref > 0 )) || ref=$(( 10#$ts + 10#$dl ))
+        fi
+        wage=$(( (nowm - ref) / 60000 )); (( wage < 0 )) && wage=0
+        if (( wage > MONITOR_QUEUE_WAIT_AGE_CRIT_MINUTES )); then qadd "queue_wait_age:$q" FAIL "oldest waiting job ${wage}m (> $MONITOR_QUEUE_WAIT_AGE_CRIT_MINUTES crit), wait=$w"
+        elif (( wage > MONITOR_QUEUE_WAIT_AGE_WARN_MINUTES )); then qadd "queue_wait_age:$q" WARN "oldest waiting job ${wage}m (> $MONITOR_QUEUE_WAIT_AGE_WARN_MINUTES warn), wait=$w"; fi
+      fi
+    fi
+    [[ "$(rcli EXISTS "$k:stalled-check")" == 0 ]] && NWC+=("$q")   # probe 1; confirmed after the loop
+  fi
+  if (( a > 0 )); then
+    lim="$(active_limit "$q")"
+    for aid in $(rcli LRANGE "$k:active" -20 -1); do
+      [[ "$aid" =~ ^[A-Za-z0-9_-]{1,100}$ ]] || continue
+      pt="$(rcli HGET "$k:$aid" processedOn)"; [[ "$pt" =~ ^[0-9]{10,16}$ ]] || continue
+      am=$(( (nowm - 10#$pt) / 60000 )); (( am > amax )) && amax=$am; (( am > lim )) && aover=$((aover + 1))
+    done
+    if (( amax > 2 * lim )); then qadd "queue_active_age:$q" FAIL "active job running ${amax}m (> 2x$lim crit), over limit: $aover"
+    elif (( amax > lim )); then qadd "queue_active_age:$q" WARN "active job running ${amax}m (> $lim warn), over limit: $aover"; fi
+  fi
+  if (( d > 0 )); then   # delayed is normal (retry backoff, schedulers): never CRIT; WARN only when the earliest is overdue
+    sc="$(rcli ZRANGE "$k:delayed" 0 0 WITHSCORES | sed -n 2p)"
+    if [[ "$sc" =~ ^[0-9]{1,18}$ ]]; then
+      wage=$(( (nowm - (10#$sc >> 12)) / 60000 ))
+      (( wage > MONITOR_QUEUE_DELAYED_OVERDUE_MINUTES )) && qadd "queue_delayed:$q" WARN "earliest delayed job overdue ${wage}m (> $MONITOR_QUEUE_DELAYED_OVERDUE_MINUTES), delayed=$d"
+    fi
+  fi
+  scan_events "$q" "$k" "$f"
+  (( QISSUE == 0 )) && add "queue:$q" OK "wait=$w active=$a delayed=$d paused=$p failed+=$SCAN_FD"
+  return 0
+}
 if [[ -n "${MONITOR_REDIS_PASSWORD:-}" || -n "$MONITOR_REDIS_USER" ]] && command -v redis-cli >/dev/null; then
   TMO=""; command -v timeout >/dev/null && TMO="timeout 5"
   rcli() { REDISCLI_AUTH="${MONITOR_REDIS_PASSWORD:-}" ${TMO:+$TMO} redis-cli -h "$MONITOR_REDIS_HOST" -p "$MONITOR_REDIS_PORT" ${MONITOR_REDIS_USER:+--user "$MONITOR_REDIS_USER"} --no-auth-warning "$@" 2>/dev/null; }
-  if [[ "$(rcli PING)" == PONG ]]; then
-    add redis OK PONG
-    for qn in $MONITOR_QUEUES; do
-      qn="$(sane_name "$qn")"; [[ -n "$qn" ]] || continue
-      qf="$(rcli ZCARD "$MONITOR_BULLMQ_PREFIX:$qn:failed")"; qw="$(rcli LLEN "$MONITOR_BULLMQ_PREFIX:$qn:wait")"
-      if [[ ! "$qf" =~ ^[0-9]+$ || ! "$qw" =~ ^[0-9]+$ ]]; then add "queue:$qn" FAIL "bad redis reply"
-      elif (( qf >= MONITOR_QUEUE_FAILED_MAX || qw >= MONITOR_QUEUE_WAIT_MAX )); then add "queue:$qn" FAIL "failed=$qf wait=$qw"
-      else add "queue:$qn" OK "failed=$qf wait=$qw"; fi
-    done
-  else add redis FAIL "no PONG / auth failed"; fi
-else add redis SKIP "MONITOR_REDIS_PASSWORD/MONITOR_REDIS_USER unset"; fi
+  # a wrong password makes redis-cli fall back to the unauthenticated `default` user (PING still works): require ACL WHOAMI == the configured user
+  if [[ -z "$MONITOR_REDIS_USER" || "$MONITOR_REDIS_USER" == default ]]; then   # fail-closed: never run as the (unauthenticated-fallback) default user
+    add redis FAIL "redis: monitor user not configured / user=default not allowed (set MONITOR_REDIS_USER to the read-only ACL user)"; add queues SKIP "redis user not configured - queue checks NOT run"
+  elif [[ "$(rcli PING)" == PONG && "$(rcli ACL WHOAMI)" == "$MONITOR_REDIS_USER" ]]; then
+    REDIS_UP=1; add redis OK PONG
+    if [[ ! "$MONITOR_BULLMQ_PREFIX" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then add queue_prefix FAIL "MONITOR_BULLMQ_PREFIX unset/invalid (required, e.g. the app BULLMQ_PREFIX) - queue checks NOT run"; REDIS_UP=0
+    else
+      for qn in $MONITOR_QUEUES; do qn="$(sane_name "$qn")"; [[ -n "$qn" ]] && qcheck "$qn"; done
+      if (( ${#NWC[@]} > 0 )); then   # worker heartbeat = stalled-check key (SET PX by live workers each stalledInterval); require 2 probes
+        sleep "$MONITOR_NOWORKER_PROBE_SECONDS"
+        for qn in "${NWC[@]}"; do
+          [[ "$(rcli EXISTS "$MONITOR_BULLMQ_PREFIX:$qn:stalled-check")" == 0 ]] && add "queue_no_worker:$qn" FAIL "jobs waiting and no worker heartbeat (2 probes ${MONITOR_NOWORKER_PROBE_SECONDS}s apart)"
+        done
+      fi
+    fi
+  else add redis FAIL "no PONG / auth failed (wrong user/password, or ACL lacks +acl|whoami)"; add queues SKIP "redis unavailable - queue checks NOT run"; fi
+else add redis SKIP "MONITOR_REDIS_PASSWORD/MONITOR_REDIS_USER unset"; add queues SKIP "redis not configured - queue checks NOT run"; fi
 
 # 5f. PM2 via snapshot file written by pm2-status-export.sh (runs as the PM2 user; monitor needs no sudo/pm2 access, keeps NoNewPrivileges).
 #     File: ts=<epoch>, proc.<name>.status=<online|...>, proc.<name>.restarts=<n>. Crit: stale/missing, not online, or restarts grew by >= MONITOR_PM2_RESTART_SPIKE since previous run.
@@ -326,7 +462,7 @@ if [[ -n "$MONITOR_PM2_STATUS_FILE" ]]; then
   fi
 else add pm2 SKIP "MONITOR_PM2_STATUS_FILE unset"; fi
 
-# 6. stuck/failed jobs + DB connections (read-only role, counts only; see monitor-role.sql)
+# 6. stale/failed jobs (backoff-aware) + job_mismatch + DB connections (read-only role, counts only; see monitor-role.sql)
 # Connection params come from separate vars; the password goes ONLY into a 0600 PGPASSFILE in a 0700 mktemp dir (never argv/ps/logs).
 if [[ -n "${MONITOR_DB_NAME:-}" && -n "${MONITOR_DB_USER:-}" ]] && command -v psql >/dev/null; then
   PGTMP="$(umask 077; mktemp -d)" && chmod 700 "$PGTMP"
@@ -337,33 +473,74 @@ if [[ -n "${MONITOR_DB_NAME:-}" && -n "${MONITOR_DB_USER:-}" ]] && command -v ps
   else
     ( umask 077; printf '%s:%s:%s:%s:%s\n' "$(pw_esc "${MONITOR_DB_HOST:-127.0.0.1}")" "$(pw_esc "${MONITOR_DB_PORT:-5432}")" "$(pw_esc "$MONITOR_DB_NAME")" "$(pw_esc "$MONITOR_DB_USER")" "$(pw_esc "${MONITOR_DB_PASSWORD:-}")" > "$PGTMP/pgpass" ); chmod 600 "$PGTMP/pgpass"
   fi
+  # Stale = backoff-aware (rows that LEGITIMATELY wait for a retry are not stale). Counts only; columns: status/timestamps/attemptCount/type (monitor-role.sql).
+  #  Notification PENDING: COALESCE(telegramNextAttemptAt, updatedAt) older than N min (a future backoff is NOT stale); SENDING: telegramClaimedAt older than N min
+  #  ImportJob PROCESSING: updatedAt older than recovery backoff LEAST(3600, 300*2^attemptCount)s + grace (import-recovery.service.ts BACKOFF)
+  #  ExportJob QUEUED/PROCESSING: updatedAt older than N min
+  w_imp="\"status\"='PROCESSING' AND \"updatedAt\" < now() - make_interval(secs => LEAST(3600, 300 * POWER(2, LEAST(\"attemptCount\", 12)))) - interval '$MONITOR_STALE_IMPORT_GRACE_MINUTES minutes'"
+  w_exp="\"status\" IN ('QUEUED','PROCESSING') AND \"updatedAt\" < now() - interval '$MONITOR_STALE_EXPORT_MINUTES minutes'"
+  w_np="\"telegramStatus\"='PENDING' AND COALESCE(\"telegramNextAttemptAt\",\"updatedAt\") < now() - interval '$MONITOR_STALE_NOTIF_MINUTES minutes'"
+  w_ns="\"telegramStatus\"='SENDING' AND \"telegramClaimedAt\" < now() - interval '$MONITOR_STALE_SENDING_MINUTES minutes'"
   q="SELECT
- (SELECT count(*) FROM \"ImportJob\" WHERE status IN ('PENDING','PROCESSING') AND COALESCE(\"updatedAt\",\"createdAt\") < now() - interval '$MONITOR_JOB_STUCK_MINUTES minutes'),
- (SELECT count(*) FROM \"ExportJob\" WHERE status IN ('QUEUED','PROCESSING') AND \"updatedAt\" < now() - interval '$MONITOR_JOB_STUCK_MINUTES minutes'),
- (SELECT count(*) FROM \"Notification\" WHERE \"telegramStatus\" IN ('PENDING','SENDING') AND \"updatedAt\" < now() - interval '$MONITOR_NOTIF_STUCK_MINUTES minutes'),
+ (SELECT count(*) FROM \"ImportJob\" WHERE $w_imp),
+ (SELECT count(*) FROM \"ExportJob\" WHERE $w_exp),
+ (SELECT count(*) FROM \"Notification\" WHERE $w_np),
+ (SELECT count(*) FROM \"Notification\" WHERE $w_ns),
  (SELECT count(*) FROM \"ImportJob\" WHERE status='FAILED' AND COALESCE(\"updatedAt\",\"createdAt\") > now() - interval '$MONITOR_JOB_FAILED_WINDOW_MINUTES minutes')
  +(SELECT count(*) FROM \"ExportJob\" WHERE status IN ('FAILED','FAILED_REVIEW') AND \"updatedAt\" > now() - interval '$MONITOR_JOB_FAILED_WINDOW_MINUTES minutes'),
  velto_monitor.conn_count()"
-  if [[ -z "${PGBAD:-}" ]] && row="$(PGPASSFILE="$PGTMP/pgpass" PGCONNECT_TIMEOUT=5 psql -h "${MONITOR_DB_HOST:-127.0.0.1}" -p "${MONITOR_DB_PORT:-5432}" -U "$MONITOR_DB_USER" -d "$MONITOR_DB_NAME" -w -X -At -F ' ' -v ON_ERROR_STOP=1 -c "$q" 2>/dev/null)" && [[ -n "$row" ]]; then
-    read -r si se sn fl conns <<<"$row"
-    (( si + se + sn == 0 )) && add jobs_stuck OK "import=$si export=$se notif=$sn" || add jobs_stuck FAIL "import=$si export=$se notif=$sn (> stuck minutes)"
-    (( fl < MONITOR_JOB_FAILED_MAX )) && add jobs_failed OK "$fl in ${MONITOR_JOB_FAILED_WINDOW_MINUTES}m" || add jobs_failed FAIL "$fl in ${MONITOR_JOB_FAILED_WINDOW_MINUTES}m"
-    add db_connections OK "$conns"
-  else add jobs_stuck FAIL "monitor DB query failed"; fi
-else add jobs_stuck SKIP "MONITOR_DB_NAME/MONITOR_DB_USER unset"; fi
+  # ids of stale rows (<=200, kept in memory only, NEVER printed) -> job_mismatch: does the BullMQ job key still exist?
+  qids="SELECT k, id FROM (
+ (SELECT 'i' AS k, id::text FROM \"ImportJob\" WHERE $w_imp LIMIT 200)
+ UNION ALL (SELECT CASE type WHEN '1c' THEN 'e' WHEN 'company' THEN 'c' ELSE 'x' END, id::text FROM \"ExportJob\" WHERE $w_exp LIMIT 200)
+ UNION ALL (SELECT 'n', id::text FROM \"Notification\" WHERE ($w_np) OR ($w_ns) LIMIT 200)) s LIMIT 200"
+  pgq() { PGPASSFILE="$PGTMP/pgpass" PGCONNECT_TIMEOUT=5 psql -h "${MONITOR_DB_HOST:-127.0.0.1}" -p "${MONITOR_DB_PORT:-5432}" -U "$MONITOR_DB_USER" -d "$MONITOR_DB_NAME" -w -X -At -F ' ' -v ON_ERROR_STOP=1 -c "$1" 2>/dev/null; }
+  if [[ -z "${PGBAD:-}" ]] && row="$(pgq "$q")" && [[ -n "$row" ]]; then
+    read -r si se sn ss fl conns <<<"$row"
+    stale_ok=0
+    if [[ ! "$si$se$sn$ss$fl" =~ ^[0-9]+$ || ! "$conns" =~ ^[0-9]+$ ]]; then add jobs_stale FAIL "monitor DB reply unparsable"
+    elif (( si + se + sn + ss == 0 )); then stale_ok=1; add jobs_stale OK "import=0 export=0 notif_pending=0 notif_sending=0"
+    else stale_ok=2; add jobs_stale WARN "import=$si export=$se notif_pending=$sn notif_sending=$ss (past backoff/lease limits)"; fi
+    if (( stale_ok > 0 )); then
+      if (( fl < MONITOR_JOB_FAILED_MAX )); then add jobs_failed OK "$fl in ${MONITOR_JOB_FAILED_WINDOW_MINUTES}m"; else add jobs_failed FAIL "$fl in ${MONITOR_JOB_FAILED_WINDOW_MINUTES}m"; fi
+      add db_connections OK "$conns"
+    fi
+    # job_mismatch: stale DB row with NO BullMQ job key (lost enqueue / wrong prefix / flushed Redis). 1 run = WARN, 2 consecutive = CRIT. Counts only.
+    if (( stale_ok == 1 )); then st_put job_mismatch 0; add job_mismatch OK "no stale rows"
+    elif (( stale_ok == 2 )); then
+      if (( REDIS_UP == 1 )); then
+        mi=0; me=0; mn=0; chkd=0
+        while read -r kd jid; do
+          [[ "$jid" =~ ^[0-9a-f-]{36}$ ]] || continue
+          case "$kd" in i) jq="import-commit"; jk="import-$jid" ;; e) jq="1c-export"; jk="export-$jid" ;; c) jq="company-export"; jk="export-$jid" ;; n) jq="notification-telegram"; jk="$jid" ;; *) continue ;; esac
+          ex="$(rcli EXISTS "$MONITOR_BULLMQ_PREFIX:$jq:$jk")"; [[ "$ex" == 0 || "$ex" == 1 ]] || continue
+          chkd=$((chkd + 1)); [[ "$ex" == 0 ]] || continue
+          case "$kd" in i) mi=$((mi + 1)) ;; n) mn=$((mn + 1)) ;; *) me=$((me + 1)) ;; esac
+        done < <(pgq "$qids")
+        unchk=$(( si + se + sn + ss - chkd )); (( unchk < 0 )) && unchk=0   # unmapped type, bad id, redis error or LIMIT 200 truncation
+        if (( mi + me + mn > 0 )); then
+          mc="$(st_get job_mismatch)"; [[ "$mc" =~ ^[0-9]+$ ]] || mc=0; mc=$((10#$mc + 1)); st_put job_mismatch "$mc"
+          if (( mc >= 2 )); then add job_mismatch FAIL "stale rows without BullMQ job: import=$mi export=$me notif=$mn (run $mc in a row), unchecked=$unchk"
+          else add job_mismatch WARN "stale rows without BullMQ job: import=$mi export=$me notif=$mn (1st run), unchecked=$unchk"; fi
+        elif (( unchk > 0 )); then add job_mismatch WARN "$unchk stale rows could not be checked against BullMQ (unmapped job type / invalid id / >200 rows) - mismatch status unknown"
+        else st_put job_mismatch 0; add job_mismatch OK "all stale rows have a BullMQ job"; fi
+      else add job_mismatch SKIP "redis/queue checks not run"; fi
+    fi
+  else add jobs_stale FAIL "monitor DB query failed"; fi
+else add jobs_stale SKIP "MONITOR_DB_NAME/MONITOR_DB_USER unset"; fi
 
 # report + alert with dedup (state change or repeat every MONITOR_REPEAT_MINUTES)
-fails=""; hascrit=0; for i in "${!NAMES[@]}"; do
+fails=""; fpsrc=""; hascrit=0; for i in "${!NAMES[@]}"; do
   printf '%-16s %-4s %s\n' "${NAMES[$i]}" "${STATUS[$i]}" "${DETAIL[$i]}"
-  if [[ "${STATUS[$i]}" == FAIL ]]; then fails+="CRIT ${NAMES[$i]}: ${DETAIL[$i]}"$'\n'; hascrit=1
-  elif [[ "${STATUS[$i]}" == WARN ]]; then fails+="WARN ${NAMES[$i]}: ${DETAIL[$i]}"$'\n'; fi
+  if [[ "${STATUS[$i]}" == FAIL ]]; then fails+="CRIT ${NAMES[$i]}: ${DETAIL[$i]}"$'\n'; fpsrc+="CRIT|${NAMES[$i]}"$'\n'; hascrit=1
+  elif [[ "${STATUS[$i]}" == WARN ]]; then fails+="WARN ${NAMES[$i]}: ${DETAIL[$i]}"$'\n'; fpsrc+="WARN|${NAMES[$i]}"$'\n'; fi
 done
 if [[ "$MODE" == dry ]]; then [[ -n "$fails" ]] && send "[$MONITOR_HOST_LABEL] ALERT"$'\n'"$fails"; exit 0; fi
 STATE_ERR=0
 state_fail() { echo "ERROR: $1" >&2; STATE_ERR=1; }
 mkdir -p "$MONITOR_STATE_DIR" && chmod 700 "$MONITOR_STATE_DIR" || state_fail "state dir $MONITOR_STATE_DIR unusable (mkdir/chmod failed; see README first-start order) - alerts will not be deduplicated"
 sf="$MONITOR_STATE_DIR/last"; prev=""; [[ -f "$sf" ]] && { prev="$(cat "$sf")" || state_fail "cannot read $sf"; }
-now="$(date +%s)"; prev_ts="${prev%%|*}"; prev_fp="${prev#*|}"; [[ "$prev_ts" =~ ^[0-9]{1,12}$ ]] || prev_ts=0; fp="$(printf '%s' "$fails" | cksum | cut -d' ' -f1)"
+now="$(date +%s)"; prev_ts="${prev%%|*}"; prev_fp="${prev#*|}"; [[ "$prev_ts" =~ ^[0-9]{1,12}$ ]] || prev_ts=0; fp="$(printf '%s' "$fpsrc" | cksum | cut -d' ' -f1)"
 if [[ -n "$fails" ]]; then
   if [[ "$fp" != "$prev_fp" ]] || (( now - ${prev_ts:-0} >= MONITOR_REPEAT_MINUTES * 60 )); then
     # the alert stays sent even if the state write fails (then exit status is non-zero anyway)
