@@ -146,12 +146,37 @@ export function useCloseOrderMutation(id: string) {
   });
 }
 
-/** Assigns a courier as deliverer — the API moves the order straight to SHIPPED. */
+export interface AssignableCourier {
+  id: string;
+  firstName: string;
+  lastName: string;
+}
+
+/** Couriers the caller may assign (orders.assignCourier) — does not require users.read. */
+export function useAssignableCouriersQuery(enabled = true) {
+  return useQuery({
+    queryKey: ['orders', 'assignable-couriers'],
+    queryFn: () => apiFetch<AssignableCourier[]>('/orders/assignable-couriers'),
+    enabled,
+  });
+}
+
+/** Assigns/reassigns a courier: CONFIRMED -> SHIPPED, or reassign while SHIPPED. */
 export function useAssignCourierMutation(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (courierId: string) =>
       apiFetch<SalesOrder>(`/orders/${id}/assign-courier`, { method: 'POST', body: { courierId } }),
+    onSuccess: () => invalidateOrder(queryClient, id),
+  });
+}
+
+/** SHIPPED -> CONFIRMED, clears the courier. */
+export function useReturnToWarehouseMutation(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (reason: string) =>
+      apiFetch<SalesOrder>(`/orders/${id}/return-to-warehouse`, { method: 'POST', body: { reason } }),
     onSuccess: () => invalidateOrder(queryClient, id),
   });
 }

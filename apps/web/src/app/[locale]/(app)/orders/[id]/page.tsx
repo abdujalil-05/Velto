@@ -3,7 +3,7 @@
 import { use, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { toast } from 'sonner';
-import { ArrowLeft, CheckCircle2, PackageCheck, Ban, XCircle } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, PackageCheck, Ban, XCircle, Undo2, Info } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
 import {
@@ -12,11 +12,15 @@ import {
   useDeliverOrderMutation,
   useCloseOrderMutation,
   useCancelOrderMutation,
+  useAssignCourierMutation,
+  useAssignableCouriersQuery,
+  useReturnToWarehouseMutation,
 } from '@/lib/api/orders';
 import { errorMessage } from '@/lib/api/client';
 import { formatDateTime, formatMoney, formatQty } from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Select } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { OrderStatusBadge } from '@/components/shared/order-status-badge';
@@ -39,6 +43,17 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const deliverKey = useRef<string | null>(null);
   const closeMutation = useCloseOrderMutation(id);
   const cancelMutation = useCancelOrderMutation(id);
+  const assignMutation = useAssignCourierMutation(id);
+  const returnMutation = useReturnToWarehouseMutation(id);
+  const canAssignCourier = hasPermission('orders.assignCourier');
+  const [courierId, setCourierId] = useState('');
+  const [returnDialogOpen, setReturnDialogOpen] = useState(false);
+  const {
+    data: couriers,
+    isLoading: couriersLoading,
+    error: couriersError,
+    refetch: refetchCouriers,
+  } = useAssignableCouriersQuery(canAssignCourier);
   const [deliverDialogOpen, setDeliverDialogOpen] = useState(false);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
 
@@ -85,10 +100,15 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     );
   }
 
-  const canDeliver = canUpdate && (order.status === 'CONFIRMED' || order.status === 'SHIPPED');
+  const canDeliver = hasPermission('orders.deliver') && (order.status === 'CONFIRMED' || order.status === 'SHIPPED');
   const showDelivered = order.status === 'DELIVERED' || order.status === 'CLOSED';
   const canClose = canUpdate && order.status === 'DELIVERED';
-  const canCancelOrder = canCancel && !['DELIVERED', 'CLOSED', 'CANCELLED'].includes(order.status);
+  const canCancelOrder = canCancel && ['DRAFT', 'SUBMITTED', 'CONFIRMED'].includes(order.status);
+  const showShippedCancelHint = canCancel && order.status === 'SHIPPED';
+  const canManageCourier = canAssignCourier && (order.status === 'CONFIRMED' || order.status === 'SHIPPED');
+  const canReturn = canAssignCourier && order.status === 'SHIPPED';
+  const isReassign = order.status === 'SHIPPED';
+  const assignDisabled = assignMutation.isPending || !courierId || courierId === order.courierId;
 
   return (
     <div className="space-y-4">
@@ -151,6 +171,12 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
               {t('close')}
             </Button>
           )}
+          {canReturn && (
+            <Button size="sm" variant="outline" onClick={() => setReturnDialogOpen(true)} disabled={returnMutation.isPending}>
+              <Undo2 className="mr-2 h-4 w-4" />
+              {t('returnToWarehouse')}
+            </Button>
+          )}
           {canCancelOrder && (
             <Button size="sm" variant="destructive" onClick={() => setCancelDialogOpen(true)}>
               <Ban className="mr-2 h-4 w-4" />
@@ -165,10 +191,81 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         <InfoCard label={t('outlet')} value={order.outlet?.name} />
         <InfoCard label={t('agent')} value={order.agent ? `${order.agent.firstName} ${order.agent.lastName}` : t('noAgent')} />
         <InfoCard label={t('warehouse')} value={order.warehouse.name} />
-        {order.courier && (
+        {order.courier && !canManageCourier && (
           <InfoCard label={t('courier')} value={`${order.courier.firstName} ${order.courier.lastName}`} />
         )}
       </div>
+
+      {canManageCourier && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">{t('courier')}</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-sm">
+              {order.courier ? `${order.courier.firstName} ${order.courier.lastName}` : t('courierNotAssigned')}
+            </p>
+            {couriersError ? (
+              <Alert variant="destructive">
+                <AlertDescription className="flex items-center justify-between gap-4">
+                  <span>{errorMessage(couriersError, locale)}</span>
+                  <Button variant="outline" size="sm" onClick={() => refetchCouriers()}>
+                    {t('retry')}
+                  </Button>
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <div className="flex flex-wrap items-end gap-2">
+                <div className="min-w-48 flex-1 space-y-1">
+                  <label htmlFor="assignCourier" className="text-xs text-muted-foreground">
+                    {t('courierSelect')}
+                  </label>
+                  <Select
+                    id="assignCourier"
+                    value={courierId}
+                    onChange={(e) => setCourierId(e.target.value)}
+                    disabled={couriersLoading || assignMutation.isPending}
+                  >
+                    <option value="">{couriersLoading ? t('courierLoading') : t('courierChoose')}</option>
+                    {(couriers ?? []).map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.firstName} {c.lastName}
+                      </option>
+                    ))}
+                  </Select>
+                  {!couriersLoading && (couriers ?? []).length === 0 && (
+                    <p className="text-xs text-muted-foreground">{t('courierNone')}</p>
+                  )}
+                </div>
+                <Button
+                  size="sm"
+                  disabled={assignDisabled}
+                  onClick={() =>
+                    assignMutation.mutate(courierId, {
+                      onSuccess: () => {
+                        setCourierId('');
+                        toast.success(t('assignSuccess'));
+                      },
+                      onError: (err) => toast.error(errorMessage(err, locale)),
+                    })
+                  }
+                >
+                  {isReassign ? t('reassignCourier') : t('assignCourier')}
+                </Button>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {showShippedCancelHint && (
+        <Alert>
+          <AlertDescription className="flex items-center gap-2">
+            <Info className="h-4 w-4 shrink-0" aria-hidden="true" />
+            {t('cancelShippedHint')}
+          </AlertDescription>
+        </Alert>
+      )}
 
       {order.note && (
         <Card>
@@ -238,6 +335,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         />
       )}
       <CancelOrderDialog
+        key={cancelDialogOpen ? 'cancel-open' : 'cancel-closed'}
         open={cancelDialogOpen}
         onOpenChange={setCancelDialogOpen}
         isSubmitting={cancelMutation.isPending}
@@ -246,6 +344,22 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
             onSuccess: () => {
               toast.success(t('cancelSuccess'));
               setCancelDialogOpen(false);
+            },
+            onError: (err) => toast.error(errorMessage(err, locale)),
+          })
+        }
+      />
+      <CancelOrderDialog
+        key={returnDialogOpen ? 'return-open' : 'return-closed'}
+        variant="return"
+        open={returnDialogOpen}
+        onOpenChange={setReturnDialogOpen}
+        isSubmitting={returnMutation.isPending}
+        onConfirm={(reason) =>
+          returnMutation.mutate(reason, {
+            onSuccess: () => {
+              toast.success(t('returnSuccess'));
+              setReturnDialogOpen(false);
             },
             onError: (err) => toast.error(errorMessage(err, locale)),
           })

@@ -16,9 +16,11 @@ interface CancelOrderDialogProps {
   onOpenChange: (open: boolean) => void;
   onConfirm: (reason: string) => void;
   isSubmitting: boolean;
+  /** Namespace key prefix for strings; defaults to the cancel flow. */
+  variant?: 'cancel' | 'return';
 }
 
-export function CancelOrderDialog({ open, onOpenChange, onConfirm, isSubmitting }: CancelOrderDialogProps) {
+export function CancelOrderDialog({ open, onOpenChange, onConfirm, isSubmitting, variant = 'cancel' }: CancelOrderDialogProps) {
   const t = useTranslations('Orders.detail');
   const tReverse = useTranslations('Common.reverse');
   const [reason, setReason] = useState('');
@@ -29,7 +31,7 @@ export function CancelOrderDialog({ open, onOpenChange, onConfirm, isSubmitting 
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{t('cancelTitle')}</DialogTitle>
+          <DialogTitle>{t(variant === 'return' ? 'returnTitle' : 'cancelTitle')}</DialogTitle>
         </DialogHeader>
         <div className="space-y-2">
           <Label htmlFor="cancelReason">{t('cancelReasonLabel')}</Label>
@@ -48,11 +50,11 @@ export function CancelOrderDialog({ open, onOpenChange, onConfirm, isSubmitting 
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isSubmitting}>
-            {t('cancelKeep')}
+            {t(variant === 'return' ? 'returnKeep' : 'cancelKeep')}
           </Button>
-          <Button variant="destructive" disabled={isSubmitting || invalid} onClick={() => onConfirm(trimmed)}>
+          <Button variant={variant === 'return' ? 'default' : 'destructive'} disabled={isSubmitting || invalid} onClick={() => onConfirm(trimmed)}>
             {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {t('cancelConfirm')}
+            {t(variant === 'return' ? 'returnConfirm' : 'cancelConfirm')}
           </Button>
         </DialogFooter>
       </DialogContent>
