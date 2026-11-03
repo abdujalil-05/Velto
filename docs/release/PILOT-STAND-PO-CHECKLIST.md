@@ -32,6 +32,7 @@
 - **Versioning + Object Lock** (Compliance или Governance), retention ≥30 дней; lifecycle-удаление после 60–90 дней настраивает владелец, не сервер.
 - IAM-политики на уровне prefix: три идентичности — server-put (только `PutObject`, на сервере), restore-read (только чтение, хранится вне сервера), admin (политики/lock, не на сервере). Запрет Delete/PutBucketPolicy/PutObjectRetention/BypassGovernance для server-put — `BACKUP-RESTORE-RUNBOOK.md` B.3–B.5.
 - Ответ провайдера: нужен ли `ListBucket` для загрузки (проверяется на стенде, B.4).
+- **ADR-067 §6 (R2):** четвёртая идентичность — server-verify-read (только `GetObject` + `ListBucket` на prefix бэкапов, `policies/offsite-restore-read.json`), хранится на сервере в `/etc/velto/backup.env` 0600; без неё offsite-выгрузка = FAIL. Это отдельный ключ, не escrow restore-read. Стоимость: каждый сет читается обратно один раз (egress = размер сета × 3/час при 20-минутном расписании) — уточнить тариф провайдера.
 - Если Object Lock не поддерживается — PO письменно принимает остаточный риск (компрометация сервера → удаление копий).
 
 ## 5. DNS и HTTPS — что нужно
@@ -46,6 +47,7 @@
 - Генерируются **на сервере**, в репозиторий/чат не передаются: JWT, `MFA_ENCRYPTION_KEY`, KEK, пароли ролей PostgreSQL (`velto_owner`, `velto_app`, `velto_system`, `velto_backup`, monitor), Redis `requirepass`, gpg-passphrase бэкапа — полный список и места хранения: `PILOT-RUNTIME-SECRETS-CHECKLIST.md` §4.
 - Предоставляются PO: ключ S3 приложения, offsite server-put ключ, токен аварийного бота + chat id, токен бота стенда (Telegram Mini App), реквизиты внешнего uptime-сервиса.
 - Escrow (хранится вне сервера у PO): gpg-passphrase бэкапа, offsite restore-read ключ, `MFA_ENCRYPTION_KEY` (без него MFA-секреты не расшифровать после восстановления).
+- **Подпись manifest (ADR-067 §6, R1):** отдельный GPG-ключ подписи генерируется на сервере в `/var/lib/velto-backup-sign` (root, 0700), не совпадает с ключом шифрования; публичный ключ и его fingerprint PO хранит вне сервера и вне бэкапа (escrow) — на станции восстановления они задаются как `BACKUP_VERIFY_KEYRING` / `BACKUP_TRUSTED_SIGN_FPRS`. Ротация: новый fingerprint добавляется в список до смены ключа, старый удаляется после истечения retention старых сетов.
 - **`velto_backup` — привилегированные учётные данные.** Роль не может писать (204/204 DML запрещены), но имеет BYPASSRLS и **читает данные всех компаний**. Пароль — только в `/etc/velto/backup.env` (root, 0600), никогда в env приложения/PM2; `pg_hba` ограничивает источник локальным хостом; ротация при любой подозрительной активности и при смене состава администраторов (ADR-066).
 
 ## 7. Согласовать с юристом (до реальных ПДн)
@@ -74,7 +76,7 @@
 2. TLS/HSTS, firewall: наружу только 80/443/SSH (`PILOT-SERVER-REQUIREMENTS.md` §4).
 3. Smoke E2E на синтетике на стенде; tenant isolation (9).
 4. S3: приватность, анонимно 403, чужая компания 404 (15).
-5. Backup → offsite → restore drill на стенде; RPO/RTO по разделу 8 (21, 35).
+5. Backup → offsite → restore drill на стенде; RPO/RTO по разделу 8 (21, 35). Drill PASS только при: валидной подписи доверенным ключом, read-back sha256 всех файлов, свежести (`DRILL_MAX_RESTORE_POINT_AGE_MINUTES`) и финансовых fingerprints MATCH; без fingerprint = NOT_VERIFIED. Замерить D, O, U для 20-минутного расписания (`RPO-RTO-ASSESSMENT.md` §8).
 6. Все алерты раздела 9 получены человеком (36).
 7. MFA M1–M4, Telegram, Android/iPhone (2–5, 17, 26); бухгалтер и 1С (18, 19).
 8. Юридическое заключение (28); permission backfill dry-run (25).

@@ -166,7 +166,7 @@ SELECT count(*) FROM "ExportJob" WHERE status IN ('QUEUED','PROCESSING') AND "up
 
 Статус: скрипты и тесты готовы; НИЧЕГО не включено на сервере; PASS по восстановимости не объявляется (нужен drill на стенде с реальным провайдером).
 
-## Что делает root-сервис `velto-backup.service` (раз в час, `velto-backup.timer.example`)
+## Что делает root-сервис `velto-backup.service` (каждые 20 минут с 2026-11-03, см. Часть 4; `velto-backup.timer.example`)
 `backup.sh` (DB + globals) -> `objects-backup.sh` (5 префиксов) -> `offsite-sync.sh` (если `OFFSITE_ENABLED=1`) -> атомарно пишет `/var/lib/velto-backup/status` (root:root 0644, каталог root:root 0755). Ошибка любого шага пишет `result=failed STEP=...` (старый ok не остаётся «свежим») и шлёт алерт. Формат: строки `KEY=VALUE` (только `[A-Za-z0-9._:-]`), парсится grep, не `source`. Поля: `ts`/`TIMESTAMP_EPOCH`, `result`/`RESULT`, `VERIFY`, `RUN_ID`, `DB_/GLOBALS_/OBJ_ ARCHIVE|SIZE|SHA256`, `OBJ_COUNT`, `OBJ_MANIFEST_SHA256`, `OBJECTS`, `OFFSITE`, `offsite_ts`, `offsite_result` (последние для velto-monitor). Секретов и путей к ключам нет.
 `deploy.sh` (velto-deploy) проверяет: файл и каталог принадлежат root (uid 0 зашит литералом), не group/world-writable, не symlink, строгая грамматика без дублей, `result=ok`, `VERIFY=ok`, возраст <= `VELTO_BACKUP_MAX_AGE_MIN` (60), каждый архив: имя по шаблону, обычный файл root-owned, размер и sha256 ШИФРОТЕКСТА пересчитываются самим deploy. Шифртекст читаем группой `velto-deploy` (0640): это выбрано вместо доверия `.sha256`-sidecar, потому что sidecar не ловит подмену архива вместе с sidecar; passphrase у deploy нет, каталог для deploy read-only. Нечитаемый архив = отказ (fallback на sidecar нет). По умолчанию deploy сначала просит свежий бэкап правилом sudoers `systemctl start velto-backup.service` (oneshot: код возврата = результат) и требует обновлённый статус. Любой отказ = стоп до install/migrate, авто-restore нет, обходного флага нет.
 
@@ -205,3 +205,49 @@ Restore: `restore-objects.sh <archive> --to-bucket|--to-dir [--prefix products/]
 14. Переход текущего хоста (всё под root) на раскладку users (deploy/system/) — отдельное плановое изменение.
 15. Манифест набора не подписан, offsite сверяется по размеру (ADR-067 §5 R1/R2): регулярный drill из offsite обязателен, put-only ключ + Object Lock.
 16. `restore-drill.sh` не сверяет финансовые суммы без внешнего fingerprint (SKIP): на стенде снять fingerprint источника до backup.
+
+---
+
+# Часть 4. R1 подпись манифеста, R2 read-back offsite, R4 финансовый fingerprint, каденс 20 мин — 2026-11-03
+
+Закрывает пункты 15 и 16 «OPEN (Часть 3)» в коде и тестах; на сервере НИЧЕГО не включено (user action). Протокол: `RESTORE-DRILL-ISOLATED-2026-11-03-R1R4.md`.
+
+## Что изменилось в наборе (restore set)
+Набор = `velto-db`, `velto-globals`, `velto-objects`, `velto-fp-<TS>.txt.gpg` (fingerprint, gpg AES256 той же парольной фразой), `.sha256`, `velto-set-<TS>.manifest` и `velto-set-<TS>.manifest.sig` (detached gpg-подпись манифеста). В манифесте: имя/размер/sha256 каждого архива, включая `FP_*`; `OFFSITE_VERIFY=readback-sha256`. Порядок offsite: архивы -> листинг (размеры) -> `.sig` -> манифест ПОСЛЕДНИМ -> листинг -> read-back sha256 каждого объекта. Без подписи, без `FP_ARCHIVE` или без read-back ключа запуск не считается точкой восстановления (fail closed).
+
+## R1 ключи (ОТДЕЛЬНЫЙ ключ подписи; парольная фраза бэкапа ничего не подписывает)
+Генерация на сервере под root (приватный ключ остаётся только там; каталог `/var/lib/velto-backup-sign` root:root 0700 создаёт `deploy/system/velto-tmpfiles.conf`, в `ReadWritePaths` юнита):
+- `GNUPGHOME=/var/lib/velto-backup-sign gpg --batch --pinentry-mode loopback --passphrase '' --quick-generate-key 'velto-backup-sign' ed25519 sign never`  (срок `never`: истёкший ключ задним числом отклонит и старые наборы; ротация решается политикой, не сроком)
+- отпечаток: `gpg --homedir /var/lib/velto-backup-sign --with-colons --list-keys | awk -F: '/^fpr/{print $10; exit}'`  -> `BACKUP_SIGN_KEY_FPR` в `/etc/velto/backup.env`
+- публичный ключ: `gpg --homedir /var/lib/velto-backup-sign --export <FPR> > backup-sign-public.gpg`
+Без пароля на ключе (иначе `BACKUP_SIGN_PASSPHRASE_FILE`, root 600). Права: каталог и владелец root, режим без доступа group/world: `backup-run.sh` отказывается иначе (`sign-key-perms`).
+Распространение отпечатка: PO/владелец записывает 40-hex ПЕРВИЧНОГО отпечатка вне сервера (менеджер паролей) и сверяет глазами: `gpg --show-keys --with-fingerprint backup-sign-public.gpg`. На рабочей станции восстановления лежат ДВЕ вещи, полученные не из бэкапа: `BACKUP_VERIFY_KEYRING` (экспорт публичного ключа) и `BACKUP_TRUSTED_SIGN_FPRS` (закреплённые первичные отпечатки через пробел/запятую; допускается >1 для ротации). Проверка: GOODSIG + ровно один VALIDSIG из `--status-fd`, первичный отпечаток в списке; EXPKEYSIG/REVKEYSIG/BADSIG/NO_PUBKEY = отказ; пустой keyring/список = отказ.
+Ротация: (1) создать K2 на сервере; (2) на станции добавить K2: `cat pub1.gpg pub2.gpg > keyring.gpg`, `BACKUP_TRUSTED_SIGN_FPRS="F1 F2"`; (3) на сервере `BACKUP_SIGN_KEY_FPR=F2`, обновить `BACKUP_VERIFY_KEYRING`/`BACKUP_TRUSTED_SIGN_FPRS`; (4) когда последний набор, подписанный K1, вышел из срока (30 дней offsite) — убрать F1. Компрометация: убрать F1 из списка немедленно, добавить сертификат отзыва в keyring (REVKEYSIG), решить судьбу наборов, подписанных до инцидента.
+
+## R2 read-back offsite
+`offsite-sync.sh` скачивает каждый загруженный объект (`rclone cat`, без записи на диск) ОТДЕЛЬНЫМ read-only ключом `OFFSITE_VERIFY_S3_*` (`policies/offsite-restore-read.json`, третий ключ: не равен writer, app и objects) и сравнивает sha256 байтов с манифестом/локальным файлом. Размер и multipart ETag доказательством не считаются; провайдер не известен, поэтому read-back обязателен для всех. Нет ключа / ошибка скачивания / расхождение = exit 11, `offsite_result=failed`, предыдущая подтверждённая точка сохраняется. Выключателя нет. Цена: egress ~1x объёма набора на каждый запуск (3 запуска/час); у провайдеров с платным egress учесть заранее. Restore/drill повторно считают sha256 каждого файла.
+
+## R4 финансовый fingerprint
+`backup.sh` экспортирует snapshot (`pg_export_snapshot`) в одной REPEATABLE READ READ ONLY транзакции, `pg_dump --snapshot=` и fingerprint считаются на ОДНОМ срезе (доказано при живом писателе, см. протокол). Таблицы (`fingerprint-lib.sh`): Invoice, InvoiceLine, Payment, PaymentAllocation, PaymentReversal, PaymentIntentResolution, StockMovement, GoodsReceiptLine, Customer, AuditLog; на таблицу: count, суммы денежных/количественных колонок, sha256 по каноническим упорядоченным строкам. Отдельных таблиц ledger и FIFO-слоёв в схеме НЕТ: ledger = Invoice+Payment+PaymentAllocation(+Reversal), FIFO = аллокация платежей PaymentAllocation; StockLevel без `id` (проекция StockMovement) проверяется drill, не хэшируется. Файл только в зашифрованном виде (psql -> gpg, plaintext на диск не пишется). Drill пересчитывает на восстановленной БД: в логе только имя таблицы и MATCH/MISMATCH. Набор без fingerprint = `NOT_VERIFIED`, exit 3, никогда PASS. Коды drill: 0 PASS, 1 FAIL, 2 PARTIAL (только БД), 3 NOT_VERIFIED.
+
+## Шаги восстановления (рабочая станция, НЕ prod)
+1. Скачать набор read-ключом: `rclone copy RESTORE:velto-offsite-backups ./set` (манифест + `.sig` + архивы).
+2. Окружение: `BACKUP_VERIFY_KEYRING`, `BACKUP_TRUSTED_SIGN_FPRS` (свои копии), `BACKUP_PASSPHRASE_FILE`.
+3. Быстрая проверка набора: `bash -c '. deploy/backup/backup-status-lib.sh; bsm_verify_signed ./set/velto-set-<TS>.manifest ./set && echo OK || echo "$BSM_REASON"'` (подпись -> sha256 каждого файла -> нет лишних файлов).
+4. `DRILL_SET_MANIFEST=./set/velto-set-<TS>.manifest bash deploy/backup/restore-drill.sh` (PASS только при exit 0). Реальное восстановление: `pg_restore` из `velto-db-*.dump.gpg` только после шага 3, затем `restore-objects.sh`.
+
+## Каденс и ретенция
+Таймер каждые 20 минут (`OnCalendar=*:00/20:00`, `RandomizedDelaySec=60`, `Persistent=true`), `Type=oneshot` + `flock` в `backup-run.sh` (второй запуск при активном первом выходит с кодом 0 и ничего не делает; без `flock` отказ, `BACKUP_ALLOW_NO_FLOCK=1` только для macOS-разработки). `TimeoutStartSec=45min`. Локальная ретенция по наборам (`bk_prune_sets`): все наборы младше 48 ч, дальше первый набор каждых суток до 30 суток, остальное и «осиротевшие» архивы (без манифеста) удаляются; offsite не трогается. Пороги монитора WARN 40 / CRIT 50 мин не менялись. Бюджет возраста: T(20)+j(<=1)+D+O+U <= 60 мин, т.е. D+O+U <= ~39 мин. D измерено на синтетике (`tests/db-e2e-measure.sh`): 11 с на БД 344 МБ (из них fingerprint ~2 с), ноутбук, fsync=off; O (объекты) и U (upload + read-back) НЕ измерены на реальном канале/объёме: до замера на проде вывод «60 мин достижимо» — гипотеза.
+
+## OPEN (Часть 4)
+17. Реальный провайдер: Object Lock + put-only + read-only ключ read-back именно на нём; egress-тариф.
+18. systemd (таймер, `flock` под юнитом, `ReadWritePaths` для gpg-homedir) на сервере не запускался.
+19. O и U на реальных данных; решение «WAL вместо 20-минутных dump» если run > ~15 мин.
+20. Заверенная доставка отпечатка ключа подписи на станцию восстановления — организационный шаг PO.
+
+## Часть 4, дополнение (аудит 2026-11-03): rollback/replay, retention, lock
+- Имя манифеста не подписано, поэтому подписан `SET_TS` (= TS в имени) и `RUN_ID`: `bsm_verify_signed` требует SET_TS == TS имени, TS архивов DB/GLOBALS/FP == SET_TS, objects не старше набора. Переименованный валидно подписанный манифест = отказ.
+- Replay старого валидно подписанного набора (новые удалены): `restore-drill.sh` в set-режиме ТРЕБУЕТ `DRILL_MAX_RESTORE_POINT_AGE_MINUTES` (возраст подписанного `RESTORE_POINT_TS`; старше = FAIL) либо `DRILL_EXPECT_RUN_ID=<RUN_ID>` для осознанного исторического восстановления. Остаточный риск: удаление новых наборов на offsite предотвращается Object Lock (GOVERNANCE 30 d, put-only ключ), а исчезновение свежей точки видит монитор по `offsite_ts` из root-owned локального статуса (WARN 40 / CRIT 50 мин); подписанные данные сами по себе актуальность не доказывают.
+- drill работает с приватной копией набора (0700) и перепроверяет подпись/sha256 копии (TOCTOU). `BACKUP_SIGN_PASSPHRASE_FILE`: root, регулярный файл, режим 0600/0400, иначе `sign-key-perms`. Подпись обязана быть detached (embedded-data подпись отклоняется).
+- Retention выполняется `backup-run.sh` ПОСЛЕ проверенного нового набора (не в `backup.sh`); хранителем дня становится самый ранний набор, прошедший проверку манифеста/sha256; самый новый проверенный набор не удаляется; без верификатора ничего не удаляется.
+- Lock занят: `backup-run.sh` завершает с кодом 75 и алертом `lock-busy` (resolve при следующем запуске, получившем lock); держатель snapshot-сессии завершается по таймауту (`FP_SNAP_MAX_SECONDS`, 7200) или при исчезновении родителя и не наследует fd 9.
