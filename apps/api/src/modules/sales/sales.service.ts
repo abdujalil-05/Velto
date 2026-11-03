@@ -28,6 +28,7 @@ import { calcLineTotal, deliveredLineTotal, orderTotal, roundLineTotal, type Ord
 import {
   AmbiguousWarehouseException,
   CourierNotFoundException,
+  CourierAssignmentForbiddenException,
   CustomerBlockedException,
   DeliveryLinesMismatchException,
   EmptyDeliveryException,
@@ -257,6 +258,10 @@ export class SalesService {
    */
   async createWithOutcome(dto: CreateOrderDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
+
+    // P0: courierId ⇒ SHIPPED + reservation, i.e. confirm()'s effect, which
+    // needs `orders.update`. Checked before any read/write (covers /sync/push).
+    if (dto.courierId && !user.permissions.includes('orders.update')) throw new CourierAssignmentForbiddenException();
 
     if (dto.clientId) {
       const existing = await tx.salesOrder.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: ORDER_INCLUDE });

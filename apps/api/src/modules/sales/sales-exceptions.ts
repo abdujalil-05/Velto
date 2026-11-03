@@ -105,6 +105,22 @@ export class OrderNotAssignedToCourierException extends AppException {
   }
 }
 
+/**
+ * P0: a courierId on create sends the order straight to SHIPPED and reserves
+ * stock — the same effect as confirm()/assignCourier(), which need
+ * `orders.update`. Holding only `orders.create` (SALES_AGENT, also via
+ * /sync/push) must not bypass director approval.
+ */
+export class CourierAssignmentForbiddenException extends AppException {
+  constructor() {
+    super(HttpStatus.FORBIDDEN, 'SALES_ORDER_COURIER_ASSIGN_FORBIDDEN', {
+      uz: "Buyurtmaga kuryer biriktirish uchun ruxsat yo'q",
+      ru: 'Нет прав на назначение курьера заказу',
+      en: 'You are not allowed to assign a courier to an order',
+    });
+  }
+}
+
 /** F2.4: deliveredQty is negative, malformed or has more than 3 decimals. */
 export class InvalidDeliveredQtyException extends AppException {
   constructor(lineId: string, deliveredQty: string) {

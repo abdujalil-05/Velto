@@ -26,6 +26,7 @@ import {
   PartialDeliveryNotAllowedException,
   PriceChangedException,
   SalesOrderNotFoundException,
+  CourierAssignmentForbiddenException,
 } from './sales-exceptions';
 import { isDeliveredQtyCheckViolation } from './delivered-qty-check';
 import { SalesService } from './sales.service';
@@ -531,6 +532,42 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     const delivered = await tenantPrisma.run(companyId, () => sales.deliver(order.id, user));
     expect(delivered.status).toBe('DELIVERED');
     expect((await getReserved()).toString()).toBe(before.toString());
+  });
+
+  it('P0: SALES_AGENT (orders.create only) + courierId is rejected 403 — no order, no reservation; OWNER/SALES_DIRECTOR still go to SHIPPED', async () => {
+    const mk = async (roles: string[], permissions: string[]): Promise<AuthenticatedUser> => {
+      const u = await systemPrisma.user.create({
+        data: { companyId, firstName: 'P0', lastName: roles[0]!, phone: `+99894${Math.floor(1_000_000 + Math.random() * 8_000_000)}` },
+      });
+      return { id: u.id, companyId, firstName: 'P0', lastName: roles[0]!, roles, permissions };
+    };
+    const agent = await mk(['SALES_AGENT'], ['orders.create', 'orders.read']);
+    const customerId = await createCustomer();
+    const before = await getReserved();
+    const clientId = randomUUID();
+
+    await expect(
+      tenantPrisma.run(companyId, () => sales.create({ customerId, clientId, courierId, lines: [{ productId, packagingId, qty: 1 }] }, agent)),
+    ).rejects.toBeInstanceOf(CourierAssignmentForbiddenException);
+    await expect(
+      tenantPrisma.run(companyId, () => sales.createWithOutcome({ customerId, courierId, lines: [{ productId, packagingId, qty: 1 }] }, agent)),
+    ).rejects.toBeInstanceOf(CourierAssignmentForbiddenException);
+    const leaked = await tenantPrisma.run(companyId, (tx) => tx.salesOrder.count({ where: { customerId } }));
+    expect(leaked).toBe(0);
+    expect((await getReserved()).toString()).toBe(before.toString());
+
+    for (const office of [
+      await mk(['OWNER'], ['orders.create', 'orders.update']),
+      await mk(['SALES_DIRECTOR'], ['orders.create', 'orders.update']),
+    ]) {
+      const start = await getReserved();
+      const order = await tenantPrisma.run(companyId, () =>
+        sales.create({ customerId, agentId: agent.id, courierId, lines: [{ productId, packagingId, qty: 1 }] }, office),
+      );
+      expect(order.status).toBe('SHIPPED');
+      expect(order.courierId).toBe(courierId);
+      expect((await getReserved()).minus(start).toString()).toBe('1');
+    }
   });
 
   it('assignCourier() on a SUBMITTED order reserves stock and moves it to SHIPPED', async () => {
