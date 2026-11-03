@@ -3,8 +3,9 @@
 Status 2026-11-02: scripts and drills verified LOCALLY only. Nothing here is activated on a server. Targets: RPO <= 24 h (pilot, daily backup), RTO <= 4 h (TZ 12.2).
 
 ## Components (deploy/backup/)
-- `backup.sh` - pg_dump -Fc as `velto_system` -> gpg AES256 -> streaming verify -> `.sha256`; retention `BACKUP_RETENTION_DAYS`.
-- `offsite-sync.sh` - `rclone copy --immutable` of `*.gpg`/`*.sha256` to an S3-compatible bucket, SEPARATE put-only credentials. Never deletes/overwrites, never uploads the passphrase.
+- `backup.sh` - pg_dump -Fc as the read-only `velto_backup` role (BYPASSRLS; NOT velto_system) -> gpg AES256 -> streaming verify -> `.sha256`; globals via `pg_dumpall --globals-only --no-role-passwords`; pg_dump/server major must match; retention `BACKUP_RETENTION_DAYS` (default 30).
+- `objects-backup.sh` / `restore-objects.sh` - S3 object archive (D-1), see Part 3. `backup-status-lib.sh`, `verify-backup-status.sh` - status attestation + deploy gate (D-3), see Part 3.
+- `offsite-sync.sh` - `rclone copy --ignore-existing` of `velto-{db,globals,objects}-*.gpg`/`.sha256` to a bare offsite bucket with the put-only backup-writer key (fails if it equals the app key). Never deletes/overwrites, never uploads the passphrase.
 - `backup-run.sh` - scheduled entrypoint: backup -> offsite (if `OFFSITE_ENABLED=1`) -> alert on any failure.
 - `restore-drill.sh` - restore into a separate `velto_restore_drill*` DB + checks. `backup.env.example`, `velto-backup.{service,timer}.example` - config samples (not installed).
 
@@ -25,9 +26,9 @@ Status 2026-11-02: scripts and drills verified LOCALLY only. Nothing here is act
 ## Recovery procedure
 Never restore over production in place. Restore into a NEW database, verify, then switch the app.
 1. Fetch the latest `velto-db-*.dump.gpg` and its `.sha256` (offsite via the read-only identity if the server is lost). `sha256sum -c velto-db-*.gpg.sha256` must say OK.
-2. Provision a Postgres 16 and roles: `psql -f packages/database/scripts/provision-roles.sql` (as superuser; prod uses the host's role names - see deploy/README.md role runbook, do not run it as is on a foreign host).
+2. Provision a Postgres 16 and restore roles first: globals (`velto-globals-*.sql.gpg`, superuser) -> set each role's password (`\password`) -> on a CLEAN database `psql -d <prod_db> -v velto_env=production -f packages/database/scripts/provision-roles.sql` (as superuser; prod uses the host's role names - see deploy/README.md role runbook, do not run it as is on a foreign host).
 3. Drill-style verification (local/staging): `DUMP_FILE=<file> BACKUP_PASSPHRASE_FILE=<pass> SOURCE_URL=<src> DRILL_KEEP_DB=1 deploy/backup/restore-drill.sh` -> all checks PASS.
-4. Real restore: `createdb velto_restored`, `gpg -d file | pg_restore --no-owner --no-privileges -d velto_restored`, re-run provision-roles, `prisma migrate status` = up to date (use `migrate deploy` only if the dump is older than the code).
+4. Real restore: `createdb velto_restored` (clean), then `gpg -d file | pg_restore --exit-on-error --single-transaction --no-owner --no-privileges -d velto_restored` (superuser), then `psql -f packages/database/scripts/provision-backup-role.sql`; `prisma migrate status` = up to date (use `migrate deploy` only if the dump is older than the code). Same order as "Порядок восстановления БД" below.
 5. Point `DATABASE_URL/DATABASE_SYSTEM_URL` to the new DB (env, no repo change), `pm2 restart`, check `/health/ready`. Keep the damaged DB for forensics; do not drop it.
 6. Data written after the last backup (<= 24 h) is lost; reconcile held offline payments per the reconciliation runbook.
 
@@ -65,7 +66,7 @@ Checks: sha256, gpg decrypt, negatives (corrupted `.gpg` -> gpg exit 2 and sha25
 | `/etc/velto/backup.env`, `backup.pass`, `monitor.env` | Без `backup.pass` все бэкапы нечитаемы | root 600 + офлайн-копия пароля | Бэкапы = мусор. Критично |
 | nginx (`deploy/nginx.conf`-сниппет + внешний 443-блок хоста), TLS-сертификаты (certbot) | Внешний блок и сертификаты не в репозитории | Конфиги хоста копировать в зашифрованный архив; сертификат перевыпускается certbot | Перевыпуск за минуты при наличии DNS |
 | PM2: `deploy/ecosystem.config.js` в git; сохранённый список `pm2 save` | Процесс `velto-api`, порт и пути — по репозиторию | git + `pm2 save` | Пересоздаётся из репозитория |
-| Роли Postgres: `packages/database/scripts/provision-roles.sql` в git; пароли ролей — в env | Дамп с `--no-owner --no-privileges` не несёт владельцев/grants | git; `BACKUP_GLOBALS_URL` (pg_dumpall --globals-only) опционален и **не настроен** | Роли пересоздаются скриптом, пароли — из env |
+| Роли Postgres: `packages/database/scripts/provision-roles.sql` в git; пароли ролей — в env | Дамп с `--no-owner --no-privileges` не несёт владельцев/grants | git; globals (`pg_dumpall --globals-only`) снимаются по умолчанию ролью `velto_backup` (`BACKUP_GLOBALS_URL` — опциональное переопределение) | Роли пересоздаются скриптом, пароли — из env |
 | Версия миграций | `_prisma_migrations` приезжает с дампом | сверка `restore-drill.sh` (3b); код той же ревизии (git tag/commit в `deploy.sh`-логе) | Дамп новее кода → ошибка схемы; старее → `migrate deploy` |
 | Redis | см. ниже: НЕ источник истины | AOF желателен, в бэкап не входит | Восстанавливается из БД (sweeps) |
 
@@ -159,3 +160,39 @@ SELECT count(*) FROM "ExportJob" WHERE status IN ('QUEUED','PROCESSING') AND "up
 8. Асимметричное шифрование вместо passphrase на сервере (B.1) — решение PO, нужна правка скриптов.
 9. Реальный offsite с Object Lock и проверка минимума прав server-put (B.4).
 10. Хранение/копии секретов `MFA_ENCRYPTION_KEY`, `OFFLINE_KEK_*` вне сервера — подтвердить PO по PILOT-RUNTIME-SECRETS-CHECKLIST.md.
+
+
+# Часть 3. D-1 (S3-объекты), D-3 (статус-аттестация, deploy gate), D-4 (30 дней) — 2026-11-02
+
+Статус: скрипты и тесты готовы; НИЧЕГО не включено на сервере; PASS по восстановимости не объявляется (нужен drill на стенде с реальным провайдером).
+
+## Что делает root-сервис `velto-backup.service` (раз в час, `velto-backup.timer.example`)
+`backup.sh` (DB + globals) -> `objects-backup.sh` (5 префиксов) -> `offsite-sync.sh` (если `OFFSITE_ENABLED=1`) -> атомарно пишет `/var/lib/velto-backup/status` (root:root 0644, каталог root:root 0755). Ошибка любого шага пишет `result=failed STEP=...` (старый ok не остаётся «свежим») и шлёт алерт. Формат: строки `KEY=VALUE` (только `[A-Za-z0-9._:-]`), парсится grep, не `source`. Поля: `ts`/`TIMESTAMP_EPOCH`, `result`/`RESULT`, `VERIFY`, `RUN_ID`, `DB_/GLOBALS_/OBJ_ ARCHIVE|SIZE|SHA256`, `OBJ_COUNT`, `OBJ_MANIFEST_SHA256`, `OBJECTS`, `OFFSITE`, `offsite_ts`, `offsite_result` (последние для velto-monitor). Секретов и путей к ключам нет.
+`deploy.sh` (velto-deploy) проверяет: файл и каталог принадлежат root (uid 0 зашит литералом), не group/world-writable, не symlink, строгая грамматика без дублей, `result=ok`, `VERIFY=ok`, возраст <= `VELTO_BACKUP_MAX_AGE_MIN` (60), каждый архив: имя по шаблону, обычный файл root-owned, размер и sha256 ШИФРОТЕКСТА пересчитываются самим deploy. Шифртекст читаем группой `velto-deploy` (0640): это выбрано вместо доверия `.sha256`-sidecar, потому что sidecar не ловит подмену архива вместе с sidecar; passphrase у deploy нет, каталог для deploy read-only. Нечитаемый архив = отказ (fallback на sidecar нет). По умолчанию deploy сначала просит свежий бэкап правилом sudoers `systemctl start velto-backup.service` (oneshot: код возврата = результат) и требует обновлённый статус. Любой отказ = стоп до install/migrate, авто-restore нет, обходного флага нет.
+
+## Матрица префиксов S3 (ключи: storage.service.ts, products.controller.ts:76, import.service.ts:43, opening-balances.service.ts:128, export-1c.constants.ts:28, company-export.constants.ts:36)
+| Префикс | Что это | Регенерируемо? | Решение | Восстанавливать |
+|---|---|---|---|---|
+| `products/{companyId}/` | картинки товаров (`Product.imageUrl`, публичные) | нет (загруженные файлы; осиротевшие остаются) | бэкап + restore | ДА, иначе битые картинки в каталоге |
+| `imports/{customers\|products}/{companyId}/` | исходные файлы импорта | нет | бэкап + restore; авто-удаление ЗАПРЕЩЕНО (FILE-RETENTION-MATRIX) | ДА (аудит/источник) |
+| `opening/{opening-customers\|opening-stock}/{companyId}/` | исходники начальных остатков | нет | бэкап + restore | ДА (аудит) |
+| `exports/1c/{companyId}/` | файлы выгрузки 1С (`ExportJob.storageKey`, ключ детерминирован) | технически перегенерируется из БД, но ACK/хэши (`fileHash`) привязаны к конкретному файлу | бэкап (дёшево) + restore | ДА, чтобы совпадали ACK/хэши; без него — только перегенерация с новым файлом |
+| `exports/company/{companyId}/` | архивы экспорта компании (ADR-045) | перегенерируется, но считается финансовым документом (матрица) | бэкап + restore | ДА (по матрице auto-delete запрещён) |
+Объекты ВНЕ этих префиксов не копируются; `objects-backup.sh` предупреждает о них. Приложение не удаляет файлы, lifecycle-очистка на app-bucket НЕ включается; чистятся только старые АРХИВЫ бэкапов (30 дней локально; offsite — Object Lock 30 дней, дальше решает владелец хранилища).
+
+## Объектный бэкап: как устроен
+rclone (любой S3-совместимый: AWS/Wasabi/B2/MinIO/...) под ОТДЕЛЬНЫМ read-only ключом (`OBJECTS_SRC_*`, `policies/backup-reader-app-bucket.json`) -> staging в `BACKUP_DIR/.objects-work.*` (нужно свободное место >= размера bucket, `OBJECTS_MIN_FREE_MB`) -> `MANIFEST.tsv` (sha256, size, key) -> tar -> gpg AES256 тем же passphrase -> проверка потоком (число файлов, хэш манифеста внутри архива) -> `.sha256`. Каждый объект, существовавший ДО копирования, обязан присутствовать с тем же размером. Ключи: app / backup-read / offsite-put-only / restore-read — четыре разных идентификатора (`deploy/backup/policies/`); скрипты падают, если ключ backup/offsite совпадает с `S3_ACCESS_KEY` приложения (`VELTO_APP_ENV_FILE`) или друг с другом.
+Restore: `restore-objects.sh <archive> --to-bucket|--to-dir [--prefix products/]` — только в ПУСТОЙ bucket (иначе отказ), сверка каждого объекта с манифестом до загрузки, побайтовая сверка после (`rclone check --download`).
+Ограничения: полный архив каждый раз (без инкремента) — при росте bucket это определяющая стоимость часового режима (см. RPO-RTO-ASSESSMENT.md); ключи с `\r` отклоняются; offsite bucket — «голое» имя без `/` (put+list ключ не может открыть prefix-root в rclone, проверено на MinIO); `OBJECTS_BACKUP_ENABLED=0` помечает статус `OBJECTS=disabled`, deploy тогда требует `VELTO_REQUIRE_OBJECTS=0`.
+
+## Порядок восстановления БД (согласовано с db-rls)
+1. Globals как superuser (`velto-globals-*.sql.gpg`; пароли ролей в бэкап НЕ входят: `--no-role-passwords`). 2. `\password` каждой роли по runbook секретов. 3. На чистой БД `psql -d <prod_db> -v velto_env=production -f packages/database/scripts/provision-roles.sql` (скрипт работает с `current_database()`). 4. `pg_restore --exit-on-error --single-transaction` от superuser (мажор клиента = мажор сервера). 5. `provision-backup-role.sql`. 6. Объекты: `restore-objects.sh` в пустой bucket, затем переключение приложения — отдельный одобренный шаг.
+
+## Тесты (статические/синтетические; на сервере не запускались)
+`deploy/backup/tests/backup-gate.test.sh` (32: нет бэкапа, устарел, подмена/усечение архива, сервис упал, подделка статуса, позитив), `deploy/tests/deploy-abort.test.sh` (8), `deploy/tests/env-parse.test.sh` (18), `deploy/backup/tests/objects-minio.test.sh` (32, throwaway MinIO в docker как синтетический S3, 2 компании x 5 префиксов, restore в пустой bucket, put-only/Object Lock/разделение ключей), `deploy/backup/tests/db-e2e-measure.sh` (замеры).
+
+## OPEN (Часть 3)
+11. Реальный offsite с Object Lock у выбранного провайдера и проверка put-only политики именно на нём (в тесте — MinIO).
+12. Drill на стенде: полный цикл velto-backup.service под root -> deploy.sh под velto-deploy (в песочнице root-owner проверен только аргументом/CLI с uid 0).
+13. Размер/время объектного архива на реальных данных (полный архив ежечасно может не уложиться).
+14. Переход текущего хоста (всё под root) на раскладку users (deploy/system/) — отдельное плановое изменение.
