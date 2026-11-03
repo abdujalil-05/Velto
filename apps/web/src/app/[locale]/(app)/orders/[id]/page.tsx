@@ -3,7 +3,7 @@
 import { use, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { toast } from 'sonner';
-import { ArrowLeft, CheckCircle2, PackageCheck, Ban, XCircle, Undo2, Info } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, PackageCheck, Truck, Ban, XCircle, Undo2, Info } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
 import {
@@ -15,6 +15,7 @@ import {
   useAssignCourierMutation,
   useAssignableCouriersQuery,
   useReturnToWarehouseMutation,
+  useHandoverOrderMutation,
 } from '@/lib/api/orders';
 import { errorMessage } from '@/lib/api/client';
 import { formatDateTime, formatMoney, formatQty } from '@/lib/format';
@@ -25,6 +26,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { OrderStatusBadge } from '@/components/shared/order-status-badge';
 import { DeliverOrderDialog } from '@/components/orders/deliver-order-dialog';
+import { HandoverOrderDialog } from '@/components/orders/handover-order-dialog';
 import { CancelOrderDialog } from '@/components/orders/cancel-order-dialog';
 
 export default function OrderDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -45,6 +47,11 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const cancelMutation = useCancelOrderMutation(id);
   const assignMutation = useAssignCourierMutation(id);
   const returnMutation = useReturnToWarehouseMutation(id);
+  const handoverMutation = useHandoverOrderMutation(id);
+  const assignKey = useRef<{ courierId: string; key: string } | null>(null);
+  const handoverKey = useRef<string | null>(null);
+  const returnKey = useRef<string | null>(null);
+  const [handoverDialogOpen, setHandoverDialogOpen] = useState(false);
   const canAssignCourier = hasPermission('orders.assignCourier');
   const [courierId, setCourierId] = useState('');
   const [returnDialogOpen, setReturnDialogOpen] = useState(false);
@@ -100,14 +107,20 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     );
   }
 
-  const canDeliver = hasPermission('orders.deliver') && (order.status === 'CONFIRMED' || order.status === 'SHIPPED');
+  // With a courier assigned, CONFIRMED needs a handover first; deliver only from SHIPPED.
+  const needsHandover = order.status === 'CONFIRMED' && !!order.courierId;
+  const canDeliver =
+    hasPermission('orders.deliver') &&
+    ((order.status === 'CONFIRMED' && !needsHandover) || order.status === 'SHIPPED');
+  const canHandover = hasPermission('orders.dispatch') && needsHandover;
+  const showDeliverNeedsHandover = needsHandover && hasPermission('orders.deliver') && !canHandover;
   const showDelivered = order.status === 'DELIVERED' || order.status === 'CLOSED';
   const canClose = canUpdate && order.status === 'DELIVERED';
   const canCancelOrder = canCancel && ['DRAFT', 'SUBMITTED', 'CONFIRMED'].includes(order.status);
   const showShippedCancelHint = canCancel && order.status === 'SHIPPED';
-  const canManageCourier = canAssignCourier && (order.status === 'CONFIRMED' || order.status === 'SHIPPED');
-  const canReturn = canAssignCourier && order.status === 'SHIPPED';
-  const isReassign = order.status === 'SHIPPED';
+  const canManageCourier = canAssignCourier && order.status === 'CONFIRMED';
+  const canReturn = hasPermission('orders.returnToWarehouse') && order.status === 'SHIPPED';
+  const isReassign = !!order.courierId;
   const assignDisabled = assignMutation.isPending || !courierId || courierId === order.courierId;
 
   return (
@@ -143,6 +156,12 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
             >
               <CheckCircle2 className="mr-2 h-4 w-4" />
               {t('confirm')}
+            </Button>
+          )}
+          {canHandover && (
+            <Button size="sm" onClick={() => setHandoverDialogOpen(true)} disabled={handoverMutation.isPending}>
+              <Truck className="mr-2 h-4 w-4" />
+              {t('handover')}
             </Button>
           )}
           {canDeliver && (
@@ -241,13 +260,23 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   size="sm"
                   disabled={assignDisabled}
                   onClick={() =>
-                    assignMutation.mutate(courierId, {
+                    assignMutation.mutate(
+                      {
+                        courierId,
+                        idempotencyKey: (assignKey.current?.courierId === courierId
+                          ? assignKey.current
+                          : (assignKey.current = { courierId, key: crypto.randomUUID() })
+                        ).key,
+                      },
+                      {
                       onSuccess: () => {
+                        assignKey.current = null;
                         setCourierId('');
                         toast.success(t('assignSuccess'));
                       },
                       onError: (err) => toast.error(errorMessage(err, locale)),
-                    })
+                      },
+                    )
                   }
                 >
                   {isReassign ? t('reassignCourier') : t('assignCourier')}
@@ -258,6 +287,22 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         </Card>
       )}
 
+      {order.status === 'SHIPPED' && order.courier && canAssignCourier && (
+        <Alert>
+          <AlertDescription className="flex items-center gap-2">
+            <Info className="h-4 w-4 shrink-0" aria-hidden="true" />
+            {t('reassignViaReturnHint')}
+          </AlertDescription>
+        </Alert>
+      )}
+      {showDeliverNeedsHandover && (
+        <Alert>
+          <AlertDescription className="flex items-center gap-2">
+            <Info className="h-4 w-4 shrink-0" aria-hidden="true" />
+            {t('deliverNeedsHandover')}
+          </AlertDescription>
+        </Alert>
+      )}
       {showShippedCancelHint && (
         <Alert>
           <AlertDescription className="flex items-center gap-2">
@@ -349,6 +394,25 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           })
         }
       />
+      <HandoverOrderDialog
+        key={handoverDialogOpen ? 'handover-open' : 'handover-closed'}
+        open={handoverDialogOpen}
+        onOpenChange={setHandoverDialogOpen}
+        isSubmitting={handoverMutation.isPending}
+        onConfirm={(note) =>
+          handoverMutation.mutate(
+            { note, idempotencyKey: (handoverKey.current ??= crypto.randomUUID()) },
+            {
+              onSuccess: () => {
+                handoverKey.current = null;
+                toast.success(t('handoverSuccess'));
+                setHandoverDialogOpen(false);
+              },
+              onError: (err) => toast.error(errorMessage(err, locale)),
+            },
+          )
+        }
+      />
       <CancelOrderDialog
         key={returnDialogOpen ? 'return-open' : 'return-closed'}
         variant="return"
@@ -356,13 +420,17 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         onOpenChange={setReturnDialogOpen}
         isSubmitting={returnMutation.isPending}
         onConfirm={(reason) =>
-          returnMutation.mutate(reason, {
+          returnMutation.mutate(
+            { reason, idempotencyKey: (returnKey.current ??= crypto.randomUUID()) },
+            {
             onSuccess: () => {
+              returnKey.current = null;
               toast.success(t('returnSuccess'));
               setReturnDialogOpen(false);
             },
             onError: (err) => toast.error(errorMessage(err, locale)),
-          })
+            },
+          )
         }
       />
     </div>

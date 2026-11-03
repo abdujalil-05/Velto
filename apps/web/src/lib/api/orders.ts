@@ -161,22 +161,44 @@ export function useAssignableCouriersQuery(enabled = true) {
   });
 }
 
-/** Assigns/reassigns a courier: CONFIRMED -> SHIPPED, or reassign while SHIPPED. */
+/** Assigns/reassigns a courier while CONFIRMED (status stays CONFIRMED). */
 export function useAssignCourierMutation(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (courierId: string) =>
-      apiFetch<SalesOrder>(`/orders/${id}/assign-courier`, { method: 'POST', body: { courierId } }),
+    mutationFn: ({ courierId, idempotencyKey }: { courierId: string; idempotencyKey: string }) =>
+      apiFetch<SalesOrder>(`/orders/${id}/assign-courier`, {
+        method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey },
+        body: { courierId },
+      }),
     onSuccess: () => invalidateOrder(queryClient, id),
   });
 }
 
-/** SHIPPED -> CONFIRMED, clears the courier. */
+/** CONFIRMED + courier -> SHIPPED (orders.dispatch). */
+export function useHandoverOrderMutation(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ note, idempotencyKey }: { note?: string; idempotencyKey: string }) =>
+      apiFetch<SalesOrder>(`/orders/${id}/handover`, {
+        method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey },
+        body: note ? { note } : {},
+      }),
+    onSuccess: () => invalidateOrder(queryClient, id),
+  });
+}
+
+/** SHIPPED -> CONFIRMED, clears the courier (orders.returnToWarehouse). */
 export function useReturnToWarehouseMutation(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (reason: string) =>
-      apiFetch<SalesOrder>(`/orders/${id}/return-to-warehouse`, { method: 'POST', body: { reason } }),
+    mutationFn: ({ reason, idempotencyKey }: { reason: string; idempotencyKey: string }) =>
+      apiFetch<SalesOrder>(`/orders/${id}/return-to-warehouse`, {
+        method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey },
+        body: { reason },
+      }),
     onSuccess: () => invalidateOrder(queryClient, id),
   });
 }
