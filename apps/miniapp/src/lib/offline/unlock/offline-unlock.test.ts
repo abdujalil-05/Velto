@@ -22,7 +22,7 @@ import { guardTokenOwner } from '../sync-engine-core';
 const A = { userId: 'uA', companyId: 'c1' };
 const B = { userId: 'uB', companyId: 'c1' };
 const userA = { id: 'uA', companyId: 'c1', firstName: 'Anvar', lastName: 'Karimov', roles: ['agent'], permissions: ['orders.create'] };
-const PASS = 'Blue-Falcon-Lamp-42';
+const PHRASE = 'Blue-Falcon-Lamp-42';
 const enc = (s: string) => new TextEncoder().encode(s);
 const jwt = (o: { userId: string; companyId: string }) => {
   const e = (v: unknown) => btoa(JSON.stringify(v)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -57,7 +57,7 @@ async function reset() {
   setOfflineSession(null);
   vi.stubGlobal('Worker', class {});
 }
-async function enrollA(pass = PASS) {
+async function enrollA(pass = PHRASE) {
   await readyVault(A);
   setOfflineSession(A);
   const r = await enrollOfflineUnlock(A, userA, pass, pass, {}, mkDeps());
@@ -83,8 +83,8 @@ describe('Offline Unlock (ADR-071)', () => {
     expect(validatePassphrase('myAnvar-secret-77', { firstName: 'Anvar' })).toContain('containsName');
     expect(validatePassphrase('x-998901234567-y-zq', { phone: '+998 90 123 45 67' })).toContain('containsPhone');
     expect(validatePassphrase('my-password-Zk9!q')).toContain('denylisted');
-    expect(validatePassphrase(PASS, {}, 'other')).toContain('mismatch');
-    expect(validatePassphrase(PASS, { firstName: 'Anvar' }, PASS)).toEqual([]);
+    expect(validatePassphrase(PHRASE, {}, 'other')).toContain('mismatch');
+    expect(validatePassphrase(PHRASE, { firstName: 'Anvar' }, PHRASE)).toEqual([]);
   });
 
   it('enroll rejects a weak passphrase and stores nothing', async () => {
@@ -98,10 +98,10 @@ describe('Offline Unlock (ADR-071)', () => {
     await readyVault(A);
     setOfflineSession(A);
     const id = await queueRepository.enqueue('payment', { amount: '100.00', customerId: 'c' });
-    expect((await enrollOfflineUnlock(A, userA, PASS, PASS, {}, mkDeps())).kind).toBe('ok');
+    expect((await enrollOfflineUnlock(A, userA, PHRASE, PHRASE, {}, mkDeps())).kind).toBe('ok');
     await goOffline();
     expect(getVaultStatus()).toBe('locked');
-    const res = await unlockOffline(A, PASS, mkDeps());
+    const res = await unlockOffline(A, PHRASE, mkDeps());
     expect(res.kind).toBe('ok');
     if (res.kind === 'ok') expect(res.user.id).toBe('uA');
     expect(isLocalMode()).toBe(true);
@@ -119,14 +119,14 @@ describe('Offline Unlock (ADR-071)', () => {
     expect(row.salt.byteLength).toBe(16);
     expect(row.params).toEqual(TARGET_PARAMS);
     const text = JSON.stringify(row, (_k, v) => (v instanceof ArrayBuffer || ArrayBuffer.isView(v) ? Array.from(new Uint8Array(v as ArrayBuffer)) : v));
-    expect(text).not.toContain(PASS);
-    const derived = await argon2Derive(enc(PASS), new Uint8Array(row.salt), enc(`${A.companyId}|${A.userId}`), { m: 256, t: 1, p: 1, v: 19 });
+    expect(text).not.toContain(PHRASE);
+    const derived = await argon2Derive(enc(PHRASE), new Uint8Array(row.salt), enc(`${A.companyId}|${A.userId}`), { m: 256, t: 1, p: 1, v: 19 });
     expect(text).not.toContain(JSON.stringify(Array.from(derived)));
   });
 
   it('floor parameters are used and stored when the device cannot do the target', async () => {
     await readyVault(A);
-    const r = await enrollOfflineUnlock(A, userA, PASS, PASS, {}, mkDeps(A, { failTarget: true }));
+    const r = await enrollOfflineUnlock(A, userA, PHRASE, PHRASE, {}, mkDeps(A, { failTarget: true }));
     expect(r).toEqual({ kind: 'ok', params: FLOOR_PARAMS });
     expect((await db.offlineUnlock.get([A.userId, A.companyId]))!.params).toEqual(FLOOR_PARAMS);
   });
@@ -137,7 +137,7 @@ describe('Offline Unlock (ADR-071)', () => {
     const r1 = await unlockOffline(A, 'Wrong-Horse-Battery-9', mkDeps());
     expect(r1).toEqual({ kind: 'wrong', remaining: MAX_FAILURES - 1 });
     expect(isLocalMode()).toBe(false);
-    const again = await unlockOffline(A, PASS, mkDeps());
+    const again = await unlockOffline(A, PHRASE, mkDeps());
     expect(again.kind).toBe('backoff'); // even the right one waits out the delay
     clock += 3_000;
     expect((await unlockOffline(A, 'Wrong-Horse-Battery-9', mkDeps())).kind).toBe('wrong');
@@ -151,16 +151,16 @@ describe('Offline Unlock (ADR-071)', () => {
     await patchRow({ lastOnlineAt: clock });
     expect((await unlockOffline(A, 'Wrong-Horse-Battery-9', mkDeps())).kind).toBe('wiped');
     expect(await hasEntry(A)).toBe(false);
-    expect((await unlockOffline(A, PASS, mkDeps())).kind).toBe('no-entry');
+    expect((await unlockOffline(A, PHRASE, mkDeps())).kind).toBe('no-entry');
   });
 
   it("B cannot open A's entry, even with a copied record and A's passphrase (wrap is bound to the owner)", async () => {
     await enrollA();
     await goOffline();
-    expect((await unlockOffline(B, PASS, mkDeps(B))).kind).toBe('no-entry');
+    expect((await unlockOffline(B, PHRASE, mkDeps(B))).kind).toBe('no-entry');
     const row = (await db.offlineUnlock.get([A.userId, A.companyId]))!;
     await db.offlineUnlock.put({ ...row, userId: B.userId, companyId: B.companyId });
-    expect((await unlockOffline(B, PASS, mkDeps(B))).kind).toBe('wrong');
+    expect((await unlockOffline(B, PHRASE, mkDeps(B))).kind).toBe('wrong');
     expect(isLocalMode()).toBe(false);
     expect(isVaultReadyFor(B)).toBe(false);
   });
@@ -172,7 +172,7 @@ describe('Offline Unlock (ADR-071)', () => {
     expect(await ensureVault(A, fakeKekServer(cur)(A))).toBe('ready'); // rewrap v1 -> v2
     expect(await hasEntry(A)).toBe(true);
     await goOffline();
-    expect((await unlockOffline(A, PASS, mkDeps())).kind).toBe('ok');
+    expect((await unlockOffline(A, PHRASE, mkDeps())).kind).toBe('ok');
   });
 
   it('entry is deleted on retired KEK, explicit logout (deleteEntry), revoke and emergency wipe', async () => {
@@ -193,7 +193,7 @@ describe('Offline Unlock (ADR-071)', () => {
     await db.offlineUnlock.clear();
     await readyVault(A);
     setOfflineSession(A);
-    expect((await enrollOfflineUnlock(A, userA, PASS, PASS, {}, mkDeps())).kind).toBe('ok');
+    expect((await enrollOfflineUnlock(A, userA, PHRASE, PHRASE, {}, mkDeps())).kind).toBe('ok');
     await emergencyWipe();
     expect(await hasEntry(A)).toBe(false);
   });
@@ -202,15 +202,15 @@ describe('Offline Unlock (ADR-071)', () => {
     await enrollA();
     await goOffline();
     clock += UNLOCK_TTL_MS + 1;
-    expect((await unlockOffline(A, PASS, mkDeps())).kind).toBe('expired');
+    expect((await unlockOffline(A, PHRASE, mkDeps())).kind).toBe('expired');
     expect(await hasEntry(A)).toBe(true);
     clock = 1_000_000 - 1; // device clock behind the last online contact
-    expect((await unlockOffline(A, PASS, mkDeps())).kind).toBe('expired');
+    expect((await unlockOffline(A, PHRASE, mkDeps())).kind).toBe('expired');
     clock = 1_000_000 + UNLOCK_TTL_MS + 5_000;
     await readyVault(A);
     await touchOnline(A, userA, clock);
     await goOffline();
-    expect((await unlockOffline(A, PASS, mkDeps())).kind).toBe('ok');
+    expect((await unlockOffline(A, PHRASE, mkDeps())).kind).toBe('ok');
   });
 
   it('local mode: zero fetches, sync paused, KEK/refresh refused; orders/visits/payments queue PENDING under the entry owner', async () => {
@@ -219,7 +219,7 @@ describe('Offline Unlock (ADR-071)', () => {
     const f = vi.fn();
     vi.stubGlobal('fetch', f);
     setTokens(jwt(A), 'rA');
-    expect((await unlockOffline(A, PASS, mkDeps())).kind).toBe('ok');
+    expect((await unlockOffline(A, PHRASE, mkDeps())).kind).toBe('ok');
     await expect(apiFetch('/auth/me')).rejects.toBeInstanceOf(LocalModeNetworkError);
     await expect(fetchOfflineKek()).rejects.toBeInstanceOf(LocalModeNetworkError);
     expect(isSyncPaused()).toBe(true);
@@ -237,7 +237,7 @@ describe('Offline Unlock (ADR-071)', () => {
   it('reconnect: only a fresh /auth/me of the same owner leaves local mode; mismatch locks the UK; offline stays local', async () => {
     await enrollA();
     await goOffline();
-    await unlockOffline(A, PASS, mkDeps());
+    await unlockOffline(A, PHRASE, mkDeps());
     expect((await reconnectFromLocal(async () => ({ kind: 'offline' }))).kind).toBe('still-offline');
     expect(getLocalOwner()).toEqual(A);
     const other = { ...userA, id: 'uB' };
@@ -246,7 +246,7 @@ describe('Offline Unlock (ADR-071)', () => {
     expect(isLocalMode()).toBe(false);
     expect(isVaultReadyFor(A)).toBe(false);
 
-    await unlockOffline(A, PASS, mkDeps());
+    await unlockOffline(A, PHRASE, mkDeps());
     expect((await reconnectFromLocal(async () => ({ kind: 'ok', user: userA }))).kind).toBe('ok');
     expect(isLocalMode()).toBe(false);
     expect(isSyncPaused()).toBe(false);
@@ -255,7 +255,7 @@ describe('Offline Unlock (ADR-071)', () => {
   it('cross-tab switch to another owner ends local mode and locks A', async () => {
     await enrollA();
     await goOffline();
-    await unlockOffline(A, PASS, mkDeps());
+    await unlockOffline(A, PHRASE, mkDeps());
     const handler = vi.fn();
     const off = onUnauthorized(handler);
     setTokens(jwt(B), 'rB');
@@ -271,9 +271,9 @@ describe('Offline Unlock (ADR-071)', () => {
     await enrollA();
     expect((await changePassphrase(A, userA, 'Nope-Nope-Nope-12', 'Green-Tiger-Moon-77', 'Green-Tiger-Moon-77', mkDeps())).kind).toBe('wrong-old');
     clock += 3_000; // the wrong old passphrase above started a backoff
-    expect((await changePassphrase(A, userA, PASS, 'Green-Tiger-Moon-77', 'Green-Tiger-Moon-77', mkDeps())).kind).toBe('ok');
+    expect((await changePassphrase(A, userA, PHRASE, 'Green-Tiger-Moon-77', 'Green-Tiger-Moon-77', mkDeps())).kind).toBe('ok');
     await goOffline();
-    expect((await unlockOffline(A, PASS, mkDeps())).kind).toBe('wrong');
+    expect((await unlockOffline(A, PHRASE, mkDeps())).kind).toBe('wrong');
     clock += 3_000;
     expect((await unlockOffline(A, 'Green-Tiger-Moon-77', mkDeps())).kind).toBe('ok');
   });
@@ -284,20 +284,20 @@ describe('Offline Unlock (ADR-071)', () => {
     expect(missingCapabilities({ indexedDB: 1, subtle: 1, WebAssembly: 1 })).toEqual(['worker']);
     await readyVault(A);
     vi.stubGlobal('Worker', undefined);
-    expect((await enrollOfflineUnlock(A, userA, PASS, PASS, {}, mkDeps())).kind).toBe('unsupported');
-    expect((await unlockOffline(A, PASS, mkDeps())).kind).toBe('unsupported');
+    expect((await enrollOfflineUnlock(A, userA, PHRASE, PHRASE, {}, mkDeps())).kind).toBe('unsupported');
+    expect((await unlockOffline(A, PHRASE, mkDeps())).kind).toBe('unsupported');
     expect(isVaultReadyFor(A)).toBe(true); // vault / online path untouched
   });
 
   it('KDF/worker errors are not wrong-passphrase verdicts (never counted) and do not weaken the KDF at enroll', async () => {
     await readyVault(A);
-    expect((await enrollOfflineUnlock(A, userA, PASS, PASS, {}, mkDeps(A, { kdfBroken: true }))).kind).toBe('error');
+    expect((await enrollOfflineUnlock(A, userA, PHRASE, PHRASE, {}, mkDeps(A, { kdfBroken: true }))).kind).toBe('error');
     expect(await hasEntry(A)).toBe(false); // no silent FLOOR fallback on a non-memory error
     await enrollA();
     await goOffline();
-    for (let i = 0; i < MAX_FAILURES + 2; i++) expect((await unlockOffline(A, PASS, mkDeps(A, { kdfBroken: true }))).kind).toBe('device-error');
+    for (let i = 0; i < MAX_FAILURES + 2; i++) expect((await unlockOffline(A, PHRASE, mkDeps(A, { kdfBroken: true }))).kind).toBe('device-error');
     expect((await db.offlineUnlock.get([A.userId, A.companyId]))!.failCount).toBe(0);
-    expect((await unlockOffline(A, PASS, mkDeps())).kind).toBe('ok');
+    expect((await unlockOffline(A, PHRASE, mkDeps())).kind).toBe('ok');
   });
 
   it('failure counter is transactional (parallel failures all count) and a wrong OLD passphrase counts too', async () => {
@@ -313,7 +313,7 @@ describe('Offline Unlock (ADR-071)', () => {
   it('reconnect keeps local mode ON until /auth/me is ok for the same owner; only /auth/me|refresh may pass during the probe', async () => {
     await enrollA();
     await goOffline();
-    await unlockOffline(A, PASS, mkDeps());
+    await unlockOffline(A, PHRASE, mkDeps());
     let during = false;
     const r = await reconnectFromLocal(async () => {
       during = isLocalMode() && isSyncPaused();
