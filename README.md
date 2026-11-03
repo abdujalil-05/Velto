@@ -58,7 +58,7 @@ docker-compose up -d        # host ports: postgres:5433 (container 5432), redis:
 # (DATABASE_URL, hech qachon superuser/BYPASSRLS emas); velto_system — BYPASSRLS,
 # faqat telefon bo'yicha login va cross-tenant fon ishlar.
 # Eski volume'da va `prisma migrate reset`dan keyin superuser sifatida qayta ishga tushiring:
-psql "postgresql://velto:velto@localhost:5433/velto_dev" -f packages/database/scripts/provision-roles.sql
+psql "postgresql://velto:velto@localhost:5433/velto_dev" -v velto_env=dev -f packages/database/scripts/provision-roles.sql
 
 pnpm db:migrate             # prisma migrate dev
 pnpm db:seed                # demo tenant "Demo Distribution" (production'da ishlamaydi)

@@ -80,7 +80,7 @@ jobs:
         run: pnpm --filter @velto/database run generate
 
       - name: Provision database roles (owner / app / system)
-        run: psql "$DATABASE_ADMIN_URL" -v ON_ERROR_STOP=1 -f packages/database/scripts/provision-roles.sql
+        run: psql "$DATABASE_ADMIN_URL" -v ON_ERROR_STOP=1 -v velto_env=dev -f packages/database/scripts/provision-roles.sql
 
       - name: Run migrations
         run: pnpm --filter @velto/database exec prisma migrate deploy

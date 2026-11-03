@@ -32,17 +32,23 @@
 --               until an operator sets one interactively: `\password <role>`
 --               in psql — never in argv/history), and velto_owner is
 --               NOCREATEDB. Existing roles' passwords are never touched.
--- If `velto_env` is not passed, it is `dev` only when the target database
--- name ends in _dev/_ci/_test/_load (docker init `velto_dev`, CI `velto_ci`,
--- load `velto_load` — these keep working unchanged); ANY other name
--- (e.g. the pilot `velto`) is `production`. Fail-safe: an unknown name never
--- gets a guessable password, and autodetected dev aborts if the cluster also
--- holds a non-dev database (see guard below).
+-- `velto_env` is REQUIRED — the environment is never inferred from the
+-- database name (an accidental name match must not hand out guessable
+-- passwords). Missing, unknown or contradicting the connection -> abort
+-- before anything is changed (fail closed):
+--   dev         requires current_database() to end in _dev/_ci/_test/_load
+--               (docker init `velto_dev`, CI `velto_ci`, `velto_test`) AND
+--               every other non-template database in the cluster (except
+--               `postgres`) to carry a dev/scratch token — roles are
+--               cluster-wide, so a dev DB inside a production cluster aborts.
+--   production  aborts if current_database() ends in _dev/_ci/_test/_load.
 --
 -- Usage (as superuser, e.g. the docker bootstrap role `velto`):
 --   psql "postgresql://velto:velto@localhost:5433/velto_dev" -v ON_ERROR_STOP=1 \
---     -f packages/database/scripts/provision-roles.sql
+--     -v velto_env=dev -f packages/database/scripts/provision-roles.sql
 --   production: psql -d <prod_db> -v ON_ERROR_STOP=1 -v velto_env=production -f ...
+-- docker-compose runs it on first init via docker-initdb-provision-roles.sh
+-- (initdb cannot pass psql variables to a bare .sql file).
 -- (psql rejects Prisma's `?schema=public` URL parameter — strip it.)
 -- Backup role velto_backup: separate opt-in script provision-backup-role.sql.
 
@@ -51,35 +57,43 @@
 \set ON_ERROR_STOP on
 \if :{?velto_env}
 \else
-SELECT CASE WHEN current_database() ~ '_(dev|ci|test|load)$' THEN 'dev' ELSE 'production' END AS velto_env \gset
--- Roles are CLUSTER-wide, the name heuristic is per-database: a *_dev DB in a
--- production cluster must not get password=rolname roles / CREATEDB. So an
--- AUTODETECTED dev mode also requires every other non-template database
--- (except `postgres`) to look non-production, i.e. carry a dev/scratch token
--- (velto_ci_20261102, velto_mfa_smoke, velto_restore_drill_*, ...). Any other
--- name (e.g. the pilot `velto`) aborts before anything is changed. An
--- explicit `-v velto_env=dev` stays allowed: deliberate operator choice.
 DO $$
-DECLARE bad text;
 BEGIN
-  IF current_database() ~ '_(dev|ci|test|load)$' THEN
-    SELECT string_agg(datname, ', ' ORDER BY datname) INTO bad
-    FROM pg_catalog.pg_database
-    WHERE NOT datistemplate AND datname <> 'postgres'
-      AND datname !~ '(^|_)(dev|ci|test|load|local|smoke|drill|synth|scratch|tmp)(_|$)';
-    IF bad IS NOT NULL THEN
-      RAISE EXCEPTION 'refusing autodetected dev mode: cluster has non-dev database(s): %', bad
-        USING HINT = 'production cluster: pass -v velto_env=production; dev-only cluster: pass -v velto_env=dev explicitly';
-    END IF;
-  END IF;
+  RAISE EXCEPTION 'provision-roles.sql: velto_env is required (no autodetect from the database name)'
+    USING HINT = 'pass -v velto_env=dev|production';
 END
 $$;
 \endif
 SELECT set_config('velto.provision_env', :'velto_env', false) AS env \gset provision_
 DO $$
+DECLARE
+  env text := current_setting('velto.provision_env');
+  devname boolean := current_database() ~ '_(dev|ci|test|load)$';
+  bad text;
 BEGIN
-  IF current_setting('velto.provision_env') NOT IN ('dev', 'production') THEN
-    RAISE EXCEPTION 'velto_env must be dev or production, got %', current_setting('velto.provision_env');
+  IF env NOT IN ('dev', 'production') THEN
+    RAISE EXCEPTION 'velto_env must be dev or production, got %', env;
+  END IF;
+  IF env = 'production' AND devname THEN
+    RAISE EXCEPTION 'velto_env=production contradicts dev/test database name %', current_database()
+      USING HINT = 'use -v velto_env=dev for a dev/CI database, or connect to the production database';
+  END IF;
+  IF env = 'dev' THEN
+    IF NOT devname THEN
+      RAISE EXCEPTION 'velto_env=dev requires a database name ending in _dev/_ci/_test/_load, got %', current_database()
+        USING HINT = 'production database: pass -v velto_env=production';
+    END IF;
+    -- Roles are CLUSTER-wide: dev mode also requires every other non-template
+    -- database (except `postgres`) to carry a dev/scratch token
+    -- (velto_ci_20261102, velto_mfa_smoke, velto_restore_drill_*, ...).
+    SELECT string_agg(datname, ', ' ORDER BY datname) INTO bad
+    FROM pg_catalog.pg_database
+    WHERE NOT datistemplate AND datname <> 'postgres'
+      AND datname !~ '(^|_)(dev|ci|test|load|local|smoke|drill|synth|scratch|tmp)(_|$)';
+    IF bad IS NOT NULL THEN
+      RAISE EXCEPTION 'refusing velto_env=dev: cluster has non-dev database(s): %', bad
+        USING HINT = 'production cluster: pass -v velto_env=production';
+    END IF;
   END IF;
 END
 $$;

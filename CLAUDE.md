@@ -37,7 +37,7 @@ docker-compose up -d   # host ports: postgres:5433 (container 5432), redis:6380 
 # velto_app = RLS-bound app/test role (DATABASE_URL, never superuser/BYPASSRLS);
 # velto_system = BYPASSRLS, login-by-phone + cross-tenant jobs only.
 # Re-run as superuser on a pre-existing volume and after `prisma migrate reset`:
-psql "postgresql://velto:velto@localhost:5433/velto_dev" -f packages/database/scripts/provision-roles.sql
+psql "postgresql://velto:velto@localhost:5433/velto_dev" -v velto_env=dev -f packages/database/scripts/provision-roles.sql
 
 pnpm db:migrate    # prisma migrate dev
 pnpm db:seed       # demo tenant "Demo Distribution" — refuses to run if NODE_ENV=production

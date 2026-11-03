@@ -15,7 +15,8 @@ services:
       - "5433:5432"
     volumes:
       - velto_postgres_data:/var/lib/postgresql/data
-      - ./packages/database/scripts/provision-roles.sql:/docker-entrypoint-initdb.d/10-provision-roles.sql:ro
+      - ./packages/database/scripts/provision-roles.sql:/velto-scripts/provision-roles.sql:ro
+      - ./packages/database/scripts/docker-initdb-provision-roles.sh:/docker-entrypoint-initdb.d/10-provision-roles.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U velto"]
       interval: 5s

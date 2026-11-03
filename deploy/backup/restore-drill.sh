@@ -110,7 +110,7 @@ drop_db; q "$ADMIN_URL" "CREATE DATABASE \"$DB\"" >/dev/null || { rec "create db
 pg_restore --no-owner --no-privileges -d "$DRILL_ADMIN" "$DUMP" 2> "$TMP/restore.err"
 REAL_ERR="$(grep -E 'error:|ERROR:' "$TMP/restore.err" | grep -v 'transaction_timeout' | head -n 3 | tr '\n|' '  ')"
 [[ -z "$REAL_ERR" ]] && rec "pg_restore" PASS "restored into $DB (version-skew SET transaction_timeout lines ignored: $(grep -c transaction_timeout "$TMP/restore.err" || true))" || { rec "pg_restore" FAIL "${REAL_ERR:0:300}"; exit 1; }
-psql "$DRILL_ADMIN" -X -v ON_ERROR_STOP=1 -q -f "$ROOT/packages/database/scripts/provision-roles.sql" >/dev/null 2>"$TMP/prov.err" \
+psql "$DRILL_ADMIN" -X -v ON_ERROR_STOP=1 -v velto_env=production -q -f "$ROOT/packages/database/scripts/provision-roles.sql" >/dev/null 2>"$TMP/prov.err" \
   && rec "provision-roles.sql" PASS "owner/app/system roles + grants applied" || rec "provision-roles.sql" FAIL "$(head -c 200 "$TMP/prov.err" | tr '\n|' '  ')"
 T2=$(now)
 

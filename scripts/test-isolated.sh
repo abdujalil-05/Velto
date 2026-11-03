@@ -22,7 +22,7 @@ trap cleanup EXIT
 "${COMPOSE[@]}" up -d --wait
 
 # Superuser provisioning via the container (no host psql needed).
-"${COMPOSE[@]}" exec -T postgres psql -U velto -d velto_test -v ON_ERROR_STOP=1 -q -f - \
+"${COMPOSE[@]}" exec -T postgres psql -U velto -d velto_test -v ON_ERROR_STOP=1 -v velto_env=dev -q -f - \
   < packages/database/scripts/provision-roles.sql >/dev/null
 
 export NODE_ENV=test

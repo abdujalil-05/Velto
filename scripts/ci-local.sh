@@ -36,7 +36,9 @@ psql "postgresql://$AU:$AP@$HOST:$PORT/postgres" -X -Atq -v ON_ERROR_STOP=1 -c "
 
 run "install"            pnpm install --frozen-lockfile
 run "prisma generate"    pnpm --filter @velto/database run generate
-run "provision roles"    psql "$DATABASE_ADMIN_URL" -X -v ON_ERROR_STOP=1 -q -f packages/database/scripts/provision-roles.sql
+# velto_env: default DB velto_ci_local has no dev suffix -> production (same as the former autodetect);
+# override with CI_LOCAL_VELTO_ENV=dev when CI_LOCAL_DB ends in _dev/_ci/_test/_load.
+run "provision roles"    psql "$DATABASE_ADMIN_URL" -X -v ON_ERROR_STOP=1 -v velto_env="${CI_LOCAL_VELTO_ENV:-production}" -q -f packages/database/scripts/provision-roles.sql
 run "migrate deploy"     pnpm --filter @velto/database exec prisma migrate deploy
 run "lint"               pnpm run lint
 run "typecheck"          pnpm run typecheck
