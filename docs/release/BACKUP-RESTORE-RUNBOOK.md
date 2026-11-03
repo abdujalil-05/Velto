@@ -191,8 +191,17 @@ Restore: `restore-objects.sh <archive> --to-bucket|--to-dir [--prefix products/]
 ## Тесты (статические/синтетические; на сервере не запускались)
 `deploy/backup/tests/backup-gate.test.sh` (32: нет бэкапа, устарел, подмена/усечение архива, сервис упал, подделка статуса, позитив), `deploy/tests/deploy-abort.test.sh` (8), `deploy/tests/env-parse.test.sh` (18), `deploy/backup/tests/objects-minio.test.sh` (32, throwaway MinIO в docker как синтетический S3, 2 компании x 5 префиксов, restore в пустой bucket, put-only/Object Lock/разделение ключей), `deploy/backup/tests/db-e2e-measure.sh` (замеры).
 
+## Изолированный drill 2026-11-03 (ADR-067; синтетика, НЕ RPO/RTO)
+Протокол: `RESTORE-DRILL-ISOLATED-2026-11-03.md`. Одноразовые postgres:16.15 + MinIO (offsite = отдельный bucket с Object Lock), runner на образе postgres:16 под root, 2 tenant (seed-load), 43 объекта в 5 префиксах; после прогона удалены только ресурсы `velto-drill-*`.
+`backup-run.sh` rc=0 (роль `velto_backup`) → 3 архива gpg AES256, plaintext нет → offsite (манифест набора загружен последним) → sha256 3/3 после скачивания → `restore-drill.sh` set-mode rc=0 (17 PASS, 1 SKIP финансовые суммы) → `restore-objects.sh` dir+bucket 43/43 sha256.
+После restore: RLS+FORCE на всех таблицах с `companyId`; UPDATE/DELETE AuditLog отклонены для 4 ролей; Invoice/Payment/Allocation/StockMovement — count+sum+md5 по компаниям совпали; verify-integrity 0 строк; чужие строки 0 в обе стороны.
+Негатив: повреждённый/усечённый/отсутствующий архив, удалённый объект, подмена sha/count в манифесте → rc=1; только БД → rc=2 PARTIAL. `backup-run.sh`: неверный пароль БД rc=2, неверный offsite-ключ rc=10, объект вне 5 префиксов rc=1 — везде алерт через `velto-monitor.sh --alert` и RECOVERED после успешного прогона. 23 файла логов/алертов × 15 секретов = 0 совпадений.
+Время (backup 2 с, restore 1 с) — локальное, на крошечном объёме; строка 35 матрицы остаётся NOT_TESTED.
+
 ## OPEN (Часть 3)
 11. Реальный offsite с Object Lock у выбранного провайдера и проверка put-only политики именно на нём (в тесте — MinIO).
 12. Drill на стенде: полный цикл velto-backup.service под root -> deploy.sh под velto-deploy (в песочнице root-owner проверен только аргументом/CLI с uid 0).
 13. Размер/время объектного архива на реальных данных (полный архив ежечасно может не уложиться).
 14. Переход текущего хоста (всё под root) на раскладку users (deploy/system/) — отдельное плановое изменение.
+15. Манифест набора не подписан, offsite сверяется по размеру (ADR-067 §5 R1/R2): регулярный drill из offsite обязателен, put-only ключ + Object Lock.
+16. `restore-drill.sh` не сверяет финансовые суммы без внешнего fingerprint (SKIP): на стенде снять fingerprint источника до backup.
