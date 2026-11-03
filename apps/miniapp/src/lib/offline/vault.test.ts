@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const pushSync = vi.fn();
 vi.mock('@/lib/api/sync', () => ({ pullSync: vi.fn(), pushSync: (...a: unknown[]) => pushSync(...a) }));
 
-import { clearDeviceKey } from './crypto';
+import { clearDeviceKey, encryptValue, hasDeviceKey } from './crypto';
 import { clearOfflineDb, db } from './db';
 import { EncryptedStore } from './encrypted-store';
 import { bringUpVault, bringUpVaultWithRetry, sealOwnerForLogout, wipeLocalAfterLogout } from './held-seal';
@@ -114,18 +114,20 @@ describe('vault key (UK) for payments', () => {
   });
   afterEach(() => resumeSync());
 
-  it('creating a PAYMENT is blocked when the KEK is unavailable (no device-key-only payments); other docs still work', async () => {
+  it('creating ANY document (payment, order, visit) is blocked when the KEK is unavailable: nothing is written, no device key is created', async () => {
     expect((await up(A, { down: true })).status).toBe('unavailable');
-    await expect(queueRepository.enqueue('payment', { amount: '1.00' })).rejects.toBeInstanceOf(VaultUnavailableError);
+    for (const t of ['payment', 'order', 'visit'] as const) {
+      await expect(queueRepository.enqueue(t, { x: 1 })).rejects.toBeInstanceOf(VaultUnavailableError);
+    }
     expect(await db.queue.count()).toBe(0);
-    await expect(queueRepository.enqueue('order', { x: 1 })).resolves.toBeTruthy();
+    expect(window.localStorage.getItem('velto.dbKey')).toBeNull();
   });
 
   it('conflict online -> offline -> logout completes with no network -> other user/company cannot open it -> owner re-login restores', async () => {
     expect((await up(A)).status).toBe('ready');
     const id = await heldPayment();
     await queueRepository.enqueue('order', { customerId: 'cust-secret-2' }); // device-key row of the owner: must move too
-    expect(window.localStorage.getItem('velto.dbKey')).not.toBeNull();
+    expect(window.localStorage.getItem('velto.dbKey')).toBeNull(); // the order went straight under the UK: no device key exists
 
     expect(await canAnyDeviceMaterialOpen(A, [(await fakeKekServer(cur)(A)()).bytes])).toBe(true); // positive control: the owner's KEK does open it
     expect(await logoutOffline(A)).toBe('sealed'); // no getKek anywhere in this path
@@ -363,7 +365,7 @@ describe('vault key (UK) for payments', () => {
     await up(A);
     const order = await queueRepository.enqueue('order', { customerId: 'cust-o' });
     const pay = await heldPayment();
-    expect((await db.queue.get(order))!._enc.v).toBeUndefined();
+    expect((await db.queue.get(order))!._enc.v).toBe('uk1'); // new documents are sealed at write time
     const r = await endSessionSealing(A);
     expect(r).toMatchObject({ state: "sealed", remainingPayments: 0 });
     expect(getVaultStatus()).toBe('locked');
@@ -437,14 +439,36 @@ describe('vault key (UK) for payments', () => {
     expect(n410).toBe(1);
   });
 
-  it('[5] ownerless quarantine export never contains PAYMENT payloads; rows are kept', async () => {
+  it('session expiry wipes the reference cache and drops the device key; vault rows stay intact and recoverable after owner re-auth', async () => {
     await up(A);
-    await legacyPayment('leg-q', { userId: undefined, companyId: undefined, payload: { amount: '88.00', customerId: 'cust-q' } });
+    const pay = await heldPayment();
+    await db.customers.put({ id: 'c-a', code: 'A', name: 'A-secret', _enc: await encryptValue({ n: 'A-secret' }) } as never); // creates the device key like a cache pull
+    expect(hasDeviceKey()).toBe(true);
+    await endSessionSealing(A);
+    setOfflineSession(null);
+    expect(await db.customers.count()).toBe(0);
+    expect(hasDeviceKey()).toBe(false);
+    expect(await db.queue.get(pay)).toBeDefined();
+    as(A);
+    await up(A);
+    expect((await queueRepository.listHeld()).map((e) => e.clientId)).toEqual([pay]);
+  });
+
+  it('device key is dropped at bring-up even when nothing was moved (no device-key rows left)', async () => {
+    await up(A);
+    await queueRepository.enqueue('order', { customerId: 'cust-o' });
+    await up(A);
+    expect(hasDeviceKey()).toBe(false);
+  });
+
+  it('[5] ownerless payment (even naming A in its payload) is never exported, listed or decrypted; row is kept', async () => {
+    await up(A);
     await queueRepository.enqueue('order', { x: 1 });
-    const out = JSON.parse(await queueRepository.exportQuarantinedToJson());
-    const item = out.items.find((i: { clientId: string }) => i.clientId === 'leg-q');
-    expect(Object.keys(item).sort()).toEqual(['clientId', 'createdAt', 'type']);
-    expect(JSON.stringify(out)).not.toContain('88.00');
+    await legacyPayment('leg-q', { userId: undefined, companyId: undefined, payload: { amount: '88.00', customerId: 'cust-q', userId: A.userId } });
+    const out = JSON.stringify(JSON.parse(await queueRepository.exportPendingToJson()));
+    expect(out).not.toContain('leg-q');
+    expect(out).not.toContain('88.00');
+    expect((await queueRepository.listAll()).some((e) => e.clientId === 'leg-q')).toBe(false);
     expect(await db.queue.get('leg-q')).toBeDefined();
   });
 
@@ -458,16 +482,16 @@ describe('vault key (UK) for payments', () => {
     expect(isVaultReadyFor(B)).toBe(true);
   });
 
-  it('claimLegacyEntries skips an ownerless payment while the vault is not ready (no throw, row untouched), claims after bring-up', async () => {
+  it('an ownerless row naming A as creator is never claimed or re-encrypted by bring-up; stays under the device key, preserved', async () => {
     const legacy = new EncryptedStore<Record<string, unknown>, string>(db.queue as never, ['clientId', 'type', 'status', 'createdAt', 'userId', 'companyId', 'seq']);
     await legacy.put({
       clientId: 'own-less', type: 'payment', status: 'PENDING', createdAt: new Date().toISOString(), seq: 1,
       payload: { amount: '9.00', agentId: A.userId }, schemaVersion: 1, attemptCount: 0,
     });
-    await expect(queueRepository.claimLegacyEntries(A)).resolves.toMatchObject({ claimed: 0 });
-    expect(await db.queue.get('own-less')).toBeDefined();
-    expect((await db.queue.get('own-less'))!._enc.v).toBeUndefined();
-    await up(A); // bring-up re-runs the claim now that the vault is ready
-    expect((await db.queue.get('own-less'))!._enc.v).toBe('uk1');
+    await up(A);
+    const row = (await db.queue.get('own-less'))!;
+    expect(row._enc.v).toBeUndefined();
+    expect(row.userId).toBeUndefined();
+    expect(await queueRepository.listPushable(20)).toEqual([]);
   });
 });

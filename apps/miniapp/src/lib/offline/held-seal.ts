@@ -1,6 +1,6 @@
 import { fetchOfflineKek, type OfflineKek } from '@/lib/api/offline-kek';
 import { fetchReconciliationStatus } from '@/lib/api/payments';
-import { clearDeviceKey } from './crypto';
+import { clearDeviceKey, hasDeviceKey } from './crypto';
 import { clearOfflineDb, db } from './db';
 import { countDeviceKeyPaymentRows, countDeviceKeyRows, ensureVault, lockVault, refreshLegacyPaymentRows, wipeVaultKeys, type VaultStatus } from './vault';
 import { queueRepository, type QueueEntry } from './queue';
@@ -86,20 +86,38 @@ export interface VaultBringUp {
   status: VaultStatus;
   /** Legacy sealed rows that could not be opened (kept sealed, never deleted). */
   legacyFailed: number;
+  /** The shared device key was removed in this pass (every queue row is under a vault key). */
+  deviceKeyDropped?: boolean;
 }
 
-/** Session-ready (after /auth/me): vault up, then legacy device-key payments and legacy sealed rows are migrated into it. Safe to repeat. */
+/**
+ * Drops the shared device key as soon as no queue row depends on it. The reference cache is encrypted under
+ * the same key, so it is wiped first (queue untouched) and refilled by the next pull; runs also when nothing was moved
+ * (no orphaned cache under a key about to disappear).
+ */
+async function dropDeviceKeyIfUnused(): Promise<boolean> {
+  if (!hasDeviceKey() || (await countDeviceKeyRows()) !== 0) return false;
+  await clearOfflineDb({ keepQueue: true });
+  clearDeviceKey();
+  return true;
+}
+
+/**
+ * Session-ready (after /auth/me): vault up, then the authenticated owner's (userId+companyId) legacy device-key
+ * orders/visits/payments and legacy sealed rows are moved into it; with no device-key row left the device key is
+ * deleted at once. Rows of another user/company are never touched (counted, see vault.ts). Safe to repeat.
+ */
 export async function bringUpVault(owner: OfflineSession, getKek: (version?: number) => Promise<OfflineKek> = fetchOfflineKek): Promise<VaultBringUp> {
   const status = await ensureVault(owner, getKek);
   if (status !== 'ready') {
-    await refreshLegacyPaymentRows();
+    await refreshLegacyPaymentRows(owner);
     return { status, legacyFailed: 0 };
   }
-  await queueRepository.claimLegacyEntries(owner); // ownerless legacy payments naming this user as creator need the vault
-  await queueRepository.sealOwnRowsToVault(owner, { onlyPayments: true });
+  await queueRepository.sealOwnRowsToVault(owner);
   const legacyFailed = (await hasSealedFor(owner)) ? (await restoreSealedFor(owner, getKek)).failed : 0;
-  await refreshLegacyPaymentRows();
-  return { status, legacyFailed };
+  const deviceKeyDropped = await dropDeviceKeyIfUnused();
+  await refreshLegacyPaymentRows(owner);
+  return { status, legacyFailed, deviceKeyDropped };
 }
 
 /**
@@ -191,10 +209,15 @@ export async function resolveHeldRows(): Promise<HeldResolved[]> {
  * still depends on it, drops the UK from memory. No network.
  */
 export async function wipeLocalAfterLogout(): Promise<void> {
+  await wipeCacheKeepQueue();
+  lockVault();
+}
+
+/** Reference-cache wipe + device key drop when unused; queue (vault rows) untouched; does not touch the vault lock. */
+export async function wipeCacheKeepQueue(): Promise<void> {
   const rows = await queueRepository.queueRowCount();
   await clearOfflineDb({ keepQueue: rows > 0 });
   if ((await countDeviceKeyRows()) === 0) clearDeviceKey();
-  lockVault();
 }
 
 /**

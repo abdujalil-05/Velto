@@ -7,6 +7,8 @@ import { isCourierOnly } from '@/lib/auth/roles';
 import { SyncStatusBadge } from '@/components/shared/sync-status-badge';
 import { QueueNavLink } from '@/components/queue/queue-nav-link';
 import { SyncBanners } from '@/components/queue/sync-banners';
+import { ForeignLegacyGate } from '@/components/foreign-legacy-gate';
+import { useForeignLegacyRows } from '@/lib/offline/use-vault-status';
 import { RevokedNotice } from '@/components/revoked-notice';
 import { TelegramFallback } from '@/components/telegram-fallback';
 import { Button } from '@/components/ui/button';
@@ -17,6 +19,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   // No sync engine is mounted for a courier-only session (see OfflineLayer in
   // components/providers.tsx), and there is nothing queued to report either.
   const courierOnly = isCourierOnly(user?.roles);
+  const foreignLegacy = useForeignLegacyRows();
 
   if (status === 'loading') {
     return (
@@ -57,6 +60,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       </div>
     );
   }
+
+  if (!courierOnly && foreignLegacy > 0) return <ForeignLegacyGate />;
 
   return (
     <div className="mx-auto flex min-h-screen max-w-lg flex-col">

@@ -13,6 +13,7 @@ import { bringUpVaultWithRetry, sealOwnerForLogout, wipeLocalAfterLogout } from 
 import { endSessionSealing } from '@/lib/offline/session-end';
 import { countDeviceKeyRows, lockVault, refreshLegacyPaymentRows } from '@/lib/offline/vault';
 import { resumeSync, stopSyncAndWait } from '@/lib/offline/sync-engine-core';
+import { guardTokenOwner } from '@/lib/offline/sync-engine-core';
 import { forgetLastKnownOwner, getOfflineSession, setOfflineSession } from '@/lib/offline/session';
 import { clearRevokedInfo, getRevokedInfo, handleSessionRevoked, type RevokedInfo } from '@/lib/offline/revoke-wipe';
 import { resetPreparedSession } from '@/lib/offline/session-bootstrap';
@@ -63,13 +64,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [revoked, setRevoked] = useState<RevokedInfo | null>(null);
   useEffect(() => setRevoked(getRevokedInfo()), []);
 
+  // Cross-tab: another tab of this origin signed in as a different user (shared localStorage tokens) -> end this tab's session now.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== null && e.key !== 'velto.accessToken' && e.key !== 'velto.refreshToken') return;
+      guardTokenOwner();
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
   // Session-ready: obtain the vault key for this user+company (needs the network once; KEK is fetched, used, zeroed).
   // Payments are blocked, and vault rows stay locked, until this succeeds.
   useEffect(() => {
     if (status !== 'authenticated' || !user) return;
     const owner = getOfflineSession();
     if (!owner) return;
-    void refreshLegacyPaymentRows().catch(() => {}); // startup detection, independent of the network
+    void refreshLegacyPaymentRows(owner).catch(() => {}); // startup detection, independent of the network
     void bringUpVaultWithRetry(owner, { isCurrent: () => getOfflineSession()?.userId === owner.userId && getOfflineSession()?.companyId === owner.companyId })
       .then((r) => {
         if (r.status === 'retired') toast.warning(tQueue('vaultRetired'), { id: 'vaultRetired' });
@@ -291,7 +302,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const resolveRevoked = useCallback(async (opts?: { hide?: boolean }) => {
     const info = getRevokedInfo();
-    if (info && !opts?.hide && (await queueRepository.listRevokedFor(info)).length === 0) {
+    if (info && !opts?.hide && (await queueRepository.countOwnRows(info)) === 0) {
       clearRevokedInfo();
       if ((await countDeviceKeyRows()) === 0) clearDeviceKey();
       setRevoked(null);

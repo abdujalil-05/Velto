@@ -5,8 +5,10 @@ import Dexie from 'dexie';
 import { encryptValue } from './crypto';
 import { db } from './db';
 import { EncryptedStore } from './encrypted-store';
-import { QueueQuotaError, queueRepository } from './queue';
+import { QueueQuotaError, queueCodec, queueRepository } from './queue';
 import { setOfflineSession } from './session';
+import { lockVault } from './vault';
+import { readyVault } from './vault-test-helper';
 import { resetPreparedSession } from './session-bootstrap';
 import { getLastStorageStatus, publishStorageStatus } from './storage-budget';
 import { resetPushBatchLimit, runPush } from './sync-engine-core';
@@ -17,8 +19,14 @@ import { resetPushBatchLimit, runPush } from './sync-engine-core';
  */
 const A = { userId: 'uA', companyId: 'c1' };
 const B = { userId: 'uB', companyId: 'c1' };
-const asUser = (u: typeof A) => {
+/** Owner-claim JWT-shaped token (the sync engine refuses tokens whose sub/companyId differ from the session owner). */
+const tok = (label: string, sub = 'uA') => `e30.${btoa(JSON.stringify({ sub, companyId: 'c1', label })).replace(/=/g, '')}.sig`;
+const STALE = tok('stale');
+const FRESH = tok('fresh');
+const RELOGIN = tok('relogin');
+const asUser = async (u: typeof A) => {
   setOfflineSession(u);
+  await readyVault(u);
   resetPreparedSession();
 };
 
@@ -45,7 +53,7 @@ class FakeServer {
     if (!this.online) throw new TypeError('Failed to fetch');
     if (u.endsWith('/auth/refresh')) {
       this.refreshCalls += 1;
-      return this.refreshOk ? json(201, { accessToken: 'fresh-access', refreshToken: 'fresh-refresh' }) : json(401, { code: 'UNAUTHORIZED', message: { uz: '', ru: '', en: '' } });
+      return this.refreshOk ? json(201, { accessToken: FRESH, refreshToken: 'fresh-refresh' }) : json(401, { code: 'UNAUTHORIZED', message: { uz: '', ru: '', en: '' } });
     }
     if (!u.endsWith('/sync/push')) throw new Error(`unexpected ${u}`);
     this.authHeaders.push(new Headers(init?.headers).get('Authorization'));
@@ -79,9 +87,10 @@ class FakeServer {
 
 let server: FakeServer;
 const rawStore = () => new EncryptedStore<Record<string, unknown>, string>(db.queue as never, ['clientId', 'type', 'status', 'createdAt', 'userId', 'companyId']);
+const vaultStore = () => new EncryptedStore<Record<string, unknown>, string>(db.queue as never, ['clientId', 'type', 'status', 'createdAt', 'userId', 'companyId', 'seq'], ['seq'], queueCodec as never);
 const entries = () => queueRepository.listAllOwners();
 async function makeAllDue() {
-  const s = rawStore();
+  const s = vaultStore();
   for (const e of await entries()) await s.put({ ...(await s.get(e.clientId))!, nextAttemptAt: undefined });
 }
 const orderPayload = (i: number) => ({ customerId: 'cust', lines: [{ productId: 'p', packagingId: 'k', qty: 1, expectedUnitPrice: '10000.00' }], note: `n${i}` });
@@ -101,6 +110,7 @@ async function restartApp(user = A) {
   resetPreparedSession();
   resetPushBatchLimit();
   setOfflineSession(user);
+  await readyVault(user);
 }
 
 describe('F4.4 offline QA (TZ 8.5 / 16.2)', () => {
@@ -111,8 +121,8 @@ describe('F4.4 offline QA (TZ 8.5 / 16.2)', () => {
     await db.queue.clear();
     await db.meta.clear();
     clearTokens();
-    setTokens('stale-access', 'refresh-1');
-    asUser(A);
+    setTokens(STALE, 'refresh-1');
+    await asUser(A);
   });
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -160,6 +170,7 @@ describe('F4.4 offline QA (TZ 8.5 / 16.2)', () => {
   it('8.5 Dexie v3 -> v4 upgrade keeps every queue row and backfills seq by createdAt then clientId', async () => {
     db.close();
     await Dexie.delete('velto-miniapp');
+    lockVault(); // the wrapped keys died with the database; the in-memory UK must not outlive them
     const v3 = new Dexie('velto-miniapp');
     v3.version(1).stores({ products: 'id, sku, name, categoryId', packagings: 'id, productId', prices: '[priceListId+productId], productId', customers: 'id, code, name, tin', outlets: 'id, customerId', stock: '[productId+warehouseId], productId', categories: 'id, parentId', balances: 'customerId', routes: 'id, weekday', routeStops: 'id, routeId, outletId', queue: 'clientId, type, status, createdAt', meta: 'key' });
     v3.version(2).stores({ customers: 'id, code, name' });
@@ -173,6 +184,7 @@ describe('F4.4 offline QA (TZ 8.5 / 16.2)', () => {
     await db.open();
     resetPreparedSession();
     setOfflineSession(A);
+    await readyVault(A);
     const after = await queueRepository.listPending(10);
     expect(after.map((e) => e.clientId)).toEqual(['zz', 'aa', 'bb']);
     expect(after.map((e) => e.seq)).toEqual([1, 2, 3]);
@@ -271,40 +283,45 @@ describe('F4.4 offline QA (TZ 8.5 / 16.2)', () => {
 
   it('8.4 logout guard + forced path: unsynced blocks logout; forced logout destroys NO unsynced row (own kept encrypted, foreign untouched)', async () => {
     const mine = await enqueueOrders(2);
-    asUser(B);
+    await asUser(B);
     const theirs = await enqueueOrders(1);
-    asUser(A);
+    await asUser(A);
     expect(await queueRepository.unsyncedCountForLogout()).toBe(2); // B's row is not A's to answer for
     expect(await queueRepository.unsyncedCountAllOwners()).toBe(3);
     await queueRepository.deleteOwnEntries();
-    const left = await entries();
+    const left = await db.queue.toArray(); // raw: B's row stays sealed under B's key
     expect(left.map((e) => e.clientId).sort()).toEqual([...mine, ...theirs].sort());
   });
 
   it('8.4 second user on the same device never pushes the first user\'s rows; first user\'s rows survive and sync under their own session', async () => {
     const aIds = await enqueueOrders(3);
-    asUser(B); // A logged out with work unsynced (forced switch), B signs in
+    await asUser(B); // A logged out with work unsynced (forced switch), B signs in
+    setTokens(tok('b', 'uB'), 'rB');
     const bIds = await enqueueOrders(2);
     await runPush();
     expect(server.sent().sort()).toEqual(bIds.sort());
     expect(server.sent().some((id) => aIds.includes(id))).toBe(false);
     expect((await queueRepository.listAll()).map((e) => e.clientId).sort()).toEqual(bIds.sort()); // B cannot even list A's
-    asUser(A);
+    await asUser(A);
+    setTokens(tok('a2'), 'rA2');
     await runPush();
     expect(server.sent().filter((id) => aIds.includes(id)).sort()).toEqual(aIds.sort());
   });
 
-  it('8.4 legacy ownerless rows are quarantined: never pushed, never adopted by whoever signs in first, listed for export/discard', async () => {
+  it('8.4 legacy ownerless rows are quarantined: never pushed, never adopted by whoever signs in first, never listed/exported/decrypted, kept', async () => {
     const legacyId = '00000000-0000-4000-8000-000000000001';
+    await asUser(A);
+    const [own] = await enqueueOrders(1);
+    await runPush();
+    expect(server.sent()).toEqual([own]);
     await rawStore().put({
       clientId: legacyId, type: 'order', status: 'PENDING', payload: { clientId: legacyId, ...orderPayload(0) },
       createdAt: new Date(Date.now() - 1000).toISOString(), schemaVersion: 1, attemptCount: 0,
     } as never);
-    asUser(A);
-    const [own] = await enqueueOrders(1);
     await runPush();
-    expect(server.sent()).toEqual([own]);
-    expect((await queueRepository.listQuarantined()).map((e) => e.clientId)).toEqual([legacyId]);
+    expect(server.sent()).toEqual([own]); // ownerless never pushed
+    expect(JSON.parse(await queueRepository.exportPendingToJson()).items.map((i: { clientId: string }) => i.clientId)).not.toContain(legacyId); // ownerless never exported
+    expect(await rawStore().get(legacyId)).toBeDefined(); // preserved
     expect((await queueRepository.listAll()).some((e) => e.clientId === legacyId)).toBe(false);
   });
 
@@ -313,8 +330,8 @@ describe('F4.4 offline QA (TZ 8.5 / 16.2)', () => {
     server.unauthorizedOnce = true;
     const out = await runPush();
     expect(server.refreshCalls).toBe(1);
-    expect(server.authHeaders).toEqual(['Bearer stale-access', 'Bearer fresh-access']);
-    expect(getAccessToken()).toBe('fresh-access');
+    expect(server.authHeaders).toEqual([`Bearer ${STALE}`, `Bearer ${FRESH}`]);
+    expect(getAccessToken()).toBe(FRESH);
     expect(out).toMatchObject({ accepted: 20, paused: null });
     expect(server.requests).toEqual([ids]);
     const done = await queueRepository.listAll();
@@ -336,7 +353,7 @@ describe('F4.4 offline QA (TZ 8.5 / 16.2)', () => {
     expect(held.map((e) => e.clientId).sort()).toEqual([...ids].sort());
     expect(held.every((e) => e.status === 'PENDING' && e.attemptCount === 0 && !e.lastError)).toBe(true);
 
-    setTokens('relogin-access', 'relogin-refresh');
+    setTokens(RELOGIN, 'relogin-refresh');
     expect((await runPush()).accepted).toBe(4);
     expect(server.sent()).toEqual(ids);
   });

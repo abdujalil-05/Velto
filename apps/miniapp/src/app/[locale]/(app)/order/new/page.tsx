@@ -21,6 +21,7 @@ import {
 import { checkQty, estimateOrderTotal, repeatLineQty, resolvePrice, withExpectedUnitPrices } from '@/lib/offline/pricing';
 import type { SyncPackaging } from '@/lib/api/sync';
 import { enqueueMany, QueueQuotaError, type EnqueueItem } from '@/lib/offline/queue';
+import { ForeignLegacyBlockedError, VaultUnavailableError } from '@/lib/offline/vault';
 import { useSyncEngine } from '@/lib/offline/sync-engine';
 import { useLastOrderQuery, type CreateOrderInput } from '@/lib/api/orders';
 import type { CreateVisitInput } from '@/lib/api/visits';
@@ -208,6 +209,13 @@ export default function NewOrderPage() {
     else toast.success(t('repeated'));
   }
 
+  function saveErrorMessage(err: unknown): string {
+    // Nothing was written in any of these cases; the cart stays in memory with the same clientIds.
+    if (err instanceof VaultUnavailableError) return t('vaultBlocked');
+    if (err instanceof ForeignLegacyBlockedError) return t('foreignLegacyBlocked');
+    return err instanceof QueueQuotaError ? t('saveQuotaFull') : t('saveFailed');
+  }
+
   async function handleSave() {
     if (!customerId || cartLineInputs.length === 0 || submittingRef.current) return;
     submittingRef.current = true;
@@ -247,7 +255,7 @@ export default function NewOrderPage() {
       router.push('/route');
     } catch (err) {
       // A queue-write error is a failure (cart stays, same clientIds). Anything after a successful write is not.
-      if (!written) toast.error(err instanceof QueueQuotaError ? t('saveQuotaFull') : t('saveFailed'));
+      if (!written) toast.error(saveErrorMessage(err));
     } finally {
       submittingRef.current = false;
       setSubmitting(false);

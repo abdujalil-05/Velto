@@ -85,7 +85,9 @@
     "discardConfirmAction": "Discard",
     "qtyScaleError": "Quantity may have at most 3 decimals",
     "qtyBaseScaleError": "Quantity × packaging factor may have at most 3 decimals",
-    "repeatedPartial": "{count} lines could not be copied exactly - enter the quantity manually"
+    "repeatedPartial": "{count} lines could not be copied exactly - enter the quantity manually",
+    "vaultBlocked": "A protection key is needed to save on this device. Connect to the internet and retry - NOTHING was saved, your entries are kept on screen.",
+    "foreignLegacyBlocked": "Cannot save: documents of another user are on this device. Ask that user to sign in here first."
   },
   "Payment": {
     "amount": "Amount",
@@ -147,7 +149,9 @@
       "NO_PERMISSION": "Location permission denied — visit saved, but GPS is not verified",
       "NO_FIX": "Location not available — visit saved, but GPS is not verified",
       "OUTLET_NO_COORDS": "The outlet has no coordinates — GPS could not be checked"
-    }
+    },
+    "vaultBlocked": "A protection key is needed to save on this device. Connect to the internet and retry - NOTHING was saved, your entries are kept on screen.",
+    "foreignLegacyBlocked": "Cannot save: documents of another user are on this device. Ask that user to sign in here first."
   },
   "Courier": {
     "title": "Deliveries",
@@ -175,7 +179,10 @@
       "DELIVERED": "Delivered",
       "CLOSED": "Closed",
       "CANCELLED": "Cancelled"
-    }
+    },
+    "awaitingHandover": "Waiting for handover",
+    "awaitingHandoverHint": "The warehouse has not handed this order over yet. Delivery can be marked after handover.",
+    "notHandedOver": "Order is not handed over by the warehouse yet. Nothing changed; try again after handover."
   },
   "NotFound": {
     "title": "This page does not exist",
@@ -292,14 +299,7 @@
     "logoutDiscardConfirmDescription": "{count} document(s) never reached the server. Nothing is deleted: they stay encrypted on this device and come back after your next sign-in.",
     "logoutDiscardConfirm": "Yes, sign out",
     "quarantineTitle": "In quarantine",
-    "quarantineWarning": "These documents are left over from an old version and their creator is unknown. They are not sent and are not counted as your work. You can export or discard them.",
     "quarantineExport": "Export",
-    "quarantineExportWarning": "Warning: the file contains data of an unknown owner. Store it carefully.",
-    "quarantineDiscard": "Discard",
-    "quarantineDiscardConfirmTitle": "Discard document of unknown owner?",
-    "quarantineDiscardConfirmDescription": "The document never reached the server and will be lost for good.",
-    "quarantineDiscardConfirm": "Yes, discard",
-    "logoutQuarantineNote": "Documents of unknown owner are not deleted on sign-out - they stay on the device.",
     "handoverPending": "Waiting for cashier handover",
     "handoverPosted": "Cashier accepted",
     "handoverRejected": "Cashier rejected",
@@ -348,5 +348,10 @@
     "wipedToast": "Device cache cleared, account blocked.",
     "exportDisabled": "Export is available only when the app is opened from the documents' owner's Telegram account (an on-device check, not a security guarantee).",
     "discardConfirm": "Delete"
+  },
+  "ForeignLegacyGate": {
+    "title": "Documents on this device are locked",
+    "body": "Documents on this device cannot be opened by this account. They are kept and not deleted. Contact your administrator; offline work is blocked until this is resolved.",
+    "logout": "Sign out"
   }
 }

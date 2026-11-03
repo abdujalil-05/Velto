@@ -13,7 +13,6 @@ import { queueRepository } from '@/lib/offline/queue';
 import { isAwaitingHandover, refreshHandoverDecisions } from '@/lib/offline/handover-sync';
 import { useOfflineCustomers, useOfflineOutlets, useOfflineProducts } from '@/lib/offline/use-offline-data';
 import { downloadJson, entryDisplayName, exportFileName, needsAttention, sortQueueForScreen } from '@/lib/offline/queue-view';
-import { ConfirmSheet } from '@/components/shared/confirm-sheet';
 import { QueueItemCard } from '@/components/queue/queue-item-card';
 import { LogoutButton } from '@/components/queue/logout-button';
 import { Button } from '@/components/ui/button';
@@ -31,12 +30,6 @@ export default function QueuePage() {
     queryFn: () => queueRepository.listAll(),
     staleTime: 0,
   });
-  const quarantined = useQuery({
-    queryKey: ['offline', 'queue', 'quarantined', engine.unsyncedCount],
-    queryFn: () => queueRepository.listQuarantined(),
-    staleTime: 0,
-  });
-  const [discardId, setDiscardId] = useState<string | null>(null);
   const customers = useOfflineCustomers();
   const outlets = useOfflineOutlets();
   const products = useOfflineProducts();
@@ -72,11 +65,6 @@ export default function QueuePage() {
     toast.success(t('exportDone'));
   }
 
-  async function onExportQuarantined() {
-    downloadJson(await queueRepository.exportQuarantinedToJson(), exportFileName());
-    toast.warning(t('quarantineExportWarning'));
-  }
-
   const section = (title: string, list: typeof rows) =>
     list.length > 0 && (
       <section className="space-y-2" aria-label={title}>
@@ -108,41 +96,6 @@ export default function QueuePage() {
       {section(t('pendingTitle'), waiting)}
       {section(t('syncedTitle'), synced)}
 
-      {(quarantined.data?.length ?? 0) > 0 && (
-        <section className="space-y-2 rounded-md border border-destructive/40 p-3" aria-label={t('quarantineTitle')}>
-          <h2 className="text-sm font-medium">
-            {t('quarantineTitle')} ({quarantined.data?.length})
-          </h2>
-          <p className="text-xs text-muted-foreground">{t('quarantineWarning')}</p>
-          {quarantined.data?.map((e) => (
-            <div key={e.clientId} className="flex items-center justify-between gap-2 text-sm">
-              <span>
-                {e.type} · {e.createdAt.slice(0, 16).replace('T', ' ')}
-              </span>
-              <Button type="button" variant="outline" size="sm" onClick={() => setDiscardId(e.clientId)}>
-                {t('quarantineDiscard')}
-              </Button>
-            </div>
-          ))}
-          <Button type="button" variant="secondary" size="lg" className="w-full gap-2" onClick={() => void onExportQuarantined()}>
-            <Download className="h-4 w-4" aria-hidden="true" />
-            {t('quarantineExport')}
-          </Button>
-        </section>
-      )}
-      <ConfirmSheet
-        open={discardId !== null}
-        onOpenChange={(o) => !o && setDiscardId(null)}
-        title={t('quarantineDiscardConfirmTitle')}
-        description={t('quarantineDiscardConfirmDescription')}
-        confirmLabel={t('quarantineDiscardConfirm')}
-        onConfirm={async () => {
-          if (discardId) await queueRepository.discardQuarantinedItem(discardId);
-          setDiscardId(null);
-          void quarantined.refetch();
-          engine.notifyQueueChanged();
-        }}
-      />
 
       <div className="space-y-2 pt-2">
         <Button type="button" variant="secondary" size="lg" className="w-full gap-2" onClick={() => void onExport()}>

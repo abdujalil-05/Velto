@@ -4,7 +4,7 @@ import { db, QUEUE_SEQ_KEY } from './db';
 import { EncryptedStore, type RowCodec } from './encrypted-store';
 import { getOfflineSession, NoOfflineSessionError, type OfflineSession } from './session';
 import { publishStorageStatus } from './storage-budget';
-import { assertNoLegacyPayments, assertVaultReady, countDeviceKeyPaymentRows, isVaultReadyFor, openWithVault, sealWithVault, UK_FORMAT, VaultUnavailableError } from './vault';
+import { assertNoForeignLegacy, assertNoLegacyPayments, assertVaultReady, countDeviceKeyPaymentRows, isVaultReadyFor, openWithVault, sealWithVault, UK_FORMAT, VaultUnavailableError } from './vault';
 
 /**
  * Local sync queue (TZ 8.2/8.3). One table, the single source for the sync
@@ -86,25 +86,28 @@ export class QueueItemStateError extends Error {
 }
 
 /**
- * PAYMENT rows (incl. held ones) are encrypted under the owner's vault key (vault.ts) at write time; every
- * other type stays under the device key until the owner's logout moves it (`sealOwnRowsToVault`). A vault row
- * is read only while the vault is ready for its owner; otherwise it is skipped (locked), never dropped.
- * A payment write while the vault is not ready THROWS (never a device-key fallback).
+ * EVERY queue row (order, visit, payment) is encrypted under the owner's vault key (vault.ts) at write time.
+ * A write while the vault is not ready for the owner THROWS (never a device-key fallback). A vault row is read
+ * only while the vault is ready for its owner; otherwise it is skipped (locked), never dropped. Rows still under
+ * the shared device key are legacy: read only for the signed-in owner; another user's and every ownerless row
+ * is never decrypted here (only detected from its plaintext owner columns, kept untouched).
  */
-const queueCodec: RowCodec<QueueEntry> = {
-  async encode(e, force) {
-    if (e.type !== 'payment' && !force) return null;
-    // Fail closed: a PAYMENT is never written under the device key. Without a ready vault for its owner the
-    // write throws and the existing row stays exactly as it was.
+export const queueCodec: RowCodec<QueueEntry> = {
+  async encode(e) {
     if (!e.userId || !e.companyId) throw new VaultUnavailableError();
     const blob = await sealWithVault({ userId: e.userId, companyId: e.companyId }, e.clientId, e);
     if (!blob) throw new VaultUnavailableError();
     return blob;
   },
   async decode(row) {
-    if (row._enc.v !== UK_FORMAT) return null;
     const { userId, companyId, clientId } = row as unknown as { userId?: string; companyId?: string; clientId: string };
+    // Ownerless row: no verifiable owner (payload fields are unauthenticated) -> never decrypted/listed/exported/pushed; kept untouched.
     if (!userId || !companyId) return {};
+    if (row._enc.v !== UK_FORMAT) {
+      const s = getOfflineSession();
+      if (!s || userId !== s.userId || companyId !== s.companyId) return {};
+      return null;
+    }
     const value = await openWithVault<QueueEntry>({ userId, companyId }, clientId, row._enc);
     return value && value.clientId === clientId && value.userId === userId && value.companyId === companyId ? { value } : {};
   },
@@ -184,11 +187,11 @@ function canonicalJson(v: unknown): string {
 export async function enqueueMany(items: EnqueueItem[]): Promise<string[]> {
   const session = getOfflineSession();
   if (!session) throw new NoOfflineSessionError();
-  // No device-key-only payments: without the vault key the payment is not created at all.
-  if (items.some((i) => i.type === 'payment')) {
-    assertVaultReady(session);
-    await assertNoLegacyPayments();
-  }
+  // No device-key documents: without the owner's vault key nothing (order, visit, payment) is created at all,
+  // and the caller keeps the form data. Another user's legacy device-key rows also stop new work (see vault.ts).
+  assertVaultReady(session);
+  await assertNoForeignLegacy(session);
+  if (items.some((i) => i.type === 'payment')) await assertNoLegacyPayments();
   const createdAt = new Date().toISOString();
   const entries: QueueEntry[] = items.map((i) => {
     const clientId = i.clientId ?? crypto.randomUUID();
@@ -217,7 +220,7 @@ export async function enqueueMany(items: EnqueueItem[]): Promise<string[]> {
     }
     const existing = await store.get(e.clientId);
     if (!existing || existing.userId !== session.userId || existing.companyId !== session.companyId) {
-      throw new QueueItemStateError('CLIENT_ID_FOREIGN', `clientId ${e.clientId} belongs to another owner or is not readable`);
+      throw new QueueItemStateError('CLIENT_ID_FOREIGN', 'clientId belongs to another owner or is not readable');
     }
     if (canonicalJson(existing.payload) === canonicalJson(e.payload) && existing.type === e.type) {
       mode.push('skip');
@@ -338,7 +341,15 @@ async function update(clientId: string, fn: (e: QueueEntry) => QueueEntry): Prom
   const raw = await store.get(clientId);
   if (!raw) return undefined;
   const next = fn(normalize(raw));
-  await store.put(next);
+  try {
+    await store.put(next);
+  } catch (e) {
+    // An EXISTING legacy device-key row (already readable with that key) may be updated in place while the vault
+    // is not ready (status changes must not stall); it is moved into the vault by the next bring-up. New rows never take this path.
+    const disk = e instanceof VaultUnavailableError ? await db.queue.get(clientId) : undefined;
+    if (!disk || disk._enc?.v === UK_FORMAT || next.type === 'payment') throw e; // a PAYMENT is never rewritten under the device key
+    await store.put(next, { deviceKey: true });
+  }
   return next;
 }
 
@@ -465,7 +476,7 @@ export async function countByStatus(): Promise<QueueCounts> {
 
 /** Unsynced documents of ALL owners on this device — the logout guard (a foreign user's unsent work also blocks the wipe). */
 export async function unsyncedCountAllOwners(): Promise<number> {
-  return (await readAll()).filter((e) => UNSYNCED_STATUSES.includes(e.status)).length;
+  return db.queue.filter((r) => UNSYNCED_STATUSES.includes(r.status as QueueStatus)).count(); // plaintext status column: counts other owners' sealed rows without decrypting
 }
 
 /** FAILED + CONFLICT items of the current user ("Needs attention"). */
@@ -549,15 +560,12 @@ export interface PendingExport {
   exportedAt: string;
   userId: string | null;
   companyId: string | null;
-  /** True for the quarantine export: the file holds data of an UNKNOWN owner. */
-  unknownOwner?: boolean;
   items: {
     clientId: string;
     type: SyncDocType;
-    /** Omitted (with payload/lastError) for PAYMENT items of the ownerless quarantine export. */
-    status?: QueueStatus;
+    status: QueueStatus;
     createdAt: string;
-    payload?: Record<string, unknown>;
+    payload: Record<string, unknown>;
     lastError?: QueueError;
   }[];
 }
@@ -581,45 +589,11 @@ export async function exportPendingToJson(): Promise<string> {
   return JSON.stringify(out, null, 2);
 }
 
-// ---- quarantine of ownerless pre-v3 rows (TZ 8.1 / 11.3) ----------------
-
-/**
- * Ownerless (pre-v3) rows. NEVER pushed, never listed as anybody's work.
- * On a shared device we cannot know who created them, so nobody inherits them
- * implicitly; they are only exportable or explicitly discardable.
- */
-export async function listQuarantined(): Promise<QueueEntry[]> {
-  if (!getOfflineSession()) return [];
-  return (await readAll()).filter((e) => !e.userId).sort(bySeq);
-}
-
-/** Export of quarantined rows: the file contains data of UNKNOWN owner (`unknownOwner: true`). */
-export async function exportQuarantinedToJson(): Promise<string> {
-  const s = getOfflineSession();
-  const out: PendingExport = {
-    exportedAt: new Date().toISOString(),
-    userId: s?.userId ?? null,
-    companyId: s?.companyId ?? null,
-    unknownOwner: true,
-    // Unknown owner => any account could read the file: PAYMENT amounts/customers are never exported here (rows are kept).
-    items: toExportItems(await listQuarantined()).map((i) => (i.type === 'payment' ? { clientId: i.clientId, type: i.type, createdAt: i.createdAt } : i)),
-  };
-  return JSON.stringify(out, null, 2);
-}
-
-/** Explicit user discard (UI confirms first) of one quarantined row. Owned rows are untouched. */
-export async function discardQuarantinedItem(clientId: string): Promise<void> {
-  const e = (await listQuarantined()).find((x) => x.clientId === clientId);
-  if (!e) throw new QueueItemStateError('NOT_FOUND', `Quarantined item ${clientId} not found`);
-  if (isReconciliationHold(e)) throw new QueueItemStateError('NOT_DISCARDABLE', `Queue item ${clientId} is held for manual reconciliation`);
-  await db.queue.delete(clientId);
-}
-
-/** Unsynced rows the current user is answerable for on logout: own + quarantined (foreign owners' are untouched and not counted). */
+/** Unsynced rows the current user is answerable for on logout: own only (foreign and ownerless rows are untouched and not counted). */
 export async function unsyncedCountForLogout(): Promise<number> {
   const s = getOfflineSession();
   // Held payments never block logout: they stay in the queue under the owner's vault key (vault.ts).
-  return (await readAll()).filter((e) => UNSYNCED_STATUSES.includes(e.status) && (!e.userId || ownedBy(e, s)) && !isReconciliationHold(e)).length;
+  return (await readAll()).filter((e) => UNSYNCED_STATUSES.includes(e.status) && ownedBy(e, s) && !isReconciliationHold(e)).length;
 }
 
 /** Current user's held (reconciliation) payments. */
@@ -781,6 +755,11 @@ export async function quarantineOwnerEntries(owner: OfflineSession): Promise<num
   return quarantined;
 }
 
+/** Rows of one owner still on the device, counted from plaintext owner columns only (works while the vault is locked; nothing is decrypted). */
+export async function countOwnRows(owner: OfflineSession): Promise<number> {
+  return db.queue.where('userId').equals(owner.userId).filter((r) => r.companyId === owner.companyId).count();
+}
+
 /** Current user's OWN quarantined rows (after a block was lifted and they signed in again). */
 export async function listOwnQuarantined(): Promise<QueueEntry[]> {
   return (await listAll()).filter((e) => !!e.quarantinedAt && e.status !== 'SYNCED').sort(bySeq);
@@ -818,35 +797,6 @@ export async function discardRevokedFor(owner: OfflineSession): Promise<void> {
   await Promise.all(rows.map((e) => db.queue.delete(e.clientId)));
 }
 
-function creatorIdOf(e: QueueEntry): string | null {
-  for (const k of ['agentId', 'userId', 'createdBy'] as const) {
-    const v = e.payload[k];
-    if (typeof v === 'string' && v) return v;
-  }
-  return null;
-}
-
-/**
- * Pre-v3 documents carry no owner. They are NEVER adopted by whoever signs in
- * first (shared device: that would push A's cash under B's identity). A row is
- * claimed only if its payload names the creating agent and that is the current
- * user; everything else stays ownerless = quarantined.
- */
-export async function claimLegacyEntries(session: OfflineSession): Promise<{ claimed: number; quarantined: number }> {
-  const legacy = (await readAll()).filter((e) => !e.userId);
-  let claimed = 0;
-  for (const e of legacy) {
-    if (creatorIdOf(e) === session.userId) {
-      // A payment is re-encrypted under the vault key: while the vault is not ready, leave the ownerless row
-      // untouched (never device-key fallback, never deleted) so a later claim after bring-up picks it up.
-      if (e.type === 'payment' && !isVaultReadyFor(session)) continue;
-      await store.put({ ...e, userId: session.userId, companyId: session.companyId });
-      claimed += 1;
-    }
-  }
-  return { claimed, quarantined: legacy.length - claimed };
-}
-
 export const queueRepository = {
   enqueue,
   enqueueMany,
@@ -872,10 +822,6 @@ export const queueRepository = {
   isReconciliationHold,
   resolveConflictResubmit,
   exportPendingToJson,
-  claimLegacyEntries,
-  listQuarantined,
-  exportQuarantinedToJson,
-  discardQuarantinedItem,
   unsyncedCountForLogout,
   listHeld,
   sealOwnRowsToVault,
@@ -887,6 +833,7 @@ export const queueRepository = {
   listOwnQuarantined,
   releaseOwnQuarantine,
   listRevokedFor,
+  countOwnRows,
   exportRevokedToJson,
   discardRevokedFor,
 };

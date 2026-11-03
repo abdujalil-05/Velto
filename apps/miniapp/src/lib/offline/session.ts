@@ -34,8 +34,16 @@ export function abortSyncRequests(): void {
   syncAbort = new AbortController();
 }
 
+const ownerChangeListeners = new Set<() => void>();
+/** Fires when a session replaces a DIFFERENT live session (account/company switch). Logout (null) is handled by its own ordered flow. */
+export function onSessionOwnerChange(cb: () => void): void {
+  ownerChangeListeners.add(cb);
+}
+
 export function setOfflineSession(session: OfflineSession | null): void {
+  const prev = current;
   current = session;
+  if (session && prev && (prev.userId !== session.userId || prev.companyId !== session.companyId)) for (const l of [...ownerChangeListeners]) l();
   if (session) syncPaused = false;
   // Survives an app restart so a revoke detected at bootstrap (no in-memory
   // session yet) still knows whose documents to quarantine. Ids only, no data.

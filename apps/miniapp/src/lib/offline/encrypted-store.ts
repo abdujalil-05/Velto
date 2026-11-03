@@ -51,11 +51,11 @@ export class EncryptedStore<T extends object, Key> {
     this.table = table;
   }
 
-  private toRow(item: T, force = false) {
+  private toRow(item: T, force = false, deviceKey = false) {
     return async () => {
       const plain: Record<string, unknown> = {};
       for (const field of this.keyFields) plain[field] = item[field];
-      const blob = (await this.codec?.encode(item, force)) ?? (await encryptValue(item));
+      const blob = deviceKey ? await encryptValue(item) : ((await this.codec?.encode(item, force)) ?? (await encryptValue(item)));
       return { ...plain, _enc: blob };
     };
   }
@@ -86,8 +86,8 @@ export class EncryptedStore<T extends object, Key> {
   }
 
   /** `force` asks the codec to use its own key even for rows it would not normally cover (logout/login migration). */
-  async put(item: T, opts: { force?: boolean } = {}): Promise<void> {
-    await this.table.put(await this.toRow(item, opts.force)());
+  async put(item: T, opts: { force?: boolean; deviceKey?: boolean } = {}): Promise<void> {
+    await this.table.put(await this.toRow(item, opts.force, opts.deviceKey)());
   }
 
   private overlay(row: RawRow & Record<string, unknown>, value: T | undefined): T | undefined {

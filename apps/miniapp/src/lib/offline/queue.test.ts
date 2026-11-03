@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { db } from './db';
 import { EncryptedStore } from './encrypted-store';
-import { queueRepository, type QueueEntry } from './queue';
+import { queueCodec, queueRepository, type QueueEntry } from './queue';
 import { setOfflineSession } from './session';
 import { readyVault } from './vault-test-helper';
 
@@ -9,7 +9,7 @@ import { readyVault } from './vault-test-helper';
 // fake-indexeddb) doesn't get along with vi.useFakeTimers() (Dexie's
 // internal scheduling relies on real timers/microtasks), so tests
 // "age" an entry by overwriting it after the fact instead of mocking time.
-const rawQueueStore = new EncryptedStore<QueueEntry, string>(db.queue as never, ['clientId', 'type', 'status', 'createdAt', 'userId', 'companyId']);
+const rawQueueStore = new EncryptedStore<QueueEntry, string>(db.queue as never, ['clientId', 'type', 'status', 'createdAt', 'userId', 'companyId', 'seq'], ['seq'], queueCodec);
 async function backdate(clientId: string, isoDate: string): Promise<void> {
   const entry = await rawQueueStore.get(clientId);
   if (!entry) throw new Error(`no queue entry ${clientId}`);
@@ -174,20 +174,23 @@ describe('queueRepository (10.3 guaranteed delivery)', () => {
   it('exportPendingToJson never includes other owners (no all scope); deleteOwnEntries keeps foreign rows and own unsynced rows', async () => {
     const mine = await queueRepository.enqueue('order', { x: 1 });
     setOfflineSession({ userId: 'u2', companyId: 'c1' });
+    await readyVault({ userId: 'u2', companyId: 'c1' });
     const theirs = await queueRepository.enqueue('order', { x: 2 });
     setOfflineSession({ userId: 'u1', companyId: 'c1' });
+    await readyVault({ userId: 'u1', companyId: 'c1' });
     const exported = JSON.parse(await queueRepository.exportPendingToJson());
     expect(exported.items.map((i: { clientId: string }) => i.clientId)).toEqual([mine]);
     expect(JSON.stringify(exported)).not.toContain(theirs);
     expect(await queueRepository.unsyncedCountForLogout()).toBe(1); // foreign row not counted
     await queueRepository.deleteOwnEntries();
-    expect((await queueRepository.listAllOwners()).map((e) => e.clientId).sort()).toEqual([mine, theirs].sort());
+    expect((await db.queue.toArray()).map((e) => e.clientId).sort()).toEqual([mine, theirs].sort()); // raw ids: the foreign row stays sealed
   });
 });
 
 describe('attempt accounting on kill / put failure', () => {
   beforeEach(async () => {
     setOfflineSession({ userId: 'u1', companyId: 'c1' });
+    await readyVault({ userId: 'u1', companyId: 'c1' });
     await db.queue.clear();
   });
 

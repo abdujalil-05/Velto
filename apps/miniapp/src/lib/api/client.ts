@@ -1,4 +1,4 @@
-import { clearTokens, getAccessToken, getRefreshToken, setTokens } from '@/lib/auth/tokens';
+import { TokenOwnerMismatchError, clearTokens, getAccessToken, getRefreshToken, setTokens, tokenIsForeign, type TokenOwner } from '@/lib/auth/tokens';
 import type { ApiErrorBody, LocalizedMessage, TokenPair } from './types';
 
 // Copied from apps/web/src/lib/api/client.ts — same shape (see the plan's
@@ -71,6 +71,11 @@ export function onUnauthorized(handler: UnauthorizedHandler): () => void {
   return () => unauthorizedHandlers.delete(handler);
 }
 
+/** Another user's token is in this tab's storage: end the in-memory session (UK dropped, queue untouched, tokens NOT cleared - they belong to the other user). */
+export function signalForeignToken(): void {
+  unauthorizedHandlers.forEach((handler) => handler({ revoked: false, sessionExpired: true }));
+}
+
 let refreshInFlight: Promise<RefreshResult> | null = null;
 
 /** `rejected`: refresh answered 401/403. `revoked`: ONLY the server's explicit AUTH_ACCOUNT_BLOCKED (user/company disabled). AUTH_SESSION_EXPIRED is shared by expired, rotated-reuse and unknown tokens, so it can never trigger a wipe. */
@@ -111,6 +116,8 @@ export interface ApiFetchOptions extends Omit<RequestInit, 'body'> {
   body?: unknown;
   /** Skip attaching the access token / attempting a refresh — for /auth/telegram itself. */
   skipAuth?: boolean;
+  /** When set, the bearer token (also one just refreshed) must belong to this owner or the call throws TokenOwnerMismatchError without touching the network. */
+  owner?: TokenOwner;
 }
 
 async function unauthorizedCode(res: Response): Promise<string | undefined> {
@@ -119,11 +126,12 @@ async function unauthorizedCode(res: Response): Promise<string | undefined> {
 }
 
 export async function apiFetch<T = void>(path: string, options: ApiFetchOptions = {}): Promise<T> {
-  const { body, skipAuth, headers, ...rest } = options;
+  const { body, skipAuth, owner, headers, ...rest } = options;
   const isFormData = body instanceof FormData;
 
-  const send = (token: string | null) =>
-    fetch(`${API_URL}${path}`, {
+  const send = (token: string | null) => {
+    if (owner && tokenIsForeign(token, owner)) throw new TokenOwnerMismatchError();
+    return fetch(`${API_URL}${path}`, {
       ...rest,
       headers: {
         ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
@@ -132,6 +140,7 @@ export async function apiFetch<T = void>(path: string, options: ApiFetchOptions 
       },
       body: isFormData ? (body as FormData) : body !== undefined ? JSON.stringify(body) : undefined,
     });
+  };
 
   let res = await send(skipAuth ? null : getAccessToken());
 

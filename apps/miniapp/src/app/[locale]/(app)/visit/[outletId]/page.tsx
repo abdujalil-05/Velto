@@ -10,6 +10,7 @@ import { useRouter, Link } from '@/i18n/navigation';
 import { useOfflineCustomers, useOfflineOutlets } from '@/lib/offline/use-offline-data';
 import { useLastOrderQuery } from '@/lib/api/orders';
 import { useSyncEngine } from '@/lib/offline/sync-engine';
+import { ForeignLegacyBlockedError, VaultUnavailableError } from '@/lib/offline/vault';
 import { enqueue, QueueQuotaError } from '@/lib/offline/queue';
 import type { CreateVisitInput } from '@/lib/api/visits';
 import { buildVisitGpsFields, localGpsStatus, stashVisitGps } from '@/lib/gps-payload';
@@ -101,7 +102,7 @@ export default function VisitPage() {
       await enqueue('visit', buildVisitPayload(outcome, reason) as unknown as Record<string, unknown>, { clientId: visitClientIdRef.current });
     } catch (err) {
       // Never shown as success; dialog and entered reason stay so the agent can retry.
-      toast.error(err instanceof QueueQuotaError ? t('saveQuotaFull') : t('saveFailed'));
+      toast.error(err instanceof VaultUnavailableError ? t('vaultBlocked') : err instanceof ForeignLegacyBlockedError ? t('foreignLegacyBlocked') : err instanceof QueueQuotaError ? t('saveQuotaFull') : t('saveFailed'));
       return false;
     } finally {
       savingRef.current = false;

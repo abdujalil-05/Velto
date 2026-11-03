@@ -6,13 +6,15 @@ import { EncryptedStore } from './encrypted-store';
 import { queueRepository } from './queue';
 import { clearRevokedInfo, getRevokedInfo, handleSessionRevoked } from './revoke-wipe';
 import { setOfflineSession, setOwnerTelegramId } from './session';
+import { readyVault } from './vault-test-helper';
 import { resetPreparedSession } from './session-bootstrap';
 import { resetPushBatchLimit, runPush } from './sync-engine-core';
 
 const A = { userId: 'uA', companyId: 'c1' };
 const B = { userId: 'uB', companyId: 'c1' };
-const asUser = (u: typeof A) => {
+const asUser = async (u: typeof A) => {
   setOfflineSession(u);
+  await readyVault(u);
   resetPreparedSession();
 };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -54,7 +56,7 @@ describe('revoke wipe (TZ 8.6, ADR-022)', () => {
     clearRevokedInfo();
     clearTokens();
     setTokens('stale', 'refresh-1');
-    asUser(A);
+    await asUser(A);
     off = revokeOnUnauthorized();
   });
   afterEach(() => {
@@ -71,11 +73,12 @@ describe('revoke wipe (TZ 8.6, ADR-022)', () => {
 
     expect(await cacheEmpty()).toBe(true);
     expect(getRefreshToken()).toBeNull();
+    await readyVault(A); // vault rows stay locked after the wipe; the owner's own key reopens them
     const rows = await queueRepository.listRevokedFor(A);
     expect(rows.map((r) => r.clientId)).toEqual([id]);
     expect(getRevokedInfo()).toMatchObject(A);
 
-    asUser(A); // even the same owner signing in again: nothing is pushed
+    await asUser(A); // even the same owner signing in again: nothing is pushed
     expect(await queueRepository.listPushable(20)).toEqual([]);
     await runPush();
     expect(pushCalls).toBe(0);
@@ -89,19 +92,19 @@ describe('revoke wipe (TZ 8.6, ADR-022)', () => {
     expect(await cacheEmpty()).toBe(false);
     expect(getRevokedInfo()).toBeNull();
     setTokens('new-access', 'new-refresh');
-    asUser(A);
+    await asUser(A);
     expect((await queueRepository.listPushable(20)).map((e) => e.clientId)).toEqual([id]);
   });
 
   it('same user signing in after the block: sees own quarantine, release (confirmed) makes it pushable', async () => {
     const id = await queueRepository.enqueue('order', order);
     await handleSessionRevoked();
-    asUser(A);
+    await asUser(A);
     expect((await queueRepository.listOwnQuarantined()).map((e) => e.clientId)).toEqual([id]);
     expect(await queueRepository.listPushable(20)).toEqual([]);
-    asUser(B);
+    await asUser(B);
     expect(await queueRepository.listOwnQuarantined()).toEqual([]);
-    asUser(A);
+    await asUser(A);
     expect(await queueRepository.releaseOwnQuarantine()).toBe(1);
     expect((await queueRepository.listPushable(20)).map((e) => e.clientId)).toEqual([id]);
   });
@@ -134,6 +137,7 @@ describe('revoke wipe (TZ 8.6, ADR-022)', () => {
     await queueRepository.enqueue('visit', { outletId: 'o' });
     await Promise.all([handleSessionRevoked(), handleSessionRevoked()]);
     await handleSessionRevoked();
+    await readyVault(A);
     expect(await queueRepository.listRevokedFor(A)).toHaveLength(2);
     expect(await cacheEmpty()).toBe(true);
   });
@@ -150,12 +154,12 @@ describe('revoke wipe (TZ 8.6, ADR-022)', () => {
   it('another user on the device never sees or exports the revoked owner\'s documents; export/discard work for the owner', async () => {
     await queueRepository.enqueue('order', order);
     await handleSessionRevoked();
-    asUser(B);
+    await asUser(B);
     expect(await queueRepository.listAll()).toEqual([]);
-    expect(await queueRepository.listQuarantined()).toEqual([]);
     expect(JSON.parse(await queueRepository.exportPendingToJson()).items).toEqual([]);
     expect(await queueRepository.unsyncedCountForLogout()).toBe(0);
 
+    await readyVault(A);
     const exported = JSON.parse(await queueRepository.exportRevokedToJson(A));
     expect(exported.items).toHaveLength(1);
     await queueRepository.discardRevokedFor(B);
@@ -174,7 +178,7 @@ describe('AUTH_SESSION_EXPIRED on access token (ADR-058)', () => {
     });
     clearTokens();
     setTokens('legacy', 'refresh-1');
-    asUser(A);
+    await asUser(A);
     await db.queue.clear();
     await seedCache();
     const id = await queueRepository.enqueue('order', order);

@@ -19,10 +19,10 @@ import { getOfflineSession, sessionKey, type OfflineSession } from './session';
 
 // One EncryptedStore per Dexie table, key fields matching db.ts's `stores()`
 // index declarations exactly (10.2).
-const products = new EncryptedStore<SyncProduct, string>(db.products as never, ['id', 'sku', 'name', 'categoryId']);
+const products = new EncryptedStore<SyncProduct, string>(db.products as never, ['id', 'categoryId']);
 const packagings = new EncryptedStore<SyncPackaging, string>(db.packagings as never, ['id', 'productId']);
 const prices = new EncryptedStore<SyncPriceItem, [string, string]>(db.prices as never, ['priceListId', 'productId']);
-const customers = new EncryptedStore<SyncCustomer, string>(db.customers as never, ['id', 'code', 'name']);
+const customers = new EncryptedStore<SyncCustomer, string>(db.customers as never, ['id']);
 const outlets = new EncryptedStore<SyncOutlet, string>(db.outlets as never, ['id', 'customerId']);
 const stock = new EncryptedStore<SyncStock, [string, string]>(db.stock as never, ['productId', 'warehouseId']);
 const categories = new EncryptedStore<SyncCategory, string>(db.categories as never, ['id', 'parentId']);

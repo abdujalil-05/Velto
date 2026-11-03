@@ -1,7 +1,7 @@
 import { fetchOfflineKek, OfflineKekRetiredError, type OfflineKek } from '@/lib/api/offline-kek';
 import type { EncryptedBlob } from './crypto';
 import { db } from './db';
-import type { OfflineSession } from './session';
+import { onSessionOwnerChange, type OfflineSession } from './session';
 
 /**
  * Per-(userId, companyId) vault key "UK" (random AES-GCM-256) protecting PAYMENT
@@ -29,8 +29,17 @@ export type VaultStatus =
 export class VaultUnavailableError extends Error {
   readonly code = 'VAULT_UNAVAILABLE';
   constructor() {
-    super('Vault key unavailable: payment cannot be saved on this device');
+    super('Vault key unavailable: document cannot be saved on this device');
     this.name = 'VaultUnavailableError';
+  }
+}
+
+/** Legacy device-key rows (orders/visits/payments) owned by ANOTHER user/company sit on this device: the shared key can still open them, so no offline work may start until their owner signs in and seals them. */
+export class ForeignLegacyBlockedError extends Error {
+  readonly code = 'FOREIGN_LEGACY_ROWS';
+  constructor() {
+    super('Legacy device-key documents of another or unknown owner are on this device');
+    this.name = 'ForeignLegacyBlockedError';
   }
 }
 
@@ -45,6 +54,7 @@ export class LegacyPaymentsBlockedError extends Error {
 
 let status: VaultStatus = 'locked';
 let legacyPaymentRows = 0;
+let foreignLegacyRows = 0;
 let active: { userId: string; companyId: string; key: CryptoKey } | null = null;
 let generation = 0;
 let pending: { userId: string; companyId: string } | null = null;
@@ -139,6 +149,9 @@ export async function ensureVault(session: OfflineSession, getKek: (version?: nu
   return next;
 }
 
+/** Account/company switch without a logout in between: the previous owner's UK must not stay in memory. */
+onSessionOwnerChange(() => lockVault());
+
 /** Drops the UK from memory (logout, session end, revoke). Persisted rows are untouched. */
 export function lockVault(): void {
   generation += 1;
@@ -207,9 +220,27 @@ export function getLegacyPaymentRows(): number {
   return legacyPaymentRows;
 }
 
-/** Startup / after bring-up: re-detects legacy payment rows from IndexedDB and notifies the UI. */
-export async function refreshLegacyPaymentRows(): Promise<number> {
+/**
+ * Rows (any type) still under the shared device key that do not provably belong to `owner`: other user, other
+ * company, or ownerless (no verifiable creator). Counted from plaintext owner columns only: never decrypted. No owner = 0.
+ */
+export async function countForeignLegacyRows(owner: OfflineSession | null): Promise<number> {
+  if (!owner) return 0;
+  return db.queue.filter((r) => r._enc?.v !== UK_FORMAT && (!r.userId || r.userId !== owner.userId || r.companyId !== owner.companyId)).count();
+}
+
+export function getForeignLegacyRows(): number {
+  return foreignLegacyRows;
+}
+
+export async function assertNoForeignLegacy(owner: OfflineSession): Promise<void> {
+  if ((await countForeignLegacyRows(owner)) > 0) throw new ForeignLegacyBlockedError();
+}
+
+/** Startup / after bring-up: re-detects legacy payment rows (and foreign legacy rows relative to `owner`) from IndexedDB and notifies the UI. */
+export async function refreshLegacyPaymentRows(owner: OfflineSession | null = null): Promise<number> {
   legacyPaymentRows = await countDeviceKeyPaymentRows();
+  foreignLegacyRows = await countForeignLegacyRows(owner);
   for (const l of [...listeners]) l();
   return legacyPaymentRows;
 }

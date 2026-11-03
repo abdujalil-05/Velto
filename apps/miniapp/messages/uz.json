@@ -85,7 +85,9 @@
     "discardConfirmAction": "O'chirish",
     "qtyScaleError": "Miqdorda ko'pi bilan 3 ta kasr xona bo'lishi mumkin",
     "qtyBaseScaleError": "Miqdor × o'ram koeffitsiyenti 3 ta kasr xonadan oshmasligi kerak",
-    "repeatedPartial": "{count} ta qator aniq ko'chirilmadi — miqdorni qo'lda kiriting"
+    "repeatedPartial": "{count} ta qator aniq ko'chirilmadi — miqdorni qo'lda kiriting",
+    "vaultBlocked": "Qurilmaga saqlash uchun xavfsiz kalit kerak. Internetga ulanib, qayta urinib ko'ring - HECH NARSA saqlanmadi, kiritilganlar ekranda qoldi.",
+    "foreignLegacyBlocked": "Saqlab bo'lmaydi: qurilmada boshqa foydalanuvchining hujjatlari bor. Avval o'sha foydalanuvchi shu yerda tizimga kirsin."
   },
   "Payment": {
     "amount": "Summa",
@@ -147,7 +149,9 @@
       "NO_PERMISSION": "Joylashuvga ruxsat berilmagan — tashrif saqlandi, lekin GPS tasdiqlanmagan",
       "NO_FIX": "Joylashuv aniqlanmadi — tashrif saqlandi, lekin GPS tasdiqlanmagan",
       "OUTLET_NO_COORDS": "Nuqtaning koordinatalari yo'q — GPS tekshirib bo'lmadi"
-    }
+    },
+    "vaultBlocked": "Qurilmaga saqlash uchun xavfsiz kalit kerak. Internetga ulanib, qayta urinib ko'ring - HECH NARSA saqlanmadi, kiritilganlar ekranda qoldi.",
+    "foreignLegacyBlocked": "Saqlab bo'lmaydi: qurilmada boshqa foydalanuvchining hujjatlari bor. Avval o'sha foydalanuvchi shu yerda tizimga kirsin."
   },
   "Courier": {
     "title": "Yetkazishlar",
@@ -175,7 +179,10 @@
       "DELIVERED": "Yetkazilgan",
       "CLOSED": "Yopilgan",
       "CANCELLED": "Bekor qilingan"
-    }
+    },
+    "awaitingHandover": "Topshirishni kutmoqda",
+    "awaitingHandoverHint": "Ombor bu buyurtmani hali topshirmagan. Yetkazib berishni topshirgandan keyin belgilash mumkin.",
+    "notHandedOver": "Ombor buyurtmani hali topshirmagan. Hech narsa o'zgarmadi; topshirgandan keyin qayta urinib ko'ring."
   },
   "NotFound": {
     "title": "Bunday sahifa mavjud emas",
@@ -292,14 +299,7 @@
     "logoutDiscardConfirmDescription": "{count} ta hujjat serverga yetmagan. Hech narsa o'chirilmaydi: hujjatlar qurilmada shifrlangan holda qoladi va keyingi kirishdan so'ng qaytadi.",
     "logoutDiscardConfirm": "Ha, chiqish",
     "quarantineTitle": "Karantinda",
-    "quarantineWarning": "Bu hujjatlar eski versiyadan qolgan, kim yaratgani noma'lum. Ular yuborilmaydi va sizning ishingiz hisoblanmaydi. Faylga yuklash yoki o'chirish mumkin.",
     "quarantineExport": "Eksport",
-    "quarantineExportWarning": "Diqqat: fayl egasi noma'lum ma'lumotni o'z ichiga oladi. Uni ehtiyotkorlik bilan saqlang.",
-    "quarantineDiscard": "O'chirish",
-    "quarantineDiscardConfirmTitle": "Egasi noma'lum hujjat o'chiriladimi?",
-    "quarantineDiscardConfirmDescription": "Hujjat serverga yetmagan va qurilmadan butunlay yo'qoladi.",
-    "quarantineDiscardConfirm": "Ha, o'chirish",
-    "logoutQuarantineNote": "Egasi noma'lum hujjatlar chiqishda o'chirilmaydi — ular qurilmada qoladi.",
     "handoverPending": "Kassirga topshirish kutilmoqda",
     "handoverPosted": "Kassir qabul qildi",
     "handoverRejected": "Kassir rad etdi",
@@ -348,5 +348,10 @@
     "wipedToast": "Qurilma keshi tozalandi, hisob bloklangan.",
     "exportDisabled": "Eksport faqat shu hujjatlar egasining Telegram hisobidan ochilgan ilovada mumkin (qurilmadagi tekshiruv, xavfsizlik kafolati emas).",
     "discardConfirm": "O'chirish"
+  },
+  "ForeignLegacyGate": {
+    "title": "Qurilmadagi hujjatlar bloklangan",
+    "body": "Qurilmadagi hujjatlarni bu hisob ochib bo'lmaydi. Ular saqlanadi va o'chirilmaydi. Administratorga murojaat qiling; hal bo'lguncha oflayn ish bloklangan.",
+    "logout": "Chiqish"
   }
 }

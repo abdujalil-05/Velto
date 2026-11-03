@@ -25,12 +25,12 @@ describe('Dexie v2 -> v3 upgrade', () => {
     expect(await db.queue.count()).toBe(1);
 
     setOfflineSession({ userId: 'u1', companyId: 'c1' });
+    await (await import('./vault-test-helper')).readyVault({ userId: 'u1', companyId: 'c1' });
     expect(await queueRepository.listAll()).toEqual([]); // unowned: not shown, not pushable
     await prepareOfflineSession();
     expect(await queueRepository.listAll()).toEqual([]); // still not user u1's work
     expect(await queueRepository.listPushable(20)).toEqual([]); // never pushed
-    expect((await queueRepository.listQuarantined()).map((e) => e.clientId)).toEqual(['legacy-1']);
-    expect(await queueRepository.unsyncedCountForLogout()).toBe(1); // logout guard counts it
+    expect(await queueRepository.unsyncedCountForLogout()).toBe(0); // not u1's: does not block the gate
 
     // another user signing in does not adopt it either
     setOfflineSession({ userId: 'u2', companyId: 'c1' });
@@ -38,13 +38,11 @@ describe('Dexie v2 -> v3 upgrade', () => {
     await prepareOfflineSession();
     expect(await queueRepository.listAll()).toEqual([]);
 
-    // export carries the unknown-owner marker; discard is explicit
-    expect(JSON.parse(await queueRepository.exportQuarantinedToJson())).toMatchObject({ unknownOwner: true, items: [{ clientId: 'legacy-1' }] });
-    await queueRepository.discardQuarantinedItem('legacy-1');
-    expect(await db.queue.count()).toBe(0);
+    expect(JSON.parse(await queueRepository.exportPendingToJson()).items).toEqual([]); // never exported
+    expect(await db.queue.count()).toBe(1); // never deleted by a non-creator
   });
 
-  it('claims a legacy row only when its payload names the current user', async () => {
+  it('a legacy row whose (unauthenticated) payload names the current user is NOT claimed: nobody adopts ownerless rows', async () => {
     const { db } = await import('./db');
     const { queueRepository } = await import('./queue');
     const { setOfflineSession } = await import('./session');
@@ -56,8 +54,13 @@ describe('Dexie v2 -> v3 upgrade', () => {
     await mk('mine', 'u1');
     await mk('theirs', 'u9');
     setOfflineSession({ userId: 'u1', companyId: 'c1' });
-    expect(await queueRepository.claimLegacyEntries({ userId: 'u1', companyId: 'c1' })).toEqual({ claimed: 1, quarantined: 1 });
-    expect((await queueRepository.listAll()).map((e) => e.clientId)).toEqual(['mine']);
-    expect((await queueRepository.listQuarantined()).map((e) => e.clientId)).toEqual(['theirs']);
+    await (await import('./vault-test-helper')).readyVault({ userId: 'u1', companyId: 'c1' });
+    const { prepareOfflineSession } = await import('./session-bootstrap');
+    await prepareOfflineSession();
+    expect(await queueRepository.listAll()).toEqual([]);
+    expect(await queueRepository.listPushable(20)).toEqual([]);
+    expect(JSON.parse(await queueRepository.exportPendingToJson()).items).toEqual([]);
+    expect(await db.queue.count()).toBe(2); // both preserved untouched
+    expect((await db.queue.get('mine'))!.userId).toBeUndefined();
   });
 });

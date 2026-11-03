@@ -77,7 +77,7 @@ async function run(): Promise<RevokedInfo | null> {
   if ((await countDeviceKeyRows()) === 0) clearDeviceKey();
 
   const info = owner ? { userId: owner.userId, companyId: owner.companyId, at: getRevokedInfo()?.at || new Date().toISOString(), telegramId } : null;
-  if (info && (await queueRepository.listRevokedFor(info)).length > 0) {
+  if (info && (await queueRepository.countOwnRows(info)) > 0) {
     window.localStorage.setItem(REVOKED_KEY, JSON.stringify(info));
     return info;
   }

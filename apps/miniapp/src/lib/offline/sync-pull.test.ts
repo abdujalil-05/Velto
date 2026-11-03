@@ -4,6 +4,7 @@ import { db } from './db';
 import { queueRepository, QueueQuotaError } from './queue';
 import { offlineRepository, getCursor, getPullState } from './repository';
 import { setOfflineSession } from './session';
+import { readyVault } from './vault-test-helper';
 import { resetPreparedSession } from './session-bootstrap';
 import { enforceStorageBudget, onStorageStatus, publishStorageStatus, storageStatusFor } from './storage-budget';
 
@@ -30,6 +31,7 @@ async function reset() {
   vi.clearAllMocks();
   await Promise.all([...[db.products, db.packagings, db.prices, db.customers, db.outlets, db.stock, db.categories, db.balances, db.routes, db.routeStops, db.queue, db.meta].map((t) => t.clear())]);
   setOfflineSession({ userId: 'u1', companyId: 'c1' });
+  await readyVault({ userId: 'u1', companyId: 'c1' });
   resetPreparedSession();
 }
 
@@ -138,7 +140,7 @@ describe('pull applier', () => {
     pullSync.mockResolvedValueOnce(page({ cursor: 'b' }));
     await runPull();
     expect(await offlineRepository.products.count()).toBe(0);
-    expect((await queueRepository.listAllOwners()).map((e) => e.clientId)).toEqual([q]);
+    expect(await db.queue.toArray().then((r) => r.map((x) => x.clientId))).toEqual([q]); // u1's vault row stays, unreadable for u2
     expect(await queueRepository.listAll()).toEqual([]);
   });
 });

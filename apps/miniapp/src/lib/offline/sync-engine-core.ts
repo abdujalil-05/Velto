@@ -1,5 +1,6 @@
 import type { GpsStatus } from '@/lib/gps-payload';
-import { ApiError, degradedKind, type DegradedKind } from '@/lib/api/client';
+import { ApiError, degradedKind, signalForeignToken, type DegradedKind } from '@/lib/api/client';
+import { TokenOwnerMismatchError, getAccessToken, tokenIsForeign } from '@/lib/auth/tokens';
 import { pullSync, pushSync, type SyncPushResultItem } from '@/lib/api/sync';
 import { applyPull, getCursor, markPullComplete } from './repository';
 import { queueRepository, type QueueEntry, type QueueError } from './queue';
@@ -10,6 +11,18 @@ import { prepareOfflineSession } from './session-bootstrap';
 import { enforceStorageBudget } from './storage-budget';
 
 /** Plain (non-React) sync primitives — kept separate from sync-engine.tsx so the provider can layer translated toasts on top. */
+
+/**
+ * True when the bearer token in storage belongs to someone other than the offline session owner (e.g. another
+ * tab signed in as a different agent). The session is then ended (UK dropped, rows stay PENDING, re-auth needed).
+ */
+export function guardTokenOwner(): boolean {
+  const s = getOfflineSession();
+  if (!s || !tokenIsForeign(getAccessToken(), s)) return false;
+  setSyncPaused(true);
+  signalForeignToken();
+  return true;
+}
 
 const PULL_PAGE_LIMIT = 500;
 /** Safety valve against a server that never clears hasMore. */
@@ -26,7 +39,18 @@ export async function runPull(): Promise<{ pages: number }> {
   let rebuilt = false;
   let pages = 0;
   for (; pages < MAX_PULL_PAGES; ) {
-    const result = await pullSync(cursor, PULL_PAGE_LIMIT);
+    const session = getOfflineSession();
+    if (!session || guardTokenOwner()) return { pages };
+    let result;
+    try {
+      result = await pullSync(cursor, PULL_PAGE_LIMIT, session);
+    } catch (err) {
+      if (err instanceof TokenOwnerMismatchError) {
+        guardTokenOwner();
+        return { pages };
+      }
+      throw err;
+    }
     pages += 1;
     const rebuild = result.fullResync && !rebuilt;
     if (result.fullResync) rebuilt = true;
@@ -139,7 +163,7 @@ export function runHeldMaintenance(): Promise<HeldResolved[]> {
 
 async function maintenanceInner(): Promise<HeldResolved[]> {
   const s = getOfflineSession();
-  if (!s || isSyncPaused()) return [];
+  if (!s || isSyncPaused() || guardTokenOwner()) return [];
   try {
     if (getVaultStatus() !== 'ready') unrestorableSealed = (await bringUpVault(s)).legacyFailed; // retry after an offline/failed start
     else if (await hasSealedFor(s)) unrestorableSealed = (await restoreSealedFor(s)).failed;
@@ -152,10 +176,16 @@ async function maintenanceInner(): Promise<HeldResolved[]> {
 
 async function pushInner(): Promise<PushOutcome> {
   const outcome: PushOutcome = { accepted: 0, rejected: 0, conflicts: 0, retried: 0, visitGps: [], paused: null };
-  if (isSyncPaused() || !(await prepareOfflineSession()) || !getOfflineSession()) return outcome;
+  if (isSyncPaused() || !(await prepareOfflineSession())) return outcome;
+  const session = getOfflineSession();
+  if (!session) return outcome;
 
   for (let n = 0; n < MAX_BATCHES_PER_CYCLE; n++) {
     if (isSyncPaused()) break;
+    if (guardTokenOwner()) {
+      outcome.paused = 'AUTH';
+      break;
+    }
     const batch = await queueRepository.listPushable(batchLimit);
     if (batch.length === 0) break;
     const ids = batch.map((e) => e.clientId);
@@ -163,8 +193,15 @@ async function pushInner(): Promise<PushOutcome> {
 
     let results: SyncPushResultItem[];
     try {
-      ({ results } = await pushSync(batch.map((e) => ({ type: e.type, clientId: e.clientId, payload: e.payload })), getSyncSignal()));
+      ({ results } = await pushSync(batch.map((e) => ({ type: e.type, clientId: e.clientId, payload: e.payload })), getSyncSignal(), session));
     } catch (err) {
+      if (err instanceof TokenOwnerMismatchError) {
+        // Token swapped/refreshed to another user between the check and the send: nothing left the device.
+        await queueRepository.releaseUnsent(ids).catch(() => {});
+        guardTokenOwner();
+        outcome.paused = 'AUTH';
+        break;
+      }
       if (isSyncPaused()) {
         // Logout / session end aborted the request: no ACK, attempt not counted; same clientId is re-sent later (server dedupes).
         await queueRepository.releaseUnsent(ids).catch(() => {});

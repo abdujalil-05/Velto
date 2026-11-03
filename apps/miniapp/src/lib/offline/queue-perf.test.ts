@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { db } from './db';
 import { queueRepository } from './queue';
 import { setOfflineSession } from './session';
+import { readyVault } from './vault-test-helper';
 import { resetPreparedSession } from './session-bootstrap';
 
 const pushSync = vi.fn();
@@ -18,6 +19,7 @@ describe('offline perf budgets (NFR-PERF-004..006)', () => {
     await db.queue.clear();
     await db.meta.clear();
     setOfflineSession({ userId: 'uP', companyId: 'cP' });
+    await readyVault({ userId: 'uP', companyId: 'cP' });
     resetPreparedSession();
   });
 

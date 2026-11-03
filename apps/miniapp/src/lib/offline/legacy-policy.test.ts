@@ -7,7 +7,7 @@ import { clearDeviceKey } from './crypto';
 import { db } from './db';
 import { EncryptedStore } from './encrypted-store';
 import { bringUpVault, sealOwnerForLogout, wipeLocalAfterLogout } from './held-seal';
-import { LegacyPaymentsBlockedError, getLegacyPaymentRows, lockVault, refreshLegacyPaymentRows } from './vault';
+import { LegacyPaymentsBlockedError, getForeignLegacyRows, getLegacyPaymentRows, lockVault, refreshLegacyPaymentRows } from './vault';
 import { QueueQuotaError, queueRepository } from './queue';
 import { setOfflineSession } from './session';
 import { resetPreparedSession } from './session-bootstrap';
@@ -173,17 +173,41 @@ describe('legacy device-key payments: pilot policy "new build only"', () => {
 
   it('A7 unresolved legacy payment blocks creating AND sending payments (DB-level, not UI), other docs still work; owner migration unblocks', async () => {
     await up(A);
-    await legacyPayment('foreign-l', { userId: B.userId });
+    await legacyPayment('own-l'); // A's own unsealed legacy payment (e.g. bring-up could not seal it yet)
     await expect(queueRepository.enqueue('payment', { amount: '1.00' })).rejects.toBeInstanceOf(LegacyPaymentsBlockedError);
     expect(await db.queue.count()).toBe(1);
     await expect(queueRepository.enqueue('order', { x: 1 })).resolves.toBeTruthy();
 
-    await db.queue.delete('foreign-l');
+    await db.queue.delete('own-l');
     const id = await queueRepository.enqueue('payment', { amount: '2.00' });
-    await legacyPayment('foreign-l2', { userId: B.userId });
+    await legacyPayment('own-l2');
     expect((await queueRepository.listPushable(20)).map((e) => e.clientId)).not.toContain(id); // sending blocked
-    await db.queue.delete('foreign-l2');
+    await db.queue.delete('own-l2');
     expect((await queueRepository.listPushable(20)).map((e) => e.clientId)).toContain(id);
+  });
+
+  it('A7b another user\'s legacy device-key row blocks ALL new documents (order, visit, payment) without exposing a count, rows untouched and never decrypted', async () => {
+    await up(A);
+    await legacyPayment('foreign-l', { userId: B.userId });
+    const before = await rawBytes('foreign-l');
+    for (const t of ['order', 'visit', 'payment'] as const) {
+      await expect(queueRepository.enqueue(t, { x: 1 })).rejects.toMatchObject({ code: 'FOREIGN_LEGACY_ROWS' });
+    }
+    expect(await refreshLegacyPaymentRows(A)).toBe(1);
+    expect(getForeignLegacyRows()).toBe(1);
+    expect(await queueRepository.listAll()).toEqual([]);
+    expect(await rawBytes('foreign-l')).toBe(before);
+    // owner B signs in and seals -> A is unblocked, device key gone
+    lockVault();
+    as(B);
+    expect((await up(B)).deviceKeyDropped).toBe(true);
+    expect((await db.queue.get('foreign-l'))!._enc.v).toBe('uk1');
+    expect(window.localStorage.getItem('velto.dbKey')).toBeNull();
+    lockVault();
+    as(A);
+    await up(A);
+    expect(getForeignLegacyRows()).toBe(0);
+    await expect(queueRepository.enqueue('order', { x: 1 })).resolves.toBeTruthy();
   });
 
   it('A7 blocked/failed-save messages exist in uz, ru and en', () => {
@@ -253,13 +277,20 @@ describe('legacy device-key payments: pilot policy "new build only"', () => {
     expect(window.localStorage.getItem('velto.dbKey')).toBeNull(); // no clear device key beside them
   });
 
-  it('logout keeps unsynced order/visit: vault NOT ready -> reported as remainingOther (caller blocks logout), nothing deleted', async () => {
+  it('logout with LEGACY device-key order/visit and vault NOT ready -> reported as remainingOther (caller blocks logout), nothing deleted', async () => {
+    await legacyPayment('lo', { type: 'order' });
+    await legacyPayment('lv', { type: 'visit' });
+    const r = await sealOwnerForLogout(A); // vault locked (offline login / 429 / 503 / 410)
+    expect(r).toMatchObject({ state: 'pending', remainingOther: 2 });
+    expect(await db.queue.count()).toBe(2); // never deleted
+  });
+
+  it('logout with vault locked but all rows already under the UK -> nothing to seal, rows stay', async () => {
     await up(A);
     await queueRepository.enqueue('order', { x: 1 });
     await queueRepository.enqueue('visit', { y: 1 });
-    lockVault(); // offline login / 429 / 503 / 410: vault unavailable at logout time
-    const r = await sealOwnerForLogout(A);
-    expect(r).toMatchObject({ state: 'pending', remainingOther: 2 });
-    expect(await db.queue.count()).toBeGreaterThanOrEqual(2); // never deleted
+    lockVault();
+    expect(await sealOwnerForLogout(A)).toMatchObject({ state: 'sealed', remainingOther: 0 });
+    expect(await db.queue.count()).toBe(2);
   });
 });

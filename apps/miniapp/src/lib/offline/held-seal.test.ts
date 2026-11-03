@@ -55,7 +55,7 @@ describe('held payments: legacy migration / resolve / wipe', () => {
     await legacySeal(id);
     expect(await db.queue.count()).toBe(0);
     const res = await bringUpVault(A, fakeKekServer()(A));
-    expect(res).toEqual({ status: 'ready', legacyFailed: 0 });
+    expect(res).toMatchObject({ status: 'ready', legacyFailed: 0 });
     const [e] = await queueRepository.listNeedsAttention();
     expect(e).toMatchObject({ clientId: id, status: 'FAILED', lastError: { code: 'PAYMENT_IDEMPOTENCY_UNVERIFIABLE' }, payload: { amount: '100.00' } });
     expect((await db.queue.get(id))?._enc.v).toBe('uk1'); // now under the vault key

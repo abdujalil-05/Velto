@@ -28,7 +28,7 @@ async function entry(id: string) {
 /** Makes an entry due again (skips backoff wait) without touching anything else. */
 async function makeDue(id: string) {
   const { EncryptedStore } = await import('./encrypted-store');
-  const store = new EncryptedStore<Record<string, unknown>, string>(db.queue as never, ['clientId', 'type', 'status', 'createdAt', 'userId', 'companyId']);
+  const store = new EncryptedStore<Record<string, unknown>, string>(db.queue as never, ['clientId', 'type', 'status', 'createdAt', 'userId', 'companyId', 'seq'], ['seq'], (await import('./queue')).queueCodec as never);
   const e = (await store.get(id))!;
   await store.put({ ...e, nextAttemptAt: undefined });
 }
@@ -164,14 +164,16 @@ describe('runPush status machine (TZ 8.3/8.4)', () => {
   it('never pushes another user\'s documents, and hides them', async () => {
     const mine = await queueRepository.enqueue('order', {});
     setOfflineSession(B);
+    await readyVault(B);
     const foreign = await queueRepository.enqueue('order', {});
     asA();
+    await readyVault(A);
     pushSync.mockImplementation(async (docs: { clientId: string }[]) => ({ results: docs.map((d) => ({ clientId: d.clientId, status: 'ACCEPTED' })) }));
     await runPush();
     const sent = pushSync.mock.calls.flatMap((c) => (c[0] as { clientId: string }[]).map((d) => d.clientId));
     expect(sent).toEqual([mine]);
     expect((await queueRepository.listAll()).map((e) => e.clientId)).toEqual([mine]);
-    expect((await entry(foreign)).status).toBe('PENDING');
+    expect((await db.queue.get(foreign))?.status).toBe('PENDING'); // sealed for A: checked via the plaintext status column
     // foreign unsent work still blocks the logout wipe
     await queueRepository.markSynced(mine);
     expect(await queueRepository.unsyncedCountAllOwners()).toBe(1);

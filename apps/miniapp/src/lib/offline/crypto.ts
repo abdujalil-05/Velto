@@ -74,3 +74,8 @@ export function clearDeviceKey(): void {
   window.localStorage.removeItem(DB_KEY_STORAGE_KEY);
   cachedKey = null;
 }
+
+/** True while a device key exists in localStorage. */
+export function hasDeviceKey(): boolean {
+  return window.localStorage.getItem(DB_KEY_STORAGE_KEY) !== null;
+}

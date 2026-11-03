@@ -1,3 +1,4 @@
+import { getOfflineSession } from '@/lib/offline/session';
 import { ApiError, apiFetch } from './client';
 
 export interface OfflineKek {
@@ -34,7 +35,7 @@ export async function fetchOfflineKek(version?: number): Promise<OfflineKek> {
   try {
     res = await apiFetch<{ kek: string; version: number; currentVersion?: number }>(
       version === undefined ? '/auth/offline-kek' : `/auth/offline-kek?version=${version}`,
-      { cache: 'no-store', signal: AbortSignal.timeout(KEK_TIMEOUT_MS) },
+      { cache: 'no-store', signal: AbortSignal.timeout(KEK_TIMEOUT_MS), owner: getOfflineSession() ?? undefined },
     );
   } catch (e) {
     if (e instanceof ApiError && (e.status === 410 || e.code === 'OFFLINE_KEK_VERSION_RETIRED')) throw new OfflineKekRetiredError();

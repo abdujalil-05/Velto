@@ -22,7 +22,6 @@ export function LogoutButton() {
   const t = useTranslations('Queue');
   const { logout } = useAuth();
   const [count, setCount] = useState(0);
-  const [quarantined, setQuarantined] = useState(0);
   const [guardOpen, setGuardOpen] = useState(false);
   const [discardOpen, setDiscardOpen] = useState(false);
   const [wipeOpen, setWipeOpen] = useState(false);
@@ -34,7 +33,6 @@ export function LogoutButton() {
       return;
     }
     setCount(unsynced);
-    setQuarantined((await queueRepository.listQuarantined()).length);
     setGuardOpen(true);
   }
 
@@ -64,7 +62,6 @@ export function LogoutButton() {
         <DialogContent className="rounded-b-none rounded-t-2xl border-b-0 p-5" role="alertdialog" aria-label={t('logoutBlockedTitle')}>
           <h2 className="text-base font-semibold">{t('logoutBlockedTitle')}</h2>
           <p className="mt-1 text-sm text-muted-foreground">{t('logoutBlockedDescription', { count })}</p>
-          {quarantined > 0 && <p className="mt-1 text-sm text-muted-foreground">{t('logoutQuarantineNote')}</p>}
           <div className="mt-5 flex flex-col gap-2">
             <Button type="button" size="lg" onClick={() => void exportThenLogout()}>
               {t('logoutExport')}

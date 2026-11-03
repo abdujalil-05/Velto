@@ -1,4 +1,5 @@
 import type { GpsStatus } from '@/lib/gps-payload';
+import type { TokenOwner } from '@/lib/auth/tokens';
 import { apiFetch } from './client';
 import type { PaymentStatus } from './payments';
 import { toQueryString } from './query-string';
@@ -139,8 +140,8 @@ export interface SyncPullResult {
 }
 
 /** Imperative (non-hook) pull. No cursor (or an invalid one) = full snapshot. */
-export function pullSync(cursor?: string, limit?: number): Promise<SyncPullResult> {
-  return apiFetch<SyncPullResult>(`/sync/pull${toQueryString({ cursor, limit })}`);
+export function pullSync(cursor?: string, limit?: number, owner?: TokenOwner): Promise<SyncPullResult> {
+  return apiFetch<SyncPullResult>(`/sync/pull${toQueryString({ cursor, limit })}`, { owner });
 }
 
 // Mirrors apps/api/src/modules/sync/dto/sync-push.dto.ts's SyncDocType and
@@ -169,6 +170,6 @@ export interface SyncPushResultItem {
 }
 
 /** 10.3: up to 20 queued documents per push — the queue engine (offline/sync-engine.tsx) enforces the batch-size cap before calling this. */
-export function pushSync(documents: SyncPushDocument[], signal?: AbortSignal): Promise<{ results: SyncPushResultItem[] }> {
-  return apiFetch<{ results: SyncPushResultItem[] }>('/sync/push', { method: 'POST', body: { documents }, signal });
+export function pushSync(documents: SyncPushDocument[], signal?: AbortSignal, owner?: TokenOwner): Promise<{ results: SyncPushResultItem[] }> {
+  return apiFetch<{ results: SyncPushResultItem[] }>('/sync/push', { method: 'POST', body: { documents }, signal, owner });
 }
