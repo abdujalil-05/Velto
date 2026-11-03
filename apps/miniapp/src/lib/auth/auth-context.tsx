@@ -211,6 +211,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         void endSessionSealing(ending)
           .then((r) => {
             if (r.remainingPayments > 0) toast.warning(tCommonRef.current('heldSealPending', { count: r.remainingPayments }), { id: 'heldSealPending', duration: Infinity });
+            if ((r.remainingOther ?? 0) > 0) toast.warning(tCommonRef.current('unsyncedRemainOnDevice', { count: r.remainingOther }), { id: 'unsyncedRemainOnDevice', duration: Infinity });
           })
           .catch(() => {});
         setOfflineSession(null);
@@ -253,6 +254,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const owner = getOfflineSession();
       if (owner) {
         const sealed = await sealOwnerForLogout(owner);
+        if ((sealed.remainingOther ?? 0) > 0 && !sealed.unconfirmed) {
+          // Vault not ready: unsynced order/visit rows would stay under a device key left in clear. Block, never keep silently or delete.
+          resumeSync();
+          toast.error(t('logoutBlockedVaultNotReady', { count: sealed.remainingOther! }));
+          return;
+        }
         sealState = sealed.state;
         remainingPayments = sealed.remainingPayments;
         localUnconfirmed = !!sealed.unconfirmed;

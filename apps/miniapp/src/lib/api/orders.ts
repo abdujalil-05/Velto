@@ -90,7 +90,7 @@ export function useCourierOrdersQuery(courierId: string | null | undefined) {
   });
 }
 
-/** POST /orders/:id/deliver — requires `orders.update`, which the COURIER role holds. */
+/** POST /orders/:id/deliver — requires `orders.deliver`. */
 export function useDeliverOrderMutation() {
   const queryClient = useQueryClient();
   return useMutation({

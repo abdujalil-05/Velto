@@ -10,7 +10,7 @@ import { useRouter, Link } from '@/i18n/navigation';
 import { useOfflineCustomers, useOfflineOutlets } from '@/lib/offline/use-offline-data';
 import { useLastOrderQuery } from '@/lib/api/orders';
 import { useSyncEngine } from '@/lib/offline/sync-engine';
-import { enqueue } from '@/lib/offline/queue';
+import { enqueue, QueueQuotaError } from '@/lib/offline/queue';
 import type { CreateVisitInput } from '@/lib/api/visits';
 import { buildVisitGpsFields, localGpsStatus, stashVisitGps } from '@/lib/gps-payload';
 import { useGeolocation } from '@/lib/hooks/use-geolocation';
@@ -49,6 +49,10 @@ export default function VisitPage() {
   const lastOrder = useLastOrderQuery(customer?.id ?? null);
 
   const startedAtRef = useRef(new Date().toISOString());
+  // Created once per visit form: retries / double-clicks reuse it, the queue dedupes.
+  const visitClientIdRef = useRef<string>('');
+  if (!visitClientIdRef.current) visitClientIdRef.current = crypto.randomUUID();
+  const savingRef = useRef(false);
   const [noOrderDialogOpen, setNoOrderDialogOpen] = useState(false);
   const [noOrderReason, setNoOrderReason] = useState('');
   const [skipDialogOpen, setSkipDialogOpen] = useState(false);
@@ -90,23 +94,38 @@ export default function VisitPage() {
   // Closing a visit is not undoable from the device: the moment `enqueue`
   // resolves the document is durable in IndexedDB and owned by the queue.
   // "Saved on device" is not "accepted by server" — the toast says so.
-  async function saveClosedVisit(outcome: 'NO_ORDER' | 'SKIPPED', reason: string) {
-    await enqueue('visit', buildVisitPayload(outcome, reason) as unknown as Record<string, unknown>);
-    syncEngine.notifyQueueChanged();
-    toast.success(t('savedOnDevice'));
-    if (gpsHint) toast.warning(t(`gpsStatus.${gpsHint}`));
-    router.push('/route');
+  async function saveClosedVisit(outcome: 'NO_ORDER' | 'SKIPPED', reason: string): Promise<boolean> {
+    if (savingRef.current) return false;
+    savingRef.current = true;
+    try {
+      await enqueue('visit', buildVisitPayload(outcome, reason) as unknown as Record<string, unknown>, { clientId: visitClientIdRef.current });
+    } catch (err) {
+      // Never shown as success; dialog and entered reason stay so the agent can retry.
+      toast.error(err instanceof QueueQuotaError ? t('saveQuotaFull') : t('saveFailed'));
+      return false;
+    } finally {
+      savingRef.current = false;
+    }
+    // Written: the next visit document on this instance gets a fresh id; later errors are not save failures.
+    visitClientIdRef.current = crypto.randomUUID();
+    try {
+      syncEngine.notifyQueueChanged();
+      toast.success(t('savedOnDevice'));
+      if (gpsHint) toast.warning(t(`gpsStatus.${gpsHint}`));
+      router.push('/route');
+    } catch {
+      /* document is already saved on device; navigation/toast problems must not look like a failed save */
+    }
+    return true;
   }
 
   async function handleNoOrder() {
-    await saveClosedVisit('NO_ORDER', noOrderReason);
-    setNoOrderDialogOpen(false);
+    if (await saveClosedVisit('NO_ORDER', noOrderReason)) setNoOrderDialogOpen(false);
   }
 
   async function handleSkip() {
     if (!skipReason.trim()) return;
-    await saveClosedVisit('SKIPPED', skipReason);
-    setSkipDialogOpen(false);
+    if (await saveClosedVisit('SKIPPED', skipReason)) setSkipDialogOpen(false);
   }
 
   if (isLoading) {

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { FreshnessLabel } from '@/components/freshness-label';
@@ -20,7 +20,7 @@ import {
 } from '@/lib/offline/use-offline-data';
 import { checkQty, estimateOrderTotal, repeatLineQty, resolvePrice, withExpectedUnitPrices } from '@/lib/offline/pricing';
 import type { SyncPackaging } from '@/lib/api/sync';
-import { enqueue } from '@/lib/offline/queue';
+import { enqueueMany, QueueQuotaError, type EnqueueItem } from '@/lib/offline/queue';
 import { useSyncEngine } from '@/lib/offline/sync-engine';
 import { useLastOrderQuery, type CreateOrderInput } from '@/lib/api/orders';
 import type { CreateVisitInput } from '@/lib/api/visits';
@@ -77,6 +77,12 @@ export default function NewOrderPage() {
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [lines, setLines] = useState<Record<string, CartLine>>({});
   const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+  // Stable per-document ids, created ONCE when the form opens: every retry/double-click reuses them (queue dedupes).
+  const orderClientIdRef = useRef<string>('');
+  const visitClientIdRef = useRef<string>('');
+  if (!orderClientIdRef.current) orderClientIdRef.current = crypto.randomUUID();
+  if (!visitClientIdRef.current) visitClientIdRef.current = crypto.randomUUID();
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
   const [repeatConfirmOpen, setRepeatConfirmOpen] = useState(false);
 
@@ -203,34 +209,47 @@ export default function NewOrderPage() {
   }
 
   async function handleSave() {
-    if (!customerId || cartLineInputs.length === 0) return;
+    if (!customerId || cartLineInputs.length === 0 || submittingRef.current) return;
+    submittingRef.current = true;
     setSubmitting(true);
+    let written = false;
     try {
       const orderPayload: CreateOrderInput = {
         customerId,
         outletId: outlet?.id,
-        clientId: '',
+        clientId: orderClientIdRef.current,
         lines: withExpectedUnitPrices(cartLineInputs, customer?.priceListId ?? null, defaultPriceListId.data ?? null, prices.data ?? []),
       };
-      await enqueue('order', orderPayload as unknown as Record<string, unknown>);
-
+      const items: EnqueueItem[] = [{ type: 'order', payload: orderPayload as unknown as Record<string, unknown>, clientId: orderClientIdRef.current }];
+      let visitQueued = false;
       if (outlet && visitStartedAt) {
+        visitQueued = true;
         const visitPayload: CreateVisitInput = {
           outletId: outlet.id,
           startedAt: visitStartedAt,
           endedAt: new Date().toISOString(),
           ...peekVisitGps(outlet.id),
           outcome: 'ORDERED',
-          clientId: '',
+          clientId: visitClientIdRef.current,
         };
-        await enqueue('visit', visitPayload as unknown as Record<string, unknown>);
-        clearVisitGps(outlet.id);
+        items.push({ type: 'visit', payload: visitPayload as unknown as Record<string, unknown>, clientId: visitClientIdRef.current });
       }
-
+      // One atomic device write: order + visit both land or neither does. Success here means "saved on this device" only.
+      await enqueueMany(items);
+      written = true;
+      // The document is durably queued: the next document on this instance gets fresh ids and an empty cart.
+      orderClientIdRef.current = crypto.randomUUID();
+      visitClientIdRef.current = crypto.randomUUID();
+      setLines({});
+      if (outlet && visitQueued) clearVisitGps(outlet.id);
       syncEngine.notifyQueueChanged();
       toast.success(t('saved'));
       router.push('/route');
+    } catch (err) {
+      // A queue-write error is a failure (cart stays, same clientIds). Anything after a successful write is not.
+      if (!written) toast.error(err instanceof QueueQuotaError ? t('saveQuotaFull') : t('saveFailed'));
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   }

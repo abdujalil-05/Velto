@@ -57,7 +57,7 @@ describe('legacy device-key payments: pilot policy "new build only"', () => {
     await up(A);
     await legacyPayment('foreign', { userId: B.userId });
     await legacyPayment('ownerless', { userId: undefined, companyId: undefined });
-    expect(await sealOwnerForLogout(A)).toEqual({ state: 'pending', remainingPayments: 2 });
+    expect(await sealOwnerForLogout(A)).toMatchObject({ state: 'pending', remainingPayments: 2, remainingOther: 0 });
     await wipeLocalAfterLogout();
     expect(window.localStorage.getItem('velto.dbKey')).not.toBeNull(); // key kept, rows still readable
     expect(await db.queue.count()).toBe(2);
@@ -220,7 +220,7 @@ describe('legacy device-key payments: pilot policy "new build only"', () => {
     expect((await db.queue.get('lo-pay'))!._enc.v).toBeUndefined();
   });
 
-  it('forced logout never deletes an unsynced PAYMENT (any status, incl. legacy/vault-locked); non-payment rows are deleted; SYNCED payment may go', async () => {
+  it('forced logout never deletes an unsynced PAYMENT (any status, incl. legacy/vault-locked); unsynced orders are kept too; SYNCED payment may go', async () => {
     await up(A);
     const ids: string[] = [];
     for (const st of ['PENDING', 'FAILED', 'CONFLICT'] as const) {
@@ -232,15 +232,34 @@ describe('legacy device-key payments: pilot policy "new build only"', () => {
     await legacyPayment('leg-force');
     const order = await queueRepository.enqueue('order', { x: 1 });
     await queueRepository.deleteOwnEntries();
-    expect(await db.queue.get(order)).toBeUndefined();
-    for (const id of [...ids, 'leg-force']) expect(await db.queue.get(id)).toBeDefined();
+    for (const id of [order, ...ids, 'leg-force']) expect(await db.queue.get(id)).toBeDefined();
     // vault locked at that moment: rows are unreadable, so they are skipped and kept as-is
     lockVault();
     await queueRepository.deleteOwnEntries();
-    expect(await db.queue.count()).toBe(4);
+    expect(await db.queue.count()).toBe(5);
     expect((await sealOwnerForLogout(A)).state).toBe('pending'); // legacy row could not be sealed: explicit warning
     // owner's next login restores the same clientIds (no re-send duplication)
     await up(A);
-    expect((await queueRepository.listAll()).map((e) => e.clientId).sort()).toEqual([...ids, 'leg-force'].sort());
+    expect((await queueRepository.listAll()).map((e) => e.clientId).sort()).toEqual([order, ...ids, 'leg-force'].sort());
+  });
+
+  it('logout keeps unsynced order/visit: vault READY -> sealed under vault key, no clear device key left', async () => {
+    await up(A);
+    await queueRepository.enqueue('order', { x: 1 });
+    await queueRepository.enqueue('visit', { y: 1 });
+    expect(await sealOwnerForLogout(A)).toMatchObject({ state: 'sealed', remainingOther: 0 });
+    await wipeLocalAfterLogout();
+    expect(await db.queue.count()).toBe(2); // retained, encrypted
+    expect(window.localStorage.getItem('velto.dbKey')).toBeNull(); // no clear device key beside them
+  });
+
+  it('logout keeps unsynced order/visit: vault NOT ready -> reported as remainingOther (caller blocks logout), nothing deleted', async () => {
+    await up(A);
+    await queueRepository.enqueue('order', { x: 1 });
+    await queueRepository.enqueue('visit', { y: 1 });
+    lockVault(); // offline login / 429 / 503 / 410: vault unavailable at logout time
+    const r = await sealOwnerForLogout(A);
+    expect(r).toMatchObject({ state: 'pending', remainingOther: 2 });
+    expect(await db.queue.count()).toBeGreaterThanOrEqual(2); // never deleted
   });
 });

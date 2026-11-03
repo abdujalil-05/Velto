@@ -365,7 +365,7 @@ describe('vault key (UK) for payments', () => {
     const pay = await heldPayment();
     expect((await db.queue.get(order))!._enc.v).toBeUndefined();
     const r = await endSessionSealing(A);
-    expect(r).toEqual({ state: 'sealed', remainingPayments: 0 });
+    expect(r).toMatchObject({ state: "sealed", remainingPayments: 0 });
     expect(getVaultStatus()).toBe('locked');
     expect((await db.queue.get(order))!._enc.v).toBe('uk1');
     expect((await db.queue.get(pay))!._enc.v).toBe('uk1');

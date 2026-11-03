@@ -269,7 +269,7 @@ describe('F4.4 offline QA (TZ 8.5 / 16.2)', () => {
     expect(ids.every((id) => stored.some((e) => e.clientId === id && e.status === 'PENDING'))).toBe(true);
   });
 
-  it('8.4 logout guard + forced path: unsynced blocks logout; forced wipe deletes ONLY the own rows', async () => {
+  it('8.4 logout guard + forced path: unsynced blocks logout; forced logout destroys NO unsynced row (own kept encrypted, foreign untouched)', async () => {
     const mine = await enqueueOrders(2);
     asUser(B);
     const theirs = await enqueueOrders(1);
@@ -278,8 +278,7 @@ describe('F4.4 offline QA (TZ 8.5 / 16.2)', () => {
     expect(await queueRepository.unsyncedCountAllOwners()).toBe(3);
     await queueRepository.deleteOwnEntries();
     const left = await entries();
-    expect(left.map((e) => e.clientId)).toEqual(theirs);
-    expect(left.some((e) => mine.includes(e.clientId))).toBe(false);
+    expect(left.map((e) => e.clientId).sort()).toEqual([...mine, ...theirs].sort());
   });
 
   it('8.4 second user on the same device never pushes the first user\'s rows; first user\'s rows survive and sync under their own session', async () => {

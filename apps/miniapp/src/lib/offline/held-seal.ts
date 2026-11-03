@@ -111,15 +111,17 @@ export interface SealForLogout {
   state: 'sealed' | 'pending';
   /** Owner PAYMENT rows that are STILL under the shared device key (caller must warn explicitly). */
   remainingPayments: number;
+  /** Owner order/visit rows STILL under the shared device key (vault not ready). The caller must NOT finish logout: the device key would stay in clear next to them. */
+  remainingOther?: number;
   /** IndexedDB could not be read/written: local data was NOT confirmed saved (caller warns, never claims "safely saved"). */
   unconfirmed?: boolean;
 }
 export async function sealOwnerForLogout(owner: OfflineSession): Promise<SealForLogout> {
   try {
-    await queueRepository.sealOwnRowsToVault(owner);
+    const sealed = await queueRepository.sealOwnRowsToVault(owner);
     // Any payment row left under the shared device key (own, foreign or ownerless) keeps the device from being reported safe.
     const remainingPayments = await countDeviceKeyPaymentRows();
-    return { state: remainingPayments === 0 ? 'sealed' : 'pending', remainingPayments };
+    return { state: remainingPayments === 0 && sealed.remainingOther === 0 ? 'sealed' : 'pending', remainingPayments, remainingOther: sealed.remainingOther };
   } catch {
     return { state: 'pending', remainingPayments: 0, unconfirmed: true };
   }

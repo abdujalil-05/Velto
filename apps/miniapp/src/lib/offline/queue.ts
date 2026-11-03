@@ -77,7 +77,7 @@ export class QueueQuotaError extends Error {
 
 export class QueueItemStateError extends Error {
   constructor(
-    readonly code: 'NOT_FOUND' | 'NOT_DISCARDABLE' | 'NOT_RESOLVABLE',
+    readonly code: 'NOT_FOUND' | 'NOT_DISCARDABLE' | 'NOT_RESOLVABLE' | 'CLIENT_ID_IN_USE' | 'CLIENT_ID_FOREIGN',
     message: string,
   ) {
     super(message);
@@ -123,17 +123,6 @@ function bySeq(a: QueueEntry, b: QueueEntry): number {
   return (a.seq ?? NO_SEQ) - (b.seq ?? NO_SEQ) || a.createdAt.localeCompare(b.createdAt) || a.clientId.localeCompare(b.clientId);
 }
 
-/** Allocates the next sequence atomically (no crypto inside the Dexie transaction). */
-async function nextSeq(): Promise<number> {
-  return db.transaction('rw', [db.meta, db.queue], async () => {
-    const counter = ((await db.meta.get(QUEUE_SEQ_KEY))?.value as number | undefined) ?? 0;
-    const top = (await db.queue.orderBy('seq').last())?.seq ?? 0;
-    const next = Math.max(counter, top) + 1;
-    await db.meta.put({ key: QUEUE_SEQ_KEY, value: next });
-    return next;
-  });
-}
-
 function isQuotaError(e: unknown): boolean {
   const err = e as { name?: string; inner?: { name?: string }; code?: number } | null;
   return err?.name === 'QuotaExceededError' || err?.inner?.name === 'QuotaExceededError' || err?.code === 22;
@@ -171,30 +160,102 @@ export function backoffDelayMs(attemptCount: number, random: () => number = Math
  * written, existing PENDING items are untouched) and `NoOfflineSessionError`
  * without a session.
  */
-export async function enqueue(type: SyncDocType, payload: Record<string, unknown>): Promise<string> {
+export interface EnqueueItem {
+  type: SyncDocType;
+  payload: Record<string, unknown>;
+  /** Stable per-document id, created ONCE when the form opens. A repeat call with the same id is a no-op. */
+  clientId?: string;
+}
+
+/**
+ * Atomic multi-document write (order + its visit): ONE Dexie transaction, so a failure leaves neither.
+ * Idempotent by clientId: an id already in the queue is not written again (double-click / retry after a
+ * failed UI step cannot create a second document). Returns the clientIds in input order.
+ */
+function canonicalJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(',')}]`;
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    return `{${Object.keys(o).filter((k) => o[k] !== undefined).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson(o[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(v) ?? 'null';
+}
+
+export async function enqueueMany(items: EnqueueItem[]): Promise<string[]> {
   const session = getOfflineSession();
   if (!session) throw new NoOfflineSessionError();
   // No device-key-only payments: without the vault key the payment is not created at all.
-  if (type === 'payment') {
+  if (items.some((i) => i.type === 'payment')) {
     assertVaultReady(session);
     await assertNoLegacyPayments();
   }
-  const clientId = crypto.randomUUID();
-  const seq = await nextSeq();
-  const entry: QueueEntry = {
-    clientId,
-    type,
-    status: 'PENDING',
-    payload: { ...payload, clientId },
-    createdAt: new Date().toISOString(),
-    seq,
-    schemaVersion: QUEUE_SCHEMA_VERSION,
-    attemptCount: 0,
-    userId: session.userId,
-    companyId: session.companyId,
-  };
+  const createdAt = new Date().toISOString();
+  const entries: QueueEntry[] = items.map((i) => {
+    const clientId = i.clientId ?? crypto.randomUUID();
+    return {
+      clientId,
+      type: i.type,
+      status: 'PENDING',
+      payload: { ...i.payload, clientId },
+      createdAt,
+      schemaVersion: QUEUE_SCHEMA_VERSION,
+      attemptCount: 0,
+      userId: session.userId,
+      companyId: session.companyId,
+    };
+  });
+  // Re-submit with an existing clientId: identical payload -> no-op; different payload while still unsent
+  // (PENDING/FAILED) -> payload replaced in place (same clientId/seq); already sent/decided -> explicit error;
+  // other owner's row -> explicit error. Never silently drops a change.
+  const mode: ('new' | 'skip' | 'update')[] = [];
+  const prior = new Map<string, QueueEntry>();
+  for (const e of entries) {
+    const raw = await db.queue.get(e.clientId);
+    if (!raw) {
+      mode.push('new');
+      continue;
+    }
+    const existing = await store.get(e.clientId);
+    if (!existing || existing.userId !== session.userId || existing.companyId !== session.companyId) {
+      throw new QueueItemStateError('CLIENT_ID_FOREIGN', `clientId ${e.clientId} belongs to another owner or is not readable`);
+    }
+    if (canonicalJson(existing.payload) === canonicalJson(e.payload) && existing.type === e.type) {
+      mode.push('skip');
+    } else if (existing.status === 'PENDING' || existing.status === 'FAILED') {
+      prior.set(e.clientId, existing);
+      mode.push('update');
+    } else {
+      throw new QueueItemStateError('CLIENT_ID_IN_USE', `clientId ${e.clientId} is ${existing.status}; its payload cannot be changed`);
+    }
+  }
+  const toWrite = entries.map((e, i) => (mode[i] === 'update' ? { ...prior.get(e.clientId)!, payload: e.payload, status: 'PENDING' as const, nextAttemptAt: undefined } : e));
+  // Crypto happens before the transaction (IndexedDB transactions auto-commit across non-IDB awaits).
+  const rows = await store.encodeRows(toWrite);
   try {
-    await store.put(entry);
+    await db.transaction('rw', [db.meta, db.queue], async () => {
+      let next = Math.max(((await db.meta.get(QUEUE_SEQ_KEY))?.value as number | undefined) ?? 0, (await db.queue.orderBy('seq').last())?.seq ?? 0);
+      const fresh: Parameters<typeof db.queue.put>[0][] = [];
+      for (const [idx, row] of rows.entries()) {
+        const id = entries[idx]!.clientId;
+        const raw = await db.queue.get(id);
+        if (mode[idx] === 'skip') continue;
+        if (mode[idx] === 'update') {
+          if (!raw) continue;
+          // Re-check inside the transaction: the row may have started syncing / changed owner since the pre-check.
+          if ((raw.status !== 'PENDING' && raw.status !== 'FAILED') || raw.userId !== session.userId || raw.companyId !== session.companyId) {
+            throw new QueueItemStateError('CLIENT_ID_IN_USE', `clientId ${id} is ${raw.status}; its payload cannot be changed`);
+          }
+          fresh.push({ ...row, seq: raw.seq } as never);
+          continue;
+        }
+        if (raw) continue; // concurrent double-click: the other call already wrote it
+        next += 1;
+        fresh.push({ ...row, seq: next } as never);
+      }
+      if (fresh.length === 0) return;
+      await db.meta.put({ key: QUEUE_SEQ_KEY, value: next });
+      for (const row of fresh) await db.queue.put(row);
+    });
   } catch (e) {
     if (isQuotaError(e)) {
       void publishStorageStatus().catch(() => {});
@@ -203,7 +264,12 @@ export async function enqueue(type: SyncDocType, payload: Record<string, unknown
     throw e;
   }
   void publishStorageStatus().catch(() => {});
-  return clientId;
+  return entries.map((e) => e.clientId);
+}
+
+export async function enqueue(type: SyncDocType, payload: Record<string, unknown>, opts: { clientId?: string } = {}): Promise<string> {
+  const [clientId] = await enqueueMany([{ type, payload, clientId: opts.clientId }]);
+  return clientId!;
 }
 
 /** Current user's entries only — other users' documents are never listed. */
@@ -578,7 +644,7 @@ export async function restoreHeldEntry(entry: QueueEntry): Promise<void> {
 export async function sealOwnRowsToVault(
   owner: OfflineSession,
   opts: { onlyPayments?: boolean } = {},
-): Promise<{ moved: number; remaining: number; remainingPayments: number }> {
+): Promise<{ moved: number; remaining: number; remainingPayments: number; remainingOther: number }> {
   const raw = (await db.queue.where('userId').equals(owner.userId).toArray()).filter(
     (r) => r.companyId === owner.companyId && r._enc?.v !== UK_FORMAT && (!opts.onlyPayments || r.type === 'payment'),
   );
@@ -593,7 +659,7 @@ export async function sealOwnRowsToVault(
       if (r.type === 'payment') remainingPayments += 1;
     } // 'gone': deleted/ACKed meanwhile - never resurrected
   }
-  return { moved, remaining, remainingPayments };
+  return { moved, remaining, remainingPayments, remainingOther: remaining - remainingPayments };
 }
 
 type CasOutcome = 'moved' | 'gone' | 'failed';
@@ -668,12 +734,17 @@ export async function removeResolvedHeld(clientId: string): Promise<boolean> {
   return true;
 }
 
-/** Force-logout discard: deletes ONLY the current user's own rows. Foreign/quarantined rows stay. */
+/**
+ * Force-logout cleanup: deletes ONLY the current user's own rows the server has already ACKed (SYNCED).
+ * Unaccepted work (PENDING/SYNCING/FAILED/CONFLICT) of any type is NEVER destroyed by logout: it stays
+ * encrypted under the owner's key and returns on their next login (same clientId -> server dedupes).
+ * Explicit destruction is only per-item discard or the separate emergency wipe. Foreign/quarantined rows stay.
+ */
 export async function deleteOwnEntries(): Promise<void> {
   const s = getOfflineSession();
   // A PAYMENT not confirmed synced by the server is never deleted (PO criterion): it stays in the queue (vault-encrypted,
   // owner-scoped) and is restored on the owner's next login under the same clientId, so server idempotency dedups a re-send.
-  const mine = (await readAll()).filter((e) => ownedBy(e, s) && (e.type !== 'payment' || e.status === 'SYNCED'));
+  const mine = (await readAll()).filter((e) => ownedBy(e, s) && e.status === 'SYNCED');
   await Promise.all(mine.map((e) => db.queue.delete(e.clientId)));
 }
 
@@ -778,6 +849,7 @@ export async function claimLegacyEntries(session: OfflineSession): Promise<{ cla
 
 export const queueRepository = {
   enqueue,
+  enqueueMany,
   listAll,
   listAllOwners,
   listPending,
