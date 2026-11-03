@@ -38,13 +38,18 @@ const SYSTEM_ROLE_CODES = Object.keys(ROLE_PERMISSIONS);
 /**
  * Permission is global reference data (schema 6.2, not tenant-scoped) — there
  * is one row per "module.action" for the whole install, so this runs once, not
- * per company.
+ * per company. `keys` limits creation to a subset (scoped data fixes such as
+ * backfill-assign-courier.ts); the returned map always covers every row.
  */
-async function ensurePermissions(db: Db, dryRun: boolean): Promise<{ idByKey: Map<string, string>; created: number }> {
+export async function ensurePermissions(
+  db: Db,
+  dryRun: boolean,
+  keys: readonly string[] = ALL_PERMISSION_KEYS,
+): Promise<{ idByKey: Map<string, string>; created: number }> {
   const existing = await db.permission.findMany({ select: { id: true, module: true, code: true } });
   const idByKey = new Map(existing.map((p) => [`${p.module}.${p.code}`, p.id]));
 
-  const missing = ALL_PERMISSION_KEYS.filter((key) => !idByKey.has(key));
+  const missing = keys.filter((key) => !idByKey.has(key));
   if (missing.length === 0) return { idByKey, created: 0 };
 
   console.log(`Missing Permission rows: ${missing.join(', ')}`);

@@ -46,6 +46,14 @@ describe('rbac-catalog: F1.4 role grants', () => {
     }
   });
 
+  it('PO 2026-11: orders.assignCourier → OWNER, SALES_DIRECTOR, WAREHOUSE; WAREHOUSE has no orders.update; SALES_DIRECTOR can cancel', () => {
+    const holders = (key: string) =>
+      SYSTEM_ROLES.filter((r) => permissionKeysForRole(r.code).includes(key)).map((r) => r.code).sort();
+    expect(holders('orders.assignCourier')).toEqual(['OWNER', 'SALES_DIRECTOR', 'WAREHOUSE']);
+    expect(holders('orders.update')).toEqual(['OWNER', 'SALES_DIRECTOR']);
+    expect(holders('orders.cancel')).toEqual(['OWNER', 'SALES_DIRECTOR']);
+  });
+
   it('F2.1: payments.allocate granted only to OWNER, SALES_DIRECTOR and CASHIER', () => {
     const holders = SYSTEM_ROLES.filter((r) => permissionKeysForRole(r.code).includes('payments.allocate')).map((r) => r.code);
     expect(holders.sort()).toEqual(['CASHIER', 'OWNER', 'SALES_DIRECTOR']);

@@ -8,6 +8,7 @@ import { CancelOrderDto } from './dto/cancel-order.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { DeliverOrderDto } from './dto/deliver-order.dto';
 import { ListOrdersQueryDto } from './dto/list-orders.query';
+import { ReturnToWarehouseDto } from './dto/return-to-warehouse.dto';
 import { SalesService } from './sales.service';
 
 @Controller('orders')
@@ -18,6 +19,13 @@ export class SalesController {
   @RequirePermission('orders.read')
   list(@Query() query: ListOrdersQueryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.sales.list(query, user);
+  }
+
+  /** Courier picker for dispatch — declared before ':id' so the static path wins. Minimal fields; no users.read needed. */
+  @Get('assignable-couriers')
+  @RequirePermission('orders.assignCourier')
+  assignableCouriers() {
+    return this.sales.listAssignableCouriers();
   }
 
   @Get(':id')
@@ -55,15 +63,28 @@ export class SalesController {
     return this.sales.deliver(id, user, dto);
   }
 
-  /** Attaches a delivery Courier and moves the order straight to SHIPPED — see SalesService.assignCourier(). */
+  /** Hand-over to a courier: CONFIRMED → SHIPPED or reassign on SHIPPED; never touches stock — see SalesService.assignCourier(). */
   @Post(':id/assign-courier')
-  @RequirePermission('orders.update')
+  @Idempotent()
+  @RequirePermission('orders.assignCourier')
   assignCourier(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: AssignCourierDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.sales.assignCourier(id, dto, user);
+  }
+
+  /** Goods back from the courier: SHIPPED → CONFIRMED, courier detached, reservation kept — see SalesService.returnToWarehouse(). */
+  @Post(':id/return-to-warehouse')
+  @Idempotent()
+  @RequirePermission('orders.assignCourier')
+  returnToWarehouse(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ReturnToWarehouseDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.sales.returnToWarehouse(id, dto, user);
   }
 
   @Post(':id/close')
@@ -73,6 +94,7 @@ export class SalesController {
   }
 
   @Post(':id/cancel')
+  @Idempotent()
   @RequirePermission('orders.cancel')
   cancel(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CancelOrderDto, @CurrentUser() user: AuthenticatedUser) {
     return this.sales.cancel(id, dto, user);

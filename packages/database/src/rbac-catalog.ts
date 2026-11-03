@@ -63,7 +63,12 @@ export const PERMISSION_DEFS: { module: string; actions: string[] }[] = [
   // close/cancel/delete and courier assignment, so granting it to a courier
   // would let them drive or delete any order in the tenant. `deliver` is the
   // narrow "mark my delivery done" transition (CONFIRMED -> DELIVERED).
-  { module: 'orders', actions: ['read', 'create', 'update', 'cancel', 'deliver'] },
+  // `assignCourier` (PO decision, 2026-11): set/replace an order's courier
+  // (uz: "Kuryer biriktirish", ru: "Назначить курьера", en: "Assign courier").
+  // Split from `update` so WAREHOUSE can dispatch without confirm/close/delete
+  // rights. OWNER, SALES_DIRECTOR, WAREHOUSE. Existing tenants: run
+  // backfill-assign-courier.ts.
+  { module: 'orders', actions: ['read', 'create', 'update', 'cancel', 'deliver', 'assignCourier'] },
   { module: 'invoices', actions: ['read'] },
   // `allocate` (F2.1): manually apply an advance (unallocated) payment to
   // invoices (POST /payments/:id/allocate). Separate from `create` so a sales
@@ -125,7 +130,8 @@ export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
   SALES_DIRECTOR: [
     'customers.read', 'customers.update', 'catalog.read', 'stock.read', 'stock.movements.read',
     'purchases.read', 'purchases.create',
-    'orders.read', 'orders.update', 'orders.deliver', 'invoices.read', 'payments.read',
+    'orders.read', 'orders.update', 'orders.cancel', 'orders.deliver', 'orders.assignCourier',
+    'invoices.read', 'payments.read',
     'payments.reverse', 'stock.reverse', 'payments.allocate',
     'routes.read', 'routes.create', 'routes.update', 'routes.finish', 'field.read',
     'reports.read', 'reports.export', 'users.read', 'users.create',
@@ -146,8 +152,11 @@ export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
   WAREHOUSE: [
     'catalog.read', 'stock.read', 'stock.movements.read', 'stock.receive', 'stock.adjust',
     'purchases.read', 'purchases.receive',
-    'orders.read', 'orders.update',
+    // No `orders.update` (PO decision, 2026-11): it also guards confirm/close/
+    // cancel/delete. Courier dispatch goes through `orders.assignCourier`.
+    'orders.read',
     'orders.deliver', // marks CONFIRMED orders as DELIVERED
+    'orders.assignCourier',
   ],
   CASHIER: [
     'customers.read', 'invoices.read', 'payments.read', 'payments.create', 'payments.allocate',

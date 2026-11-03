@@ -3,6 +3,7 @@ import { Injectable } from '@nestjs/common';
 import { assertClientIdReplayAllowed } from '../../common/idempotency/client-id-replay';
 import { OrderStatus, Prisma, withSavepoint, type TenantClient } from '@velto/database';
 import { AuditLogService, toAuditJson } from '../../common/audit/audit-log.service';
+import { auditRejection } from '../../common/audit/rejection-audit';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { DocumentNumberingService } from '../../common/document-numbering/document-numbering.service';
 import { paginate, resolveSort } from '../../common/pagination/pagination.dto';
@@ -22,6 +23,7 @@ import type { CancelOrderDto } from './dto/cancel-order.dto';
 import type { CreateOrderDto } from './dto/create-order.dto';
 import type { DeliverOrderDto, DeliverOrderLineDto } from './dto/deliver-order.dto';
 import type { ListOrdersQueryDto } from './dto/list-orders.query';
+import type { ReturnToWarehouseDto } from './dto/return-to-warehouse.dto';
 import { isDeliveredQtyCheckViolation } from './delivered-qty-check';
 import { assertNotBelowMinPrice, assertQtyPrecision } from './order-line-guards';
 import { calcLineTotal, deliveredLineTotal, orderTotal, roundLineTotal, type OrderLineAmounts } from './line-total';
@@ -29,6 +31,7 @@ import {
   AmbiguousWarehouseException,
   CourierNotFoundException,
   CourierAssignmentForbiddenException,
+  CourierAssignInvalidStatusException,
   CustomerBlockedException,
   DeliveryLinesMismatchException,
   EmptyDeliveryException,
@@ -37,11 +40,13 @@ import {
   InvalidOrderTransitionException,
   OrderNotAssignedToCourierException,
   OrderAlreadyInvoicedException,
+  OrderShippedRequiresReturnException,
   OverDeliveryException,
   PackagingMismatchException,
   PartialDeliveryNotAllowedException,
   PriceChangedException,
   PriceNotFoundException,
+  ReturnToWarehouseInvalidStatusException,
   SalesOrderNotFoundException,
   type PriceChangedLine,
 } from './sales-exceptions';
@@ -259,9 +264,22 @@ export class SalesService {
   async createWithOutcome(dto: CreateOrderDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
 
-    // P0: courierId ⇒ SHIPPED + reservation, i.e. confirm()'s effect, which
-    // needs `orders.update`. Checked before any read/write (covers /sync/push).
-    if (dto.courierId && !user.permissions.includes('orders.update')) throw new CourierAssignmentForbiddenException();
+    // P0: courierId ⇒ SHIPPED + reservation, i.e. confirm()'s effect (needs
+    // `orders.update`) plus the courier hand-over (needs `orders.assignCourier`).
+    // BOTH are required; checked before any read/write (covers /sync/push).
+    if (
+      dto.courierId &&
+      !(user.permissions.includes('orders.update') && user.permissions.includes('orders.assignCourier'))
+    ) {
+      // SEC-054: 403 is audited in its own tx after the rollback (ADR-061), also on /sync/push.
+      throw auditRejection(
+        this.tenantPrisma,
+        this.auditLog,
+        { companyId: user.companyId, userId: user.id, action: 'order.create_with_courier', entity: 'User', entityId: user.id },
+        new CourierAssignmentForbiddenException(),
+        { requiredPermissions: 'orders.update,orders.assignCourier' },
+      );
+    }
 
     if (dto.clientId) {
       const existing = await tx.salesOrder.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: ORDER_INCLUDE });
@@ -666,20 +684,25 @@ export class SalesService {
     return withTotal(updated);
   }
 
-  /** Releases any reservation (if CONFIRMED, or SHIPPED — a courier-assigned order also carries one, see reserveOrderStock()) — never allowed once DELIVERED/CLOSED. */
+  /**
+   * §6.3 cancel (PO decision D): allowed from DRAFT/SUBMITTED (nothing reserved)
+   * and CONFIRMED (reservation released here, exactly once). SHIPPED is with a
+   * courier — it must first come back via returnToWarehouse() (→ CONFIRMED).
+   * DELIVERED/CLOSED → 409. Already CANCELLED → idempotent no-op: same order
+   * back, no second RELEASE, no second audit. The SalesOrder row lock
+   * serializes concurrent cancels, so the loser re-reads CANCELLED and no-ops.
+   */
   async cancel(id: string, dto: CancelOrderDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
     const order = await this.getRawOrderForUpdate(tx, id);
 
-    if (
-      order.status === OrderStatus.DELIVERED ||
-      order.status === OrderStatus.CLOSED ||
-      order.status === OrderStatus.CANCELLED
-    ) {
+    if (order.status === OrderStatus.CANCELLED) return withTotal(order);
+    if (order.status === OrderStatus.SHIPPED) throw new OrderShippedRequiresReturnException();
+    if (order.status === OrderStatus.DELIVERED || order.status === OrderStatus.CLOSED) {
       throw new InvalidOrderTransitionException(order.status, OrderStatus.CANCELLED);
     }
 
-    if (order.status === OrderStatus.CONFIRMED || order.status === OrderStatus.SHIPPED) {
+    if (order.status === OrderStatus.CONFIRMED) {
       for (const line of sortByProduct(order.lines)) {
         await this.stock.release(tx, {
           companyId: user.companyId,
@@ -717,36 +740,24 @@ export class SalesService {
   }
 
   /**
-   * Attaches a delivery Courier to an already-created order and moves it
-   * straight to SHIPPED — the same jump `create()` takes when `courierId`
-   * is known up front. Blocked once the order is DELIVERED/CLOSED/CANCELLED
-   * (nothing left to deliver); allowed from DRAFT/SUBMITTED/CONFIRMED and
-   * even from SHIPPED itself (re-pointing an already-assigned order at a
-   * different courier).
+   * Hand-over to a courier (PO decision A): CONFIRMED → SHIPPED, or re-pointing
+   * an already-SHIPPED order at another courier (stays SHIPPED). Pure
+   * logistics: the reservation was taken by confirm() and is never touched
+   * here — no RESERVE/RELEASE/ISSUE, no invoice. Any other status → 409.
+   * Same courier again on a SHIPPED order → idempotent no-op (no audit).
    */
   async assignCourier(id: string, dto: AssignCourierDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
     const order = await this.getRawOrderForUpdate(tx, id);
 
-    if (
-      order.status === OrderStatus.DELIVERED ||
-      order.status === OrderStatus.CLOSED ||
-      order.status === OrderStatus.CANCELLED
-    ) {
-      throw new InvalidOrderTransitionException(order.status, OrderStatus.SHIPPED);
+    if (order.status !== OrderStatus.CONFIRMED && order.status !== OrderStatus.SHIPPED) {
+      throw new CourierAssignInvalidStatusException(order.status);
     }
 
     const courierId = await this.resolveCourier(tx, dto.courierId);
+    if (order.status === OrderStatus.SHIPPED && order.courierId === courierId) return withTotal(order);
 
-    // Only reserve if nothing has been reserved for this order yet — a
-    // CONFIRMED (or already-SHIPPED) order already carries one, and
-    // reserving twice would double-count against StockLevel.reserved.
-    if (order.status === OrderStatus.DRAFT || order.status === OrderStatus.SUBMITTED) {
-      // Same confirm-equivalent step as confirm(): ADR-059b minPrice re-check.
-      await this.assertLinesNotBelowMinPrice(tx, order.lines);
-      await this.reserveOrderStock(tx, order, user);
-    }
-
+    const reassign = order.status === OrderStatus.SHIPPED;
     const updated = await tx.salesOrder.update({
       where: { id },
       data: { courierId, status: OrderStatus.SHIPPED },
@@ -756,7 +767,7 @@ export class SalesService {
     await this.auditLog.log(tx, {
       companyId: user.companyId,
       userId: user.id,
-      action: 'order.assignCourier',
+      action: reassign ? 'order.reassignCourier' : 'order.assignCourier',
       entity: 'SalesOrder',
       entityId: id,
       oldValue: toAuditJson({ status: order.status, courierId: order.courierId }),
@@ -766,6 +777,47 @@ export class SalesService {
     await this.scheduleCourierAssignedNotification(tx, courierId, updated.number, user.companyId);
 
     return withTotal(updated);
+  }
+
+  /**
+   * PO decision C: goods came back from the courier — SHIPPED → CONFIRMED and
+   * the courier is detached. The reservation stays as is (SHIPPED carries only
+   * RESERVE, never ISSUE), so no stock movement. Reason mandatory, audited.
+   * Already CONFIRMED without a courier → idempotent no-op; other statuses → 409.
+   */
+  async returnToWarehouse(id: string, dto: ReturnToWarehouseDto, user: AuthenticatedUser) {
+    const tx = this.tenantPrisma.client;
+    const order = await this.getRawOrderForUpdate(tx, id);
+
+    if (order.status === OrderStatus.CONFIRMED && order.courierId === null) return withTotal(order);
+    if (order.status !== OrderStatus.SHIPPED) throw new ReturnToWarehouseInvalidStatusException(order.status);
+
+    const updated = await tx.salesOrder.update({
+      where: { id },
+      data: { courierId: null, status: OrderStatus.CONFIRMED },
+      include: ORDER_INCLUDE,
+    });
+
+    await this.auditLog.log(tx, {
+      companyId: user.companyId,
+      userId: user.id,
+      action: 'order.returnToWarehouse',
+      entity: 'SalesOrder',
+      entityId: id,
+      oldValue: toAuditJson({ status: order.status, courierId: order.courierId }),
+      newValue: toAuditJson({ status: OrderStatus.CONFIRMED, courierId: null, reason: dto.reason }),
+    });
+
+    return withTotal(updated);
+  }
+
+  /** PO decision B: the courier picker for `orders.assignCourier` holders — no `users.read` needed, minimal fields only. */
+  async listAssignableCouriers() {
+    return this.tenantPrisma.client.user.findMany({
+      where: { isActive: true, roles: { some: { role: { code: 'COURIER' } } } },
+      select: { id: true, firstName: true, lastName: true },
+      orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }, { id: 'asc' }],
+    });
   }
 
   /**
@@ -807,7 +859,7 @@ export class SalesService {
     }
   }
 
-  /** Reserves every line of `order` (8.3) — shared by confirm(), create() (courier-known-up-front) and assignCourier(). */
+  /** Reserves every line of `order` (8.3) — shared by confirm() and create() (courier-known-up-front). */
   private async reserveOrderStock(
     tx: TenantClient,
     order: { id: string; warehouseId: string; lines: { productId: string; qty: Prisma.Decimal }[] },

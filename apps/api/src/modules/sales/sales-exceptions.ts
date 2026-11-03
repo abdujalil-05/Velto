@@ -76,12 +76,12 @@ export class AmbiguousWarehouseException extends AppException {
  * (rbac-catalog.ts), so "not found" here covers all three ways the id can be
  * wrong: no such user in this tenant, deactivated, or an active user who
  * simply isn't a courier. Deliberately one message for all three — the caller
- * picks from `GET /users?roleCode=COURIER`, so anything else is a bad request,
- * not a state the UI needs to distinguish.
+ * picks from `GET /orders/assignable-couriers`. 404, like any foreign/unknown
+ * id: another tenant's user is indistinguishable from a nonexistent one.
  */
 export class CourierNotFoundException extends AppException {
   constructor() {
-    super(HttpStatus.BAD_REQUEST, 'COURIER_NOT_FOUND', {
+    super(HttpStatus.NOT_FOUND, 'COURIER_NOT_FOUND', {
       uz: 'Kuryer topilmadi yoki faol emas',
       ru: 'Курьер не найден или неактивен',
       en: 'Courier not found or inactive',
@@ -107,8 +107,8 @@ export class OrderNotAssignedToCourierException extends AppException {
 
 /**
  * P0: a courierId on create sends the order straight to SHIPPED and reserves
- * stock — the same effect as confirm()/assignCourier(), which need
- * `orders.update`. Holding only `orders.create` (SALES_AGENT, also via
+ * stock — confirm()'s effect (`orders.update`) plus the courier hand-over
+ * (`orders.assignCourier`); both are required. Holding only `orders.create` (SALES_AGENT, also via
  * /sync/push) must not bypass director approval.
  */
 export class CourierAssignmentForbiddenException extends AppException {
@@ -287,5 +287,48 @@ export class OrderAlreadyInvoicedException extends AppException {
       },
       { orderId },
     );
+  }
+}
+
+/** PO decision A: a courier is handed a CONFIRMED order (→ SHIPPED) or re-pointed on a SHIPPED one — nothing else. */
+export class CourierAssignInvalidStatusException extends AppException {
+  constructor(status: string) {
+    super(
+      HttpStatus.CONFLICT,
+      'SALES_ORDER_COURIER_ASSIGN_INVALID_STATUS',
+      {
+        uz: `Kuryer faqat tasdiqlangan (CONFIRMED) yoki yo'ldagi (SHIPPED) buyurtmaga biriktiriladi; joriy holat: "${status}"`,
+        ru: `Курьера можно назначить только подтверждённому (CONFIRMED) или отгруженному (SHIPPED) заказу; текущий статус: "${status}"`,
+        en: `A courier can only be assigned to a CONFIRMED or SHIPPED order; current status: "${status}"`,
+      },
+      { status },
+    );
+  }
+}
+
+/** PO decision C: only a SHIPPED order can come back from the courier to the warehouse. */
+export class ReturnToWarehouseInvalidStatusException extends AppException {
+  constructor(status: string) {
+    super(
+      HttpStatus.CONFLICT,
+      'SALES_ORDER_RETURN_INVALID_STATUS',
+      {
+        uz: `Faqat yo'ldagi (SHIPPED) buyurtmani omborga qaytarish mumkin; joriy holat: "${status}"`,
+        ru: `Вернуть на склад можно только отгруженный (SHIPPED) заказ; текущий статус: "${status}"`,
+        en: `Only a SHIPPED order can be returned to the warehouse; current status: "${status}"`,
+      },
+      { status },
+    );
+  }
+}
+
+/** PO decision D: a SHIPPED order is with the courier — return it to the warehouse before cancelling. */
+export class OrderShippedRequiresReturnException extends AppException {
+  constructor() {
+    super(HttpStatus.CONFLICT, 'SALES_ORDER_SHIPPED_REQUIRES_RETURN', {
+      uz: "Buyurtma kuryerda (SHIPPED). Bekor qilishdan oldin uni omborga qaytaring",
+      ru: 'Заказ у курьера (SHIPPED). Перед отменой верните его на склад',
+      en: 'The order is with the courier (SHIPPED). Return it to the warehouse before cancelling',
+    });
   }
 }

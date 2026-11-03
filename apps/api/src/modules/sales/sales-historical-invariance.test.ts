@@ -79,7 +79,7 @@ describe('ADR-059: assignCourier minPrice, historical invariance, tenant isolati
     await systemPrisma.$disconnect();
   });
 
-  it('ADR-059b: assignCourier on SUBMITTED order after minPrice raised => ORDER_PRICE_BELOW_MIN; no reservation, no StockMovement, status unchanged', async () => {
+  it('ADR-059b + PO-A: assignCourier on SUBMITTED order (minPrice raised) => 409 SALES_ORDER_COURIER_ASSIGN_INVALID_STATUS (assign never confirms); no reservation, no StockMovement, status unchanged', async () => {
     const order = await create(A, 3);
     await setMin(A, '1500.00');
     const state = () =>
@@ -90,9 +90,9 @@ describe('ADR-059: assignCourier minPrice, historical invariance, tenant isolati
       }));
     const before = await state();
     const err = await caught(run(A, () => sales.assignCourier(order.id, { courierId: A.courierId }, A.user)));
-    expect(err?.getStatus()).toBe(400);
-    expect(err?.getResponse().code).toBe('ORDER_PRICE_BELOW_MIN');
-    expect(err?.getResponse().details).toMatchObject({ productId: A.productId, minPrice: '1500.00' });
+    expect(err?.getStatus()).toBe(409);
+    expect(err?.getResponse().code).toBe('SALES_ORDER_COURIER_ASSIGN_INVALID_STATUS');
+    expect(err?.getResponse().details).toMatchObject({ status: 'SUBMITTED' });
     expect(await state()).toEqual(before);
     expect(JSON.parse(before.order).status).toBe('SUBMITTED');
     await setMin(A, null);

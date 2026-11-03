@@ -157,7 +157,7 @@ describe('E2E §16.5.1 negative checklist', () => {
     expect(await byClient(accepted.clientId)).toHaveLength(1);
   });
 
-  it('§16.5.1 cancel after confirm: 4 parallel cancels (distinct keys) => exactly one wins, one RELEASE per line, reserved back to baseline, onHand untouched, no ISSUE', async () => {
+  it('§16.5.1 cancel after confirm: 4 parallel cancels (distinct keys) => all 201 CANCELLED (idempotent, PO-D), one RELEASE per line, reserved back to baseline, onHand untouched, no ISSUE', async () => {
     const [baseA, baseB] = [await level(productA), await level(productB)];
     const order = await run(() =>
       sales.create(
@@ -180,10 +180,9 @@ describe('E2E §16.5.1 negative checklist', () => {
         http().post(`/orders/${order.id}/cancel`).set(auth('OWNER')).set('Idempotency-Key', randomUUID()).send({ reason: 'dup cancel race' }),
       ),
     );
-    expect(res.filter((r) => r.status === 201)).toHaveLength(1);
-    for (const r of res.filter((x) => x.status !== 201)) {
-      expect(r.status).toBeGreaterThanOrEqual(400);
-      expect(r.status).toBeLessThan(500);
+    for (const r of res) {
+      expect(r.status).toBe(201);
+      expect(r.body.status).toBe('CANCELLED');
     }
 
     const moves = await run(() => tenantPrisma.client.stockMovement.findMany({ where: { refType: 'SalesOrder', refId: order.id } }));
@@ -199,9 +198,11 @@ describe('E2E §16.5.1 negative checklist', () => {
     expect((await run(() => tenantPrisma.client.salesOrder.findUniqueOrThrow({ where: { id: order.id } }))).status).toBe('CANCELLED');
     expect(await run(() => tenantPrisma.client.auditLog.count({ where: { action: 'order.cancel', entityId: order.id } }))).toBe(1);
 
-    // a later, sequential cancel is a rejected transition and changes nothing
+    // a later, sequential cancel is an idempotent no-op (PO-D) and changes nothing
     const again = await http().post(`/orders/${order.id}/cancel`).set(auth('OWNER')).set('Idempotency-Key', randomUUID()).send({ reason: 'again' });
-    expect(again.status).toBeGreaterThanOrEqual(400);
+    expect(again.status).toBe(201);
+    expect(again.body.status).toBe('CANCELLED');
+    expect(await run(() => tenantPrisma.client.auditLog.count({ where: { action: 'order.cancel', entityId: order.id } }))).toBe(1);
     expect((await level(productA)).reserved.toString()).toBe(baseA.reserved.toString());
     expect((await run(() => tenantPrisma.client.stockMovement.count({ where: { refType: 'SalesOrder', refId: order.id, type: 'RELEASE' } })))).toBe(2);
   });

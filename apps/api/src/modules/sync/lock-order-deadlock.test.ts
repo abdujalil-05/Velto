@@ -65,7 +65,7 @@ describe('Writer lock order: sync push x orders x deliver x payments (real Postg
       return { id: u.id, companyId, firstName: 'U', lastName: phone, roles, permissions };
     };
     agent = await mk(`+99890${Date.now() % 10000000}`.slice(0, 13), ['SALES_AGENT'], ['orders.create', 'payments.create', 'field.create']);
-    director = await mk(`+99891${Date.now() % 10000000}`.slice(0, 13), ['SALES_DIRECTOR'], ['orders.create', 'orders.update', 'orders.confirm', 'orders.deliver', 'payments.create']);
+    director = await mk(`+99891${Date.now() % 10000000}`.slice(0, 13), ['SALES_DIRECTOR'], ['orders.create', 'orders.update', 'orders.assignCourier', 'orders.confirm', 'orders.deliver', 'payments.create']);
 
     const courier = await systemPrisma.user.create({
       data: { companyId, firstName: 'C', lastName: 'Courier', phone: `+99892${Date.now() % 10000000}`.slice(0, 13), telegramId: BigInt(Date.now()) },

@@ -192,6 +192,7 @@ describe('audit-deleted-customers', () => {
       });
       expect(summary.resolutionGuide.MANUAL_RECONCILIATION_REQUIRED).toMatch(/SHIPPED/);
       expect(summary.resolutionGuide.MANUAL_RECONCILIATION_REQUIRED).toMatch(/orders\.cancel/);
+      expect(summary.resolutionGuide.MANUAL_RECONCILIATION_REQUIRED).toMatch(/return-to-warehouse/);
       const summaryText = JSON.stringify(summary);
       expect(summaryText).not.toMatch(UUID);
       for (const pii of ['DIRTY', 'COLLIDE', 'ONLY-OTHER', 'Audit Co', actor.phone, 'SO-', 'PAY-', 'INV-']) {

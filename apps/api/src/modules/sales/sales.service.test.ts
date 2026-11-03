@@ -27,6 +27,9 @@ import {
   PriceChangedException,
   SalesOrderNotFoundException,
   CourierAssignmentForbiddenException,
+  CourierAssignInvalidStatusException,
+  OrderShippedRequiresReturnException,
+  ReturnToWarehouseInvalidStatusException,
 } from './sales-exceptions';
 import { isDeliveredQtyCheckViolation } from './delivered-qty-check';
 import { SalesService } from './sales.service';
@@ -60,7 +63,7 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     const dbUser = await systemPrisma.user.create({
       data: { companyId, firstName: 'Op', lastName: 'User', phone: '+998900000003' },
     });
-    user = { id: dbUser.id, companyId, firstName: 'Op', lastName: 'User', roles: ['WAREHOUSE'], permissions: ['orders.update'] };
+    user = { id: dbUser.id, companyId, firstName: 'Op', lastName: 'User', roles: ['WAREHOUSE'], permissions: ['orders.update', 'orders.assignCourier'] };
 
     await tenantPrisma.run(companyId, async (tx) => {
       const warehouse = await tx.warehouse.create({ data: { companyId, name: 'Sales Test Warehouse' } });
@@ -556,9 +559,21 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     expect(leaked).toBe(0);
     expect((await getReserved()).toString()).toBe(before.toString());
 
-    for (const office of [
-      await mk(['OWNER'], ['orders.create', 'orders.update']),
+    // PO-E: courierId on create needs BOTH orders.update and orders.assignCourier.
+    for (const half of [
       await mk(['SALES_DIRECTOR'], ['orders.create', 'orders.update']),
+      await mk(['WAREHOUSE'], ['orders.create', 'orders.assignCourier']),
+    ]) {
+      await expect(
+        tenantPrisma.run(companyId, () => sales.create({ customerId, courierId, lines: [{ productId, packagingId, qty: 1 }] }, half)),
+      ).rejects.toBeInstanceOf(CourierAssignmentForbiddenException);
+    }
+    expect(await tenantPrisma.run(companyId, (tx) => tx.salesOrder.count({ where: { customerId } }))).toBe(0);
+    expect((await getReserved()).toString()).toBe(before.toString());
+
+    for (const office of [
+      await mk(['OWNER'], ['orders.create', 'orders.update', 'orders.assignCourier']),
+      await mk(['SALES_DIRECTOR'], ['orders.create', 'orders.update', 'orders.assignCourier']),
     ]) {
       const start = await getReserved();
       const order = await tenantPrisma.run(companyId, () =>
@@ -570,52 +585,161 @@ describe('SalesService (integration, real Postgres + RLS)', () => {
     }
   });
 
-  it('assignCourier() on a SUBMITTED order reserves stock and moves it to SHIPPED', async () => {
+  /** Snapshot of everything assign/return/cancel must or must not touch for one order on an isolated product. */
+  async function sideEffects(orderId: string, iso: { productId: string; warehouseId: string }) {
+    return tenantPrisma.run(companyId, async (tx) => ({
+      reserved: (await tx.stockLevel.findUniqueOrThrow({ where: { productId_warehouseId: { productId: iso.productId, warehouseId: iso.warehouseId } } })).reserved.toString(),
+      onHand: (await tx.stockLevel.findUniqueOrThrow({ where: { productId_warehouseId: { productId: iso.productId, warehouseId: iso.warehouseId } } })).onHand.toString(),
+      movements: (await tx.stockMovement.findMany({ where: { productId: iso.productId }, orderBy: { createdAt: 'asc' } })).map((m) => `${m.type}:${m.qty.toString()}`),
+      invoices: await tx.invoice.count({ where: { orderId } }),
+    }));
+  }
+  const audits = (entityId: string, action: string) => systemPrisma.auditLog.findMany({ where: { companyId, entityId, action } });
+  async function isoOrder(qty = 1, confirm = true) {
     const iso = await freshStock();
-    const before = await reservedOf(iso.productId, iso.warehouseId);
     const customerId = await createCustomer();
     const order = await tenantPrisma.run(companyId, () =>
-      sales.create({ customerId, lines: [{ productId: iso.productId, packagingId: iso.packagingId, qty: 1 }] }, user),
+      sales.create({ customerId, lines: [{ productId: iso.productId, packagingId: iso.packagingId, qty }] }, user),
     );
-    expect(order.status).toBe('SUBMITTED');
+    if (confirm) await tenantPrisma.run(companyId, () => sales.confirm(order.id, user));
+    return { iso, order };
+  }
+  async function makeCourier(cid: string, isActive = true) {
+    return systemPrisma.$transaction(async (tx) => {
+      const role =
+        (await tx.role.findFirst({ where: { companyId: cid, code: 'COURIER' } })) ??
+        (await tx.role.create({ data: { companyId: cid, code: 'COURIER', name: 'Kuryer', isSystem: true } }));
+      return tx.user.create({
+        data: { companyId: cid, firstName: 'K2', lastName: 'Test', isActive, phone: `+99893${Math.floor(1_000_000 + Math.random() * 8_000_000)}`, roles: { create: { roleId: role.id } } },
+      });
+    });
+  }
+
+  it('PO-A: assignCourier() from DRAFT/SUBMITTED => 409 SALES_ORDER_COURIER_ASSIGN_INVALID_STATUS, no reservation, no movement', async () => {
+    const { iso, order } = await isoOrder(1, false);
+    const before = await sideEffects(order.id, iso);
+    const err = await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId }, user)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CourierAssignInvalidStatusException);
+    expect((err as AppException).getStatus()).toBe(409);
+    expect(await sideEffects(order.id, iso)).toEqual(before);
+    const row = await tenantPrisma.run(companyId, (tx) => tx.salesOrder.findUniqueOrThrow({ where: { id: order.id } }));
+    expect(row.status).toBe('SUBMITTED');
+    expect(row.courierId).toBeNull();
+  });
+
+  it('PO-A: assignCourier() CONFIRMED => SHIPPED keeps the reservation as is, no StockMovement, no Invoice; audited', async () => {
+    const { iso, order } = await isoOrder(2);
+    const before = await sideEffects(order.id, iso);
+    expect(before.movements).toEqual(['RECEIVE:1000', 'RESERVE:2']);
 
     const assigned = await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId }, user));
     expect(assigned.status).toBe('SHIPPED');
     expect(assigned.courierId).toBe(courierId);
-    expect((await reservedOf(iso.productId, iso.warehouseId)).minus(before).toString()).toBe('1');
+    expect(await sideEffects(order.id, iso)).toEqual(before);
+    const [a] = await audits(order.id, 'order.assignCourier');
+    expect(a?.oldValue).toMatchObject({ status: 'CONFIRMED', courierId: null });
+    expect(a?.newValue).toMatchObject({ status: 'SHIPPED', courierId });
   });
 
-  it('assignCourier() on a CONFIRMED order does not double-reserve, and is rejected once DELIVERED', async () => {
-    const customerId = await createCustomer();
-    const order = await tenantPrisma.run(companyId, () =>
-      sales.create({ customerId, lines: [{ productId, packagingId, qty: 1 }] }, user),
-    );
-    await tenantPrisma.run(companyId, () => sales.confirm(order.id, user));
-    const before = await getReserved();
+  it('PO-A: reassign on SHIPPED stays SHIPPED (audited prev/new); same courier again => no-op, no duplicate audit; DELIVERED => 409', async () => {
+    const { iso, order } = await isoOrder(1);
+    await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId }, user));
+    const before = await sideEffects(order.id, iso);
+    const second = await makeCourier(companyId);
 
-    const assigned = await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId }, user));
-    expect(assigned.status).toBe('SHIPPED');
-    expect((await getReserved()).toString()).toBe(before.toString());
+    const re = await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId: second.id }, user));
+    expect(re.status).toBe('SHIPPED');
+    expect(re.courierId).toBe(second.id);
+    const [r] = await audits(order.id, 'order.reassignCourier');
+    expect(r?.oldValue).toMatchObject({ status: 'SHIPPED', courierId });
+    expect(r?.newValue).toMatchObject({ status: 'SHIPPED', courierId: second.id });
 
-    const delivered = await tenantPrisma.run(companyId, () => sales.deliver(order.id, user));
-    expect(delivered.status).toBe('DELIVERED');
+    const again = await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId: second.id }, user));
+    expect(again.courierId).toBe(second.id);
+    expect(await audits(order.id, 'order.reassignCourier')).toHaveLength(1);
+    expect(await audits(order.id, 'order.assignCourier')).toHaveLength(1);
+    expect(await sideEffects(order.id, iso)).toEqual(before);
 
+    await tenantPrisma.run(companyId, () => sales.deliver(order.id, user));
     await expect(
       tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId }, user)),
-    ).rejects.toBeInstanceOf(InvalidOrderTransitionException);
+    ).rejects.toBeInstanceOf(CourierAssignInvalidStatusException);
   });
 
-  it('assignCourier() rejects a user who does not hold the COURIER role', async () => {
-    const customerId = await createCustomer();
-    const order = await tenantPrisma.run(companyId, () =>
-      sales.create({ customerId, lines: [{ productId, packagingId, qty: 1 }] }, user),
-    );
+  it('PO-A: non-courier, inactive courier and another tenant\'s courier => COURIER_NOT_FOUND 404, order untouched', async () => {
+    const { order } = await isoOrder(1);
+    const inactive = await makeCourier(companyId, false);
+    const tenant2 = await systemPrisma.tenant.create({ data: { slug: `test-sales-x-${Date.now()}`, name: 'X' } });
+    const company2 = await systemPrisma.company.create({ data: { tenantId: tenant2.id, name: 'X Co' } });
+    const foreign = await makeCourier(company2.id);
 
-    // `user` is a real, active User in this tenant — but a WAREHOUSE one, so
-    // only the role check (not the FK) can reject it.
+    for (const id of [user.id, inactive.id, foreign.id]) {
+      const err = await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId: id }, user)).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(CourierNotFoundException);
+      expect((err as AppException).getStatus()).toBe(404);
+    }
+    const row = await tenantPrisma.run(companyId, (tx) => tx.salesOrder.findUniqueOrThrow({ where: { id: order.id } }));
+    expect(row.status).toBe('CONFIRMED');
+    expect(row.courierId).toBeNull();
+
+    const list = await tenantPrisma.run(companyId, () => sales.listAssignableCouriers());
+    expect(list.map((c) => c.id)).toContain(courierId);
+    expect(list.map((c) => c.id)).not.toContain(inactive.id);
+    expect(list.map((c) => c.id)).not.toContain(foreign.id);
+    expect(list.map((c) => c.id)).not.toContain(user.id);
+    expect(Object.keys(list[0]!).sort()).toEqual(['firstName', 'id', 'lastName']);
+  });
+
+  it('PO-C: return-to-warehouse SHIPPED => CONFIRMED, courier cleared, reservation untouched, audited with reason; repeat => no-op; SUBMITTED => 409', async () => {
+    const { iso, order } = await isoOrder(3);
+    await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId }, user));
+    const before = await sideEffects(order.id, iso);
+
+    const back = await tenantPrisma.run(companyId, () => sales.returnToWarehouse(order.id, { reason: 'mijoz yopiq' }, user));
+    expect(back.status).toBe('CONFIRMED');
+    expect(back.courierId).toBeNull();
+    expect(await sideEffects(order.id, iso)).toEqual(before);
+    const [a] = await audits(order.id, 'order.returnToWarehouse');
+    expect(a?.oldValue).toMatchObject({ status: 'SHIPPED', courierId });
+    expect(a?.newValue).toMatchObject({ status: 'CONFIRMED', courierId: null, reason: 'mijoz yopiq' });
+
+    const again = await tenantPrisma.run(companyId, () => sales.returnToWarehouse(order.id, { reason: 'mijoz yopiq' }, user));
+    expect(again.status).toBe('CONFIRMED');
+    expect(await audits(order.id, 'order.returnToWarehouse')).toHaveLength(1);
+
+    // back in CONFIRMED, cancel now releases the reservation once
+    await tenantPrisma.run(companyId, () => sales.cancel(order.id, { reason: 'qaytdi' }, user));
+    expect((await sideEffects(order.id, iso)).movements).toEqual(['RECEIVE:1000', 'RESERVE:3', 'RELEASE:3']);
+
+    const sub = await isoOrder(1, false);
     await expect(
-      tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId: user.id }, user)),
-    ).rejects.toBeInstanceOf(CourierNotFoundException);
+      tenantPrisma.run(companyId, () => sales.returnToWarehouse(sub.order.id, { reason: 'xato' }, user)),
+    ).rejects.toBeInstanceOf(ReturnToWarehouseInvalidStatusException);
+  });
+
+  it('PO-D: cancel SHIPPED => 409 SALES_ORDER_SHIPPED_REQUIRES_RETURN, nothing released', async () => {
+    const { iso, order } = await isoOrder(2);
+    await tenantPrisma.run(companyId, () => sales.assignCourier(order.id, { courierId }, user));
+    const before = await sideEffects(order.id, iso);
+    const err = await tenantPrisma.run(companyId, () => sales.cancel(order.id, { reason: 'bekor' }, user)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(OrderShippedRequiresReturnException);
+    expect((err as AppException).getStatus()).toBe(409);
+    expect(await sideEffects(order.id, iso)).toEqual(before);
+  });
+
+  it('PO-D: 4 concurrent cancels + a later one on CONFIRMED => all return CANCELLED, exactly one RELEASE, one audit', async () => {
+    const { iso, order } = await isoOrder(5);
+    const res = await Promise.all(
+      Array.from({ length: 4 }, () => tenantPrisma.run(companyId, () => sales.cancel(order.id, { reason: 'race' }, user))),
+    );
+    expect(res.every((o) => o.status === 'CANCELLED')).toBe(true);
+    const later = await tenantPrisma.run(companyId, () => sales.cancel(order.id, { reason: 'again' }, user));
+    expect(later.status).toBe('CANCELLED');
+    expect(later.cancelReason).toBe('race');
+    const after = await sideEffects(order.id, iso);
+    expect(after.movements).toEqual(['RECEIVE:1000', 'RESERVE:5', 'RELEASE:5']);
+    expect(after.reserved).toBe('0');
+    expect(await audits(order.id, 'order.cancel')).toHaveLength(1);
   });
 
   it('a courier cannot deliver an order that is not assigned to them', async () => {

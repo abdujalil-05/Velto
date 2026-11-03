@@ -45,8 +45,9 @@ export const RESOLUTION_GUIDE: Record<ResolutionCode, string> = {
   DELIVER_THEN_CLOSE: 'DELIVERED: goods reached the customer; finish the order and close it.',
   MANUAL_RECONCILIATION_REQUIRED:
     'SHIPPED: shipment does not prove receipt; check per order. Delivery confirmed -> existing DELIVERED transition. ' +
-    'Goods still with the courier -> keep SHIPPED. Goods back in the warehouse -> existing orders.cancel releases the ' +
-    'reservation (SHIPPED has only RESERVE, no ISSUE). Unknown -> leave as is.',
+    'Goods still with the courier -> keep SHIPPED. Goods back in the warehouse -> POST /orders/:id/return-to-warehouse ' +
+    '(SHIPPED -> CONFIRMED, reservation kept: SHIPPED has only RESERVE, no ISSUE), then orders.cancel releases the ' +
+    'reservation (cancel rejects SHIPPED directly). Unknown -> leave as is.',
   RESTORE_REQUIRED: "Customer restore is blocked by a live customer's code; rename one of them by hand first.",
 };
 
