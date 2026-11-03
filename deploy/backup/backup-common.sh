@@ -48,3 +48,50 @@ bk_assert_key_separation() {
   done
   return 0
 }
+
+# bk_ts_before <seconds> [now-epoch]: the velto-*-<TS> timestamp (local time, YYYYmmdd-HHMMSS, same format as the file names) of "now minus <seconds>". GNU and BSD date.
+bk_ts_before() {
+  local e=$(( ${2:-$(date +%s)} - $1 ))
+  date -d "@$e" +%Y%m%d-%H%M%S 2>/dev/null || date -r "$e" +%Y%m%d-%H%M%S
+}
+
+# bk_prune_sets <dir> <keep_all_hours> <keep_days> [now-epoch]: TIERED local retention, whole sets only (replaces `find -mtime +30`):
+#   * every file whose name timestamp is younger than <keep_all_hours> is kept (the 20-min cadence: ~3 sets/h are kept for 48 h);
+#   * from there to <keep_days>: only the EARLIEST VERIFIED set (manifest) of each calendar day, with every file that manifest lists (+ .sig, .sha256 sidecars);
+#   * the NEWEST verified set is always kept, whatever its age; older than <keep_days>, non-keepers and orphans (archives with no manifest) are deleted.
+# A manifest counts as verified only if the callback named in BK_PRUNE_VERIFY (called: fn <manifest> <dir>; rc 0 = sizes/sha256/structure ok) accepts it; with no callback
+# nothing is pruned (fail closed). Call it only AFTER the new set is complete and verified. Only regular files directly in <dir> named velto-{db,globals,objects,fp}-<TS>.* or
+# velto-set-<TS>.manifest[.sig] are considered. Offsite copies are never touched.
+bk_prune_sets() {
+  local dir="$1" ah="$2" kd="$3" now="${4:-${BK_NOW:-$(date +%s)}}" t48 t30 f b ts day mf keep=$'\n' n newest="" seen_days=" "   # (no associative arrays: bash 3.2 runs the tests)
+  [[ "$ah" =~ ^[0-9]+$ && "$kd" =~ ^[0-9]+$ ]] || { echo "bk_prune_sets: bad arguments" >&2; return 1; }
+  [[ -n "${BK_PRUNE_VERIFY:-}" ]] && declare -F "$BK_PRUNE_VERIFY" >/dev/null || { echo "bk_prune_sets: no verifier (BK_PRUNE_VERIFY): nothing pruned" >&2; return 1; }
+  t48="$(bk_ts_before $(( ah * 3600 )) "$now")"; t30="$(bk_ts_before $(( kd * 86400 )) "$now")"
+  keepset() { # manifest basename + its sig + every listed file
+    keep+="$1"$'\n'"$1.sig"$'\n'
+    for n in $(grep -E '^[A-Z]+_ARCHIVE=' "$dir/$1" | cut -d= -f2-); do keep+="$n"$'\n'"$n.sha256"$'\n'; done
+  }
+  # 1. newest VERIFIED set is untouchable
+  while IFS= read -r mf; do
+    if "$BK_PRUNE_VERIFY" "$mf" "$dir"; then newest="$(basename "$mf")"; keepset "$newest"; break; fi
+  done < <(find "$dir" -maxdepth 1 -type f -name 'velto-set-*.manifest' | sort -r)
+  # 2. keeper manifests: all younger than <ah> (verified or not: a set being written is never touched); older but within <kd>: the earliest VERIFIED one of each day
+  while IFS= read -r mf; do
+    b="$(basename "$mf")"; ts="${b#velto-set-}"; ts="${ts%.manifest}"; day="${ts%%-*}"
+    [[ "$ts" =~ ^[0-9]{8}-[0-9]{6}$ ]] || continue
+    if [[ "$ts" > "$t48" || "$ts" == "$t48" ]]; then keepset "$b"; continue; fi
+    [[ "$ts" < "$t30" ]] && continue
+    [[ "$seen_days" == *" $day "* ]] && continue
+    "$BK_PRUNE_VERIFY" "$mf" "$dir" || continue
+    seen_days+="$day "; keepset "$b"
+  done < <(find "$dir" -maxdepth 1 -type f -name 'velto-set-*.manifest' | sort)
+  # 3. delete every older, unreferenced backup file
+  while IFS= read -r f; do
+    b="$(basename "$f")"
+    ts="$(sed -E 's/^velto-(db|globals|objects|fp|set)-([0-9]{8}-[0-9]{6})\..*$/\2/' <<<"$b")"
+    [[ "$ts" =~ ^[0-9]{8}-[0-9]{6}$ ]] || continue
+    if [[ "$ts" > "$t48" || "$ts" == "$t48" ]]; then continue; fi
+    [[ "$keep" == *$'\n'"$b"$'\n'* ]] && continue
+    echo "[retention] delete $b"; rm -f "$f"
+  done < <(find "$dir" -maxdepth 1 -type f \( -name 'velto-db-*' -o -name 'velto-globals-*' -o -name 'velto-objects-*' -o -name 'velto-fp-*' -o -name 'velto-set-*' \) | sort)
+}

@@ -17,9 +17,12 @@
 #   DRILL_SET_MANIFEST     path of a velto-set-<TS>.manifest: the drill restores THAT set (DB + objects) after verifying manifest structure, OBJECTS=ok and the
 #                          exact size + sha256 of every archive next to it. Mutually exclusive with DUMP_FILE.
 #   DRILL_BACKUP_DIR       directory of sets (e.g. a downloaded offsite copy): the NEWEST set whose manifest exists and whose checksums all match is used.
+#   DRILL_MAX_RESTORE_POINT_AGE_MINUTES  REQUIRED in set-mode: max age of the SIGNED RESTORE_POINT_TS (stale/replayed older set = FAIL); or DRILL_EXPECT_RUN_ID=<signed RUN_ID> for a deliberate historical restore.
+#   BACKUP_VERIFY_KEYRING  exported PUBLIC signing key(s), kept OUTSIDE the backup (set-mode requires it); BACKUP_TRUSTED_SIGN_FPRS = pinned PRIMARY-key fingerprints (space/comma separated, >1 for rotation).
+#                          Set-mode order: manifest signature -> size+sha256 of EVERY listed file -> no extra file -> restore -> financial fingerprint recomputed and compared with the encrypted FP in the set.
 # Verdict: PASS only for a verified restore set whose objects archive is intact AND every object key referenced by the restored DB (ExportJob.storageKey, ImportJob.fileUrl,
 # Product.imageUrl) is in the archive (ExportJob.fileHash must also equal the archived sha256). A DB-only drill (DUMP_FILE / fresh dump, no set) is PARTIAL, never PASS.
-# Exit 0 = PASS; 1 = any FAIL; 2 = PARTIAL (all executed checks passed but DB-only: not a proven restore point).
+# Exit 0 = PASS; 1 = any FAIL; 2 = PARTIAL (all executed checks passed but DB-only: not a proven restore point); 3 = NOT_VERIFIED (set verified but it carries NO financial fingerprint: never PASS).
 set -Euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -38,6 +41,8 @@ case "$HOST" in localhost|127.0.0.1|::1) ;; *) [[ "${DRILL_ALLOW_REMOTE:-0}" == 
 . "$(dirname "${BASH_SOURCE[0]}")/pg-conn.sh"
 # shellcheck source=backup-status-lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/backup-status-lib.sh"
+# shellcheck source=fingerprint-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fingerprint-lib.sh"
 trap pgc_cleanup EXIT; pgc_init
 pgc_parse "$SOURCE_URL" || { echo "SOURCE_URL is not parseable" >&2; exit 1; }; SRC="$(pgc_conninfo)"
 pgc_add "$HOST" "$PORT" postgres "$ADMIN_USER" "$ADMIN_PW"; ADMIN_URL="$(pgc_conninfo)"
@@ -60,19 +65,28 @@ cleanup() { [[ "${DRILL_KEEP_DB:-0}" == 1 ]] || drop_db; rm -rf "$TMP"; pgc_clea
 trap cleanup EXIT
 
 # 0. restore set selection: only a set with a manifest whose checksums match counts (bsm_verify: OBJECTS=ok, exact sizes + sha256 of DB/objects/globals)
-SET_OK=0; OBJ_ARCH=""; SETM=""
+SET_OK=0; OBJ_ARCH=""; SETM=""; FP_ARCH=""; FP_STATE=n/a
 if [[ -n "${DRILL_SET_MANIFEST:-}" || -n "${DRILL_BACKUP_DIR:-}" ]]; then
   [[ -z "${DUMP_FILE:-}" ]] || { echo "DUMP_FILE and DRILL_SET_MANIFEST/DRILL_BACKUP_DIR are mutually exclusive" >&2; exit 1; }
   if [[ -n "${DRILL_SET_MANIFEST:-}" ]]; then
-    bsm_verify "$DRILL_SET_MANIFEST" "$(dirname "$DRILL_SET_MANIFEST")" 1 || { rec "restore set" FAIL "$BSM_REASON"; exit 1; }
+    bsm_verify_signed "$DRILL_SET_MANIFEST" "$(dirname "$DRILL_SET_MANIFEST")" || { rec "restore set" FAIL "$BSM_REASON"; exit 1; }
     SETM="$DRILL_SET_MANIFEST"
   else
     bsm_select "$DRILL_BACKUP_DIR" || { rec "restore set" FAIL "no valid set in DRILL_BACKUP_DIR ($BSM_REJECTED manifest(s) rejected; archives without a manifest are never used)"; exit 1; }
-    SETM="$BSM_SELECTED"; bsm_verify "$SETM" "$DRILL_BACKUP_DIR" 1 || exit 1   # reload BSM_TEXT of the selected set
+    SETM="$BSM_SELECTED"; bsm_verify_signed "$SETM" "$DRILL_BACKUP_DIR" || exit 1   # reload BSM_TEXT of the selected set
   fi
-  SETD="$(dirname "$SETM")"; DUMP_FILE="$SETD/$(bsm_get DB_ARCHIVE)"; OBJ_ARCH="$SETD/$(bsm_get OBJ_ARCHIVE)"
+  # replay guard on SIGNED data: a stale (older, validly signed) set is a FAIL unless the operator names the historical RUN_ID explicitly
+  bsm_fresh_check "${DRILL_MAX_RESTORE_POINT_AGE_MINUTES:-}" "${DRILL_EXPECT_RUN_ID:-}" || { rec "restore set freshness" FAIL "$BSM_REASON"; exit 1; }
+  # TOCTOU: work only on a PRIVATE copy (0700 temp dir) and verify the COPY again (signature, sha256 of every file, binding); the original is never read after this point
+  PRIV="$TMP/set"; mkdir -m 700 "$PRIV" && cp "$SETM" "$SETM.sig" "$PRIV/" || { rec "restore set copy" FAIL "cannot copy the manifest"; exit 1; }
+  for _n in $(grep -E '^[A-Z]+_ARCHIVE=' "$PRIV/$(basename "$SETM")" | cut -d= -f2-); do cp "$(dirname "$SETM")/$_n" "$PRIV/" || { rec "restore set copy" FAIL "cannot copy $_n"; exit 1; }; done
+  SETM="$PRIV/$(basename "$SETM")"
+  bsm_verify_signed "$SETM" "$PRIV" || { rec "restore set (private copy)" FAIL "$BSM_REASON"; exit 1; }
+  bsm_fresh_check "${DRILL_MAX_RESTORE_POINT_AGE_MINUTES:-}" "${DRILL_EXPECT_RUN_ID:-}" || { rec "restore set freshness (private copy)" FAIL "$BSM_REASON"; exit 1; }
+  SETD="$PRIV"; DUMP_FILE="$SETD/$(bsm_get DB_ARCHIVE)"; OBJ_ARCH="$SETD/$(bsm_get OBJ_ARCHIVE)"
   OBJ_MSHA="$(bsm_get OBJ_MANIFEST_SHA256)"; OBJ_COUNT="$(bsm_get OBJ_COUNT)"; SET_OK=1
-  rec "restore set manifest" PASS "$(basename "$SETM"): archives match manifest sizes + sha256, objects backup ok"
+  [[ -z "$(bsm_get FP_ARCHIVE)" ]] || FP_ARCH="$SETD/$(bsm_get FP_ARCHIVE)"
+  rec "restore set manifest" PASS "$(basename "$SETM"): signature valid (pinned key), every listed file matches manifest size + sha256, no extra files, objects backup ok"
 fi
 
 T0=$(now); START_ISO="$(date -u +%FT%TZ)"
@@ -232,6 +246,21 @@ else
   if [[ $FBAD -eq 0 ]]; then rec "financial sums" PASS "${FD[*]} (vs source)"; else rec "financial sums" FAIL "${FD[*]} (vs source)"; fi
 fi
 
+# 8b2. financial fingerprint (R4): the set carries an encrypted per-table fingerprint taken in the SAME snapshot as the dump; recompute it on the restored DB.
+# Only table names + MATCH/MISMATCH are printed or reported (no sums, no hashes). A set without a fingerprint is NOT_VERIFIED (exit 3), never PASS.
+if [[ $SET_OK == 1 ]]; then
+  if [[ -z "$FP_ARCH" ]]; then FP_STATE=NOT_VERIFIED; rec "financial fingerprint" SKIP "NOT_VERIFIED: the set has no fingerprint archive (pre-R4 backup) - verdict can not be PASS"
+  elif [[ ! -s "${BACKUP_PASSPHRASE_FILE:-}" ]]; then FP_STATE=FAIL; rec "financial fingerprint" FAIL "BACKUP_PASSPHRASE_FILE required to decrypt the fingerprint"
+  elif ! gpg --batch --quiet --pinentry-mode loopback --passphrase-file "$BACKUP_PASSPHRASE_FILE" --decrypt "$FP_ARCH" > "$TMP/fp.expected" 2>/dev/null || ! fp_check_shape < "$TMP/fp.expected"; then
+    FP_STATE=FAIL; rec "financial fingerprint" FAIL "fingerprint archive cannot be decrypted or is malformed"
+  elif ! fp_compute "$DRILL_SYS" > "$TMP/fp.actual" 2>"$TMP/fp.err"; then
+    FP_STATE=FAIL; rec "financial fingerprint" FAIL "recompute failed on the restored DB"
+  else
+    FPD="$(fp_compare "$TMP/fp.expected" "$TMP/fp.actual")" && { FP_STATE=PASS; rec "financial fingerprint" PASS "$FPD(count + sums + sha256 of canonical rows, same snapshot as the dump)"; } \
+      || { FP_STATE=FAIL; rec "financial fingerprint" FAIL "$FPD"; }
+  fi
+fi
+
 # 8c. roles: app/owner must be NOSUPERUSER NOBYPASSRLS (a BYPASSRLS app role would silently defeat RLS); system must be BYPASSRLS-only
 RL="$(q "$DRILL_SYS" "SELECT string_agg(r.l||':'||rolsuper||':'||rolbypassrls, ',' ORDER BY r.l) FROM pg_roles JOIN (VALUES ('$APP_ROLE','app'),('$OWNER_ROLE','owner'),('$SYSTEM_ROLE','system')) r(n,l) ON rolname=r.n")"
 [[ "$RL" == "app:false:false,owner:false:false,system:false:true" ]] && rec "roles NOBYPASSRLS (app/owner)" PASS "$RL (role:super:bypassrls)" || rec "roles NOBYPASSRLS (app/owner)" FAIL "${RL:-roles missing} (expected app/owner false:false, system false:true)"
@@ -276,7 +305,8 @@ T3=$(now)
 # report
 D="$(date +%F)"; mkdir -p "$REPORT_DIR"; OUT="$REPORT_DIR/restore-drill-$D.md"
 VERDICT="$(bs_verdict "$FAILS" "$SET_OK" "$OBJ_OK")"; RC=$?
-case "$VERDICT" in FAIL) VERDICT="FAIL ($FAILS)";; PARTIAL) VERDICT="PARTIAL (DB only: objects not verified, not a proven restore point)";; esac
+if [[ $RC -eq 0 && $SET_OK == 1 && "$FP_STATE" != PASS ]]; then VERDICT=NOT_VERIFIED; RC=3; fi
+case "$VERDICT" in NOT_VERIFIED) VERDICT="NOT_VERIFIED (no financial fingerprint in the set: not a proven restore point)";; FAIL) VERDICT="FAIL ($FAILS)";; PARTIAL) VERDICT="PARTIAL (DB only: objects not verified, not a proven restore point)";; esac
 {
   echo "# Restore drill $D"; echo
   echo "- Verdict: **$VERDICT**"
@@ -284,7 +314,7 @@ case "$VERDICT" in FAIL) VERDICT="FAIL ($FAILS)";; PARTIAL) VERDICT="PARTIAL (DB
   echo "- Source of dump: $DSRC"
   echo "- Target: separate database \`$DB\` on $HOST:$PORT (dropped afterwards unless DRILL_KEEP_DB=1); source DB not modified."
   echo "- **RTO measured**: restore (create + pg_restore + provision-roles) = $((T2-T1)) s; full drill incl. dump and all checks = $((T3-T0)) s. Dataset size: $(du -h "$DUMP" | cut -f1) dump — NOT representative of production volume; re-measure on production-sized data. Target RTO <= 4 h."
-  echo "- RPO: daily backup only (pilot); WAL/PITR for GA is plan-only, see docs/ops/wal-pitr-plan.md."
+  echo "- RPO/RTO: NOT_TESTED by this drill (scheduled cadence is every 20 min; volumes here are not production-like). See docs/release/RPO-RTO-ASSESSMENT.md; WAL/PITR is plan-only (docs/ops/wal-pitr-plan.md)."
   echo; echo "| Check | Status | Detail |"; echo "|---|---|---|"; printf '%s\n' "${RESULTS[@]}"
   echo; echo "## Row counts (table=rows, restored DB)"; echo '```'; cat "$TMP/cnt.drill"; echo '```'
 } > "$OUT"

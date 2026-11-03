@@ -9,10 +9,13 @@
 #                              No --enable-row-security (it silently yields empty tenant tables). velto_system is NOT used for backups.
 #   BACKUP_DIR                 required (output dir, e.g. /var/backups/velto; mode 700)
 #   BACKUP_PASSPHRASE_FILE     path to passphrase file (preferred) OR BACKUP_PASSPHRASE (env)
-#   BACKUP_RETENTION_DAYS      default 30 (PO D-4); prunes only old velto-*.gpg backup files, never application data
+#   BACKUP_RETENTION_DAYS      default 30 (PO D-4); BACKUP_KEEP_ALL_HOURS default 48: tiered LOCAL retention, run by backup-run.sh AFTER the new set is verified (bk_prune_sets in backup-common.sh): every set younger than
+#                              48 h, then the first set of each day until RETENTION days, older = deleted. Prunes only velto-* backup files, never application data
 #   BACKUP_READ_GROUP          optional: group (the deploy user's) allowed to READ the ciphertext (0640 root:<group>); it never gets the passphrase
 #   BACKUP_GLOBALS_URL         optional separate URL for pg_dumpall --globals-only; default: the same backup role (globals are dumped with --no-role-passwords,
 #                              so no pg_authid access is needed; role passwords are re-set from provision-roles.sql/secrets on restore)
+# R4: dump and financial fingerprint (fingerprint-lib.sh) are taken in ONE exported snapshot (pg_export_snapshot + pg_dump --snapshot); the fingerprint is gpg-encrypted
+#   (velto-fp-<TS>.txt.gpg, never plaintext on disk). Output marker FP_FILE=<path>.
 # Exit 0 only if every produced artifact was written, encrypted and verified readable. Non-zero => alert (TZ 12.3 "backup failure").
 set -Eeuo pipefail
 umask 077
@@ -20,14 +23,18 @@ unset PGPASSWORD PGSERVICE PGSERVICEFILE PGPASSFILE   # only the generated 0600 
 
 : "${DATABASE_BACKUP_URL:?DATABASE_BACKUP_URL is required (velto_backup role; velto_system is no longer used for backups)}"
 : "${BACKUP_DIR:?BACKUP_DIR is required}"
-RETENTION="${BACKUP_RETENTION_DAYS:-30}"
-[[ "$RETENTION" =~ ^[0-9]+$ ]] || { echo "BACKUP_RETENTION_DAYS must be an integer" >&2; exit 1; }
+RETENTION="${BACKUP_RETENTION_DAYS:-30}"; KEEP_ALL_H="${BACKUP_KEEP_ALL_HOURS:-48}"
+[[ "$RETENTION" =~ ^[0-9]+$ && "$KEEP_ALL_H" =~ ^[0-9]+$ ]] || { echo "BACKUP_RETENTION_DAYS / BACKUP_KEEP_ALL_HOURS must be integers" >&2; exit 1; }
 command -v gpg >/dev/null || { echo "gpg not found" >&2; exit 1; }
 command -v pg_dump >/dev/null || { echo "pg_dump not found" >&2; exit 1; }
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=pg-conn.sh
 . "$HERE/pg-conn.sh"
+# shellcheck source=backup-common.sh
+. "$HERE/backup-common.sh"
+# shellcheck source=fingerprint-lib.sh
+. "$HERE/fingerprint-lib.sh"
 # DB passwords go ONLY to a 0600 PGPASSFILE in a 0700 mktemp dir (never argv); removed on EXIT/INT/TERM.
 trap 'exit 130' INT; trap 'exit 143' TERM
 trap pgc_cleanup EXIT
@@ -58,7 +65,9 @@ mkdir -p "$BACKUP_DIR"; chmod o-rwx "$BACKUP_DIR"
 TS="$(date +%Y%m%d-%H%M%S)"
 DUMP="$BACKUP_DIR/velto-db-$TS.dump.gpg"
 GLOB="$BACKUP_DIR/velto-globals-$TS.sql.gpg"
-cleanup() { [[ "$CLEAN_PASS" == 1 ]] && rm -f "$PASSFILE"; pgc_cleanup; [[ "${OK:-0}" == 1 ]] || rm -f "$DUMP" "$GLOB" "$DUMP.sha256" "$GLOB.sha256"; }
+FPF="$BACKUP_DIR/velto-fp-$TS.txt.gpg"
+FPW=""   # snapshot-session sync dir (no data in it)
+cleanup() { fp_snap_abort; [[ -z "$FPW" ]] || rm -rf "${FPW:?}"; [[ "$CLEAN_PASS" == 1 ]] && rm -f "$PASSFILE"; pgc_cleanup; [[ "${OK:-0}" == 1 ]] || rm -f "$DUMP" "$GLOB" "$FPF" "$DUMP.sha256" "$GLOB.sha256" "$FPF.sha256"; }
 trap cleanup EXIT
 
 # Portable sha256 (Linux sha256sum / macOS shasum). Sidecar uses the bare file name so `sha256sum -c` works from the backup dir.
@@ -75,8 +84,15 @@ if command -v psql >/dev/null; then
   [[ "$SRV" =~ ^[0-9]+$ ]] || { echo "[backup] cannot read the server version (psql failed)" >&2; exit 1; }
   (( SRV / 10000 == CLI )) || { echo "[backup] pg_dump major $CLI != server major $((SRV / 10000)): install the matching postgresql-client" >&2; exit 1; }
 else echo "[backup] psql not found: cannot verify the pg_dump/server major version" >&2; exit 1; fi
-echo "[backup] pg_dump -Fc -> $DUMP"
-pg_dump -Fc -w "${DB_ARGS[@]}" | enc "$DUMP"
+echo "[backup] pg_dump -Fc (exported snapshot) + financial fingerprint in the same snapshot -> $DUMP, $FPF"
+[[ "$PASSFILE" != *"'"* && "$FPF" != *"'"* ]] || { echo "[backup] unsafe character in a path" >&2; exit 1; }
+FPW="$(umask 077; mktemp -d)"
+fp_snap_open "$FPW" "gpg --batch --yes --pinentry-mode loopback --passphrase-file '$PASSFILE' --symmetric --cipher-algo AES256 -o '$FPF'" "${DB_ARGS[@]}" || { echo "[backup] snapshot/fingerprint session failed" >&2; exit 1; }
+pg_dump -Fc -w --snapshot="$FP_SNAP_ID" "${DB_ARGS[@]}" | enc "$DUMP"
+fp_snap_close || { echo "[backup] fingerprint computation failed" >&2; exit 1; }
+FPTXT="$(dec "$FPF")" && fp_check_shape <<<"$FPTXT" || { echo "[backup] fingerprint verification FAILED for $FPF" >&2; exit 1; }
+unset FPTXT
+seal "$FPF"
 # Verify by streaming (no plaintext on disk): pg_restore -l may stop reading early => drain stdin to avoid SIGPIPE/pipefail on dec.
 dec "$DUMP" | { pg_restore -l >/dev/null; rc=$?; cat >/dev/null; exit $rc; } || { echo "[backup] verification FAILED for $DUMP" >&2; exit 1; }
 seal "$DUMP"
@@ -92,12 +108,11 @@ else
   GLOB=""
 fi
 if [[ -n "${BACKUP_READ_GROUP:-}" ]]; then
-  for f in "$DUMP" "$DUMP.sha256" ${GLOB:+"$GLOB" "$GLOB.sha256"}; do chgrp "$BACKUP_READ_GROUP" "$f" && chmod 640 "$f"; done
+  for f in "$DUMP" "$DUMP.sha256" "$FPF" "$FPF.sha256" ${GLOB:+"$GLOB" "$GLOB.sha256"}; do chgrp "$BACKUP_READ_GROUP" "$f" && chmod 640 "$f"; done
 fi
 OK=1
 
-echo "[backup] retention: deleting velto-*.gpg, .gpg.sha256 and velto-set-*.manifest older than $RETENTION days"
-find "$BACKUP_DIR" -maxdepth 1 -type f \( -name 'velto-db-*.gpg' -o -name 'velto-globals-*.gpg' -o -name 'velto-objects-*.gpg' -o -name 'velto-db-*.gpg.sha256' -o -name 'velto-globals-*.gpg.sha256' -o -name 'velto-objects-*.gpg.sha256' -o -name 'velto-set-*.manifest' \) -mtime +"$RETENTION" -print -delete
 echo "[backup] OK $(du -h "$DUMP" | cut -f1) $DUMP"
 [[ -z "$GLOB" ]] || echo "GLOBALS_FILE=$GLOB"
+echo "FP_FILE=$FPF"
 echo "BACKUP_FILE=$DUMP"  # last line: backup-run.sh parses this (path may contain spaces)

@@ -5,7 +5,7 @@
 | app | `/etc/velto/app.env` (`S3_ACCESS_KEY`), runtime user `velto` | `app-bucket-rw.json` | get/put objects; `s3:ListBucket` only because `StorageService` calls `HeadBucketCommand` (storage.service.ts:3) | delete, change policy/lifecycle/versioning |
 | backup-writer, source side (`OBJECTS_SRC_*`) | `/etc/velto/backup.env`, root only | `backup-reader-app-bucket.json` | read + list the app bucket | write/delete anything |
 | backup-writer, offsite side (`OFFSITE_S3_*`) | `/etc/velto/backup.env`, root only | `offsite-backup-writer-put-only.json` | put new objects, list names (rclone needs it to skip existing files) | read content, delete, version-delete, change retention/policy |
-| restore | NOT on the server; password manager / separate admin workstation | `offsite-restore-read.json` | read + list versions of the offsite bucket | write/delete |
+| restore (+ read-back verify identity `OFFSITE_VERIFY_S3_*` on the backup host: a third key, GET+LIST only, R2) | restore: NOT on the server; password manager / separate admin workstation | `offsite-restore-read.json` | read + list versions of the offsite bucket | write/delete |
 
 Rules enforced by the scripts: `offsite-sync.sh` and `objects-backup.sh` fail if `OFFSITE_S3_ACCESS_KEY_ID` / `OBJECTS_SRC_ACCESS_KEY_ID` equal the app's `S3_ACCESS_KEY` (read from `VELTO_APP_ENV_FILE`) or each other.
 The offsite bucket must be in a different account/provider than the app's storage. Admin credentials (create bucket, Object Lock, lifecycle) are used once from a workstation, never stored on the VPS.

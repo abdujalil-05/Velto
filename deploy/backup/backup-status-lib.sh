@@ -12,6 +12,7 @@ bs_uid()  { bs_stat %u %u "$1"; }
 bs_perm() { bs_stat %a %Lp "$1"; }
 bs_size() { bs_stat %s %z "$1"; }
 bs_sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
+bs_sha256_stdin() { if command -v sha256sum >/dev/null; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi; }
 
 # ---------------------------------------------------------------- writer (root)
 # bs_write <status_dir> <result ok|failed> [KEY=VALUE ...]  -> atomic: temp file in the same dir, chmod 0644, sync, rename(2)
@@ -78,9 +79,11 @@ bs_update() {
 
 # ---------------------------------------------------------------- restore-set manifest
 # velto-set-<TS>.manifest = the RESTORE POINT record of one run: same strict KEY=VALUE grammar as the status (data, never sourced, no secrets):
-#   VELTO_SET_MANIFEST=1 RUN_ID RESTORE_POINT_TS OBJECTS_SNAPSHOT_TS OBJECTS=ok  DB_/OBJ_/GLOBALS_ {ARCHIVE,SIZE,SHA256}  OBJ_COUNT OBJ_MANIFEST_SHA256 OFFSITE_VERIFY
+#   VELTO_SET_MANIFEST=1 RUN_ID RESTORE_POINT_TS OBJECTS_SNAPSHOT_TS OBJECTS=ok  DB_/OBJ_/GLOBALS_/FP_ {ARCHIVE,SIZE,SHA256}  OBJ_COUNT OBJ_MANIFEST_SHA256 OFFSITE_VERIFY
+# FP = gpg-encrypted financial fingerprint (fingerprint-lib.sh) taken in the SAME snapshot as the dump; optional only for pre-R4 sets (the drill then says NOT_VERIFIED).
+# AUTHENTICITY: velto-set-<TS>.manifest.sig = detached gpg signature of the manifest (separate signing key, bsm_sign / bsm_sig_verify below).
 # Written AFTER every archive is final and uploaded LAST: a set without its manifest (or with OBJECTS!=ok) is NOT a restore point.
-BS_ARCHIVE_RE='^velto-(db|objects|globals)-[0-9]{8}-[0-9]{6}\.(dump|tar|sql)\.gpg$'
+BS_ARCHIVE_RE='^velto-(db|objects|globals|fp)-[0-9]{8}-[0-9]{6}\.(dump|tar|sql|txt)\.gpg$'
 BS_MANIFEST_RE='^velto-set-[0-9]{8}-[0-9]{6}\.manifest$'
 BSM_REASON=""; BSM_TEXT=""; BSM_OBJ_NUM=""
 export BSM_REASON BSM_TEXT BSM_OBJ_NUM
@@ -118,10 +121,11 @@ bsm_verify() {
     [[ "$(bsm_get $p)" =~ ^[0-9]{9,11}$ ]] || { bsm_fail "manifest $p malformed"; return 1; }
   done
   (( $(bsm_get RESTORE_POINT_TS) <= $(bsm_get OBJECTS_SNAPSHOT_TS) )) || { bsm_fail "manifest: objects snapshot is older than the DB restore point"; return 1; }
-  for f in DB OBJ GLOBALS; do
+  for f in DB OBJ GLOBALS FP; do
     name="$(bsm_get ${f}_ARCHIVE)"
     if [[ -z "$name" ]]; then
       [[ $f == GLOBALS && "$(bsm_get BACKUP_GLOBALS)" != 1 ]] && continue
+      [[ $f == FP ]] && continue   # pre-R4 set: still a valid restore point, but the drill reports NOT_VERIFIED (never PASS)
       bsm_fail "manifest has no $f archive"; return 1
     fi
     [[ "$name" =~ $BS_ARCHIVE_RE ]] || { bsm_fail "$f archive name not allowed"; return 1; }
@@ -135,14 +139,108 @@ bsm_verify() {
   return 0
 }
 
-# bsm_select <dir>: newest set whose manifest exists AND verifies (OBJECTS=ok, exact size + sha256 of every archive). Sets BSM_SELECTED (path) and BSM_REJECTED (count).
+# ---------------------------------------------------------------- manifest signature (R1)
+# Detached gpg signature of the manifest with a SEPARATE signing key (NOT the backup passphrase; it never encrypts anything). The private key lives only in
+# BACKUP_SIGN_GNUPGHOME (root-owned 0700, backup host). Verification NEVER trusts anything shipped inside the backup: it imports BACKUP_VERIFY_KEYRING
+# (an exported PUBLIC key file kept apart from the backup, e.g. on the restore workstation) into a fresh temporary homedir and pins the signer's
+# PRIMARY-key fingerprint to BACKUP_TRUSTED_SIGN_FPRS (space/comma separated, >1 allowed for rotation). Result comes from --status-fd, not from gpg's exit text.
+
+# bsm_sign <manifest>: needs BACKUP_SIGN_GNUPGHOME + BACKUP_SIGN_KEY_FPR (+ optional BACKUP_SIGN_PASSPHRASE_FILE). Writes <manifest>.sig atomically.
+bsm_sign() {
+  local mf="$1" tmp; BSM_REASON=""
+  [[ -n "${BACKUP_SIGN_GNUPGHOME:-}" && -d "$BACKUP_SIGN_GNUPGHOME" && "${BACKUP_SIGN_KEY_FPR:-}" =~ ^[0-9A-Fa-f]{40}([0-9A-Fa-f]{24})?$ ]] \
+    || { bsm_fail "signing not configured (BACKUP_SIGN_GNUPGHOME / BACKUP_SIGN_KEY_FPR)"; return 1; }
+  tmp="$(umask 022; mktemp "$(dirname "$mf")/.sig.XXXXXX")" || { bsm_fail "cannot create temp signature"; return 1; }
+  if gpg --homedir "$BACKUP_SIGN_GNUPGHOME" --batch --yes --quiet --pinentry-mode loopback ${BACKUP_SIGN_PASSPHRASE_FILE:+--passphrase-file "$BACKUP_SIGN_PASSPHRASE_FILE"} \
+       --local-user "$BACKUP_SIGN_KEY_FPR!" --detach-sign -o "$tmp" "$mf" 2>/dev/null && [[ -s "$tmp" ]]; then
+    chmod 0644 "$tmp"; mv -f "$tmp" "$mf.sig"
+  else rm -f "$tmp"; bsm_fail "gpg signing failed"; return 1; fi
+}
+
+# bsm_sig_verify <manifest>: 0 only for a GOODSIG+VALIDSIG by a non-expired, non-revoked key whose PRIMARY fingerprint is pinned. Sets BSM_REASON (never prints key material).
+bsm_sig_verify() {
+  local mf="$1" sig="$1.sig" gh st fp pinned ok=0 npin=0 line f rc
+  BSM_REASON=""
+  [[ -n "${BACKUP_VERIFY_KEYRING:-}" && -f "$BACKUP_VERIFY_KEYRING" ]] || { bsm_fail "BACKUP_VERIFY_KEYRING unset or missing: signature cannot be verified (fail closed)"; return 1; }
+  pinned="$(tr ',a-f' ' A-F' <<<"${BACKUP_TRUSTED_SIGN_FPRS:-}")"
+  for f in $pinned; do [[ "$f" =~ ^[0-9A-F]{40}([0-9A-F]{24})?$ ]] || { bsm_fail "BACKUP_TRUSTED_SIGN_FPRS has a malformed entry"; return 1; }; npin=$((npin+1)); done
+  (( npin > 0 )) || { bsm_fail "BACKUP_TRUSTED_SIGN_FPRS empty: no trusted signer (fail closed)"; return 1; }
+  [[ -f "$sig" && ! -L "$sig" ]] || { bsm_fail "manifest signature missing: $(basename "$sig")"; return 1; }
+  if gpg --list-packets "$sig" 2>/dev/null | grep -qE '^:(literal data|onepass_sig) packet'; then bsm_fail "manifest signature is not a detached signature"; return 1; fi
+  gh="$(umask 077; mktemp -d)" || { bsm_fail "cannot create temp gpg home"; return 1; }
+  if ! gpg --homedir "$gh" --batch --quiet --import "$BACKUP_VERIFY_KEYRING" >/dev/null 2>&1; then rm -rf "$gh"; bsm_fail "cannot import BACKUP_VERIFY_KEYRING"; return 1; fi
+  st="$(gpg --homedir "$gh" --batch --no-autostart --status-fd 1 --verify "$sig" "$mf" 2>/dev/null)"; rc=$?
+  gpgconf --homedir "$gh" --kill all >/dev/null 2>&1; rm -rf "$gh"
+  if grep -qE '^\[GNUPG:\] (BADSIG|EXPSIG|EXPKEYSIG|REVKEYSIG|ERRSIG|NO_PUBKEY|KEYREVOKED|KEYEXPIRED) ' <<<"$st"; then bsm_fail "manifest signature rejected (bad, expired, revoked or unknown signer)"; return 1; fi
+  if [[ $rc -ne 0 ]] || ! grep -q '^\[GNUPG:\] GOODSIG ' <<<"$st"; then bsm_fail "manifest signature invalid"; return 1; fi
+  [[ "$(grep -c '^\[GNUPG:\] VALIDSIG ' <<<"$st")" == 1 ]] || { bsm_fail "manifest signature: not exactly one valid signature"; return 1; }
+  line="$(grep '^\[GNUPG:\] VALIDSIG ' <<<"$st")"; fp="$(awk '{print toupper($12)}' <<<"$line")"
+  for f in $pinned; do [[ "$fp" == "$f" ]] && ok=1; done
+  (( ok == 1 )) || { bsm_fail "manifest signed by an untrusted key (primary fingerprint not in BACKUP_TRUSTED_SIGN_FPRS)"; return 1; }
+}
+
+# bsm_set_complete <manifest> <dir>: the set contains EXACTLY what the manifest lists: no extra file carrying any timestamp of this set (the manifest's and those of the
+# listed archives: objects/globals/fingerprint are named a few seconds after the DB dump) - an unlisted archive, a stray plaintext, a second manifest variant - and, via
+# bsm_verify, no missing one. Allowed: manifest, .sig, each listed archive and its .sha256 sidecar. Files of OTHER sets (other timestamps) are not extras.
+bsm_set_complete() {
+  local mf="$1" dir="$2" f n allowed=$'\n' extra="" tss=" " t pat=()
+  BSM_REASON=""
+  t="$(basename "$mf" | sed -E 's/^velto-set-([0-9]{8}-[0-9]{6})\.manifest$/\1/')"; tss+="$t "
+  allowed+="$(basename "$mf")"$'\n'"$(basename "$mf").sig"$'\n'
+  for f in DB OBJ GLOBALS FP; do
+    n="$(bsm_get ${f}_ARCHIVE)"; [[ -n "$n" ]] || continue
+    allowed+="$n"$'\n'"$n.sha256"$'\n'
+    t="$(sed -E 's/^velto-[a-z]+-([0-9]{8}-[0-9]{6})\..*$/\1/' <<<"$n")"; [[ "$tss" == *" $t "* ]] || tss+="$t "
+  done
+  for t in $tss; do pat+=(-o -name "velto-*-$t.*" -o -name "velto-set-$t.*"); done
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    [[ "$allowed" == *$'\n'"$f"$'\n'* ]] || extra="$f"
+  done < <(find "$dir" -maxdepth 1 -type f \( -name 'velto-set-x-none' "${pat[@]}" \) -exec basename {} \; | sort)
+  [[ -z "$extra" ]] || { bsm_fail "extra file in the set (not listed in the manifest): $extra"; return 1; }
+}
+
+# bsm_bind_check <manifest>: the file NAME is not signed, so bind it to signed content (anti rollback-by-rename): signed SET_TS == the name's timestamp, DB/GLOBALS/FP
+# archive names carry that same timestamp, the objects archive (created seconds later) never an earlier one. Needs BSM_TEXT (bsm_verify ran).
+bsm_bind_check() {
+  local ts f n t
+  ts="$(basename "$1" | sed -E 's/^velto-set-([0-9]{8}-[0-9]{6})\.manifest$/\1/')"
+  [[ -n "$(bsm_get RUN_ID)" && "$(bsm_get SET_TS)" == "$ts" ]] || { bsm_fail "manifest file name is not bound to the signed content (SET_TS/RUN_ID mismatch): possible rename/rollback"; return 1; }
+  for f in DB GLOBALS FP OBJ; do
+    n="$(bsm_get ${f}_ARCHIVE)"; [[ -n "$n" ]] || continue
+    t="$(sed -E 's/^velto-[a-z]+-([0-9]{8}-[0-9]{6})\..*$/\1/' <<<"$n")"
+    if [[ $f == OBJ ]]; then [[ ! "$t" < "$ts" ]] || { bsm_fail "$f archive is older than the set (timestamp mismatch)"; return 1; }
+    else [[ "$t" == "$ts" ]] || { bsm_fail "$f archive timestamp differs from the set (mismatch)"; return 1; }; fi
+  done
+}
+
+# bsm_fresh_check <max_age_minutes> <expected_run_id>: replay guard on SIGNED data (an old validly signed set must not pass as the current one when newer sets are gone).
+# expected_run_id set = explicit historical restore (RUN_ID must equal it); else max age is REQUIRED and RESTORE_POINT_TS must be within it (and not in the future).
+bsm_fresh_check() {
+  local max="$1" want="$2" rp now; BSM_REASON=""
+  if [[ -n "$want" ]]; then [[ "$(bsm_get RUN_ID)" == "$want" ]] || { bsm_fail "signed RUN_ID differs from the expected one"; return 1; }; return 0; fi
+  [[ "$max" =~ ^[0-9]+$ && "$max" -gt 0 ]] || { bsm_fail "freshness bound required: set DRILL_MAX_RESTORE_POINT_AGE_MINUTES, or DRILL_EXPECT_RUN_ID for a historical restore"; return 1; }
+  rp="$(bsm_get RESTORE_POINT_TS)"; now="${BSM_NOW:-$(date +%s)}"
+  (( rp <= now + 120 )) || { bsm_fail "signed RESTORE_POINT_TS is in the future"; return 1; }
+  (( now - rp <= max * 60 )) || { bsm_fail "set is STALE: signed restore point is $(( (now - rp) / 60 )) min old, limit $max min (replay of an older set? use DRILL_EXPECT_RUN_ID for a deliberate historical restore)"; return 1; }
+}
+
+# bsm_verify_signed <manifest> <dir>: THE restore-side check, in this order: signature -> manifest structure + size/sha256 of EVERY listed file -> name bound to signed content -> no extra files.
+bsm_verify_signed() {
+  bsm_sig_verify "$1" || return 1
+  bsm_verify "$1" "$2" 1 || return 1
+  bsm_bind_check "$1" || return 1
+  bsm_set_complete "$1" "$2"
+}
+
+# bsm_select <dir>: newest set whose manifest exists AND verifies (valid pinned signature, OBJECTS=ok, exact size + sha256 of every file, no extra files). Sets BSM_SELECTED (path) and BSM_REJECTED (count).
 # A set without a manifest is invisible here: loose archives are never a restore point.
 BSM_SELECTED=""; BSM_REJECTED=0
 export BSM_SELECTED BSM_REJECTED
 bsm_select() {
   local m; BSM_SELECTED=""; BSM_REJECTED=0
   while IFS= read -r m; do
-    if bsm_verify "$m" "$1" 1; then BSM_SELECTED="$m"; return 0; fi
+    if bsm_verify_signed "$m" "$1"; then BSM_SELECTED="$m"; return 0; fi
     BSM_REJECTED=$((BSM_REJECTED+1))
   done < <(find "$1" -maxdepth 1 -type f -name 'velto-set-*.manifest' | sort -r)
   return 1

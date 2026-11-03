@@ -12,7 +12,7 @@ command -v docker >/dev/null && command -v rclone >/dev/null && command -v gpg >
 docker image inspect "$IMG" >/dev/null 2>&1 || { echo "SKIP: image $IMG not present locally (docker pull $IMG)"; exit 0; }
 
 T="$(mktemp -d)"; NAME="velto-test-minio-$$"; PORT=$((20000 + RANDOM % 2000))
-cleanup() { docker rm -f "$NAME" >/dev/null 2>&1; rm -rf "${T:?}"; }
+cleanup() { docker rm -f "$NAME" >/dev/null 2>&1; gpgconf --homedir "$T/signhome" --kill all >/dev/null 2>&1; rm -rf "${T:?}"; }
 trap cleanup EXIT
 pass=0; fail=0
 ok()  { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
@@ -96,11 +96,15 @@ echo "PLAINTEXT-SHOULD-NOT-UPLOAD" > "$T/bk/plain.sql"
 # shellcheck source=../backup-status-lib.sh
 . "$HERE/backup-status-lib.sh"
 DBN=velto-db-20261102-000000.dump.gpg; OBN="$(basename "$ARCH")"; MAN="$T/bk/velto-set-20261102-000000.manifest"
-bsm_write "$MAN" RUN_ID=minio-test RESTORE_POINT_TS=1790000000 OBJECTS_SNAPSHOT_TS=1790000005 OBJECTS=ok BACKUP_GLOBALS=0 OFFSITE_VERIFY=size-local-sha256 \
+# shellcheck source=sign-fixture.sh
+. "$HERE/tests/sign-fixture.sh"
+SGH="$T/signhome"; SFPR="$(mk_signkey "$SGH" minio)"; pub_export "$SGH" "$SFPR" "$T/sign-pub.gpg"
+export BACKUP_SIGN_GNUPGHOME="$SGH" BACKUP_SIGN_KEY_FPR="$SFPR" BACKUP_VERIFY_KEYRING="$T/sign-pub.gpg" BACKUP_TRUSTED_SIGN_FPRS="$SFPR"
+bsm_write "$MAN" RUN_ID=minio-test RESTORE_POINT_TS=1790000000 OBJECTS_SNAPSHOT_TS=1790000005 OBJECTS=ok BACKUP_GLOBALS=0 OFFSITE_VERIFY=readback-sha256 \
   "DB_ARCHIVE=$DBN" "DB_SIZE=$(bs_size "$T/bk/$DBN")" "DB_SHA256=$(bs_sha256 "$T/bk/$DBN")" "OBJ_ARCHIVE=$OBN" "OBJ_SIZE=$(bs_size "$ARCH")" "OBJ_SHA256=$(bs_sha256 "$ARCH")" \
-  && ok "set manifest written" || bad "set manifest"
-OFFENV+=(OFFSITE_MANIFEST="$MAN")
-env "${OFFENV[@]}" OFFSITE_S3_ACCESS_KEY_ID="$OFF_ID" OFFSITE_S3_SECRET_ACCESS_KEY="$OFF_SECRET" bash "$HERE/offsite-sync.sh" >"$T/o" 2>&1 && grep -q '^OFFSITE_VERIFIED_RESTORE_POINT_TS=1790000000$' "$T/o" && ok "offsite-sync.sh with writer key: uploaded + verified by listing (marker printed)" || bad "offsite-sync failed: $(tail -n 3 "$T/o" | tr -d '\r')"
+  && bsm_sign "$MAN" && ok "set manifest written + signed" || bad "set manifest"
+OFFENV+=(OFFSITE_MANIFEST="$MAN" OFFSITE_VERIFY_S3_ACCESS_KEY_ID="$RD_ID" OFFSITE_VERIFY_S3_SECRET_ACCESS_KEY="$RD_SECRET")
+env "${OFFENV[@]}" OFFSITE_S3_ACCESS_KEY_ID="$OFF_ID" OFFSITE_S3_SECRET_ACCESS_KEY="$OFF_SECRET" bash "$HERE/offsite-sync.sh" >"$T/o" 2>&1 && grep -q '^OFFSITE_VERIFIED_RESTORE_POINT_TS=1790000000$' "$T/o" && ok "offsite-sync.sh with writer key: uploaded + verified by listing AND sha256 read-back through the restore-read identity (marker printed)" || bad "offsite-sync failed: $(tail -n 3 "$T/o" | tr -d '\r')"
 [[ "$(rclone lsf ADM:velto-offsite-backups -R --files-only | grep -c 'velto-objects-.*\.tar\.gpg$')" == 1 ]] && ok "objects archive reached offsite" || bad "objects archive not offsite"
 rclone lsf ADM:velto-offsite-backups -R --files-only | grep -q 'plain.sql' && bad "plaintext uploaded" || ok "non-backup file (plain.sql) not uploaded"
 OBJNAME="$(basename "$ARCH")"
@@ -113,6 +117,10 @@ rclone deletefile "RDR:velto-offsite-backups/$OBJNAME" >/dev/null 2>&1 && bad "r
 
 env "${OFFENV[@]}" OFFSITE_S3_ACCESS_KEY_ID="$OFF_ID" OFFSITE_S3_SECRET_ACCESS_KEY="$OFF_SECRET" bash "$HERE/offsite-sync.sh" >"$T/o2" 2>&1 && ok "offsite-sync.sh re-run is idempotent (existing files skipped, exit 0)" || bad "offsite re-run failed: $(tail -n 2 "$T/o2")"
 ( env "${OFFENV[@]}" OFFSITE_BUCKET=velto-offsite-backups/prod OFFSITE_S3_ACCESS_KEY_ID="$OFF_ID" OFFSITE_S3_SECRET_ACCESS_KEY="$OFF_SECRET" bash "$HERE/offsite-sync.sh" >/dev/null 2>&1 ) && bad "bucket prefix accepted" || ok "bucket with prefix refused (documented limitation)"
+
+( env "${OFFENV[@]}" OFFSITE_VERIFY_S3_ACCESS_KEY_ID="$OFF_ID" OFFSITE_VERIFY_S3_SECRET_ACCESS_KEY="$OFF_SECRET" OFFSITE_S3_ACCESS_KEY_ID="$OFF_ID" OFFSITE_S3_SECRET_ACCESS_KEY="$OFF_SECRET" bash "$HERE/offsite-sync.sh" >/dev/null 2>"$T/e" ) && bad "read-back identity == writer key accepted" || ok "read-back identity equal to the writer key refused"
+( env "${OFFENV[@]}" OFFSITE_VERIFY_S3_ACCESS_KEY_ID= OFFSITE_S3_ACCESS_KEY_ID="$OFF_ID" OFFSITE_S3_SECRET_ACCESS_KEY="$OFF_SECRET" bash "$HERE/offsite-sync.sh" >/dev/null 2>"$T/e" ); rcv=$?
+[[ $rcv -eq 11 ]] && grep -q "read-back verification unavailable" "$T/e" && ok "no read-back identity -> exit 11 (fail closed, nothing uploaded)" || bad "missing read identity: rc=$rcv $(head -c 150 "$T/e")"
 
 echo "== restore into an empty bucket + comparison"
 export RESTORE_S3_ENDPOINT="$EP" RESTORE_S3_BUCKET=velto-restore-target RESTORE_S3_ACCESS_KEY_ID="$ADMIN_U" RESTORE_S3_SECRET_ACCESS_KEY="$ADMIN_P" RESTORE_S3_PROVIDER=Minio
