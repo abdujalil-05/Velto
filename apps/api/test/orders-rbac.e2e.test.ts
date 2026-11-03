@@ -12,6 +12,12 @@ import { TenantPrismaService } from '../src/common/tenant/tenant-prisma.service'
 import { uniquePhone } from './unique-phone';
 import { loginWithMfa } from './mfa-login';
 
+// Race-safe: parallel test files share the global Permission rows (upsert is not atomic).
+async function ensurePermission(module: string, code: string) {
+  await systemPrisma.permission.createMany({ data: [{ module, code }], skipDuplicates: true });
+  return systemPrisma.permission.findUniqueOrThrow({ where: { module_code: { module, code } } });
+}
+
 /**
  * Order RBAC split over real HTTP (SEC-054, §16.3 "unauthorised => 403 + audit"):
  * orders.update (confirm/close/DELETE), orders.cancel, orders.assignCourier
@@ -73,7 +79,7 @@ describe('E2E orders RBAC split (orders.update / cancel / assignCourier / delive
       const permissionIds: string[] = [];
       for (const key of permissionKeysForRole(roleCode)) {
         const [module, code] = key.split('.');
-        const p = await systemPrisma.permission.upsert({ where: { module_code: { module: module!, code: code! } }, update: {}, create: { module: module!, code: code! } });
+        const p = await ensurePermission(module!, code!);
         permissionIds.push(p.id);
       }
       await prisma.$transaction(async (tx) => {
@@ -354,7 +360,7 @@ describe('E2E orders RBAC split (orders.update / cancel / assignCourier / delive
       const perms = await Promise.all(
         ['orders.create', 'orders.read', 'orders.update', 'customers.read', 'catalog.read'].map((k) => {
           const [module, code] = k.split('.');
-          return systemPrisma.permission.upsert({ where: { module_code: { module: module!, code: code! } }, update: {}, create: { module: module!, code: code! } });
+          return ensurePermission(module!, code!);
         }),
       );
       await prisma.$transaction(async (tx) => {
@@ -609,7 +615,7 @@ describe('E2E orders RBAC split (orders.update / cancel / assignCourier / delive
       const perms = await Promise.all(
         permissionKeysForRole('OWNER').map((k) => {
           const [module, code] = k.split('.');
-          return systemPrisma.permission.upsert({ where: { module_code: { module: module!, code: code! } }, update: {}, create: { module: module!, code: code! } });
+          return ensurePermission(module!, code!);
         }),
       );
       await prisma.$transaction(async (tx) => {
