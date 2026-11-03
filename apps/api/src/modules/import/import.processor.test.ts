@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import type { Job } from 'bullmq';
 import { prisma, systemPrisma } from '@velto/database';
 import { AuditLogService } from '../../common/audit/audit-log.service';
@@ -85,7 +85,11 @@ describe('ImportProcessor (integration, real Postgres + RLS)', () => {
     const report = updated.errorLog as unknown as ImportJobReport<never>;
     expect(report.createdCount).toBe(0);
     expect(report.skippedCount).toBe(1);
-    expect(report.errors).toContainEqual({ row: 2, messages: ['code "C-RACE" allaqachon mavjud'] });
+    expect(report.errors).toContainEqual({
+      row: 2,
+      messages: ['code "C-RACE" allaqachon mavjud'],
+      i18n: [expect.objectContaining({ uz: 'code "C-RACE" allaqachon mavjud', ru: expect.stringContaining('уже существует'), en: expect.stringContaining('already exists') })],
+    });
   });
 
   it('creates a product with a default packaging, auto-creating a new category and reusing an existing one case-insensitively', async () => {
@@ -139,5 +143,106 @@ describe('ImportProcessor (integration, real Postgres + RLS)', () => {
   it('is a no-op when the import job no longer exists', async () => {
     const companyId = await createCompany();
     await expect(processor.process(fakeJob(randomUUID(), companyId))).resolves.toBeUndefined();
+  });
+
+  it('resumes after a partial failure: counters cumulative, no duplicates, own rows never reported as skipped', async () => {
+    const companyId = await createCompany();
+    const rows: CustomerImportRow[] = Array.from({ length: 1000 }, (_, k) => ({
+      rowNumber: k + 2,
+      code: `R-${k}`,
+      name: `N${k}`,
+      paymentTermDays: 0,
+      outletName: 'O',
+    }));
+    const job = await createProcessingJob(companyId, 'customers', rows);
+
+    // Fail the 3rd chunk's commit (after chunks 1-2 committed).
+    const original = tenantPrisma.run.bind(tenantPrisma);
+    let calls = 0;
+    const spy = vi.spyOn(tenantPrisma, 'run').mockImplementation((async (cid: string, fn: never, opts?: never) => {
+      calls++;
+      if (calls === 4) throw new Error('boom: prisma internal text');
+      return original(cid, fn, opts);
+    }) as never);
+    const failing = { data: { importJobId: job.id, companyId }, attemptsMade: 0, opts: { attempts: 3 } } as unknown as Job<ImportJobData>;
+    await expect(processor.process(failing)).rejects.toThrow('boom');
+    spy.mockRestore();
+
+    const mid = await tenantPrisma.run(companyId, (tx) => tx.importJob.findUniqueOrThrow({ where: { id: job.id } }));
+    expect(mid.status).toBe('PROCESSING');
+    expect(await tenantPrisma.run(companyId, (tx) => tx.customer.count())).toBe(400);
+
+    await processor.process(fakeJob(job.id, companyId));
+    const done = await tenantPrisma.run(companyId, (tx) => tx.importJob.findUniqueOrThrow({ where: { id: job.id } }));
+    const report = done.errorLog as unknown as ImportJobReport<never>;
+    expect(done.status).toBe('DONE');
+    expect(report.createdCount).toBe(1000);
+    expect(report.skippedCount).toBe(0);
+    expect(report.errors).toHaveLength(0);
+    expect(await tenantPrisma.run(companyId, (tx) => tx.customer.count())).toBe(1000);
+  });
+
+  it('chunk tx slower than its timeout rolls back atomically (cursor and rows together); retry resumes from the cursor, no double-creation', async () => {
+    const companyId = await createCompany();
+    const rows: CustomerImportRow[] = Array.from({ length: 600 }, (_, k) => ({ rowNumber: k + 2, code: `T-${k}`, name: `N${k}`, paymentTermDays: 0, outletName: 'O' }));
+    const job = await createProcessingJob(companyId, 'customers', rows);
+    const original = tenantPrisma.run.bind(tenantPrisma);
+    let calls = 0;
+    const spy = vi.spyOn(tenantPrisma, 'run').mockImplementation((async (cid: string, fn: (tx: never) => Promise<unknown>, opts?: never) => {
+      calls++;
+      // 4th run call = 3rd chunk: slow body vs. a 100 ms tx timeout (what Prisma's 5 s default did under load).
+      if (calls === 4) return original(cid, async (tx) => { await new Promise((r) => setTimeout(r, 400)); return fn(tx as never); }, { timeout: 100, maxWait: 5000 } as never);
+      return original(cid, fn as never, opts);
+    }) as never);
+    const failing = { data: { importJobId: job.id, companyId }, attemptsMade: 0, opts: { attempts: 3 } } as unknown as Job<ImportJobData>;
+    await expect(processor.process(failing)).rejects.toThrow();
+    spy.mockRestore();
+    const mid = await tenantPrisma.run(companyId, (tx) => tx.importJob.findUniqueOrThrow({ where: { id: job.id } }));
+    expect(mid.status).toBe('PROCESSING');
+    expect((mid.errorLog as unknown as ImportJobReport<never>).commit?.nextIndex).toBe(400); // rolled-back chunk left no cursor
+    expect(await tenantPrisma.run(companyId, (tx) => tx.customer.count())).toBe(400);
+    await processor.process(fakeJob(job.id, companyId));
+    const done = await tenantPrisma.run(companyId, (tx) => tx.importJob.findUniqueOrThrow({ where: { id: job.id } }));
+    expect(done.status).toBe('DONE');
+    expect((done.errorLog as unknown as ImportJobReport<never>).createdCount).toBe(600);
+    expect(await tenantPrisma.run(companyId, (tx) => tx.customer.count())).toBe(600);
+  });
+
+  it('a run whose cursor is stale (another run advanced it) yields without writing', async () => {
+    const companyId = await createCompany();
+    const rows: CustomerImportRow[] = Array.from({ length: 300 }, (_, k) => ({ rowNumber: k + 2, code: `S-${k}`, name: `N${k}`, paymentTermDays: 0, outletName: 'O' }));
+    const job = await createProcessingJob(companyId, 'customers', rows);
+    const original = tenantPrisma.run.bind(tenantPrisma);
+    let calls = 0;
+    // After the processor loaded the job (call 1), simulate a concurrent run having advanced the cursor.
+    const spy = vi.spyOn(tenantPrisma, 'run').mockImplementation((async (cid: string, fn: never, opts?: never) => {
+      calls++;
+      if (calls === 2) await original(cid, (tx) => tx.$executeRaw`UPDATE "ImportJob" SET "errorLog" = "errorLog" || '{"commit":{"nextIndex":200,"createdCount":200,"skippedCount":0,"errors":[]}}'::jsonb WHERE "id" = ${job.id}::uuid`);
+      return original(cid, fn, opts);
+    }) as never);
+    await processor.process(fakeJob(job.id, companyId));
+    spy.mockRestore();
+    const after = await tenantPrisma.run(companyId, (tx) => tx.importJob.findUniqueOrThrow({ where: { id: job.id } }));
+    expect(after.status).toBe('PROCESSING');
+    expect(await tenantPrisma.run(companyId, (tx) => tx.customer.count())).toBe(0);
+  });
+
+  it('on the last failed attempt stores a stable code + trilingual message, never the raw error text', async () => {
+    const companyId = await createCompany();
+    const job = await createProcessingJob(companyId, 'customers', [{ rowNumber: 2, code: 'F-1', name: 'x', paymentTermDays: 0, outletName: 'O' }] as CustomerImportRow[]);
+    const original = tenantPrisma.run.bind(tenantPrisma);
+    let calls = 0;
+    const spy = vi.spyOn(tenantPrisma, 'run').mockImplementation((async (cid: string, fn: never, opts?: never) => {
+      calls++;
+      if (calls === 2) throw new Error('secret prisma detail');
+      return original(cid, fn, opts);
+    }) as never);
+    const last = { data: { importJobId: job.id, companyId }, attemptsMade: 2, opts: { attempts: 3 } } as unknown as Job<ImportJobData>;
+    await expect(processor.process(last)).rejects.toThrow();
+    spy.mockRestore();
+    const failed = await tenantPrisma.run(companyId, (tx) => tx.importJob.findUniqueOrThrow({ where: { id: job.id } }));
+    expect(failed.status).toBe('FAILED');
+    expect(JSON.stringify(failed.errorLog)).not.toContain('secret prisma detail');
+    expect(failed.errorLog).toMatchObject({ code: 'IMPORT_COMMIT_FAILED', message: { uz: expect.any(String), ru: expect.any(String), en: expect.any(String) } });
   });
 });

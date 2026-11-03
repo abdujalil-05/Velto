@@ -1,4 +1,7 @@
-import { OrderStatus, Prisma } from '@velto/database';
+import { Logger } from '@nestjs/common';
+import { OrderStatus, Prisma, type TenantClient } from '@velto/database';
+import { companyDay, type CompanyDay } from '../field/company-day';
+import { ORDER_LINE_AMOUNTS_SELECT } from '../sales/line-total';
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -7,39 +10,84 @@ export interface DateRange {
   end: Date;
 }
 
-export function startOfDay(date: Date): Date {
-  const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  return d;
+/** Fallback when Company.timezone is unreadable; the schema default. */
+export const DEFAULT_TIME_ZONE = 'Asia/Tashkent';
+
+/** True when `timeZone` is an IANA zone the runtime's Intl accepts. */
+export function isValidTimeZone(timeZone: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-GB', { timeZone });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-export function endOfDay(date: Date): Date {
-  const d = new Date(date);
-  d.setHours(23, 59, 59, 999);
-  return d;
+const tzLogger = new Logger('companyTimeZone');
+
+/** Company.timezone of the current tenant (TZ §7.1); a legacy invalid value falls back to Asia/Tashkent with a warning. */
+export async function companyTimeZone(tx: TenantClient): Promise<string> {
+  const company = await tx.company.findFirst({ select: { timezone: true } });
+  const stored = company?.timezone;
+  if (!stored) return DEFAULT_TIME_ZONE;
+  if (!isValidTimeZone(stored)) {
+    tzLogger.warn(`Invalid stored company timezone "${stored}", falling back to ${DEFAULT_TIME_ZONE}`);
+    return DEFAULT_TIME_ZONE;
+  }
+  return stored;
 }
 
-/**
- * `YYYY-MM-DD` from the *local* date parts — day buckets must be keyed the
- * same way the startOfDay()-based axis loops walk them; `toISOString()` is
- * UTC and shifts rows into the neighbouring bucket for any non-UTC server.
- */
-export function localDateString(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+/** UTC instant of 00:00:00.000 of the company-timezone day containing `date`. */
+export function startOfDay(date: Date, timeZone: string = DEFAULT_TIME_ZONE): Date {
+  return companyDay(date, timeZone).start;
 }
 
-/** ISO 8601: Monday=1 ... Sunday=7 — matches how Route.weekday (6.8: "1-7") is validated in CreateRouteDto. */
-export function isoWeekday(date: Date): number {
-  return ((date.getDay() + 6) % 7) + 1;
+/** UTC instant of 23:59:59.999 of the company-timezone day containing `date`. */
+export function endOfDay(date: Date, timeZone: string = DEFAULT_TIME_ZONE): Date {
+  return new Date(companyDay(date, timeZone).end.getTime() - 1);
 }
 
-/** Inclusive [start, end] window. `to` (if given) is extended to its end-of-day boundary. Defaults to the last `defaultDays` days ending today. */
-export function resolveDateRange(from?: string, to?: string, defaultDays = 30): DateRange {
-  const end = to ? endOfDay(new Date(to)) : endOfDay(new Date());
-  const start = from ? startOfDay(new Date(from)) : startOfDay(new Date(end.getTime() - (defaultDays - 1) * DAY_MS));
+/** `YYYY-MM-DD` of the company-timezone calendar day — the key day buckets and axes share. */
+export function localDateString(date: Date, timeZone: string = DEFAULT_TIME_ZONE): string {
+  return companyDay(date, timeZone).date;
+}
+
+/** ISO 8601 in the company timezone: Monday=1 ... Sunday=7 — matches Route.weekday (6.8: "1-7"). */
+export function isoWeekday(date: Date, timeZone: string = DEFAULT_TIME_ZONE): number {
+  return companyDay(date, timeZone).isoWeekday;
+}
+
+/** Company-timezone day for a `YYYY-MM-DD` string (exact), or for the day containing a full ISO instant. */
+export function companyDayOf(input: string, timeZone: string = DEFAULT_TIME_ZONE): CompanyDay {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input)) return companyDay(new Date(input), timeZone);
+  let probe = new Date(`${input}T12:00:00Z`);
+  let day = companyDay(probe, timeZone);
+  for (let i = 0; i < 2 && day.date !== input; i += 1) {
+    const diff = Math.round((Date.parse(`${input}T00:00:00Z`) - Date.parse(`${day.date}T00:00:00Z`)) / DAY_MS);
+    probe = new Date(probe.getTime() + diff * DAY_MS);
+    day = companyDay(probe, timeZone);
+  }
+  return day;
+}
+
+/** Every company-timezone calendar day touched by [start, end], in order (DST-safe, unlike +24h stepping). */
+export function eachCompanyDay(start: Date, end: Date, timeZone: string = DEFAULT_TIME_ZONE): CompanyDay[] {
+  const days: CompanyDay[] = [];
+  let day = companyDay(start, timeZone);
+  while (day.start.getTime() <= end.getTime()) {
+    days.push(day);
+    day = companyDay(day.end, timeZone);
+  }
+  return days;
+}
+
+/** Inclusive [start, end] window in the company timezone. `to` extends to its end-of-day. Defaults to the last `defaultDays` days ending today. */
+export function resolveDateRange(from?: string, to?: string, defaultDays = 30, timeZone: string = DEFAULT_TIME_ZONE): DateRange {
+  const endDay = to ? companyDayOf(to, timeZone) : companyDay(new Date(), timeZone);
+  const end = new Date(endDay.end.getTime() - 1);
+  const start = from
+    ? companyDayOf(from, timeZone).start
+    : companyDay(new Date(endDay.start.getTime() - (defaultDays - 1) * DAY_MS + 12 * 3_600_000), timeZone).start;
   return { start, end };
 }
 
@@ -52,16 +100,26 @@ export function pctChange(current: Prisma.Decimal | number, previous: Prisma.Dec
 }
 
 /**
- * 3.2/9.3: an order that reached at least SUBMITTED counts toward every sales
- * figure in this module — DRAFT (not yet sent) and CANCELLED are excluded.
+ * F2.4 / PO decision (2026-11-01): the ONLY order statuses that make actual
+ * turnover. Every sales figure in this module (turnover, delivered-order count,
+ * avg check, per day/agent/product, overview, dashboard, agents report) uses
+ * this set and the DELIVERED amount (Σ deliveredQty-priced lines = invoice
+ * total). DRAFT/SUBMITTED/CONFIRMED/SHIPPED/CANCELLED are not turnover; a
+ * DELIVERED→CLOSED order is one row, counted once. Payments/debt and OPENING
+ * invoices are not orders, so they never enter these figures.
+ * Date attribution (PO 2026-11-01) = delivery date = the order's SALE invoice
+ * createdAt (report-sql.ts deliveredInWindowJoin), not SalesOrder.createdAt.
  */
-export const COUNTED_ORDER_STATUSES: OrderStatus[] = [
-  OrderStatus.SUBMITTED,
-  OrderStatus.CONFIRMED,
-  OrderStatus.DELIVERED,
-  OrderStatus.CLOSED,
-];
+export const TURNOVER_STATUSES: readonly OrderStatus[] = [OrderStatus.DELIVERED, OrderStatus.CLOSED];
 
-export function sumLineTotals(lines: { lineTotal: Prisma.Decimal }[]): Prisma.Decimal {
-  return lines.reduce((sum, l) => sum.plus(l.lineTotal), new Prisma.Decimal(0));
-}
+/**
+ * Prisma `select` every sales figure needs: status + line snapshot, so
+ * DELIVERED/CLOSED orders count what was delivered (= invoice total) and the
+ * rest count what was ordered — one rule, shared with SalesService (§6.6/F2.4).
+ */
+export const ORDER_AMOUNT_SELECT = {
+  status: true,
+  lines: { select: ORDER_LINE_AMOUNTS_SELECT },
+} as const satisfies Prisma.SalesOrderSelect;
+
+export { orderTotal, effectiveLineTotal } from '../sales/line-total';

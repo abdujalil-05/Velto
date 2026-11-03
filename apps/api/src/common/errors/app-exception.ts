@@ -11,6 +11,8 @@ export interface ApiErrorBody {
   code: string;
   message: LocalizedMessage;
   details?: unknown;
+  /** Request correlation id, also sent as the X-Request-Id header (7.1/12.3). */
+  traceId?: string;
 }
 
 /**

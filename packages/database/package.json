@@ -11,8 +11,13 @@
     "migrate:deploy": "prisma migrate deploy",
     "studio": "prisma studio",
     "seed": "tsx src/seed.ts",
+    "db:load:create": "bash scripts/load-db.sh create",
+    "db:load:reset": "bash scripts/load-db.sh reset",
+    "db:load:seed": "bash scripts/load-db.sh seed",
+    "db:load:verify": "bash scripts/load-db.sh verify",
     "rename-system-roles": "tsx src/rename-system-roles.ts",
     "backfill-permissions": "tsx src/backfill-permissions.ts",
+    "backfill-assign-courier": "tsx src/backfill-assign-courier.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src"

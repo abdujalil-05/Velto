@@ -14,6 +14,8 @@ export interface User {
   createdAt: string;
   /** Whether the user has linked their Telegram account (they /start the bot and share their phone; no admin-issued code exists). */
   telegramLinked: boolean;
+  /** True when the user has a confirmed TOTP enrollment. */
+  mfaEnabled: boolean;
   /** Optional — only sent by endpoints that carry the link timestamp. */
   telegramLinkedAt?: string | null;
   roles: { id: string; code: string; name: string }[];

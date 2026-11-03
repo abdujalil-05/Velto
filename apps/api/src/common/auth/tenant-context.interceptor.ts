@@ -9,9 +9,15 @@ import { Reflector } from '@nestjs/core';
 import { firstValueFrom, from, type Observable } from 'rxjs';
 import { AuditLogService } from '../audit/audit-log.service';
 import { TenantPrismaService } from '../tenant/tenant-prisma.service';
+import { TenantContext, handlerScopeStore } from '../tenant/tenant-context';
+import { TENANT_TX_OPTIONS_KEY, type TenantTxRouteOptions } from '../tenant/tenant-tx-options.decorator';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { REQUIRE_PERMISSION_KEY } from '../decorators/require-permission.decorator';
-import { PermissionDeniedException } from './auth-exceptions';
+import { REQUIRE_ACTIVE_SESSION_KEY } from '../decorators/private-download.decorator';
+import { isSessionActive } from './session-active';
+import { MfaRequiredException, PermissionDeniedException, SessionExpiredException } from './auth-exceptions';
+import { isMfaSessionValid } from './mfa-policy';
+import { loadAuthenticatedUser } from './load-authenticated-user';
 import type { AccessTokenPayload, AuthenticatedUser } from './auth.types';
 
 /**
@@ -57,56 +63,109 @@ export class TenantContextInterceptor implements NestInterceptor {
       context.getClass(),
     ]);
 
-    return this.tenantPrisma.run(payload.companyId, async (tx) => {
-      const user = await tx.user.findUnique({ where: { id: payload.sub } });
-      if (!user || !user.isActive) {
+    const routeOptions = this.reflector.getAllAndOverride<TenantTxRouteOptions | undefined>(TENANT_TX_OPTIONS_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+
+    const { scope, ...txOptions } = routeOptions ?? {};
+    const handlerScope = scope === 'handler';
+    let denied: AuthenticatedUser | undefined;
+    let mfaDenied: AuthenticatedUser | undefined;
+    let sessionDenied: AuthenticatedUser | undefined;
+    const requireActiveSession = this.reflector.getAllAndOverride<boolean | undefined>(REQUIRE_ACTIVE_SESSION_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+
+    const result = await this.tenantPrisma.run(payload.companyId, async (tx) => {
+      // Deactivated user or company -> 401 (client then tries /auth/refresh -> 403 AUTH_ACCOUNT_BLOCKED).
+      const loaded = await loadAuthenticatedUser(tx, payload.sub, payload.companyId);
+      if (!loaded) {
         throw new UnauthorizedException();
       }
-
-      const userRoles = await tx.userRole.findMany({
-        where: { userId: user.id },
-        include: { role: { include: { permissions: { include: { permission: true } } } } },
-      });
-
-      const roles = userRoles.map((ur) => ur.role.code);
-      const permissions = [
-        ...new Set(
-          userRoles.flatMap((ur) =>
-            ur.role.permissions.map((rp) => `${rp.permission.module}.${rp.permission.code}`),
-          ),
-        ),
-      ];
+      const { confirmedMfaId, ...actor } = loaded;
+      // ADR-058: privileged roles need a session backed by the current confirmed MFA (checked against DB roles, not the JWT).
+      if (!isMfaSessionValid(actor.roles, confirmedMfaId, payload.mfa)) {
+        mfaDenied = actor;
+        return undefined;
+      }
+      // Private downloads: a revoked session (logout / logout-all) must not keep working until the access token expires.
+      if (requireActiveSession && !(await isSessionActive(tx, actor.id, payload.sid))) {
+        sessionDenied = actor;
+        return undefined;
+      }
+      const { permissions } = actor;
 
       if (requiredPermission && !permissions.includes(requiredPermission)) {
-        // SEC-020..024 / SEC-054: "ruxsat rad etilsa 403 + audit" — logged
-        // against the acting user themselves (there's no other natural
-        // entity for a denied permission check on an arbitrary route).
-        // Written in its own transaction (like AuthService.logFailedLogin):
-        // throwing here rolls back `tx`, which would take the audit row with it.
-        await this.tenantPrisma.run(payload.companyId, (auditTx) =>
-          this.auditLog.log(auditTx, {
-            companyId: payload.companyId,
-            userId: user.id,
-            action: 'auth.permission_denied',
-            entity: 'User',
-            entityId: user.id,
-            newValue: { permission: requiredPermission, method: request.method, path: request.url },
-          }),
-        );
-        throw new PermissionDeniedException(requiredPermission);
+        // Commit this short tx cleanly, then audit + throw outside it (no nested tx):
+        // throwing here would roll back `tx` (and the audit row), and a second
+        // run() while this tx is open can self-wait on the pool.
+        denied = actor;
+        return undefined;
       }
 
-      const authenticatedUser: AuthenticatedUser = {
-        id: user.id,
-        companyId: payload.companyId,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        roles,
-        permissions,
-      };
-      request.user = authenticatedUser;
-
+      request.user = payload.sid ? { ...actor, sid: payload.sid } : actor;
+      if (handlerScope) return undefined;
       return firstValueFrom(next.handle());
+    }, handlerScope || Object.keys(txOptions).length === 0 ? undefined : txOptions);
+
+    if (mfaDenied) {
+      const m = mfaDenied;
+      await this.tenantPrisma.run(payload.companyId, (auditTx) =>
+        this.auditLog.log(auditTx, {
+          companyId: payload.companyId,
+          userId: m.id,
+          action: 'auth.mfa.denied',
+          entity: 'User',
+          entityId: m.id,
+          newValue: { method: request.method, path: request.url },
+        }),
+      );
+      throw new MfaRequiredException();
+    }
+    if (sessionDenied) {
+      const u = sessionDenied;
+      await this.tenantPrisma.run(payload.companyId, (auditTx) =>
+        this.auditLog.log(auditTx, {
+          companyId: payload.companyId,
+          userId: u.id,
+          action: 'auth.session_revoked_denied',
+          entity: 'User',
+          entityId: u.id,
+          newValue: { method: request.method, path: request.url },
+        }),
+      );
+      throw new SessionExpiredException();
+    }
+    if (denied) {
+      const d = denied;
+      // SEC-020..024 / SEC-054: "ruxsat rad etilsa 403 + audit" — logged
+      // against the acting user themselves, in its own tx (like AuthService.logFailedLogin).
+      await this.tenantPrisma.run(payload.companyId, (auditTx) =>
+        this.logDenied(auditTx, payload.companyId, d.id, requiredPermission!, request),
+      );
+      throw new PermissionDeniedException(requiredPermission!);
+    }
+    if (!handlerScope) return result;
+    // handler scope: short auth tx is committed; the handler now runs with no open tx.
+    return TenantContext.run(handlerScopeStore(payload.companyId), () => firstValueFrom(next.handle()));
+  }
+
+  private logDenied(
+    auditTx: Parameters<AuditLogService['log']>[0],
+    companyId: string,
+    userId: string,
+    permission: string,
+    request: { method: string; url: string },
+  ) {
+    return this.auditLog.log(auditTx, {
+      companyId,
+      userId,
+      action: 'auth.permission_denied',
+      entity: 'User',
+      entityId: userId,
+      newValue: { permission, method: request.method, path: request.url },
     });
   }
 }

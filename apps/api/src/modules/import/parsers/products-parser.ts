@@ -25,7 +25,7 @@ export interface ProductImportRow {
  * `baseUnit` (qty 1) on confirm — matching baseUnit/blok/quti variants can
  * be added afterwards through the regular Products screen.
  */
-export async function parseProductsWorkbook(buffer: Buffer, existingSkus: Set<string>): Promise<ParseResult<ProductImportRow>> {
+export async function parseProductsWorkbook(buffer: Buffer, existingSkus: Set<string>, defaultVatRate: number): Promise<ParseResult<ProductImportRow>> {
   const rows = await readWorkbookRows(buffer);
   const validRows: ProductImportRow[] = [];
   const errors: RowError[] = [];
@@ -54,7 +54,7 @@ export async function parseProductsWorkbook(buffer: Buffer, existingSkus: Set<st
     if (brand && brand.length > 200) messages.push('brand 200 belgidan oshmasligi kerak');
 
     const vatRateRaw = asNumber(row.get('vatRate'));
-    const vatRate = vatRateRaw ?? 12;
+    const vatRate = vatRateRaw ?? defaultVatRate;
     if (vatRateRaw !== undefined && (Number.isNaN(vatRateRaw) || vatRateRaw < 0 || vatRateRaw > 100)) {
       messages.push("vatRate 0..100 oralig'ida bo'lishi kerak");
     }

@@ -1,11 +1,23 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import type { Job } from 'bullmq';
-import { InvoiceStatus, type TenantClient } from '@velto/database';
+import { UnrecoverableError, type Job } from 'bullmq';
+import { createHash } from 'node:crypto';
+import { InvoiceKind, InvoiceStatus, PaymentSource, Prisma, type ExportFormat, type PaymentMethod, type TenantClient } from '@velto/database';
+import { runJobWithTrace } from '../../../common/queue/trace-job';
 import { StorageService } from '../../../common/storage/storage.service';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import { buildCommerceMlXml, type CommerceMlCustomer, type CommerceMlDocument } from './commerce-ml';
 import { buildExport1cWorkbook, type PaymentDocumentRow, type SalesDocumentRow } from './export-1c-excel';
-import { EXPORT_1C_QUEUE, type Export1cJobData } from './export-1c.constants';
+import { buildExport1cCsv, type CsvDocument } from './export-1c-csv';
+import { ExportUnsupportedCombinationException, UNSUPPORTED_DETAILS_CAP, type UnsupportedViolation } from './export-1c-exceptions';
+import { checkInvoiceRepresentable } from './export-1c-representability';
+import { companyDay } from '../../field/company-day';
+import { EXPORT_1C_MAPPING_VERSION, EXPORT_1C_QUEUE, export1cStorageKey, type Export1cJobData } from './export-1c.constants';
+import { paymentPostedAt, paymentPostedWithin } from '../../finance/ledger-filters';
+
+function collectionMethod(payment: { id: string; method: PaymentMethod | null }): PaymentMethod {
+  if (payment.method === null) throw new Error(`payment ${payment.id}: COLLECTION payment without method violates Payment_source_shape_check`);
+  return payment.method;
+}
 
 /**
  * Network/connection failures (e.g. S3 unreachable) surface from the AWS SDK
@@ -14,7 +26,7 @@ import { EXPORT_1C_QUEUE, type Export1cJobData } from './export-1c.constants';
  * upload would leave the accountant looking at `{ "message": "" }` with no
  * way to tell what actually went wrong.
  */
-function describeError(err: unknown): string {
+export function describeError(err: unknown): string {
   if (err instanceof AggregateError) {
     const inner = err.errors.map((e) => describeError(e)).join('; ');
     return inner || err.message || err.name;
@@ -31,7 +43,10 @@ interface ExportData {
   documents: CommerceMlDocument[];
   salesDocuments: SalesDocumentRow[];
   payments: PaymentDocumentRow[];
+  csvDocuments: CsvDocument[];
   missingExternalCode: string[];
+  /** ADR-059: invoices the line-level formats (XML/CSV) cannot represent; empty for EXCEL (header-only, no line data). */
+  unsupported: UnsupportedViolation[];
 }
 
 /**
@@ -51,83 +66,154 @@ export class Export1cProcessor extends WorkerHost {
     super();
   }
 
-  async process(job: Job<Export1cJobData>): Promise<void> {
+  process(job: Job<Export1cJobData>): Promise<void> {
+    return runJobWithTrace(job, () => this.handle(job));
+  }
+
+  private async handle(job: Job<Export1cJobData>): Promise<void> {
     const { exportJobId, companyId } = job.data;
 
+    // Idempotency: only a QUEUED job is picked up. Redelivery of a job that is
+    // already PROCESSING/GENERATED/FAILED (or acknowledged) is a no-op.
     const exportJob = await this.tenantPrisma.run(companyId, async (tx) => {
-      const found = await tx.exportJob.findFirst({ where: { id: exportJobId } });
-      if (!found) return null;
-      await tx.exportJob.update({ where: { id: exportJobId }, data: { status: 'PROCESSING' } });
-      return found;
+      // Atomic compare-and-set: of two workers / a redelivery only one wins and bumps attemptCount.
+      const { count } = await tx.exportJob.updateMany({ where: { id: exportJobId, status: 'QUEUED' }, data: { status: 'PROCESSING', attemptCount: { increment: 1 } } });
+      if (count !== 1) return null;
+      return tx.exportJob.findFirst({ where: { id: exportJobId } });
     });
-    if (!exportJob) return; // job/company mismatch — nothing to process
+    if (!exportJob) return;
 
     try {
-      const data = await this.tenantPrisma.run(companyId, (tx) => this.loadExportData(tx, exportJob.periodFrom, exportJob.periodTo));
+      // One REPEATABLE READ snapshot: invoices, payments and customers must be mutually consistent.
+      const data = await this.tenantPrisma.run(
+        companyId,
+        async (tx) => {
+          const company = await tx.company.findFirst({ select: { timezone: true } });
+          return this.loadExportData(tx, exportJob.periodFrom, exportJob.periodTo, company?.timezone ?? 'Asia/Tashkent', exportJob.format);
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+      );
 
-      const { buffer, mimeType, extension } =
-        exportJob.format === 'EXCEL'
-          ? {
-              buffer: await buildExport1cWorkbook(data),
-              mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-              extension: 'xlsx',
-            }
-          : {
-              buffer: Buffer.from(
-                buildCommerceMlXml({ generatedAt: new Date(), customers: data.customers, documents: data.documents, currency: 'UZS' }),
-                'utf-8',
-              ),
-              mimeType: 'application/xml',
-              extension: 'xml',
-            };
+      // Strict reject BEFORE any file is rendered/uploaded: never a file that looks accounting-correct but contradicts amounts.
+      if (data.unsupported.length > 0) throw new ExportUnsupportedCombinationException(data.unsupported);
 
-      const fileUrl = await this.storage.upload({ buffer, mimeType, extension, keyPrefix: `exports/1c/${companyId}` });
+      const { buffer, mimeType, extension } = await this.render(exportJob.format, data);
+      const storageKey = export1cStorageKey(companyId, exportJobId, extension);
+      // Deterministic key: a retry overwrites the same object, so no orphan files.
+      await this.storage.putObject({ key: storageKey, buffer, mimeType });
+      const fileHash = createHash('sha256').update(buffer).digest('hex');
 
+      // Guarded: if the sweep already FAILED this job, write nothing (the deterministic key is overwritten by a later export of the same job id; none exists).
       await this.tenantPrisma.run(companyId, (tx) =>
-        tx.exportJob.update({
-          where: { id: exportJobId },
+        tx.exportJob.updateMany({
+          where: { id: exportJobId, status: 'PROCESSING' },
           data: {
-            status: 'DONE',
-            fileUrl,
+            status: 'GENERATED',
+            storageKey,
+            fileName: `1c-export-${exportJob.periodFrom.toISOString().slice(0, 10)}_${exportJob.periodTo.toISOString().slice(0, 10)}.${extension}`,
+            fileSize: buffer.length,
+            fileHash,
+            recordCount: data.documents.length,
+            mappingVersion: EXPORT_1C_MAPPING_VERSION,
+            generatedAt: new Date(),
             // Non-fatal: still a successful export, but the accountant needs
             // to know these lines won't match cleanly in 1C (11.1: "Product.
             // externalCode maydoni majburiy") until product data is fixed.
             errorLog:
               data.missingExternalCode.length > 0
                 ? { warnings: data.missingExternalCode.map((sku) => `Mahsulot "${sku}" uchun externalCode kiritilmagan`) }
-                : undefined,
+                : Prisma.DbNull,
           },
         }),
       );
     } catch (err) {
+      if (err instanceof ExportUnsupportedCombinationException) {
+        // Deterministic data problem: retrying cannot help -> terminal FAILED now, no BullMQ retry.
+        await this.tenantPrisma.run(companyId, (tx) =>
+          tx.exportJob.updateMany({
+            where: { id: exportJobId, status: 'PROCESSING' },
+            data: {
+              status: 'FAILED',
+              errorLog: {
+                code: ExportUnsupportedCombinationException.CODE,
+                message: `${ExportUnsupportedCombinationException.MESSAGES.uz} [${err.total}]: ${err.violations.slice(0, 5).map((v) => `${v.invoiceNumber}${v.sku ? `/${v.sku}` : ''} ${v.reasons.join('+')}`).join('; ')}${err.total > 5 ? '; ...' : ''}`,
+                messages: ExportUnsupportedCombinationException.MESSAGES,
+                total: err.total,
+                violations: err.violations.slice(0, UNSUPPORTED_DETAILS_CAP).map((v) => ({ invoiceId: v.invoiceId, invoiceNumber: v.invoiceNumber, sku: v.sku, reasons: [...v.reasons] })),
+              },
+            },
+          }),
+        );
+        throw new UnrecoverableError(ExportUnsupportedCombinationException.CODE);
+      }
+      // Only the last attempt is terminal; earlier ones go back to QUEUED so BullMQ's retry can run.
+      const isLastAttempt = (job.attemptsMade ?? 0) + 1 >= (job.opts?.attempts ?? 1);
       await this.tenantPrisma.run(companyId, (tx) =>
-        tx.exportJob.update({
-          where: { id: exportJobId },
-          data: { status: 'FAILED', errorLog: { message: describeError(err) } },
+        tx.exportJob.updateMany({
+          where: { id: exportJobId, status: 'PROCESSING' },
+          data: { status: isLastAttempt ? 'FAILED' : 'QUEUED', errorLog: { message: describeError(err) } },
         }),
       );
-      throw err; // BullMQ still records the failure (retries/observability)
+      throw err; // BullMQ retries (backoff) or records the failure
     }
   }
 
+  private async render(format: ExportFormat, data: ExportData): Promise<{ buffer: Buffer; mimeType: string; extension: string }> {
+    if (format === 'EXCEL') {
+      return { buffer: await buildExport1cWorkbook(data), mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', extension: 'xlsx' };
+    }
+    if (format === 'CSV') {
+      return { buffer: buildExport1cCsv(data.csvDocuments), mimeType: 'text/csv; charset=utf-8', extension: 'csv' };
+    }
+    return {
+      buffer: Buffer.from(buildCommerceMlXml({ generatedAt: new Date(), customers: data.customers, documents: data.documents, currency: 'UZS' }), 'utf-8'),
+      mimeType: 'application/xml',
+      extension: 'xml',
+    };
+  }
+
   /** 11.1: "Eksport qilinadi: kontragentlar, sotish hujjatlari, to'lovlar" — sales documents are Invoices (6.6: "1 order = 1 invoice soddalashtirilgan"), not SalesOrders, since those are the actual accounting-facing documents. */
-  private async loadExportData(tx: TenantClient, periodFrom: Date, periodTo: Date): Promise<ExportData> {
-    const [invoices, payments] = await Promise.all([
+  private async loadExportData(tx: TenantClient, periodFrom: Date, periodTo: Date, timeZone: string, format: ExportFormat): Promise<ExportData> {
+    const [invoices, collected] = await Promise.all([
+      // F6: OPENING invoices/payments (opening balance batch) already exist in
+      // 1C — exporting them again would double-count debt/credit there.
       tx.invoice.findMany({
-        where: { createdAt: { gte: periodFrom, lte: periodTo }, status: { not: InvoiceStatus.CANCELLED } },
+        where: { kind: InvoiceKind.SALE, createdAt: { gte: periodFrom, lte: periodTo }, status: { not: InvoiceStatus.CANCELLED } },
         include: { customer: true, lines: { include: { product: true } } },
         orderBy: { createdAt: 'asc' },
       }),
       tx.payment.findMany({
-        where: { createdAt: { gte: periodFrom, lte: periodTo } },
+        // REVERSED payments are never exported as ordinary payments (no storno document in MVP).
+        // ADR-029: period/date = paymentPostedAt (accepted handover -> handoverAt);
+        // PENDING_HANDOVER/REJECTED never reach 1C.
+        where: { ...paymentPostedWithin({ gte: periodFrom, lte: periodTo }), status: 'POSTED', source: PaymentSource.COLLECTION },
         include: { customer: true },
-        orderBy: { createdAt: 'asc' },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       }),
     ]);
+    // COLLECTION payments always carry a method (DB CHECK Payment_source_shape_check).
+    const payments = collected.map((p) => ({ ...p, method: collectionMethod(p) }));
+
+    const orderIds = [...new Set(invoices.flatMap((i) => (i.orderId ? [i.orderId] : [])))];
+    const orderLines =
+      format === 'EXCEL' || orderIds.length === 0
+        ? []
+        : (await tx.salesOrderLine.findMany({ where: { orderId: { in: orderIds } }, select: { orderId: true, productId: true, unitPrice: true, vatRate: true, discountPct: true, packaging: { select: { qtyInBaseUnit: true } } } })).map((o) => ({
+            orderId: o.orderId,
+            productId: o.productId,
+            unitPrice: o.unitPrice,
+            vatRate: o.vatRate,
+            discountPct: o.discountPct,
+            packQtyInBase: o.packaging.qtyInBaseUnit,
+          }));
+    const unsupported =
+      format === 'EXCEL' ? [] : invoices.flatMap((i) => checkInvoiceRepresentable({ id: i.id, number: i.number, orderId: i.orderId, total: i.total, lines: i.lines.map((l) => ({ productId: l.productId, sku: l.product.sku, qty: l.qty, unitPrice: l.unitPrice, vatRate: l.vatRate, lineTotal: l.lineTotal })) }, orderLines));
 
     const customersById = new Map<string, CommerceMlCustomer>();
     const missingExternalCode = new Set<string>();
     const documents: CommerceMlDocument[] = [];
+    const csvDocuments: CsvDocument[] = [];
+    const day = (d: Date) => companyDay(d, timeZone).date;
 
     const toCommerceMlCustomer = (c: { id: string; code: string; name: string; phone: string | null }): CommerceMlCustomer => ({
       id: c.id,
@@ -160,13 +246,41 @@ export class Export1cProcessor extends WorkerHost {
       });
     }
 
+    for (const invoice of invoices) {
+      csvDocuments.push({
+        docType: 'SALE',
+        id: invoice.id,
+        number: invoice.number,
+        date: day(invoice.createdAt),
+        partnerCode: invoice.customer.code,
+        partnerName: invoice.customer.name,
+        total: invoice.total.toString(),
+        method: '',
+        lines: invoice.lines.map((l) => ({ sku: l.product.sku, externalCode: l.product.externalCode, qty: l.qty.toString(), unitPrice: l.unitPrice.toString(), lineTotal: l.lineTotal.toString() })),
+      });
+    }
+
+    for (const payment of payments) {
+      csvDocuments.push({
+        docType: 'PAYMENT',
+        id: payment.id,
+        number: payment.number,
+        date: day(paymentPostedAt(payment)),
+        partnerCode: payment.customer.code,
+        partnerName: payment.customer.name,
+        total: payment.amount.toString(),
+        method: payment.method,
+        lines: [],
+      });
+    }
+
     for (const payment of payments) {
       customersById.set(payment.customer.id, toCommerceMlCustomer(payment.customer));
 
       documents.push({
         id: payment.id,
         number: payment.number,
-        date: payment.createdAt,
+        date: paymentPostedAt(payment),
         operation: 'Оплата от покупателя',
         customerId: payment.customerId,
         total: payment.amount.toString(),
@@ -176,9 +290,11 @@ export class Export1cProcessor extends WorkerHost {
     return {
       customers: [...customersById.values()],
       documents,
-      salesDocuments: invoices.map((i) => ({ number: i.number, date: i.createdAt, customerName: i.customer.name, total: i.total.toString() })),
-      payments: payments.map((p) => ({ number: p.number, date: p.createdAt, customerName: p.customer.name, amount: p.amount.toString(), method: p.method })),
+      salesDocuments: invoices.map((i) => ({ id: i.id, number: i.number, date: i.createdAt, customerName: i.customer.name, total: i.total.toString() })),
+      payments: payments.map((p) => ({ id: p.id, number: p.number, date: paymentPostedAt(p), customerName: p.customer.name, amount: p.amount.toString(), method: p.method })),
+      csvDocuments,
       missingExternalCode: [...missingExternalCode],
+      unsupported,
     };
   }
 }

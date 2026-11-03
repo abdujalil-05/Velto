@@ -18,18 +18,11 @@ import { useRouter } from '@/i18n/navigation';
 import { formatDateTime, formatMoney } from '@/lib/format';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Badge } from '@/components/ui/badge';
-import type { QueueEntry, QueueStatus } from '@/lib/offline/queue';
-
-const QUEUE_STATUS_VARIANT: Record<QueueStatus, 'default' | 'secondary' | 'destructive'> = {
-  PENDING: 'secondary',
-  SYNCED: 'default',
-  FAILED: 'destructive',
-};
+import { QueueStatusBadge } from '@/components/queue/queue-status-badge';
+import type { QueueEntry } from '@/lib/offline/queue';
 
 export default function DailyReportPage() {
   const t = useTranslations('Report');
-  const tQueue = useTranslations('Common.queueStatus');
   const tCommon = useTranslations('Common');
   const locale = useLocale();
   const router = useRouter();
@@ -110,7 +103,7 @@ export default function DailyReportPage() {
                 <p className="font-semibold tabular-nums">
                   {formatMoney(order.total)} {tCommon('somUnit')}
                 </p>
-                <Badge variant={QUEUE_STATUS_VARIANT[order.status as QueueStatus]}>{tQueue(order.status)}</Badge>
+                <QueueStatusBadge status={order.status} />
               </div>
             </div>
           ))}
@@ -139,7 +132,7 @@ export default function DailyReportPage() {
                 <p className="font-semibold tabular-nums text-success">
                   {formatMoney(payment.amount)} {tCommon('somUnit')}
                 </p>
-                <Badge variant={QUEUE_STATUS_VARIANT[payment.status as QueueStatus]}>{tQueue(payment.status)}</Badge>
+                <QueueStatusBadge status={payment.status} />
               </div>
             </div>
           ))}

@@ -1,13 +1,16 @@
+import { AuditLogService } from '../../common/audit/audit-log.service';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Queue } from 'bullmq';
 import { prisma, systemPrisma } from '@velto/database';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { StorageService } from '../../common/storage/storage.service';
+import { runWithTraceId } from '../../common/trace/trace-context';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
-import { ImportAlreadyConfirmedException, ImportJobNotFoundException, InvalidImportFileException } from './import-exceptions';
+import { ImportAlreadyConfirmedException, ImportJobNotFoundException, ImportQueueUnavailableException, InvalidImportFileException } from './import-exceptions';
 import type { ImportJobData, ImportJobReport } from './import.constants';
 import { ImportService } from './import.service';
+import { ScopedImportRecoveryService as ImportRecoveryService } from './scoped-import-recovery';
 import type { CustomerImportRow } from './parsers/customers-parser';
 import { buildTestWorkbook } from './parsers/test-workbook';
 
@@ -19,8 +22,8 @@ describe('ImportService (integration, real Postgres + RLS)', () => {
   const upload = vi.fn().mockResolvedValue('https://storage.test/imports/file.xlsx');
   const fakeStorage = { upload } as unknown as StorageService;
   const queueAdd = vi.fn().mockResolvedValue(undefined);
-  const fakeQueue = { add: queueAdd } as unknown as Queue<ImportJobData>;
-  const importService = new ImportService(tenantPrisma, fakeStorage, fakeQueue);
+  const fakeQueue = { add: queueAdd, getJob: vi.fn().mockResolvedValue(undefined) } as unknown as Queue<ImportJobData>;
+  const importService = new ImportService(tenantPrisma, fakeStorage, fakeQueue, new AuditLogService());
 
   beforeAll(async () => {
     const tenant = await systemPrisma.tenant.create({ data: { slug: `test-import-${Date.now()}`, name: 'Import Test Tenant' } });
@@ -82,6 +85,20 @@ describe('ImportService (integration, real Postgres + RLS)', () => {
     expect(productJobs.data.some((j) => j.id === created.id)).toBe(true);
   });
 
+  it('products upload: blank vatRate takes own Company.defaultVatRate, not another tenant (ADR-059c)', async () => {
+    const other = await systemPrisma.tenant.create({ data: { slug: `vat-imp-${randomUUID()}`, name: 'VAT Imp' } });
+    await systemPrisma.company.create({ data: { tenantId: other.id, name: 'VAT Imp Co', defaultVatRate: 7 } });
+    await systemPrisma.company.update({ where: { id: companyId }, data: { defaultVatRate: 15 } });
+    const headers = ['sku', 'name', 'categoryName', 'brand', 'baseUnit', 'vatRate', 'minPrice', 'barcode', 'externalCode'];
+    const buffer = await buildTestWorkbook(headers, [
+      ['VATIMP-1', 'P1', '', '', 'dona', '', '', '', ''],
+      ['VATIMP-2', 'P2', '', '', 'dona', 0, '', '', ''],
+    ]);
+    const job = await tenantPrisma.run(companyId, () => importService.uploadAndValidate('products', buffer, user));
+    const rows = (job.errorLog as unknown as ImportJobReport<{ vatRate: number }>).rows;
+    expect(rows!.map((r) => r.vatRate)).toEqual([15, 0]);
+  });
+
   it('getById() throws for an unknown id', async () => {
     await expect(tenantPrisma.run(companyId, () => importService.getById(randomUUID()))).rejects.toBeInstanceOf(ImportJobNotFoundException);
   });
@@ -90,12 +107,39 @@ describe('ImportService (integration, real Postgres + RLS)', () => {
     const buffer = await buildTestWorkbook(CUSTOMER_HEADERS, [['C-2', 'Another Customer']]);
     const created = await tenantPrisma.run(companyId, () => importService.uploadAndValidate('customers', buffer, user));
 
-    const confirmed = await tenantPrisma.run(companyId, () => importService.confirm(created.id, user));
+    const confirmed = await runWithTraceId('known-trace-id-123', () =>
+      tenantPrisma.run(companyId, () => importService.confirm(created.id, user)),
+    );
     expect(confirmed.status).toBe('PROCESSING');
-    expect(queueAdd).toHaveBeenCalledWith('commit', { importJobId: created.id, companyId });
+    expect(queueAdd).toHaveBeenCalledWith('commit', { importJobId: created.id, companyId, userId: user.id, traceId: 'known-trace-id-123' }, expect.objectContaining({ jobId: `import-${created.id}`, attempts: 3 }));
 
     await expect(tenantPrisma.run(companyId, () => importService.confirm(created.id, user))).rejects.toBeInstanceOf(
       ImportAlreadyConfirmedException,
     );
+  });
+
+  it('confirm() reverts to PENDING and throws a trilingual 503 when enqueue fails; re-confirm then works', async () => {
+    const buffer = await buildTestWorkbook(CUSTOMER_HEADERS, [['C-3', 'Third Customer']]);
+    const created = await tenantPrisma.run(companyId, () => importService.uploadAndValidate('customers', buffer, user));
+
+    queueAdd.mockRejectedValueOnce(new Error('ECONNREFUSED redis'));
+    await expect(tenantPrisma.run(companyId, () => importService.confirm(created.id, user))).rejects.toBeInstanceOf(ImportQueueUnavailableException);
+    const reverted = await tenantPrisma.run(companyId, () => importService.getById(created.id));
+    expect(reverted.status).toBe('PENDING');
+
+    const again = await tenantPrisma.run(companyId, () => importService.confirm(created.id, user));
+    expect(again.status).toBe('PROCESSING');
+  });
+
+  it('recovery sweep re-enqueues a PROCESSING job missing from the queue (idempotent jobId)', async () => {
+    const buffer = await buildTestWorkbook(CUSTOMER_HEADERS, [['C-4', 'Fourth']]);
+    const created = await tenantPrisma.run(companyId, () => importService.uploadAndValidate('customers', buffer, user));
+    await tenantPrisma.run(companyId, (tx) => tx.importJob.update({ where: { id: created.id }, data: { status: 'PROCESSING' } }));
+    const add = vi.fn().mockResolvedValue(undefined);
+    const recovery = new ImportRecoveryService(tenantPrisma, { add, getJob: vi.fn().mockResolvedValue(undefined) } as unknown as Queue<ImportJobData>);
+    await recovery.sweep(new Date(Date.now() + 86_400_000), companyId);
+    expect(add).toHaveBeenCalledWith('commit', expect.objectContaining({ importJobId: created.id, companyId }), expect.objectContaining({ jobId: `import-${created.id}` }));
+    // do not leave PROCESSING residue in the shared dev DB
+    await tenantPrisma.run(companyId, (tx) => tx.importJob.updateMany({ where: { id: created.id, status: 'PROCESSING' }, data: { status: 'FAILED' } }));
   });
 });

@@ -1,34 +1,43 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { toast } from 'sonner';
 import { CreditCard, Plus, RefreshCw, Wallet } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
-import { errorMessage } from '@/lib/api/client';
+import { ApiError, errorMessage } from '@/lib/api/client';
 import {
   useCashSessionsQuery,
   useCloseCashSessionMutation,
   useCurrentCashSessionQuery,
   useOpenCashSessionMutation,
 } from '@/lib/api/cash-sessions';
-import { usePaymentsQuery } from '@/lib/api/payments';
+import {
+  usePaymentsQuery,
+  type PaymentSource,
+  useReversePaymentMutation,
+  useAcceptHandoverMutation,
+  useRejectHandoverMutation,
+  type Payment,
+} from '@/lib/api/payments';
 import { useCustomersQuery, type Customer } from '@/lib/api/customers';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
 import { useSort } from '@/lib/hooks/use-sort';
-import { exportToCsv } from '@/lib/export-csv';
-import { formatDateTime, formatMoney } from '@/lib/format';
+import { exportToCsv, csvDecimal } from '@/lib/export-csv';
+import { formatDateTime } from '@/lib/format';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { PaginationBar } from '@/components/shared/pagination-bar';
 import { ExportCsvButton } from '@/components/shared/export-csv-button';
+import { Select } from '@/components/ui/select';
 import { SearchSelect } from '@/components/shared/search-select';
 import { OpenSessionForm } from '@/components/cash/open-session-form';
 import { CloseSessionForm } from '@/components/cash/close-session-form';
 import { CashSessionsTable } from '@/components/cash/cash-sessions-table';
+import { ReverseDialog } from '@/components/shared/reverse-dialog';
 import { PaymentsTable } from '@/components/payments/payments-table';
 import { cn } from '@/lib/utils';
 
@@ -40,7 +49,7 @@ export default function CashPage() {
     <div className="space-y-8">
       <h1 className="text-xl font-semibold">{t('title')}</h1>
       {hasPermission('cash.read') && <CashSection />}
-      {hasPermission('payments.read') && <PaymentsSection canCreate={hasPermission('payments.create')} />}
+      {hasPermission('payments.read') && <PaymentsSection canCreate={hasPermission('payments.create')} canReverse={hasPermission('payments.reverse')} canHandover={hasPermission('payments.handover')} />}
     </div>
   );
 }
@@ -55,6 +64,8 @@ function CashSection() {
   const history = useCashSessionsQuery({ page, pageSize: 25 });
   const openMutation = useOpenCashSessionMutation();
   const closeMutation = useCloseCashSessionMutation();
+  // One key per close action, reused on retry until the server accepts it.
+  const closeKey = useRef<string | null>(null);
 
   function handleExport() {
     if (!history.data) return;
@@ -62,14 +73,14 @@ function CashSection() {
       { header: t('cashier'), value: (s) => (s.user ? `${s.user.firstName} ${s.user.lastName}` : '') },
       { header: t('openedAt'), value: (s) => formatDateTime(s.openedAt, locale) },
       { header: t('closedAt'), value: (s) => (s.closedAt ? formatDateTime(s.closedAt, locale) : '') },
-      { header: t('openAmount'), value: (s) => formatMoney(s.openAmount) },
-      { header: t('closeAmount'), value: (s) => (s.closeAmount ? formatMoney(s.closeAmount) : '') },
-      { header: t('totalCollected'), value: (s) => formatMoney(s.totalCollected) },
+      { header: t('openAmount'), value: (s) => csvDecimal(s.openAmount, 2) },
+      { header: t('closeAmount'), value: (s) => (s.closeAmount ? csvDecimal(s.closeAmount, 2) : '') },
+      { header: t('totalCollected'), value: (s) => csvDecimal(s.totalCollected, 2) },
     ]);
   }
 
   return (
-    <section className="space-y-4">
+    <section id="cash-session" className="space-y-4">
       <Card className="mx-auto max-w-xl">
         <CardHeader>
           <CardTitle>{current.data ? t('closeForm.title') : t('openForm.title')}</CardTitle>
@@ -101,9 +112,12 @@ function CashSection() {
               onSubmit={(closeAmount) => {
                 setActionError(null);
                 closeMutation.mutate(
-                  { id: current.data!.id, closeAmount },
+                  { id: current.data!.id, closeAmount, idempotencyKey: (closeKey.current ??= crypto.randomUUID()) },
                   {
-                    onSuccess: () => toast.success(t('closed')),
+                    onSuccess: () => {
+                      closeKey.current = null;
+                      toast.success(t('closed'));
+                    },
                     onError: (error) => setActionError(errorMessage(error, locale)),
                   },
                 );
@@ -176,12 +190,31 @@ function CashSection() {
   );
 }
 
-function PaymentsSection({ canCreate }: { canCreate: boolean }) {
+function PaymentsSection({ canCreate, canReverse, canHandover }: { canCreate: boolean; canReverse: boolean; canHandover: boolean }) {
   const t = useTranslations('Payments');
   const locale = useLocale();
+  const [reverseTarget, setReverseTarget] = useState<Payment | null>(null);
+  const [reverseError, setReverseError] = useState<string | null>(null);
+  const reverseMutation = useReversePaymentMutation();
+  // One key per reversal attempt, reused on retry until the server accepts it.
+  const reverseKey = useRef<string | null>(null);
+  const acceptMutation = useAcceptHandoverMutation();
+  const rejectMutation = useRejectHandoverMutation();
+  const [rejectTarget, setRejectTarget] = useState<Payment | null>(null);
+  const [rejectError, setRejectError] = useState<string | null>(null);
+  const [handoverError, setHandoverError] = useState<{ code: string; message: string } | null>(null);
+  // One key per payment+action, reused on retry until the server accepts it.
+  const handoverKeys = useRef<Map<string, string>>(new Map());
+  const handoverKey = (action: string, id: string) => {
+    const k = `${action}:${id}`;
+    if (!handoverKeys.current.has(k)) handoverKeys.current.set(k, crypto.randomUUID());
+    return handoverKeys.current.get(k)!;
+  };
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [customerQuery, setCustomerQuery] = useState('');
   const [page, setPage] = useState(1);
+  // COLLECTION by default: carried-over opening credit is not money collected.
+  const [source, setSource] = useState<PaymentSource | ''>('COLLECTION');
   const debouncedCustomerQuery = useDebouncedValue(customerQuery, 300);
   const { sort, toggle: toggleSort } = useSort();
 
@@ -195,6 +228,7 @@ function PaymentsSection({ canCreate }: { canCreate: boolean }) {
     page,
     pageSize: 25,
     customerId: customer?.id,
+    source: source || undefined,
     sortBy: sort.sortBy,
     sortDir: sort.sortDir,
   });
@@ -206,7 +240,7 @@ function PaymentsSection({ canCreate }: { canCreate: boolean }) {
       { header: t('customer'), value: (p) => p.customer.name },
       { header: t('date'), value: (p) => formatDateTime(p.createdAt, locale) },
       { header: t('method'), value: (p) => t(`methods.${p.method}`) },
-      { header: t('amount'), value: (p) => formatMoney(p.amount) },
+      { header: t('amount'), value: (p) => csvDecimal(p.amount, 2) },
     ]);
   }
 
@@ -242,6 +276,20 @@ function PaymentsSection({ canCreate }: { canCreate: boolean }) {
           />
         </div>
 
+        <Select
+          aria-label={t('source.label')}
+          className="w-48"
+          value={source}
+          onChange={(e) => {
+            setSource(e.target.value as PaymentSource | '');
+            setPage(1);
+          }}
+        >
+          <option value="COLLECTION">{t('source.COLLECTION')}</option>
+          <option value="OPENING">{t('source.OPENING')}</option>
+          <option value="">{t('source.all')}</option>
+        </Select>
+
         <Button variant="ghost" size="sm" onClick={() => refetch()} disabled={isFetching}>
           <RefreshCw className={cn('mr-2 h-4 w-4', isFetching && 'animate-spin')} />
           {t('refresh')}
@@ -271,6 +319,19 @@ function PaymentsSection({ canCreate }: { canCreate: boolean }) {
         </Alert>
       )}
 
+      {handoverError && (
+        <Alert variant="destructive">
+          <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+            <span>{handoverError.message}</span>
+            {handoverError.code === 'PAYMENT_HANDOVER_CASH_SESSION_NOT_OPEN' && (
+              <Link href="/cash#cash-session" className="font-medium underline">
+                {t('handover.openSession')}
+              </Link>
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
+
       {data && data.data.length === 0 && (
         <Card>
           <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
@@ -283,10 +344,91 @@ function PaymentsSection({ canCreate }: { canCreate: boolean }) {
       {data && data.data.length > 0 && (
         <Card>
           <CardContent className="pt-6">
-            <PaymentsTable payments={data.data} sort={sort} onSort={toggleSort} />
+            <PaymentsTable
+              payments={data.data}
+              sort={sort}
+              onSort={toggleSort}
+              canReverse={canReverse}
+              canHandover={canHandover}
+              acceptingId={acceptMutation.isPending ? acceptMutation.variables?.id : null}
+              onAccept={(payment) => {
+                setHandoverError(null);
+                acceptMutation.mutate(
+                  { id: payment.id, idempotencyKey: handoverKey('accept', payment.id) },
+                  {
+                    onSuccess: () => {
+                      handoverKeys.current.delete(`accept:${payment.id}`);
+                      toast.success(t('handover.acceptSuccess'));
+                    },
+                    onError: (err) =>
+                      setHandoverError({ code: err instanceof ApiError ? err.code : '', message: errorMessage(err, locale) }),
+                  },
+                );
+              }}
+              onReject={(payment) => {
+                setRejectError(null);
+                setRejectTarget(payment);
+              }}
+              onReverse={(payment) => {
+                reverseKey.current = null;
+                setReverseError(null);
+                setReverseTarget(payment);
+              }}
+            />
             <PaginationBar meta={data.meta} onPageChange={setPage} />
           </CardContent>
         </Card>
+      )}
+      {rejectTarget && (
+        <ReverseDialog
+          key={`reject-${rejectTarget.id}`}
+          open
+          onOpenChange={(open) => !open && setRejectTarget(null)}
+          title={t('handover.rejectTitle', { number: rejectTarget.number })}
+          description={t('handover.rejectDescription')}
+          confirmLabel={t('handover.reject')}
+          error={rejectError}
+          isPending={rejectMutation.isPending}
+          onConfirm={(reason) => {
+            setRejectError(null);
+            rejectMutation.mutate(
+              { id: rejectTarget.id, reason, idempotencyKey: handoverKey('reject', rejectTarget.id) },
+              {
+                onSuccess: () => {
+                  handoverKeys.current.delete(`reject:${rejectTarget.id}`);
+                  setRejectTarget(null);
+                  toast.success(t('handover.rejectSuccess'));
+                },
+                onError: (err) => setRejectError(errorMessage(err, locale)),
+              },
+            );
+          }}
+        />
+      )}
+      {reverseTarget && (
+        <ReverseDialog
+          key={reverseTarget.id}
+          open
+          onOpenChange={(open) => !open && setReverseTarget(null)}
+          title={t('reverse.title', { number: reverseTarget.number })}
+          description={t('reverse.description')}
+          error={reverseError}
+          isPending={reverseMutation.isPending}
+          onConfirm={(reason) => {
+            setReverseError(null);
+            reverseMutation.mutate(
+              { id: reverseTarget.id, reason, idempotencyKey: (reverseKey.current ??= crypto.randomUUID()) },
+              {
+                onSuccess: () => {
+                  reverseKey.current = null;
+                  setReverseTarget(null);
+                  toast.success(t('reverse.success'));
+                },
+                onError: (err) => setReverseError(errorMessage(err, locale)),
+              },
+            );
+          }}
+        />
       )}
     </section>
   );

@@ -6,7 +6,7 @@ import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
 import { useCourierOrdersQuery } from '@/lib/api/orders';
 import { formatMoney } from '@/lib/format';
-import { orderStatusVariant } from './order-status';
+import { courierStatusLabelKey, orderStatusVariant } from './order-status';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -73,7 +73,7 @@ export function CourierHome() {
                     <p className="font-semibold tabular-nums">
                       {formatMoney(order.total)} <span className="text-xs font-normal text-muted-foreground">{tCommon('somUnit')}</span>
                     </p>
-                    <Badge variant={orderStatusVariant(order.status)}>{t(`status.${order.status}`)}</Badge>
+                    <Badge variant={orderStatusVariant(order.status)}>{t(courierStatusLabelKey(order.status))}</Badge>
                   </div>
                 </Link>
               </CardContent>

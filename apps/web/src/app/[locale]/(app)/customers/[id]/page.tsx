@@ -11,6 +11,7 @@ import {
   useBlockCustomerMutation,
   useUnblockCustomerMutation,
 } from '@/lib/api/customers';
+import { useInTransitQuery } from '@/lib/api/payments';
 import { errorMessage } from '@/lib/api/client';
 import { formatDate, formatDateTime, formatMoney } from '@/lib/format';
 import { Badge } from '@/components/ui/badge';
@@ -19,6 +20,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { OrderStatusBadge } from '@/components/shared/order-status-badge';
+import { AllocateAdvanceDialog } from '@/components/customers/allocate-advance-dialog';
 import { BlockCustomerDialog } from '@/components/customers/block-customer-dialog';
 
 export default function CustomerDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -31,9 +33,11 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
   const { hasPermission } = useAuth();
 
   const { data: customer, isLoading, isError, error, refetch } = useCustomerQuery(id);
+  const inTransit = useInTransitQuery(id, hasPermission('payments.read'));
   const blockMutation = useBlockCustomerMutation(id);
   const unblockMutation = useUnblockCustomerMutation(id);
   const [blockDialogOpen, setBlockDialogOpen] = useState(false);
+  const [allocateOpen, setAllocateOpen] = useState(false);
 
   if (isLoading) {
     return (
@@ -123,12 +127,28 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">{t('balance')}</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">{balance < 0 ? t('credit') : t('balance')}</CardTitle>
           </CardHeader>
           <CardContent>
             <p className={`text-2xl font-semibold ${balance > 0 ? 'text-destructive' : ''}`}>
-              {formatMoney(customer.balance)} <span className="text-sm text-muted-foreground">{tCommon('somUnit')}</span>
+              {formatMoney(customer.balance.replace('-', ''))} <span className="text-sm text-muted-foreground">{tCommon('somUnit')}</span>
             </p>
+            {Number(customer.advance) > 0 && (
+              <p className="mt-1 text-sm text-muted-foreground">
+                {t('advance')}: {formatMoney(customer.advance)} {tCommon('somUnit')}
+              </p>
+            )}
+            {inTransit.data && inTransit.data.count > 0 && (
+              <p className="mt-1 text-sm text-warning-foreground">
+                {t('inTransit', { count: inTransit.data.count })}: {formatMoney(inTransit.data.amount)} {tCommon('somUnit')}
+                <span className="block text-xs text-muted-foreground">{t('inTransitHint')}</span>
+              </p>
+            )}
+            {Number(customer.advance) > 0 && hasPermission('payments.allocate') && (
+              <Button variant="outline" size="sm" className="mt-2" onClick={() => setAllocateOpen(true)}>
+                {t('allocate.action')}
+              </Button>
+            )}
           </CardContent>
         </Card>
 
@@ -144,6 +164,8 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
           </CardContent>
         </Card>
       </div>
+
+      {allocateOpen && <AllocateAdvanceDialog customerId={id} open onOpenChange={setAllocateOpen} />}
 
       <Card>
         <CardHeader>

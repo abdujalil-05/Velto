@@ -2,16 +2,20 @@
 // module-level PrismaClient constructions below read DATABASE_SYSTEM_URL.
 import './load-env';
 import { PrismaClient, Prisma } from '../generated/client';
+import { pooledUrl } from './pool-config';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * RLS-bound client (Postgres role `velto`). All per-tenant reads/writes must
+ * RLS-bound client (Postgres role `velto_app`: not superuser, NOBYPASSRLS —
+ * see scripts/provision-roles.sql). All per-tenant reads/writes must
  * go through `withTenant()` below — a bare `prisma.customer.findMany()` etc.
  * outside a tenant transaction will see zero rows (6.10 fails closed, not
  * open) because `app.current_company_id` was never set on that connection.
+ * Pool size/timeout: PRISMA_POOL_SIZE / PRISMA_POOL_TIMEOUT_S (pool-config.ts).
  */
-export const prisma = new PrismaClient();
+const appUrl = pooledUrl(process.env.DATABASE_URL, process.env, 'app');
+export const prisma = new PrismaClient(appUrl ? { datasources: { db: { url: appUrl } } } : undefined);
 
 /**
  * BYPASSRLS client (Postgres role `velto_system`, see
@@ -24,7 +28,8 @@ export const prisma = new PrismaClient();
  * to `withTenant()` for the actual mutation rather than keep using this.
  */
 export const systemPrisma = new PrismaClient({
-  datasources: { db: { url: process.env.DATABASE_SYSTEM_URL } },
+  // Separate pool from `prisma` (PRISMA_SYSTEM_POOL_SIZE, default 5).
+  datasources: { db: { url: pooledUrl(process.env.DATABASE_SYSTEM_URL, process.env, 'system') } },
 });
 
 export type TenantClient = Prisma.TransactionClient;

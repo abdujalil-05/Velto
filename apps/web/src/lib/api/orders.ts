@@ -10,6 +10,8 @@ export interface SalesOrderLine {
   productId: string;
   packagingId: string;
   qty: string;
+  /** Base-unit qty actually issued (F2.4); equals qty until the order is delivered. */
+  deliveredQty: string;
   unitPrice: string;
   discountPct: string;
   vatRate: string;
@@ -108,15 +110,30 @@ export function useCreateOrderMutation() {
 export function useConfirmOrderMutation(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => apiFetch<SalesOrder>(`/orders/${id}/confirm`, { method: 'POST' }),
+    mutationFn: (idempotencyKey: string) =>
+      apiFetch<SalesOrder>(`/orders/${id}/confirm`, {
+        method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey },
+      }),
     onSuccess: () => invalidateOrder(queryClient, id),
   });
+}
+
+export interface DeliverOrderInput {
+  idempotencyKey: string;
+  lines?: { lineId: string; deliveredQty: string }[];
 }
 
 export function useDeliverOrderMutation(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => apiFetch<SalesOrder>(`/orders/${id}/deliver`, { method: 'POST' }),
+    mutationFn: ({ idempotencyKey, lines }: DeliverOrderInput) =>
+      apiFetch<SalesOrder>(`/orders/${id}/deliver`, {
+        method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey },
+        // No body = full delivery; `lines` (every order line, base units) = partial goods issue.
+        ...(lines ? { body: { lines } } : {}),
+      }),
     onSuccess: () => invalidateOrder(queryClient, id),
   });
 }
@@ -129,12 +146,59 @@ export function useCloseOrderMutation(id: string) {
   });
 }
 
-/** Assigns a courier as deliverer — the API moves the order straight to SHIPPED. */
+export interface AssignableCourier {
+  id: string;
+  firstName: string;
+  lastName: string;
+}
+
+/** Couriers the caller may assign (orders.assignCourier) — does not require users.read. */
+export function useAssignableCouriersQuery(enabled = true) {
+  return useQuery({
+    queryKey: ['orders', 'assignable-couriers'],
+    queryFn: () => apiFetch<AssignableCourier[]>('/orders/assignable-couriers'),
+    enabled,
+  });
+}
+
+/** Assigns/reassigns a courier while CONFIRMED (status stays CONFIRMED). */
 export function useAssignCourierMutation(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (courierId: string) =>
-      apiFetch<SalesOrder>(`/orders/${id}/assign-courier`, { method: 'POST', body: { courierId } }),
+    mutationFn: ({ courierId, idempotencyKey }: { courierId: string; idempotencyKey: string }) =>
+      apiFetch<SalesOrder>(`/orders/${id}/assign-courier`, {
+        method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey },
+        body: { courierId },
+      }),
+    onSuccess: () => invalidateOrder(queryClient, id),
+  });
+}
+
+/** CONFIRMED + courier -> SHIPPED (orders.dispatch). */
+export function useHandoverOrderMutation(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ note, idempotencyKey }: { note?: string; idempotencyKey: string }) =>
+      apiFetch<SalesOrder>(`/orders/${id}/handover`, {
+        method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey },
+        body: note ? { note } : {},
+      }),
+    onSuccess: () => invalidateOrder(queryClient, id),
+  });
+}
+
+/** SHIPPED -> CONFIRMED, clears the courier (orders.returnToWarehouse). */
+export function useReturnToWarehouseMutation(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ reason, idempotencyKey }: { reason: string; idempotencyKey: string }) =>
+      apiFetch<SalesOrder>(`/orders/${id}/return-to-warehouse`, {
+        method: 'POST',
+        headers: { 'Idempotency-Key': idempotencyKey },
+        body: { reason },
+      }),
     onSuccess: () => invalidateOrder(queryClient, id),
   });
 }
@@ -142,7 +206,7 @@ export function useAssignCourierMutation(id: string) {
 export function useCancelOrderMutation(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (reason?: string) => apiFetch<SalesOrder>(`/orders/${id}/cancel`, { method: 'POST', body: { reason } }),
+    mutationFn: (reason: string) => apiFetch<SalesOrder>(`/orders/${id}/cancel`, { method: 'POST', body: { reason } }),
     onSuccess: () => invalidateOrder(queryClient, id),
   });
 }

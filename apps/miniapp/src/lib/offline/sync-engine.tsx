@@ -6,18 +6,37 @@ import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useAuth } from '@/lib/auth/auth-context';
 import { queueRepository } from './queue';
-import { runPull, runPush } from './sync-engine-core';
+import { getVaultStatus } from './vault';
+import { getLastStorageStatus, onStorageStatus, publishStorageStatus, type StorageStatus } from './storage-budget';
+import { ApiError, degradedKind, type DegradedKind } from '@/lib/api/client';
+import { runHeldMaintenance, runPull, runPush, unrestorableSealedCount } from './sync-engine-core';
 
 const FLUSH_INTERVAL_MS = 30_000;
 const MIN_BACKOFF_MS = 2_000;
 const MAX_BACKOFF_MS = 5 * 60_000;
+
+function describeError(err: unknown): string {
+  if (err instanceof ApiError) return err.code || String(err.status);
+  return err instanceof Error ? err.message : 'SYNC_ERROR';
+}
 
 interface SyncEngineValue {
   isOnline: boolean;
   isSyncing: boolean;
   pendingCount: number;
   failedCount: number;
+  conflictCount: number;
+  /** PENDING + SYNCING + FAILED + CONFLICT — documents still only on this device. */
+  unsyncedCount: number;
+  /** Device storage vs the 50 MB budget; `level === 'warning'` from 80%. */
+  storage: StorageStatus;
+  /** True after a 401 survived refresh: sync is paused until the user signs in again. */
+  authPaused: boolean;
+  /** F7: server temporarily refusing (503 maintenance / 429). Documents wait on the device; null when healthy. */
+  degraded: DegradedKind | null;
   lastSyncAt: Date | null;
+  /** Code/message of the last failed push or pull (null after a clean cycle). Surfaced, never swallowed. */
+  syncError: string | null;
   /** Screens call this right after `queueRepository.enqueue(...)` so the badge updates immediately and a push is attempted without waiting for the next interval tick. */
   notifyQueueChanged: () => void;
   forceSyncNow: () => void;
@@ -27,23 +46,44 @@ const SyncEngineContext = createContext<SyncEngineValue | null>(null);
 
 export function SyncEngineProvider({ children }: { children: React.ReactNode }) {
   const { status } = useAuth();
-  const t = useTranslations('Common');
+  // Translators are read through refs: their identity changes with every intl provider update (e.g. a full-tree RSC payload),
+  // and listing them as deps would restart the sync cycle effects on a plain navigation.
+  const tVisit = useTranslations('Visit');
+  const tQueue = useTranslations('Queue');
+  const tVisitRef = useRef(tVisit);
+  tVisitRef.current = tVisit;
+  const tQueueRef = useRef(tQueue);
+  tQueueRef.current = tQueue;
   const queryClient = useQueryClient();
 
   const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine));
   const [isSyncing, setIsSyncing] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
   const [failedCount, setFailedCount] = useState(0);
+  const [conflictCount, setConflictCount] = useState(0);
+  const [unsyncedCount, setUnsyncedCount] = useState(0);
+  const [storage, setStorage] = useState<StorageStatus>(getLastStorageStatus);
+  const [authPaused, setAuthPaused] = useState(false);
+  const [degraded, setDegraded] = useState<DegradedKind | null>(null);
+  const nextDelayRef = useRef<number | undefined>(undefined);
   const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   const backoffRef = useRef(MIN_BACKOFF_MS);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runningRef = useRef(false);
 
   const refreshCounts = useCallback(async () => {
-    const all = await queueRepository.listAll();
-    setPendingCount(all.filter((e) => e.status === 'PENDING').length);
-    setFailedCount(all.filter((e) => e.status === 'FAILED').length);
+    const counts = await queueRepository.countByStatus();
+    setPendingCount(counts.PENDING + counts.SYNCING);
+    setFailedCount(counts.FAILED);
+    setConflictCount(counts.CONFLICT);
+    setUnsyncedCount(counts.unsynced);
+  }, []);
+
+  useEffect(() => {
+    void publishStorageStatus().catch(() => {});
+    return onStorageStatus(setStorage);
   }, []);
 
   const cycle = useCallback(
@@ -64,23 +104,64 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
       runningRef.current = true;
       setIsSyncing(true);
       let didPull = false;
+      let pullFailed = false;
+      let pullAuth = false;
+      let pullDegraded: DegradedKind | null = null;
+      // Push and pull are independent: a failing pull (5xx/401/network) must
+      // never keep documents on the device, and a failing push never blocks pull.
+      let outcome: Awaited<ReturnType<typeof runPush>> | null = null;
       try {
-        if (opts.pull) {
-          await runPull();
-          didPull = true;
+      try {
+        outcome = await runPush();
+        for (const v of outcome.visitGps) {
+          if (v.gpsStatus !== 'VERIFIED') toast.warning(tVisitRef.current(`gpsStatus.${v.gpsStatus}`));
         }
-        const outcome = await runPush();
-        if (outcome.accepted > 0) {
-          // Freshly-confirmed docs can change stock/balances (e.g. a
-          // just-approved order reserving stock) — pull again so the next
-          // screen render reflects it, without waiting a full interval.
-          await runPull();
-          didPull = true;
-        }
-        backoffRef.current = MIN_BACKOFF_MS;
-        setLastSyncAt(new Date());
-      } catch {
+      } catch (err) {
+        setSyncError(describeError(err));
         backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
+      }
+      try {
+        for (const r of await runHeldMaintenance()) toast.success(tQueueRef.current(r.outcome === 'EXISTING_PAYMENT_CONFIRMED' ? 'heldResolvedExisting' : 'heldResolvedNotPosted'));
+        if (getVaultStatus() === 'retired') toast.warning(tQueueRef.current('vaultRetired'), { id: 'vaultRetired' });
+        if (unrestorableSealedCount() > 0) toast.warning(tQueueRef.current('heldSealUnrestorable'), { id: 'heldSealUnrestorable' });
+      } catch {
+        /* held rows are kept on any failure */
+      }
+      if (opts.pull || (outcome?.accepted ?? 0) > 0) {
+        // Freshly-confirmed docs can change stock/balances, so pull after an accepted push too.
+        try {
+          await runPull();
+          didPull = true;
+        } catch (err) {
+          pullFailed = true;
+          // apiFetch already refreshed the token once; a surviving 401 pauses sync.
+          if (err instanceof ApiError && err.status === 401) pullAuth = true;
+          else if (degradedKind(err)) {
+            pullDegraded = degradedKind(err);
+            if (err instanceof ApiError && err.retryAfterMs !== undefined) nextDelayRef.current = Math.min(err.retryAfterMs, MAX_BACKOFF_MS);
+          } else backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
+          setSyncError(describeError(err));
+        }
+      }
+      if (outcome) {
+        setAuthPaused(outcome.paused === 'AUTH' || pullAuth);
+        setDegraded(outcome.degraded ?? pullDegraded);
+        nextDelayRef.current = outcome.nextRetryInMs ?? (pullDegraded ? nextDelayRef.current : undefined);
+        if (outcome.paused === 'NETWORK') {
+          backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
+        } else {
+          // DEGRADED waits on each item's nextAttemptAt (Retry-After), not on the network backoff.
+          backoffRef.current = MIN_BACKOFF_MS;
+          if (outcome.paused === null && !pullFailed) {
+            setLastSyncAt(new Date());
+            setSyncError(null);
+          }
+        }
+      } else if (pullAuth) {
+        setAuthPaused(true);
+      } else {
+        setDegraded(pullDegraded);
+      }
       } finally {
         runningRef.current = false;
         setIsSyncing(false);
@@ -89,12 +170,13 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
         scheduleNext();
       }
     },
-    [status, t, refreshCounts, queryClient],
+    [status, refreshCounts, queryClient],
   );
 
   const scheduleNext = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
-    const delay = backoffRef.current > MIN_BACKOFF_MS ? backoffRef.current : FLUSH_INTERVAL_MS;
+    const base = backoffRef.current > MIN_BACKOFF_MS ? backoffRef.current : FLUSH_INTERVAL_MS;
+    const delay = nextDelayRef.current !== undefined ? Math.min(base, nextDelayRef.current) : base;
     timerRef.current = setTimeout(() => void cycle({ pull: false }), delay);
   }, [cycle]);
 
@@ -147,7 +229,7 @@ export function SyncEngineProvider({ children }: { children: React.ReactNode }) 
 
   return (
     <SyncEngineContext.Provider
-      value={{ isOnline, isSyncing, pendingCount, failedCount, lastSyncAt, notifyQueueChanged, forceSyncNow }}
+      value={{ isOnline, isSyncing, pendingCount, failedCount, conflictCount, unsyncedCount, storage, authPaused, degraded, lastSyncAt, syncError, notifyQueueChanged, forceSyncNow }}
     >
       {children}
     </SyncEngineContext.Provider>

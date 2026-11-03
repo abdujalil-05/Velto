@@ -91,7 +91,7 @@ export class ProductsService {
     return products.map((p) => ({ ...p, price: priceByProductId.get(p.id) ?? null }));
   }
 
-  private async setPrice(productId: string, price: number) {
+  private async setPrice(productId: string, price: Prisma.Decimal.Value) {
     const priceList = await this.priceLists.getOrCreateDefault();
     await this.tenantPrisma.client.priceListItem.upsert({
       where: { priceListId_productId: { priceListId: priceList.id, productId } },
@@ -115,6 +115,13 @@ export class ProductsService {
 
     const packagings = normalizePackagings(dto.packagings);
 
+    // TZ 6.6: VAT not hardcoded — tenant default applies when DTO omits it (explicit 0 wins).
+    let vatRate: number | Prisma.Decimal | undefined = dto.vatRate;
+    if (vatRate === undefined) {
+      const company = await tx.company.findUnique({ where: { id: user.companyId }, select: { defaultVatRate: true } });
+      vatRate = company?.defaultVatRate;
+    }
+
     const product = await tx.product.create({
       data: {
         companyId: user.companyId,
@@ -124,7 +131,7 @@ export class ProductsService {
         brand: dto.brand,
         baseUnit: dto.baseUnit,
         categoryId: dto.categoryId,
-        vatRate: dto.vatRate ?? 12,
+        vatRate,
         minPrice: dto.minPrice,
         externalCode: dto.externalCode ?? dto.sku,
         packagings: { create: packagings },

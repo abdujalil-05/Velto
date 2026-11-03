@@ -2,14 +2,16 @@ import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus, Logge
 import * as Sentry from '@sentry/node';
 import { Prisma } from '@velto/database';
 import type { Response } from 'express';
+import { getTraceId } from '../trace/trace-context';
 import type { ApiErrorBody, LocalizedMessage } from '../errors/app-exception';
 
-const GENERIC_MESSAGES: Record<number, LocalizedMessage> = {
+export const GENERIC_MESSAGES: Record<number, LocalizedMessage> = {
   [HttpStatus.BAD_REQUEST]: { uz: "So'rov noto'g'ri", ru: 'Некорректный запрос', en: 'Bad request' },
   [HttpStatus.UNAUTHORIZED]: { uz: 'Tizimga kirish talab qilinadi', ru: 'Требуется авторизация', en: 'Authentication required' },
   [HttpStatus.FORBIDDEN]: { uz: 'Ruxsat berilmagan', ru: 'Доступ запрещён', en: 'Forbidden' },
   [HttpStatus.NOT_FOUND]: { uz: 'Topilmadi', ru: 'Не найдено', en: 'Not found' },
   [HttpStatus.CONFLICT]: { uz: "Ziddiyat yuz berdi", ru: 'Конфликт данных', en: 'Conflict' },
+  [HttpStatus.PAYLOAD_TOO_LARGE]: { uz: "So'rov hajmi juda katta", ru: 'Слишком большой запрос', en: 'Payload too large' },
   [HttpStatus.UNPROCESSABLE_ENTITY]: { uz: "Ma'lumot noto'g'ri", ru: 'Некорректные данные', en: 'Unprocessable entity' },
   [HttpStatus.TOO_MANY_REQUESTS]: { uz: "So'rovlar soni oshib ketdi", ru: 'Слишком много запросов', en: 'Too many requests' },
   [HttpStatus.INTERNAL_SERVER_ERROR]: { uz: 'Server xatoligi', ru: 'Ошибка сервера', en: 'Internal server error' },
@@ -108,6 +110,88 @@ function describeOverflow(exception: unknown): string {
   return parts.length > 0 ? parts.join(' ') : String(exception);
 }
 
+const SERVICE_BUSY_MESSAGE: LocalizedMessage = {
+  uz: "Server band — birozdan so'ng qayta urinib ko'ring",
+  ru: 'Сервер занят — повторите попытку чуть позже',
+  en: 'Server is busy — please retry shortly',
+};
+const SERVICE_BUSY_RETRY_AFTER_SECONDS = 5;
+const TX_CONFLICT_RETRY_AFTER_SECONDS = 1;
+
+/** P2028 text when the transaction could not even be opened (nothing was written). */
+const TX_START_TIMEOUT_PATTERN = /Unable to start a transaction in the (?:given|allocated) time/i;
+
+/**
+ * P2028 text when the interactive tx hit its timeout: Prisma rolled it back and
+ * refused the operation, so nothing was committed (deliver-tx-timeout.test.ts).
+ * Deliberately not "Transaction already closed" alone: the "on a committed
+ * transaction" shape means the writes ARE durable, so a retry is not safe.
+ */
+const TX_EXPIRED_PATTERN = /Transaction already closed:.*\bcannot be executed on an expired transaction/is;
+
+/**
+ * Pool exhaustion (P2024) and tx-start timeout (P2028 "Unable to start...")
+ * both fail BEFORE any statement ran, so a retry is safe -> 503. Other P2028
+ * shapes that do not prove a rollback ("committed transaction", "not found")
+ * stay a 500 and reach Sentry; the expired shape is in txConflictState().
+ */
+function isPoolBusy(exception: unknown): boolean {
+  if (!(exception instanceof Error) || !isPrismaKnownRequestError(exception)) return false;
+  const code = (exception as { code?: unknown }).code;
+  if (code === 'P2024') return true;
+  return code === 'P2028' && TX_START_TIMEOUT_PATTERN.test(exception.message);
+}
+
+function isPrismaUnknownRequestError(exception: object): boolean {
+  return exception instanceof Prisma.PrismaClientUnknownRequestError;
+}
+
+/**
+ * PostgreSQL deadlock_detected (40P01) / serialization_failure (40001) abort
+ * the WHOLE transaction (full rollback, no partial write), so a retry is safe.
+ * Prisma surfaces them as P2034, as a SQLSTATE on `code`/`meta.code`, or only
+ * in the message (raw query / driver adapter). The bare SQLSTATE digits in a
+ * message are trusted ONLY on Prisma errors (known/unknown request error): an
+ * arbitrary Error whose text merely contains "40001" must stay a 500 + Sentry.
+ * The long phrases are specific enough to match any Error. Returns the state for logging.
+ * F7: lock_not_available (55P03, the per-request `SET LOCAL lock_timeout`, see
+ * common/tenant/lock-timeout.ts) is the same class: the statement fails before
+ * the lock is granted and the request tx is rolled back -> 503, retry-safe.
+ * P2028 on an expired tx (TX_EXPIRED_PATTERN) is the same class: full rollback.
+ */
+function txConflictState(exception: unknown): string | undefined {
+  if (!(exception instanceof Error)) return undefined;
+  const prismaErr = isPrismaKnownRequestError(exception) || isPrismaUnknownRequestError(exception);
+  if (isPrismaKnownRequestError(exception)) {
+    const code = (exception as { code?: unknown }).code;
+    if (code === 'P2034') return 'P2034';
+    if (code === 'P2028' && TX_EXPIRED_PATTERN.test(exception.message)) return 'P2028';
+  }
+  const state = sqlState(exception);
+  if (state === '40P01' || state === '40001' || state === '55P03') return state;
+  if (/deadlock detected/i.test(exception.message)) return '40P01';
+  if (/could not serialize access/i.test(exception.message)) return '40001';
+  if (/canceling statement due to lock timeout/i.test(exception.message)) return '55P03';
+  if (prismaErr) {
+    if (/\b40P01\b/.test(exception.message)) return '40P01';
+    if (/\b40001\b/.test(exception.message)) return '40001';
+    if (/\b55P03\b/.test(exception.message)) return '55P03';
+  }
+  return undefined;
+}
+
+/** 4xx status for a raw MulterError (by code) or an `expose`d body-parser http-error; else undefined. */
+function clientErrorStatus(exception: unknown): number | undefined {
+  if (!(exception instanceof Error)) return undefined;
+  const e = exception as Error & { code?: unknown; status?: unknown; statusCode?: unknown; expose?: unknown };
+  if (e.name === 'MulterError' && typeof e.code === 'string' && e.code.startsWith('LIMIT_')) {
+    return e.code === 'LIMIT_FILE_SIZE' ? HttpStatus.PAYLOAD_TOO_LARGE : HttpStatus.BAD_REQUEST;
+  }
+  const status = typeof e.status === 'number' ? e.status : e.statusCode;
+  if (e.expose === true && typeof status === 'number' && status >= 400 && status <= 499) return status;
+  return undefined;
+}
+
 /**
  * Normalizes every error response to `{ code, message, details }` (7.1),
  * with `message` always in uz/ru/en (9.1/14.6). Never leaks a stack trace
@@ -125,7 +209,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     if (exception instanceof HttpException) {
       const status = exception.getStatus();
       const body = exception.getResponse();
-      response.status(status).json(this.normalize(status, body));
+      response.status(status).json(this.withTrace(this.normalize(status, body)));
       return;
     }
 
@@ -133,10 +217,37 @@ export class AllExceptionsFilter implements ExceptionFilter {
     // nor logged as an error — it is a routine client-input rejection.
     if (isNumericOutOfRange(exception)) {
       this.logger.warn(`Rejected out-of-range numeric input (SQLSTATE 22003): ${describeOverflow(exception)}`);
-      response.status(HttpStatus.BAD_REQUEST).json({
-        code: 'NUMERIC_OUT_OF_RANGE',
-        message: NUMERIC_OUT_OF_RANGE_MESSAGE,
-      } satisfies ApiErrorBody);
+      response.status(HttpStatus.BAD_REQUEST).json(
+        this.withTrace({ code: 'NUMERIC_OUT_OF_RANGE', message: NUMERIC_OUT_OF_RANGE_MESSAGE }),
+      );
+      return;
+    }
+
+    // Warn-level, not Sentry: transient load shedding, not a defect.
+    if (isPoolBusy(exception)) {
+      const { code, message } = exception as Error & { code: string };
+      this.logger.warn(`DB pool busy (${code}) traceId=${getTraceId() ?? '-'}: ${message.slice(0, 300)}`);
+      this.sendServiceBusy(response, SERVICE_BUSY_RETRY_AFTER_SECONDS);
+      return;
+    }
+
+    // Full rollback, safe to retry immediately: warn-level, not Sentry.
+    const conflict = txConflictState(exception);
+    if (conflict) {
+      this.logger.warn(
+        `Tx conflict (sqlstate=${conflict}) traceId=${getTraceId() ?? '-'}: ${(exception as Error).message.slice(0, 300)}`,
+      );
+      this.sendServiceBusy(response, TX_CONFLICT_RETRY_AFTER_SECONDS);
+      return;
+    }
+
+    // Raw multer errors (multer 2.x wording differs from what Nest maps) are
+    // classified by `code`, never by message text. Client input, not Sentry.
+    // Likewise body-parser/zlib http-errors (`expose` 4xx): generic message only.
+    const clientStatus = clientErrorStatus(exception);
+    if (clientStatus) {
+      this.logger.warn(`Rejected client input (${clientStatus}) traceId=${getTraceId() ?? '-'}`);
+      response.status(clientStatus).json(this.withTrace(this.normalize(clientStatus, null)));
       return;
     }
 
@@ -144,7 +255,19 @@ export class AllExceptionsFilter implements ExceptionFilter {
     // No-op if SENTRY_DSN wasn't set at bootstrap (main.ts) — only truly
     // unexpected errors are reported, not routine 4xx HttpExceptions above.
     Sentry.captureException(exception);
-    response.status(HttpStatus.INTERNAL_SERVER_ERROR).json(this.normalize(HttpStatus.INTERNAL_SERVER_ERROR, null));
+    response.status(HttpStatus.INTERNAL_SERVER_ERROR).json(this.withTrace(this.normalize(HttpStatus.INTERNAL_SERVER_ERROR, null)));
+  }
+
+  private sendServiceBusy(response: Response, retryAfterSeconds: number) {
+    response.setHeader('Retry-After', String(retryAfterSeconds));
+    response.status(HttpStatus.SERVICE_UNAVAILABLE).json(
+      this.withTrace({ code: 'SERVICE_BUSY', message: SERVICE_BUSY_MESSAGE }),
+    );
+  }
+
+  private withTrace(body: ApiErrorBody): ApiErrorBody {
+    const traceId = getTraceId();
+    return traceId ? { ...body, traceId } : body;
   }
 
   private normalize(status: number, body: unknown): ApiErrorBody {

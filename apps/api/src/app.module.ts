@@ -1,11 +1,16 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { MoneyResponseInterceptor } from './common/serialization/money-json';
+import { MaintenanceGuard } from './common/maintenance/maintenance.guard';
+import { UserThrottlerGuard } from './common/throttle/user-throttler.guard';
+import './common/serialization/bigint-json';
 import { validateEnv } from './common/config/env.schema';
 import { AuditLogService } from './common/audit/audit-log.service';
 import { JwtAuthGuard } from './common/auth/jwt-auth.guard';
 import { TenantContextInterceptor } from './common/auth/tenant-context.interceptor';
+import { IdempotencyModule } from './common/idempotency/idempotency.module';
 import { QueueModule } from './common/queue/queue.module';
 import { RedisModule } from './common/redis/redis.module';
 import { TenantModule } from './common/tenant/tenant.module';
@@ -15,10 +20,14 @@ import { AuditModule } from './modules/audit/audit.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { CustomersModule } from './modules/customers/customers.module';
+import { OpeningBalancesModule } from './modules/opening-balances/opening-balances.module';
+import { CompanyExportModule } from './modules/company-export/company-export.module';
 import { IntegrationsModule } from './modules/integrations/integrations.module';
 import { ImportModule } from './modules/import/import.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { StockModule } from './modules/stock/stock.module';
+import { PurchasesModule } from './modules/purchases/purchases.module';
+import { ReconciliationModule } from './modules/reconciliation/reconciliation.module';
 import { SalesModule } from './modules/sales/sales.module';
 import { FinanceModule } from './modules/finance/finance.module';
 import { FieldModule } from './modules/field/field.module';
@@ -42,13 +51,16 @@ import { UsersModule } from './modules/users/users.module';
     RedisModule,
     QueueModule,
     TenantModule,
+    IdempotencyModule,
     AuthModule,
     CatalogModule,
     CustomersModule,
     NotificationsModule,
     StockModule,
+    PurchasesModule,
     SalesModule,
     FinanceModule,
+    ReconciliationModule,
     FieldModule,
     SyncModule,
     UsersModule,
@@ -56,12 +68,16 @@ import { UsersModule } from './modules/users/users.module';
     AuditModule,
     SettingsModule,
     IntegrationsModule,
+    CompanyExportModule,
     ImportModule,
+    OpeningBalancesModule,
     HealthModule,
   ],
   providers: [
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: MaintenanceGuard }, // first: a write is refused before JWT/tenant tx (ADR-051)
     { provide: APP_GUARD, useClass: JwtAuthGuard },
+    { provide: APP_GUARD, useClass: UserThrottlerGuard }, // after JwtAuthGuard: buckets by userId
+    { provide: APP_INTERCEPTOR, useClass: MoneyResponseInterceptor },
     { provide: APP_INTERCEPTOR, useClass: TenantContextInterceptor },
     AuditLogService,
   ],

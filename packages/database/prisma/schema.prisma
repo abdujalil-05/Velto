@@ -11,8 +11,12 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  // Runtime: RLS-bound app role `velto_app` (never superuser/BYPASSRLS).
+  url       = env("DATABASE_URL")
+  // Prisma CLI (migrate/introspect) only: schema owner `velto_owner`.
+  // See scripts/provision-roles.sql for the role model.
+  directUrl = env("DATABASE_MIGRATE_URL")
 }
 
 // ---------------------------------------------------------------------------
@@ -40,44 +44,63 @@ model Tenant {
 }
 
 model Company {
-  id             String   @id @default(uuid()) @db.Uuid
-  tenantId       String   @db.Uuid
-  name           String
-  legalName      String?
-  phone          String?
-  address        String?
-  currency       String   @default("UZS")
-  defaultVatRate Decimal  @default(12) @db.Decimal(5, 2)
-  docPrefix      String   @default("")
-  timezone       String   @default("Asia/Tashkent")
-  isActive       Boolean  @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id              String   @id @default(uuid()) @db.Uuid
+  tenantId        String   @db.Uuid
+  name            String
+  legalName       String?
+  phone           String?
+  address         String?
+  currency        String   @default("UZS")
+  defaultVatRate  Decimal  @default(12) @db.Decimal(5, 2)
+  docPrefix       String   @default("")
+  timezone        String   @default("Asia/Tashkent")
+  /// F3: visit geofence radius in metres (CHECK 10..5000, Company_visitGpsRadiusM_range_check).
+  visitGpsRadiusM Int      @default(150)
+  /// F3: max accepted device GPS accuracy in metres (CHECK 5..1000, Company_gpsMaxAccuracyM_range_check).
+  gpsMaxAccuracyM Int      @default(100)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
 
-  users                     User[]
-  roles                     Role[]
-  customers                 Customer[]
-  outlets                   Outlet[]
-  productCategories         ProductCategory[]
-  products                  Product[]
-  priceLists                PriceList[]
-  warehouses                Warehouse[]
-  stockMovements            StockMovement[]
-  salesOrders               SalesOrder[]
-  invoices                  Invoice[]
-  payments                  Payment[]
-  cashSessions              CashSession[]
-  routes                    Route[]
-  routeRuns                 RouteRun[]
-  visits                    Visit[]
-  auditLogs                 AuditLog[]
-  outboxEvents              OutboxEvent[]
-  importJobs                ImportJob[]
-  exportJobs                ExportJob[]
-  documentCounters          DocumentCounter[]
-  notifications             Notification[]
+  users                  User[]
+  roles                  Role[]
+  customers              Customer[]
+  outlets                Outlet[]
+  productCategories      ProductCategory[]
+  products               Product[]
+  priceLists             PriceList[]
+  warehouses             Warehouse[]
+  stockMovements         StockMovement[]
+  salesOrders            SalesOrder[]
+  invoices               Invoice[]
+  payments               Payment[]
+  cashSessions           CashSession[]
+  routes                 Route[]
+  routeRuns              RouteRun[]
+  visits                 Visit[]
+  auditLogs              AuditLog[]
+  paymentIntentResolutions PaymentIntentResolution[]
+  outboxEvents           OutboxEvent[]
+  importJobs             ImportJob[]
+  exportJobs             ExportJob[]
+  documentCounters       DocumentCounter[]
+  idempotencyRecords     IdempotencyRecord[]
+  paymentReversals       PaymentReversal[]
+  notifications          Notification[]
+  suppliers              Supplier[]
+  purchaseOrders         PurchaseOrder[]
+  purchaseOrderLines     PurchaseOrderLine[]
+  goodsReceipts          GoodsReceipt[]
+  goodsReceiptLines      GoodsReceiptLine[]
+  reconciliationRuns     ReconciliationRun[]
+  reconciliationFindings ReconciliationFinding[]
+  syncTombstones         SyncTombstone[]
+  openingBalanceBatches  OpeningBalanceBatch[]
+  userMfas               UserMfa[]
+  userMfaRecoveryCodes   UserMfaRecoveryCode[]
+  mfaEnrollmentCodes     MfaEnrollmentCode[]
 
   @@index([tenantId])
 }
@@ -98,21 +121,40 @@ model User {
 
   company Company @relation(fields: [companyId], references: [id])
 
-  roles             UserRole[]
-  refreshTokens     RefreshToken[]
-  agentOrders       SalesOrder[]   @relation("AgentOrders")
+  roles                       UserRole[]
+  refreshTokens               RefreshToken[]
+  agentOrders                 SalesOrder[]            @relation("AgentOrders")
   // Delivery work assigned to this user as a kuryer (role code COURIER). A
   // courier is an ordinary User, so the same row can in principle appear on
   // both sides; in practice the two roles are held by different people.
-  courierOrders     SalesOrder[]   @relation("CourierOrders")
-  paymentsCollected Payment[]      @relation("PaymentsCollected")
-  cashSessions      CashSession[]
-  agentRoutes       Route[]        @relation("AgentRoutes")
-  courierRoutes     Route[]        @relation("CourierRoutes")
-  agentVisits       Visit[]        @relation("AgentVisits")
-  auditLogs         AuditLog[]
-  exportJobs        ExportJob[]
-  notifications     Notification[]
+  courierOrders               SalesOrder[]            @relation("CourierOrders")
+  paymentsCollected           Payment[]               @relation("PaymentsCollected")
+  paymentHandoversResolved    Payment[]               @relation("PaymentHandoversResolved")
+  paymentReversals            PaymentReversal[]       @relation("PaymentReversalsActed")
+  cashSessions                CashSession[]
+  agentRoutes                 Route[]                 @relation("AgentRoutes")
+  courierRoutes               Route[]                 @relation("CourierRoutes")
+  agentVisits                 Visit[]                 @relation("AgentVisits")
+  auditLogs                   AuditLog[]
+  paymentIntentResolutionsMade  PaymentIntentResolution[] @relation("PaymentIntentResolutionActor")
+  paymentIntentResolutionsOwned PaymentIntentResolution[] @relation("PaymentIntentResolutionOriginalUser")
+  exportJobs                  ExportJob[]             @relation("ExportJobRequestedBy")
+  exportJobsAcknowledged      ExportJob[]             @relation("ExportJobAcknowledgedBy")
+  createdImportJobs           ImportJob[]             @relation("ImportJobCreator")
+  notifications               Notification[]
+  purchaseOrders              PurchaseOrder[]         @relation("PurchaseOrderCreatedBy")
+  goodsReceipts               GoodsReceipt[]          @relation("GoodsReceiptReceivedBy")
+  idempotencyRecords          IdempotencyRecord[]
+  reconciliationRunsTriggered ReconciliationRun[]     @relation("ReconciliationRunTriggeredBy")
+  reconciliationFindingsFixed ReconciliationFinding[] @relation("ReconciliationFindingFixedBy")
+  salesOrdersCancelled        SalesOrder[]            @relation("SalesOrderCancelledBy")
+  openingBatchesCreated       OpeningBalanceBatch[]   @relation("OpeningBatchCreatedBy")
+  openingBatchesPosted        OpeningBalanceBatch[]   @relation("OpeningBatchPostedBy")
+  openingBatchesVoided        OpeningBalanceBatch[]   @relation("OpeningBatchVoidedBy")
+  mfa                         UserMfa?
+  mfaRecoveryCodes            UserMfaRecoveryCode[]
+  mfaEnrollmentCodes          MfaEnrollmentCode[]     @relation("MfaEnrollmentCodeUser")
+  mfaEnrollmentCodesIssued    MfaEnrollmentCode[]     @relation("MfaEnrollmentCodeCreatedBy")
 
   @@unique([companyId, phone])
   // Scoped per-company like every other natural key here: a global unique on
@@ -185,13 +227,82 @@ model RefreshToken {
   revokedAt DateTime?
   userAgent String?
   ip        String?
+  /// ADR-058: confirmed UserMfa.id this session was issued under (null =
+  /// pre-MFA / MFA-exempt session). DB trigger: must be the same user's
+  /// confirmed UserMfa. SET NULL when the MFA row is reset.
+  mfaId     String?   @db.Uuid
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
-  user User @relation(fields: [userId], references: [id])
+  user User     @relation(fields: [userId], references: [id])
+  mfa  UserMfa? @relation(fields: [mfaId], references: [id], onDelete: SetNull)
 
   @@index([userId])
   @@index([familyId])
+  @@index([mfaId])
+}
+
+/// ADR-058: TOTP enrollment, one per user. Secret is stored only encrypted
+/// (AES-GCM ciphertext/iv/tag, key selected by keyVersion). confirmedAt null
+/// = pending enrollment. lastUsedStep = last accepted TOTP time step (replay
+/// guard), -1 = never used.
+model UserMfa {
+  id               String    @id @default(uuid()) @db.Uuid
+  companyId        String    @db.Uuid
+  userId           String    @unique @db.Uuid
+  secretCiphertext Bytes
+  secretIv         Bytes
+  secretTag        Bytes
+  keyVersion       Int
+  confirmedAt      DateTime?
+  lastUsedStep     BigInt    @default(-1)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  company       Company        @relation(fields: [companyId], references: [id])
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
+
+  @@index([companyId])
+}
+
+/// ADR-058: single-use MFA recovery codes (argon2id hash only, never plain).
+model UserMfaRecoveryCode {
+  id        String    @id @default(uuid()) @db.Uuid
+  companyId String    @db.Uuid
+  userId    String    @db.Uuid
+  codeHash  String
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, usedAt])
+  @@index([companyId])
+}
+
+/// ADR-058 follow-up: one-time out-of-band code required for a user's FIRST
+/// TOTP enrollment (a password alone must not let anyone bind an
+/// authenticator). Only sha256 hex of the code is stored. usedAt set = consumed
+/// or invalidated by a newer code. createdById null = issued by a platform script.
+model MfaEnrollmentCode {
+  id          String    @id @default(uuid()) @db.Uuid
+  companyId   String    @db.Uuid
+  userId      String    @db.Uuid
+  codeHash    String    @unique
+  expiresAt   DateTime
+  usedAt      DateTime?
+  createdById String?   @db.Uuid
+  createdAt   DateTime  @default(now())
+
+  company   Company @relation(fields: [companyId], references: [id])
+  user      User    @relation("MfaEnrollmentCodeUser", fields: [userId], references: [id], onDelete: Cascade)
+  createdBy User?   @relation("MfaEnrollmentCodeCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([userId, usedAt])
+  @@index([companyId])
+  @@index([createdById])
 }
 
 // ---------------------------------------------------------------------------
@@ -224,14 +335,16 @@ model Customer {
   deletedAt       DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
+  changeSeq       BigInt    @default(dbgenerated("nextval('sync_change_seq'::regclass)")) // F4: global sync cursor, trigger-maintained
 
   company   Company    @relation(fields: [companyId], references: [id])
   priceList PriceList? @relation(fields: [priceListId], references: [id])
 
-  outlets     Outlet[]
-  salesOrders SalesOrder[]
-  invoices    Invoice[]
-  payments    Payment[]
+  outlets                Outlet[]
+  salesOrders            SalesOrder[]
+  invoices               Invoice[]
+  payments               Payment[]
+  reconciliationFindings ReconciliationFinding[]
 
   // Uniqueness on `code` only applies to live rows — enforced by a partial
   // index in prisma/migrations/*_soft_delete_partial_unique (Prisma's schema
@@ -244,6 +357,7 @@ model Customer {
   // (not hand-written SQL) so Prisma's migration diff manages it and stops
   // proposing to drop it on every subsequent `migrate dev`.
   @@index([name(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@index([companyId, changeSeq])
 }
 
 model Outlet {
@@ -260,6 +374,7 @@ model Outlet {
   deletedAt  DateTime?
   createdAt  DateTime   @default(now())
   updatedAt  DateTime   @updatedAt
+  changeSeq  BigInt     @default(dbgenerated("nextval('sync_change_seq'::regclass)")) // F4: global sync cursor, trigger-maintained
 
   company  Company  @relation(fields: [companyId], references: [id])
   customer Customer @relation(fields: [customerId], references: [id])
@@ -269,7 +384,9 @@ model Outlet {
   visits      Visit[]
 
   @@index([companyId, customerId])
+  @@index([customerId]) // FK-check on Customer delete (F7)
   @@index([companyId, latitude, longitude])
+  @@index([companyId, changeSeq])
 }
 
 // Domen qoidasi (F-M01): mijoz to'laqonli obyekt. Dublikat aniqlash — INN,
@@ -287,6 +404,7 @@ model ProductCategory {
   parentId  String?  @db.Uuid
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  changeSeq BigInt   @default(dbgenerated("nextval('sync_change_seq'::regclass)")) // F4: global sync cursor, trigger-maintained
 
   company  Company           @relation(fields: [companyId], references: [id])
   parent   ProductCategory?  @relation("CategoryTree", fields: [parentId], references: [id])
@@ -300,6 +418,7 @@ model ProductCategory {
   // prisma/migrations/*_tenant_scoped_keys_and_fk_guards, same technique as the
   // soft-delete partial uniques on Customer.code / Product.sku.
   @@unique([companyId, name, parentId])
+  @@index([companyId, changeSeq])
 }
 
 model Product {
@@ -319,16 +438,20 @@ model Product {
   deletedAt    DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
+  changeSeq    BigInt    @default(dbgenerated("nextval('sync_change_seq'::regclass)")) // F4: global sync cursor, trigger-maintained
 
   company  Company          @relation(fields: [companyId], references: [id])
   category ProductCategory? @relation(fields: [categoryId], references: [id])
 
-  packagings         ProductPackaging[]
-  priceListItems     PriceListItem[]
-  stockLevels        StockLevel[]
-  stockMovements     StockMovement[]
-  orderLines         SalesOrderLine[]
-  invoiceLines       InvoiceLine[]
+  packagings             ProductPackaging[]
+  priceListItems         PriceListItem[]
+  stockLevels            StockLevel[]
+  stockMovements         StockMovement[]
+  reconciliationFindings ReconciliationFinding[]
+  orderLines             SalesOrderLine[]
+  invoiceLines           InvoiceLine[]
+  purchaseOrderLines     PurchaseOrderLine[]
+  goodsReceiptLines      GoodsReceiptLine[]
 
   // Same partial-unique-index note as Customer.code above — see
   // prisma/migrations/*_soft_delete_partial_unique.
@@ -336,6 +459,7 @@ model Product {
   @@index([companyId, sku])
   @@index([companyId, name])
   @@index([companyId, barcode])
+  @@index([companyId, changeSeq])
 }
 
 model ProductPackaging {
@@ -347,11 +471,13 @@ model ProductPackaging {
   isDefault     Boolean  @default(false)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
+  changeSeq     BigInt   @default(dbgenerated("nextval('sync_change_seq'::regclass)")) // F4: global sync cursor, trigger-maintained
 
   product    Product          @relation(fields: [productId], references: [id])
   orderLines SalesOrderLine[]
 
   @@index([productId])
+  @@index([changeSeq])
 }
 
 model PriceList {
@@ -376,11 +502,13 @@ model PriceListItem {
   price       Decimal  @db.Decimal(18, 2)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  changeSeq   BigInt   @default(dbgenerated("nextval('sync_change_seq'::regclass)")) // F4: global sync cursor, trigger-maintained
 
   priceList PriceList @relation(fields: [priceListId], references: [id])
   product   Product   @relation(fields: [productId], references: [id])
 
   @@unique([priceListId, productId])
+  @@index([changeSeq])
 }
 
 // ---------------------------------------------------------------------------
@@ -404,10 +532,13 @@ model Warehouse {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  company        Company         @relation(fields: [companyId], references: [id])
-  stockLevels    StockLevel[]
-  stockMovements StockMovement[]
-  salesOrders    SalesOrder[]
+  company                Company                 @relation(fields: [companyId], references: [id])
+  stockLevels            StockLevel[]
+  stockMovements         StockMovement[]
+  reconciliationFindings ReconciliationFinding[]
+  salesOrders            SalesOrder[]
+  purchaseOrders         PurchaseOrder[]
+  goodsReceipts          GoodsReceipt[]
 
   @@index([companyId])
 }
@@ -421,29 +552,43 @@ model StockLevel {
   // available = onHand - reserved (hisoblanadi)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  changeSeq   BigInt   @default(dbgenerated("nextval('sync_change_seq'::regclass)")) // F4: global sync cursor, trigger-maintained
 
   product   Product   @relation(fields: [productId], references: [id])
   warehouse Warehouse @relation(fields: [warehouseId], references: [id])
 
   @@id([productId, warehouseId])
+  @@index([changeSeq])
+  @@index([warehouseId, changeSeq]) // F7: per-tenant stableSeq via warehouse predicate
 }
 
 model StockMovement {
   // haqiqat manbai — append-only
-  id          String            @id @default(uuid()) @db.Uuid
-  companyId   String            @db.Uuid
-  productId   String            @db.Uuid
-  warehouseId String            @db.Uuid
-  type        StockMovementType
-  qty         Decimal           @db.Decimal(18, 3) // ishorali: + kirim, - chiqim
-  refType     String? // "SalesOrder", "PurchaseOrder"...
-  refId       String?           @db.Uuid
-  note        String?
-  createdAt   DateTime          @default(now())
+  id                 String            @id @default(uuid()) @db.Uuid
+  companyId          String            @db.Uuid
+  productId          String            @db.Uuid
+  warehouseId        String            @db.Uuid
+  type               StockMovementType
+  qty                Decimal           @db.Decimal(18, 3) // > 0 for RECEIVE/RESERVE/RELEASE/ISSUE (sign = type); signed only for ADJUST and reversal rows
+  // F6: opening stock = type ADJUST, refType 'OpeningBalance', refId =
+  // OpeningBalanceBatch.id (STOCK, PREVIEWED at insert), qty > 0; at most one
+  // non-reversal opening row per (companyId, productId, warehouseId).
+  refType            String? // "SalesOrder", "PurchaseOrder", "OpeningBalance"...
+  refId              String?           @db.Uuid
+  note               String?
+  // F2.1: a reversal is a new compensating row pointing at the original —
+  // the original is never edited (UPDATE/DELETE blocked by DB trigger).
+  // Unique: a movement can be reversed at most once. `reason` is required
+  // (DB CHECK) whenever reversesMovementId is set.
+  reversesMovementId String?           @unique @db.Uuid
+  reason             String?
+  createdAt          DateTime          @default(now())
 
-  company   Company   @relation(fields: [companyId], references: [id])
-  product   Product   @relation(fields: [productId], references: [id])
-  warehouse Warehouse @relation(fields: [warehouseId], references: [id])
+  company    Company        @relation(fields: [companyId], references: [id])
+  product    Product        @relation(fields: [productId], references: [id])
+  warehouse  Warehouse      @relation(fields: [warehouseId], references: [id])
+  reverses   StockMovement? @relation("StockMovementReversal", fields: [reversesMovementId], references: [id])
+  reversedBy StockMovement? @relation("StockMovementReversal")
 
   @@index([companyId, productId, warehouseId])
 }
@@ -451,6 +596,166 @@ model StockMovement {
 // Qoida (F-M03): konkurent operatsiyalarda ortiqcha sotishni oldini olish —
 // row-level lock (`SELECT ... FOR UPDATE`) majburiy rezerv operatsiyasida
 // (apps/api stock module'da amalga oshiriladi).
+
+// ---------------------------------------------------------------------------
+// M08 Xarid (5.1 M08, 6.2) — restored per ADR-011 after
+// 20260810170000_couriers_replace_suppliers dropped it. Supplier here is a
+// plain external counterparty (no Telegram link / pickup routes — those stay
+// removed; outbound delivery remains the COURIER role).
+//
+// Every table carries its own companyId (incl. line tables) so each FK can be
+// guarded by velto_assert_child_company_matches_parent and RLS is a direct
+// companyId policy — see migration *_restore_purchasing.
+//
+// Stock truth: a GoodsReceiptLine produces exactly one StockMovement
+// (type RECEIVE, qty > 0, refType "GoodsReceipt", refId = GoodsReceipt.id)
+// in the same transaction; StockLevel is then a rebuildable projection.
+// Receipts are posted documents — never updated/deleted; corrections go
+// through StockMovement ADJUST.
+// ---------------------------------------------------------------------------
+
+model Supplier {
+  id        String    @id @default(uuid()) @db.Uuid
+  companyId String    @db.Uuid
+  name      String
+  legalName String?
+  inn       String?
+  phone     String?
+  address   String?
+  note      String?
+  isActive  Boolean   @default(true)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  company        Company         @relation(fields: [companyId], references: [id])
+  purchaseOrders PurchaseOrder[]
+  goodsReceipts  GoodsReceipt[]
+
+  @@index([companyId, name])
+  @@index([companyId, inn])
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  ORDERED
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CANCELLED
+}
+
+model PurchaseOrder {
+  id          String              @id @default(uuid()) @db.Uuid
+  companyId   String              @db.Uuid
+  number      String // PO-2026-000027 (DocumentCounter docType "PO")
+  supplierId  String              @db.Uuid
+  warehouseId String              @db.Uuid
+  status      PurchaseOrderStatus @default(DRAFT)
+  expectedAt  DateTime?
+  // Server-computed sum of lines' lineTotal; never client-supplied.
+  totalAmount Decimal             @default(0) @db.Decimal(18, 2)
+  note        String?
+  createdById String?             @db.Uuid
+  orderedAt   DateTime?
+  cancelledAt DateTime?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  company   Company   @relation(fields: [companyId], references: [id])
+  supplier  Supplier  @relation(fields: [supplierId], references: [id])
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id])
+  createdBy User?     @relation("PurchaseOrderCreatedBy", fields: [createdById], references: [id])
+
+  lines         PurchaseOrderLine[]
+  goodsReceipts GoodsReceipt[]
+
+  @@unique([companyId, number])
+  @@index([companyId, supplierId])
+  @@index([companyId, warehouseId])
+  @@index([companyId, status])
+}
+
+model PurchaseOrderLine {
+  id              String   @id @default(uuid()) @db.Uuid
+  companyId       String   @db.Uuid
+  purchaseOrderId String   @db.Uuid
+  productId       String   @db.Uuid
+  // Snapshots at creation (6.1) — later catalog edits must not rewrite history.
+  productName     String
+  productSku      String
+  unit            String
+  qty             Decimal  @db.Decimal(18, 3)
+  // Running sum of posted GoodsReceiptLine.qty for this line (projection;
+  // rebuildable from GoodsReceiptLine).
+  qtyReceived     Decimal  @default(0) @db.Decimal(18, 3)
+  unitPrice       Decimal  @db.Decimal(18, 2)
+  vatRate         Decimal  @default(0) @db.Decimal(5, 2)
+  lineTotal       Decimal  @db.Decimal(18, 2) // serverda hisoblanadi
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  company       Company            @relation(fields: [companyId], references: [id])
+  purchaseOrder PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id])
+  product       Product            @relation(fields: [productId], references: [id])
+  receiptLines  GoodsReceiptLine[]
+
+  @@index([companyId, purchaseOrderId])
+  @@index([companyId, productId])
+}
+
+model GoodsReceipt {
+  id              String   @id @default(uuid()) @db.Uuid
+  companyId       String   @db.Uuid
+  warehouseId     String   @db.Uuid
+  // Optional: a receipt may arrive without a prior PO (ad-hoc delivery).
+  purchaseOrderId String?  @db.Uuid
+  supplierId      String?  @db.Uuid
+  receivedById    String?  @db.Uuid
+  receivedAt      DateTime @default(now())
+  // Idempotency key (NFR-REL-007, 16.3): client-generated UUID, required.
+  // Scoped per-company, not globally unique — see SalesOrder.clientId.
+  clientId        String
+  note            String?
+  createdAt       DateTime @default(now())
+
+  company       Company        @relation(fields: [companyId], references: [id])
+  warehouse     Warehouse      @relation(fields: [warehouseId], references: [id])
+  // Append-only (DB triggers, TZ 6.1/6.4): optional FKs are Restrict, not the
+  // SetNull default — a SET NULL cascade would be an UPDATE on this table.
+  purchaseOrder PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: Restrict)
+  supplier      Supplier?      @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  receivedBy    User?          @relation("GoodsReceiptReceivedBy", fields: [receivedById], references: [id], onDelete: Restrict)
+
+  lines GoodsReceiptLine[]
+
+  @@unique([companyId, clientId])
+  @@index([companyId, warehouseId, receivedAt])
+  @@index([companyId, purchaseOrderId])
+  @@index([companyId, supplierId])
+}
+
+model GoodsReceiptLine {
+  id                  String   @id @default(uuid()) @db.Uuid
+  companyId           String   @db.Uuid
+  goodsReceiptId      String   @db.Uuid
+  purchaseOrderLineId String?  @db.Uuid
+  productId           String   @db.Uuid
+  productName         String
+  productSku          String
+  unit                String
+  qty                 Decimal  @db.Decimal(18, 3) // > 0, base unit
+  unitCost            Decimal? @db.Decimal(18, 2)
+  createdAt           DateTime @default(now())
+
+  company           Company            @relation(fields: [companyId], references: [id])
+  goodsReceipt      GoodsReceipt       @relation(fields: [goodsReceiptId], references: [id])
+  purchaseOrderLine PurchaseOrderLine? @relation(fields: [purchaseOrderLineId], references: [id], onDelete: Restrict)
+  product           Product            @relation(fields: [productId], references: [id])
+
+  @@index([companyId, goodsReceiptId])
+  @@index([companyId, purchaseOrderLineId])
+  @@index([companyId, productId])
+}
 
 // ---------------------------------------------------------------------------
 // 6.6 Sotish
@@ -467,38 +772,47 @@ enum OrderStatus {
 }
 
 model SalesOrder {
-  id          String      @id @default(uuid()) @db.Uuid
-  companyId   String      @db.Uuid
-  number      String // SO-2026-000123
-  customerId  String      @db.Uuid
-  outletId    String?     @db.Uuid
-  agentId     String?     @db.Uuid
+  id           String      @id @default(uuid()) @db.Uuid
+  companyId    String      @db.Uuid
+  number       String // SO-2026-000123
+  customerId   String      @db.Uuid
+  outletId     String?     @db.Uuid
+  agentId      String?     @db.Uuid
   /// Kuryer: the company's own delivery person (a `User` holding the COURIER
   /// system role) who takes this order from the warehouse to the customer.
   /// Optional — an order is not assigned to anyone until it is dispatched, and
   /// agent-delivered orders never get a courier. `onDelete: SetNull` because an
   /// order's history must survive the courier's user record being removed; the
   /// order itself is never deleted as a side effect of user cleanup.
-  courierId   String?     @db.Uuid
+  courierId    String?     @db.Uuid
   // Not in the TZ's 6.6 schema, but stock reservation (8.3) is inherently
   // per-warehouse (StockLevel/StockMovement are keyed by warehouseId) —
   // required infrastructure the doc's schema section omitted.
-  warehouseId String      @db.Uuid
-  status      OrderStatus @default(DRAFT)
+  warehouseId  String      @db.Uuid
+  status       OrderStatus @default(DRAFT)
   // Offline idempotency key (10.4). Scoped per-company, not globally unique:
   // a client-generated id must never be able to collide across tenants.
-  clientId    String?
-  note        String?
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  clientId     String?
+  note         String?
+  // F6 (20261019120100): mandatory cancel reason. DB CHECK
+  // SalesOrder_cancel_reason_check: status = CANCELLED => non-blank
+  // cancelReason. Legacy CANCELLED rows backfilled from note
+  // ("[Bekor qilindi]: ...") or 'legacy'; cancelledAt from updatedAt;
+  // cancelledBy stays NULL for legacy rows (unknown actor).
+  cancelReason String?
+  cancelledAt  DateTime?
+  cancelledBy  String?     @db.Uuid
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
 
   company   Company   @relation(fields: [companyId], references: [id])
   customer  Customer  @relation(fields: [customerId], references: [id])
+  canceller User?     @relation("SalesOrderCancelledBy", fields: [cancelledBy], references: [id], onDelete: Restrict)
   outlet    Outlet?   @relation(fields: [outletId], references: [id])
   agent     User?     @relation("AgentOrders", fields: [agentId], references: [id])
   warehouse Warehouse @relation(fields: [warehouseId], references: [id])
 
-  courier   User?     @relation("CourierOrders", fields: [courierId], references: [id], onDelete: SetNull)
+  courier User? @relation("CourierOrders", fields: [courierId], references: [id], onDelete: SetNull)
 
   lines    SalesOrderLine[]
   invoices Invoice[]
@@ -506,24 +820,29 @@ model SalesOrder {
   @@unique([companyId, number])
   @@unique([companyId, clientId])
   @@index([companyId, customerId])
+  @@index([customerId]) // FK-check on Customer delete (F7)
   @@index([companyId, agentId, createdAt])
+  @@index([companyId, createdAt])
   @@index([companyId, outletId])
   @@index([companyId, warehouseId])
   @@index([companyId, courierId])
+  @@index([cancelledBy])
 }
 
 model SalesOrderLine {
-  id          String   @id @default(uuid()) @db.Uuid
-  orderId     String   @db.Uuid
-  productId   String   @db.Uuid
-  packagingId String   @db.Uuid
-  qty         Decimal  @db.Decimal(18, 3)
-  unitPrice   Decimal  @db.Decimal(18, 2)
-  discountPct Decimal  @default(0) @db.Decimal(5, 2)
-  vatRate     Decimal  @db.Decimal(5, 2)
-  lineTotal   Decimal  @db.Decimal(18, 2) // serverda hisoblanadi, agent yubormaydi
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id           String   @id @default(uuid()) @db.Uuid
+  orderId      String   @db.Uuid
+  productId    String   @db.Uuid
+  packagingId  String   @db.Uuid
+  qty          Decimal  @db.Decimal(18, 3)
+  unitPrice    Decimal  @db.Decimal(18, 2)
+  discountPct  Decimal  @default(0) @db.Decimal(5, 2)
+  vatRate      Decimal  @db.Decimal(5, 2)
+  lineTotal    Decimal  @db.Decimal(18, 2) // serverda hisoblanadi, agent yubormaydi
+  // F2.4: chiqarilgan (yetkazilgan) miqdor; DB CHECK: 0 <= deliveredQty <= qty
+  deliveredQty Decimal  @default(0) @db.Decimal(18, 3)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   order     SalesOrder       @relation(fields: [orderId], references: [id])
   product   Product          @relation(fields: [productId], references: [id])
@@ -542,26 +861,49 @@ enum InvoiceStatus {
   CANCELLED
 }
 
-model Invoice {
-  id         String        @id @default(uuid()) @db.Uuid
-  companyId  String        @db.Uuid
-  number     String // INV-2026-000142
-  customerId String        @db.Uuid
-  orderId    String?       @db.Uuid // N:M munosabat kelajakda — MVP'da 1 order = 1 invoice soddalashtirilgan
-  total      Decimal       @db.Decimal(18, 2)
-  status     InvoiceStatus @default(OPEN)
-  createdAt  DateTime      @default(now())
-  updatedAt  DateTime      @updatedAt
+// F6: SALE = regular delivery invoice (INV-...); OPENING = opening customer
+// debt from an OpeningBalanceBatch (OB-..., no lines, no order).
+enum InvoiceKind {
+  SALE
+  OPENING
+}
 
-  company  Company     @relation(fields: [companyId], references: [id])
-  customer Customer    @relation(fields: [customerId], references: [id])
-  order    SalesOrder? @relation(fields: [orderId], references: [id])
+model Invoice {
+  id             String        @id @default(uuid()) @db.Uuid
+  companyId      String        @db.Uuid
+  number         String // INV-2026-000142
+  customerId     String        @db.Uuid
+  orderId        String?       @db.Uuid // N:M munosabat kelajakda — MVP'da 1 order = 1 invoice soddalashtirilgan
+  total          Decimal       @db.Decimal(18, 2)
+  status         InvoiceStatus @default(OPEN)
+  // F6 (20261019120000). DB-enforced: kind = OPENING <=> openingBatchId set;
+  // OPENING => orderId NULL, total > 0, number 'OB-%', no InvoiceLine rows,
+  // batch is a same-company CUSTOMER_BALANCE batch still PREVIEWED at insert.
+  // kind/openingBatchId/externalDocRef immutable. Partial unique
+  // (companyId, customerId, externalDocRef) WHERE kind = OPENING.
+  // SALE (20261102100000, raw SQL): partial unique "Invoice_sale_orderId_key"
+  // (companyId, orderId) WHERE kind = SALE AND orderId IS NOT NULL (max one
+  // SALE invoice per order); trigger invoice_sale_guard: a SALE invoice may only
+  // change status — companyId/number/customerId/orderId/total/kind/createdAt
+  // (= turnover date) are immutable for every role. orderId FK is RESTRICT.
+  kind           InvoiceKind   @default(SALE)
+  openingBatchId String?       @db.Uuid
+  externalDocRef String? // 1C / legacy document reference of the opening debt
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  company      Company              @relation(fields: [companyId], references: [id])
+  customer     Customer             @relation(fields: [customerId], references: [id])
+  order        SalesOrder?          @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  openingBatch OpeningBalanceBatch? @relation(fields: [openingBatchId], references: [id], onDelete: Restrict)
 
   lines       InvoiceLine[]
   allocations PaymentAllocation[]
 
   @@unique([companyId, number])
   @@index([companyId, customerId])
+  @@index([customerId]) // FK-check on Customer delete (F7)
+  @@index([openingBatchId])
 }
 
 model InvoiceLine {
@@ -591,28 +933,143 @@ enum PaymentMethod {
   TRANSFER
 }
 
-model Payment {
-  id          String        @id @default(uuid()) @db.Uuid
-  companyId   String        @db.Uuid
-  number      String // PAY-2026-000311
-  customerId  String        @db.Uuid
-  amount      Decimal       @db.Decimal(18, 2)
-  method      PaymentMethod
-  collectedBy String?       @db.Uuid // agent/kassir
-  clientId    String? // offline idempotentlik — per-company unique, see SalesOrder.clientId
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+// Lifecycle (TZ §6.5, §6.7.2, ADR-029). LOCAL_PENDING lives on the agent's
+// device only and never reaches this enum. Permitted in-place changes are
+// enforced by a DB trigger (velto_payment_guard_update):
+//   PENDING_HANDOVER -> POSTED   cashier accepts into own open CashSession
+//   PENDING_HANDOVER -> REJECTED cashier rejects, reason required
+//   POSTED           -> REVERSED only after its PaymentReversal row (F2.1)
+// Agent-collected cash is inserted as PENDING_HANDOVER (no allocations, does
+// not reduce debt); cashier/office payments are inserted directly as POSTED.
+// Only POSTED counts in the ledger; allocations require POSTED (DB trigger).
+enum PaymentStatus {
+  PENDING_HANDOVER
+  POSTED
+  REJECTED
+  REVERSED
+}
 
-  company   Company  @relation(fields: [companyId], references: [id])
-  customer  Customer @relation(fields: [customerId], references: [id])
-  collector User?    @relation("PaymentsCollected", fields: [collectedBy], references: [id])
+// F6: COLLECTION = money actually received (agent/cashier/office, method set);
+// OPENING = opening customer credit (advance) from an OpeningBalanceBatch —
+// no method, no collector, POSTED directly, OB-... number.
+enum PaymentSource {
+  COLLECTION
+  OPENING
+}
+
+model Payment {
+  id             String         @id @default(uuid()) @db.Uuid
+  companyId      String         @db.Uuid
+  number         String // PAY-2026-000311
+  customerId     String         @db.Uuid
+  amount         Decimal        @db.Decimal(18, 2)
+  // NULL only for source = OPENING (DB CHECK Payment_source_shape_check).
+  method         PaymentMethod?
+  status         PaymentStatus  @default(POSTED)
+  // F6 (20261019120000). OPENING => method NULL, collectedBy NULL,
+  // openingBatchId set, status POSTED/REVERSED, no handover, number 'OB-%';
+  // COLLECTION => method set, openingBatchId NULL. One live (non-REVERSED)
+  // OPENING payment per customer (partial unique).
+  source         PaymentSource  @default(COLLECTION)
+  openingBatchId String?        @db.Uuid
+  collectedBy    String?        @db.Uuid // agent/kassir
+  clientId       String? // offline idempotentlik — per-company unique, see SalesOrder.clientId
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  // ADR-029 handover resolution (set once, on PENDING_HANDOVER -> POSTED or
+  // -> REJECTED; NULL for payments inserted directly as POSTED). For an
+  // accepted handover, handoverAt is the posting time (ledger/1C date).
+  handoverActorId       String?   @db.Uuid // kassir/OWNER/SALES_DIRECTOR who accepted or rejected
+  handoverAt            DateTime?
+  handoverCashSessionId String?   @db.Uuid // accepting cashier's open shift (accept only)
+  handoverRejectReason  String? // reject only, non-empty
+
+  company             Company              @relation(fields: [companyId], references: [id])
+  customer            Customer             @relation(fields: [customerId], references: [id])
+  collector           User?                @relation("PaymentsCollected", fields: [collectedBy], references: [id])
+  handoverActor       User?                @relation("PaymentHandoversResolved", fields: [handoverActorId], references: [id], onDelete: Restrict)
+  handoverCashSession CashSession?         @relation(fields: [handoverCashSessionId], references: [id], onDelete: Restrict)
+  openingBatch        OpeningBalanceBatch? @relation(fields: [openingBatchId], references: [id], onDelete: Restrict)
 
   allocations PaymentAllocation[]
+  intentResolutions PaymentIntentResolution[]
+  reversal    PaymentReversal?
 
   @@unique([companyId, number])
   @@unique([companyId, clientId])
   @@index([companyId, customerId])
+  @@index([customerId]) // FK-check on Customer delete (F7)
+  @@index([companyId, status])
+  // ADR-029 posted-at period filter (paymentPostedWithin: handoverAt range OR
+  // handoverAt IS NULL AND createdAt range) -> BitmapOr of these two (F7.6).
+  @@index([companyId, handoverAt])
+  @@index([companyId, createdAt])
   @@index([collectedBy])
+  @@index([handoverActorId])
+  @@index([handoverCashSessionId])
+  @@index([openingBatchId])
+}
+
+// Offline payment-intent reconciliation (PO 2026-11-02, migration
+// 20261102120000_payment_intent_resolution). One durable decision per rejected
+// offline intent (409 PAYMENT_IDEMPOTENCY_CONFLICT/UNVERIFIABLE). "Open" /
+// REQUIRES_INVESTIGATION = no row. Append-only (DB trigger, all roles).
+// paymentId is NOT NULL: these 409s only arise when a Payment with the same
+// (companyId, clientId) already exists, and the DB trigger requires
+// Payment.clientId = clientId in the same company. evidenceRef is required for
+// NOT_POSTED_CONFIRMED by the service, not the DB.
+enum PaymentReconciliationOutcome {
+  EXISTING_PAYMENT_CONFIRMED
+  NOT_POSTED_CONFIRMED
+}
+
+model PaymentIntentResolution {
+  id               String                       @id @default(uuid()) @db.Uuid
+  companyId        String                       @db.Uuid
+  clientId         String
+  paymentId        String                       @db.Uuid
+  outcome          PaymentReconciliationOutcome
+  reason           String
+  evidenceRef      String?
+  actorId          String                       @db.Uuid
+  originalUserId   String                       @db.Uuid
+  rejectionAuditId String?                      @db.Uuid
+  traceId          String?
+  createdAt        DateTime                     @default(now())
+
+  company        Company   @relation(fields: [companyId], references: [id])
+  payment        Payment   @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  actor          User      @relation("PaymentIntentResolutionActor", fields: [actorId], references: [id], onDelete: Restrict)
+  originalUser   User      @relation("PaymentIntentResolutionOriginalUser", fields: [originalUserId], references: [id], onDelete: Restrict)
+  rejectionAudit AuditLog? @relation(fields: [rejectionAuditId], references: [id], onDelete: Restrict)
+
+  @@unique([companyId, clientId])
+  @@index([companyId, createdAt])
+  @@index([paymentId])
+  @@index([actorId])
+  @@index([originalUserId])
+  @@index([rejectionAuditId])
+}
+
+// F2.1: append-only record of a payment reversal (OWNER/SALES_DIRECTOR via
+// `payments.reverse`). One per payment. Payment.status may only flip to
+// REVERSED once this row exists (DB trigger). Closed-cash-session / 1C-export
+// prohibitions are enforced in the service layer.
+model PaymentReversal {
+  id                String   @id @default(uuid()) @db.Uuid
+  companyId         String   @db.Uuid
+  reversesPaymentId String   @unique @db.Uuid
+  reason            String
+  actorId           String   @db.Uuid
+  createdAt         DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+  payment Payment @relation(fields: [reversesPaymentId], references: [id])
+  actor   User    @relation("PaymentReversalsActed", fields: [actorId], references: [id])
+
+  @@index([companyId])
+  @@index([actorId])
 }
 
 model PaymentAllocation {
@@ -652,6 +1109,8 @@ model CashSession {
   company Company @relation(fields: [companyId], references: [id])
   user    User    @relation(fields: [userId], references: [id])
 
+  handoverPayments Payment[]
+
   // "One open shift per user" is enforced by a partial unique index in
   // prisma/migrations/*_cash_session_one_open_per_user (WHERE "closedAt" IS
   // NULL — Prisma's schema DSL can't express that), matching the
@@ -665,8 +1124,8 @@ model CashSession {
 // ---------------------------------------------------------------------------
 
 model Route {
-  id         String   @id @default(uuid()) @db.Uuid
-  companyId  String   @db.Uuid
+  id        String   @id @default(uuid()) @db.Uuid
+  companyId String   @db.Uuid
   /// Exactly one of `agentId` / `courierId` is set — a route is served either
   /// by an own field agent or by a kuryer (a `User` holding the COURIER system
   /// role), never both and never neither. Prisma's DSL cannot express that, so
@@ -674,16 +1133,16 @@ model Route {
   /// (renamed from `Route_agent_xor_supplier_check` in
   /// 20260810170000_couriers_replace_suppliers); both columns are nullable here
   /// only because the constraint lives in SQL.
-  agentId    String?  @db.Uuid
+  agentId   String?  @db.Uuid
   /// Both FKs below are RESTRICT, not SetNull: nulling a served route's
   /// `courierId` (or `agentId`) as a side effect of deleting the parent user
   /// would leave the row with neither owner and violate the XOR. `SalesOrder`
   /// keeps SetNull because an order has no such invariant.
-  courierId  String?  @db.Uuid
-  weekday    Int // 1-7
-  name       String
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  courierId String?  @db.Uuid
+  weekday   Int // 1-7
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   company Company     @relation(fields: [companyId], references: [id])
   agent   User?       @relation("AgentRoutes", fields: [agentId], references: [id], onDelete: Restrict)
@@ -731,6 +1190,20 @@ model RouteStop {
 enum VisitOutcome {
   ORDERED
   NO_ORDER
+  /// F3: stop skipped without a visit; `skipReason` required (Visit_skipReason_check).
+  SKIPPED
+}
+
+/// F3: outcome of the visit GPS check. Coordinates are present for VERIFIED,
+/// OUTSIDE_RADIUS, LOW_ACCURACY, OUTLET_NO_COORDS and absent for NO_PERMISSION,
+/// NO_FIX (Visit_gpsStatus_coords_check).
+enum GpsStatus {
+  VERIFIED
+  OUTSIDE_RADIUS
+  LOW_ACCURACY
+  NO_PERMISSION
+  NO_FIX
+  OUTLET_NO_COORDS
 }
 
 model Visit {
@@ -740,14 +1213,26 @@ model Visit {
   outletId      String       @db.Uuid
   startedAt     DateTime
   endedAt       DateTime?
-  latitude      Decimal      @db.Decimal(10, 7)
-  longitude     Decimal      @db.Decimal(10, 7)
-  // null = outlet has no registered coordinates, so the check couldn't run
-  // (allowed through, not blocked — see visits.service.ts); true/false = a
-  // real 150m-radius check was performed.
+  /// F3: nullable — both null or both set (Visit_coords_pair_check).
+  latitude      Decimal?     @db.Decimal(10, 7)
+  longitude     Decimal?     @db.Decimal(10, 7)
+  /// F3: source of truth for the GPS check. The DB default NO_FIX is only a
+  /// legacy-writer fallback: trigger Visit_gps_sync derives it from `gpsOk`
+  /// when a writer that predates F3 inserts coordinates without a status.
+  gpsStatus     GpsStatus    @default(NO_FIX)
+  gpsAccuracyM  Decimal?     @db.Decimal(8, 2)
+  gpsCapturedAt DateTime?
+  distanceM     Decimal?     @db.Decimal(10, 2)
+  /// Derived from `gpsStatus` (trigger Visit_gps_sync overwrites it; CHECK
+  /// Visit_gpsOk_derived_check): VERIFIED -> true; OUTSIDE_RADIUS,
+  /// LOW_ACCURACY -> false; NO_PERMISSION, NO_FIX, OUTLET_NO_COORDS -> null.
+  /// Kept for backward compatibility — new code should read `gpsStatus`.
   gpsOk         Boolean?
   outcome       VisitOutcome
   noOrderReason String?
+  /// F3: free text like `noOrderReason` (no reason catalog exists); required
+  /// iff outcome = SKIPPED (Visit_skipReason_check).
+  skipReason    String?
   clientId      String? // offline idempotentlik — per-company unique, see SalesOrder.clientId
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
@@ -775,10 +1260,13 @@ model AuditLog {
   oldValue  Json?
   newValue  Json?
   ip        String?
+  traceId   String? // TZ 11.4: request trace ID (null for pre-F1.1b rows)
   createdAt DateTime @default(now())
 
   company Company @relation(fields: [companyId], references: [id])
   user    User?   @relation(fields: [userId], references: [id])
+
+  paymentIntentResolutions PaymentIntentResolution[]
 
   @@index([companyId, entity, entityId])
 }
@@ -786,6 +1274,7 @@ model AuditLog {
 // Append-only — o'chirish/o'zgartirish imkonsiz (DB trigger orqali
 // ta'minlanadi, ko'ring: prisma/migrations/*_audit_append_only).
 
+/// DEPRECATED (ADR-047): kod ishlatmaydi, DROP keyingi relizda expand-contract.
 model OutboxEvent {
   id          String    @id @default(uuid()) @db.Uuid
   companyId   String    @db.Uuid
@@ -806,11 +1295,27 @@ model ImportJob {
   status    String // PENDING PROCESSING DONE FAILED
   fileUrl   String
   errorLog  Json?
-  createdAt DateTime @default(now())
+  // F5: null for pre-F5 rows. Cross-tenant guard trigger
+  // importjob_createdby_same_company (20261014090000).
+  createdBy String?  @db.Uuid
+  progress  Int? // 0..100, CHECK ImportJob_progress_range_check
+  // ADR-064b (20261031120000): durable count of automatic dispatch/recovery
+  // enqueues (NOT BullMQ-internal retries). CHECK ImportJob_attemptCount_nonneg_check.
+  attemptCount Int      @default(0)
+  createdAt    DateTime @default(now())
+  // ADR-064b: last state change. Also bumped by DB trigger
+  // importjob_set_updated_at on every UPDATE, incl. raw SQL writers.
+  updatedAt    DateTime @default(now()) @updatedAt
 
   company Company @relation(fields: [companyId], references: [id])
+  creator User?   @relation("ImportJobCreator", fields: [createdBy], references: [id])
+
+  openingBalanceBatches OpeningBalanceBatch[]
 
   @@index([companyId, status])
+  @@index([companyId, createdAt(sort: Desc)])
+  // ADR-064b: cross-tenant stale-PROCESSING sweep (status + age).
+  @@index([status, updatedAt])
 }
 
 // 11.1: "Buxgalter /export/1c'da davrni tanlaydi -> fayl BullMQ orqali fon
@@ -821,34 +1326,99 @@ model ImportJob {
 // finishes; `errorLog` also doubles as a non-fatal warnings slot (e.g.
 // products missing `externalCode`, still exported by falling back to `sku`)
 // even on a DONE job, not only on FAILED.
-model ExportJob {
-  id          String   @id @default(uuid()) @db.Uuid
-  companyId   String   @db.Uuid
-  type        String // "1c"
-  format      String // "XML" | "EXCEL"
-  periodFrom  DateTime
-  periodTo    DateTime
-  status      String // PENDING PROCESSING DONE FAILED
-  fileUrl     String?
-  errorLog    Json?
-  requestedBy String?  @db.Uuid
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+// F5.3 / ADR-030 (20261019110000): 1C export lifecycle. Transitions are
+// DB-trigger-enforced (velto_export_job_guard_update), insert only as QUEUED:
+//   QUEUED -> PROCESSING; PROCESSING -> QUEUED (retry) | GENERATED | FAILED;
+//   GENERATED -> ACCOUNTING_ACCEPTED | FAILED_REVIEW (manual accountant ACK).
+//   FAILED, ACCOUNTING_ACCEPTED, FAILED_REVIEW are terminal.
+enum ExportJobStatus {
+  QUEUED
+  PROCESSING
+  GENERATED
+  FAILED
+  ACCOUNTING_ACCEPTED
+  FAILED_REVIEW
+}
 
-  company Company @relation(fields: [companyId], references: [id])
-  user    User?   @relation(fields: [requestedBy], references: [id])
+enum ExportFormat {
+  EXCEL
+  CSV
+  XML
+}
+
+model ExportJob {
+  id             String          @id @default(uuid()) @db.Uuid
+  companyId      String          @db.Uuid
+  type           String // "1c"
+  format         ExportFormat
+  periodFrom     DateTime
+  periodTo       DateTime
+  status         ExportJobStatus @default(QUEUED)
+  // DEPRECATED (F5.3): superseded by storageKey (backfilled from it). Kept
+  // nullable only until apps/api stops reading/writing it; dropped in a later,
+  // separate release.
+  fileUrl        String?
+  errorLog       Json?
+  requestedBy    String?         @db.Uuid
+  // F5 (20261014090000): sha256 lower-case hex of the produced file; CHECKs:
+  // fileHash ~ ^[0-9a-f]{64}$, recordCount >= 0, mappingVersion >= 1,
+  // attemptCount >= 0.
+  fileHash       String?
+  recordCount    Int?
+  mappingVersion Int?
+  attemptCount   Int             @default(0)
+  // F5.3: object-storage key of the generated file (never a public URL),
+  // display file name, size in bytes (CHECK >= 0), generation time.
+  // GENERATED/ACCOUNTING_ACCEPTED/FAILED_REVIEW require fileHash, storageKey,
+  // recordCount (CHECK); from GENERATED on, the artifact columns and the
+  // period/type/format are immutable (trigger).
+  storageKey     String?
+  fileName       String?
+  fileSize       Int?
+  generatedAt    DateTime?
+  // ADR-030 manual ACK, written exactly once on GENERATED -> ACCOUNTING_ACCEPTED
+  // | FAILED_REVIEW and NULL in every other status (CHECK): ackChecksum must
+  // equal fileHash; FAILED_REVIEW needs ackNote of >= 3 non-blank chars.
+  acknowledgedAt DateTime?
+  acknowledgedBy String?         @db.Uuid
+  ackChecksum    String?
+  ackNote        String?         @db.VarChar(1000)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  company      Company @relation(fields: [companyId], references: [id])
+  user         User?   @relation("ExportJobRequestedBy", fields: [requestedBy], references: [id])
+  acknowledger User?   @relation("ExportJobAcknowledgedBy", fields: [acknowledgedBy], references: [id], onDelete: Restrict)
+  // Not expressible in Prisma — partial unique index in SQL only:
+  // "ExportJob_active_period_key" UNIQUE (companyId, type, format, periodFrom,
+  // periodTo) WHERE status IN ('QUEUED','PROCESSING'). A second active
+  // export for the same key fails with P2002; later statuses never block.
+  // DELETE/TRUNCATE are rejected by trigger (export history is evidence).
 
   @@index([companyId, status])
+  @@index([acknowledgedBy])
 }
 
 // M14 (5.3: "In-app + Telegram"). `title`/`message` are LocalizedMessage
 // JSON ({uz, ru, en} — the same trilingual shape as AppException's error
 // body, 7.1) so the web UI can render whichever language it's set to;
-// Telegram delivery (NotificationsService) is best-effort and always uses
-// `uz` since there's no per-user locale preference stored anywhere in the
-// schema. `entityType`/`entityId` let the UI deep-link to what triggered it
-// (e.g. an approved order) without a per-notification-type
-// table.
+// Telegram text always uses `uz` since there's no per-user locale preference
+// stored anywhere in the schema. `entityType`/`entityId` let the UI deep-link
+// to what triggered it (e.g. an approved order) without a
+// per-notification-type table.
+//
+// ADR-060: a row is also the durable Telegram outbox record (ADR-047 pattern:
+// row written in the business tx + afterCommit enqueue + cross-tenant sweep).
+// For tracked rows (`telegramStatus` NOT NULL) Telegram is NOT sent inside the
+// tx; the worker claims PENDING rows (SENDING + `telegramClaimedAt` lease),
+// retries with `telegramNextAttemptAt` backoff and ends in SENT/FAILED/SKIPPED.
+// `telegramStatus` NULL = pre-migration legacy row (best-effort-in-tx), never
+// swept. `dedupKey` (e.g. "payment.reverse:<reversalId>") makes the alert
+// idempotent per recipient; NULLs stay distinct so legacy rows are unaffected.
+// SQL-only (not expressible in Prisma): CHECK telegramAttempts >= 0, CHECK
+// length(telegramLastError) <= 500, BEFORE UPDATE trigger bumping updatedAt,
+// partial index "Notification_telegram_sweep_idx" (telegramStatus,
+// telegramNextAttemptAt) WHERE telegramStatus IN ('PENDING','SENDING').
 model Notification {
   id          String    @id @default(uuid()) @db.Uuid
   companyId   String    @db.Uuid
@@ -860,11 +1430,30 @@ model Notification {
   entityId    String?   @db.Uuid
   readAt      DateTime?
   createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @default(now()) @updatedAt
+
+  dedupKey              String?
+  telegramStatus        NotificationTelegramStatus?
+  telegramAttempts      Int                         @default(0)
+  telegramNextAttemptAt DateTime?
+  telegramClaimedAt     DateTime?
+  telegramSentAt        DateTime?
+  telegramLastError     String?
 
   company   Company @relation(fields: [companyId], references: [id])
   recipient User    @relation(fields: [recipientId], references: [id])
 
+  @@unique([companyId, recipientId, dedupKey])
   @@index([companyId, recipientId, readAt])
+}
+
+// ADR-060: Telegram delivery state of a tracked Notification row.
+enum NotificationTelegramStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+  SKIPPED
 }
 
 // 8.6: sequential, gapless-per-cancellation document numbering
@@ -883,4 +1472,215 @@ model DocumentCounter {
   company Company @relation(fields: [companyId], references: [id])
 
   @@id([companyId, docType, year])
+}
+
+// F1.3 / §10.5: HTTP `Idempotency-Key` replay store. A retried mutating
+// request with the same key returns the stored response instead of
+// re-executing. Scoped per company (a global unique would let tenant A probe
+// tenant B's keys). `requestHash` detects key reuse with a different payload.
+// Rows are ephemeral: a cleanup job deletes them after `expiresAt`.
+model IdempotencyRecord {
+  id             String   @id @default(uuid()) @db.Uuid
+  companyId      String   @db.Uuid
+  key            String
+  userId         String   @db.Uuid
+  route          String // "POST /orders"
+  requestHash    String
+  responseStatus Int
+  responseBody   Json
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+
+  company Company @relation(fields: [companyId], references: [id])
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, key])
+  @@index([expiresAt])
+}
+
+// ---------------------------------------------------------------------------
+// F2.5 (§6.4, §6.5): projection drift reconciliation. A run recomputes
+//   STOCK:   onHand   = ΣRECEIVE + ΣADJUST − ΣISSUE
+//            reserved = ΣRESERVE − ΣRELEASE − ΣISSUE      (vs StockLevel)
+//   BALANCE: Customer.cachedBalance vs the invoice/payment ledger
+// and records one finding per drifted subject. "expected" = ledger-derived,
+// "actual" = stored projection, diff = actual − expected (DB CHECK).
+// Dedupe: at most one OPEN finding per (companyId, kind, subject) — enforced
+// by partial unique indexes in migration 20261013170000_reconciliation (Prisma
+// 6 cannot express partial indexes, so they live in SQL only). A repeat run
+// refreshes the existing OPEN row instead of inserting a duplicate.
+// ---------------------------------------------------------------------------
+
+enum ReconciliationKind {
+  STOCK
+  BALANCE
+}
+
+enum ReconciliationTrigger {
+  SCHEDULED
+  MANUAL
+}
+
+enum ReconciliationFindingStatus {
+  OPEN
+  FIXED
+}
+
+model ReconciliationRun {
+  id              String                @id @default(uuid()) @db.Uuid
+  companyId       String                @db.Uuid
+  trigger         ReconciliationTrigger
+  triggeredById   String?               @db.Uuid // null for SCHEDULED
+  startedAt       DateTime              @default(now())
+  finishedAt      DateTime?
+  stockChecked    Int                   @default(0) // (product, warehouse) pairs checked
+  stockFindings   Int                   @default(0)
+  balanceChecked  Int                   @default(0) // customers checked
+  balanceFindings Int                   @default(0)
+
+  company     Company                 @relation(fields: [companyId], references: [id])
+  triggeredBy User?                   @relation("ReconciliationRunTriggeredBy", fields: [triggeredById], references: [id], onDelete: Restrict)
+  findings    ReconciliationFinding[] @relation("ReconciliationFindingRun")
+  lastSeen    ReconciliationFinding[] @relation("ReconciliationFindingLastRun")
+
+  @@index([companyId, startedAt])
+}
+
+model ReconciliationFinding {
+  id          String                      @id @default(uuid()) @db.Uuid
+  companyId   String                      @db.Uuid
+  runId       String                      @db.Uuid // run that first detected it
+  lastRunId   String                      @db.Uuid // latest run that still saw it
+  kind        ReconciliationKind
+  status      ReconciliationFindingStatus @default(OPEN)
+  // STOCK subject
+  productId   String?                     @db.Uuid
+  warehouseId String?                     @db.Uuid
+  // BALANCE subject
+  customerId  String?                     @db.Uuid
+
+  // STOCK values (qty, Decimal(18,3)) — all set iff kind = STOCK
+  expectedOnHand   Decimal? @db.Decimal(18, 3)
+  actualOnHand     Decimal? @db.Decimal(18, 3)
+  diffOnHand       Decimal? @db.Decimal(18, 3)
+  expectedReserved Decimal? @db.Decimal(18, 3)
+  actualReserved   Decimal? @db.Decimal(18, 3)
+  diffReserved     Decimal? @db.Decimal(18, 3)
+  // BALANCE values (money, Decimal(18,2)) — all set iff kind = BALANCE
+  expectedBalance  Decimal? @db.Decimal(18, 2)
+  actualBalance    Decimal? @db.Decimal(18, 2)
+  diffBalance      Decimal? @db.Decimal(18, 2)
+
+  fixedAt   DateTime?
+  fixedById String?   @db.Uuid
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  company   Company           @relation(fields: [companyId], references: [id])
+  run       ReconciliationRun @relation("ReconciliationFindingRun", fields: [runId], references: [id])
+  lastRun   ReconciliationRun @relation("ReconciliationFindingLastRun", fields: [lastRunId], references: [id])
+  product   Product?          @relation(fields: [productId], references: [id], onDelete: Restrict)
+  warehouse Warehouse?        @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  customer  Customer?         @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  fixedBy   User?             @relation("ReconciliationFindingFixedBy", fields: [fixedById], references: [id], onDelete: Restrict)
+
+  @@index([companyId, status, kind])
+  @@index([customerId]) // FK-check on Customer delete (F7)
+  @@index([runId])
+  @@index([lastRunId])
+}
+
+// F4 offline sync: a synced row that was hard-deleted, soft-deleted
+// (deletedAt set) or deactivated (isActive -> false). Written only by DB
+// triggers (migration 20261013200000_sync_change_seq_tombstones); devices pull
+// tombstones with `changeSeq > cursor` and drop the local row. entityId is the
+// row id (StockLevel: "productId:warehouseId"); entityKey carries the natural
+// key for device stores keyed by a composite (PriceListItem, StockLevel).
+// Retention: keep >= the longest supported offline window (no cleanup job yet).
+model SyncTombstone {
+  id        String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  companyId String     @db.Uuid
+  entity    SyncEntity
+  entityId  String
+  entityKey Json?
+  changeSeq BigInt     @default(dbgenerated("nextval('sync_change_seq'::regclass)"))
+  deletedAt DateTime   @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, changeSeq])
+}
+
+enum SyncEntity {
+  Product
+  ProductPackaging
+  PriceListItem
+  Customer
+  Outlet
+  StockLevel
+  ProductCategory
+}
+
+// ---------------------------------------------------------------------------
+// F6: opening balances (TZ §6.7.1 openingQty; ADR-026 import rules)
+// ---------------------------------------------------------------------------
+
+enum OpeningBalanceKind {
+  CUSTOMER_BALANCE
+  STOCK
+}
+
+enum OpeningBalanceStatus {
+  PREVIEWED
+  POSTED
+  VOIDED
+}
+
+// One imported opening-balance file. Ledger rows it produces: Invoice
+// (kind OPENING) for debt, Payment (source OPENING) for credit, StockMovement
+// (ADJUST, refType 'OpeningBalance', refId = id) for stock. DB triggers
+// (20261019120000):
+//   insert only as PREVIEWED; PREVIEWED -> POSTED -> VOIDED only; no DELETE.
+//   companyId/kind/createdBy/createdAt never change; once POSTED the file,
+//   asOfDate and totals are frozen.
+//   -> POSTED: debtTotal/creditTotal/qtyTotal must equal the batch's ledger
+//      rows (written in the same transaction, before the flip).
+//   -> VOIDED: every ledger row already compensated (invoice CANCELLED,
+//      payment REVERSED, movement reversed) in the same transaction.
+model OpeningBalanceBatch {
+  id          String               @id @default(uuid()) @db.Uuid
+  companyId   String               @db.Uuid
+  kind        OpeningBalanceKind
+  asOfDate    DateTime             @db.Date
+  source      String // file name / "1C" / free-form origin
+  fileHash    String // sha256 of the uploaded file
+  importJobId String?              @db.Uuid
+  status      OpeningBalanceStatus @default(PREVIEWED)
+  rowCount    Int                  @default(0)
+  debtTotal   Decimal              @default(0) @db.Decimal(18, 2)
+  creditTotal Decimal              @default(0) @db.Decimal(18, 2)
+  qtyTotal    Decimal              @default(0) @db.Decimal(18, 3)
+  createdBy   String               @db.Uuid
+  postedBy    String?              @db.Uuid
+  postedAt    DateTime?
+  voidedBy    String?              @db.Uuid
+  voidedAt    DateTime?
+  voidReason  String?
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  company   Company    @relation(fields: [companyId], references: [id])
+  importJob ImportJob? @relation(fields: [importJobId], references: [id], onDelete: Restrict)
+  creator   User       @relation("OpeningBatchCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
+  poster    User?      @relation("OpeningBatchPostedBy", fields: [postedBy], references: [id], onDelete: Restrict)
+  voider    User?      @relation("OpeningBatchVoidedBy", fields: [voidedBy], references: [id], onDelete: Restrict)
+
+  invoices Invoice[]
+  payments Payment[]
+
+  @@index([companyId, kind, status])
+  @@index([importJobId])
+  @@index([createdBy])
+  @@index([postedBy])
+  @@index([voidedBy])
 }

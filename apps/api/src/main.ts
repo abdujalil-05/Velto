@@ -4,10 +4,12 @@ import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import * as Sentry from '@sentry/node';
 import { AppModule } from './app.module';
+import { TraceLogger } from './common/trace/trace-logger';
+import { perfMetrics } from './common/perf/perf-metrics';
 import { configureApp } from './bootstrap';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { logger: new TraceLogger() });
   const config = app.get(ConfigService);
 
   // Behind nginx on the same host: trust only the loopback hop for
@@ -36,7 +38,8 @@ async function bootstrap() {
   const port = process.env.API_PORT ?? 3001;
   const host = process.env.API_HOST ?? '0.0.0.0';
   await app.listen(port, host);
-  Logger.log(`Velto API listening on ${host}:${port}`, 'Bootstrap');
+  perfMetrics.start();
+  Logger.log(`Velto API listening on ${host}:${port} (version=${process.env.APP_VERSION ?? 'dev'} commit=${process.env.GIT_SHA ?? 'dev'})`, 'Bootstrap');
 }
 
 bootstrap();

@@ -1,0 +1,15 @@
+# EXAMPLE, see velto-backup.service.example. EVERY 20 MINUTES (PO target: offsite RPO <= 1 h with WARN 40 / CRIT 50 min on offsite_ts, see deploy/monitoring).
+# NOT enabled by the repo. Budget per run (RPO-RTO-ASSESSMENT.md): T (20 min cadence) + j (jitter <= 60 s) + D (dump + encrypt + fingerprint) + O (objects) + U (upload + read-back) <= 60 min.
+# If a measured run takes longer than ~15 min the cadence cannot hold -> WAL archiving (option B), not a longer timer.
+# Missed runs after downtime are caught up once (Persistent=true). No overlap: Type=oneshot AND flock in backup-run.sh (a second start while one is active exits 0 without work).
+[Unit]
+Description=Velto backup every 20 minutes
+
+[Timer]
+OnCalendar=*:00/20:00
+RandomizedDelaySec=60
+AccuracySec=1s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

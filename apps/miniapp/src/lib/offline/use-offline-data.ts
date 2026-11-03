@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { offlineRepository, getDefaultPriceListId } from './repository';
+import { offlineRepository, getDefaultPriceListId, getDatasetSyncTimes } from './repository';
 import { queueRepository } from './queue';
 
 // Local-first reads: these hit Dexie only, never the network — the sync
@@ -55,4 +55,8 @@ export function useOfflineDefaultPriceListId() {
 /** Today's queued (pending or already synced) documents of one type — the offline-first source for "8/22 nuqta"-style today counters (Home §9.4 Ekran 1) and Route's per-stop visited badge. */
 export function useOfflineTodayQueue(type: 'order' | 'visit' | 'payment') {
   return useQuery({ queryKey: ['offline', 'queue', 'today', type], queryFn: () => queueRepository.todayByType(type), staleTime: 5_000 });
+}
+
+export function useOfflineDatasetSyncTimes() {
+  return useQuery({ queryKey: ['offline', 'datasetSyncTimes'], queryFn: getDatasetSyncTimes, staleTime: Infinity });
 }

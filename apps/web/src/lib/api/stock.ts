@@ -56,3 +56,51 @@ export function useReceiveStockMutation() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['stock'] }),
   });
 }
+
+/** POST /stock/movements/:id/reverse — manual RECEIVE/ADJUST movements only (needs `stock.reverse`). */
+export function useReverseStockMovementMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, reason, idempotencyKey }: { id: string; reason: string; idempotencyKey: string }) =>
+      apiFetch<unknown>(`/stock/movements/${id}/reverse`, {
+        method: 'POST',
+        body: { reason },
+        headers: { 'Idempotency-Key': idempotencyKey },
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['stock'] }),
+  });
+}
+
+export type StockMovementType = 'RECEIVE' | 'ISSUE' | 'RESERVE' | 'RELEASE' | 'ADJUST';
+
+export interface StockMovementRow {
+  id: string;
+  type: StockMovementType;
+  qty: string;
+  productId: string;
+  warehouseId: string;
+  createdAt: string;
+  reason: string | null;
+  reversesMovementId: string | null;
+  reversedBy: string | null;
+  reversible: boolean;
+}
+
+export interface ListMovementsParams {
+  page?: number;
+  pageSize?: number;
+  productId?: string;
+  warehouseId?: string;
+  type?: StockMovementType;
+  from?: string;
+  to?: string;
+  [key: string]: string | number | undefined;
+}
+
+export function useStockMovementsQuery(params: ListMovementsParams) {
+  return useQuery({
+    queryKey: ['stock', 'movements', params],
+    queryFn: () => apiFetch<PaginatedResult<StockMovementRow>>(`/stock/movements${toQueryString(params)}`),
+    placeholderData: (previous) => previous,
+  });
+}

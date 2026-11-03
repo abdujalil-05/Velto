@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from 'sonner';
 import { AuthProvider, useAuth } from '@/lib/auth/auth-context';
 import { isCourierOnly } from '@/lib/auth/roles';
+import { ServiceWorkerRegister } from '@/components/service-worker-register';
 import { SyncEngineProvider } from '@/lib/offline/sync-engine';
 
 /**
@@ -37,6 +38,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
         <OfflineLayer>
+          <ServiceWorkerRegister />
           {children}
           <Toaster richColors position="top-center" />
         </OfflineLayer>

@@ -5,7 +5,9 @@ import { AuditLogService } from '../../common/audit/audit-log.service';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
 import {
   CustomerAlreadyBlockedException,
+  CustomerHasCreditBalanceException,
   CustomerHasOutstandingBalanceException,
+  CustomerHasPendingHandoverException,
   CustomerNotBlockedException,
   CustomerNotFoundException,
   DuplicateCustomerCodeException,
@@ -133,6 +135,101 @@ describe('CustomersService (integration, real Postgres + RLS)', () => {
     await expect(tenantPrisma.run(companyId, () => customers.remove(id, user))).rejects.toBeInstanceOf(
       CustomerHasOutstandingBalanceException,
     );
+  });
+
+  it('remove() refuses while the customer has an unallocated advance/credit (balance < 0), and leaves the row live', async () => {
+    const { customer } = await tenantPrisma.run(companyId, () => customers.create(dto('C-DEL-3'), user));
+    const id = (customer as { id: string }).id;
+    await tenantPrisma.run(companyId, (tx) =>
+      tx.payment.create({ data: { companyId, number: 'PAY-TEST-DEL-3', customerId: id, amount: '7000.00', method: 'TRANSFER' } }),
+    );
+
+    const err = await tenantPrisma.run(companyId, () => customers.remove(id, user)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CustomerHasCreditBalanceException);
+    expect((err as CustomerHasCreditBalanceException).getResponse()).toMatchObject({
+      code: 'CUSTOMER_HAS_CREDIT_BALANCE',
+      details: { credit: '7000.00' },
+    });
+    const row = await tenantPrisma.run(companyId, (tx) => tx.customer.findUniqueOrThrow({ where: { id } }));
+    expect(row.deletedAt).toBeNull();
+  });
+
+  it('remove() succeeds once debt and payment net to exactly 0', async () => {
+    const { customer } = await tenantPrisma.run(companyId, () => customers.create(dto('C-DEL-4'), user));
+    const id = (customer as { id: string }).id;
+    await tenantPrisma.run(companyId, async (tx) => {
+      const inv = await tx.invoice.create({ data: { companyId, number: 'INV-TEST-DEL-4', customerId: id, total: '5000.00', status: 'PAID' } });
+      const pay = await tx.payment.create({ data: { companyId, number: 'PAY-TEST-DEL-4', customerId: id, amount: '5000.00', method: 'CASH' } });
+      await tx.paymentAllocation.create({ data: { paymentId: pay.id, invoiceId: inv.id, amount: '5000.00' } });
+    });
+
+    const deleted = await tenantPrisma.run(companyId, () => customers.remove(id, user));
+    expect(deleted.deletedAt).not.toBeNull();
+  });
+
+  it('remove() refuses while a PENDING_HANDOVER payment exists; allowed once it is resolved', async () => {
+    const { customer } = await tenantPrisma.run(companyId, () => customers.create(dto('C-DEL-5'), user));
+    const id = (customer as { id: string }).id;
+    const pay = await tenantPrisma.run(companyId, (tx) =>
+      tx.payment.create({
+        data: { companyId, number: 'PAY-TEST-DEL-5', customerId: id, amount: '3000.00', method: 'CASH', status: 'PENDING_HANDOVER', collectedBy: user.id },
+      }),
+    );
+
+    const err = await tenantPrisma.run(companyId, () => customers.remove(id, user)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CustomerHasPendingHandoverException);
+    expect((err as CustomerHasPendingHandoverException).getResponse()).toMatchObject({
+      code: 'CUSTOMER_HAS_PENDING_HANDOVER',
+      details: { count: 1 },
+    });
+
+    // ADR-029 four-eyes (DB trigger): the collector may not resolve their own handover.
+    const resolver = await systemPrisma.user.create({ data: { companyId, firstName: 'Cash', lastName: 'Resolver', phone: '+998900000095' } });
+    await tenantPrisma.run(companyId, (tx) =>
+      tx.payment.update({
+        where: { id: pay.id },
+        data: { status: 'REJECTED', handoverActorId: resolver.id, handoverAt: new Date(), handoverRejectReason: 'test' },
+      }),
+    );
+    const deleted = await tenantPrisma.run(companyId, () => customers.remove(id, user));
+    expect(deleted.deletedAt).not.toBeNull();
+  });
+
+  it('race: two parallel remove() on one customer — exactly one wins, the other gets CustomerNotFound, audited once', async () => {
+    const { customer } = await tenantPrisma.run(companyId, () => customers.create(dto('C-DEL-RACE'), user));
+    const id = (customer as { id: string }).id;
+
+    const settled = await Promise.allSettled([
+      tenantPrisma.run(companyId, () => customers.remove(id, user)),
+      tenantPrisma.run(companyId, () => customers.remove(id, user)),
+    ]);
+    expect(settled.filter((s) => s.status === 'fulfilled')).toHaveLength(1);
+    const rejected = settled.filter((s): s is PromiseRejectedResult => s.status === 'rejected');
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.reason).toBeInstanceOf(CustomerNotFoundException);
+
+    const audits = await tenantPrisma.run(companyId, (tx) =>
+      tx.auditLog.count({ where: { action: 'customer.delete', entityId: id } }),
+    );
+    expect(audits).toBe(1);
+  });
+
+  it('getById lastPayment ignores REVERSED payments', async () => {
+    const { customer } = await tenantPrisma.run(companyId, () => customers.create(dto('C-LASTPAY'), user));
+    const customerId = (customer as { id: string }).id;
+    const posted = await tenantPrisma.run(companyId, (tx) =>
+      tx.payment.create({ data: { companyId, number: 'PAY-TEST-LP-1', customerId, amount: '1000.00', method: 'CASH', createdAt: new Date(Date.now() - 60_000) } }),
+    );
+    await tenantPrisma.run(companyId, (tx) =>
+      // Inserted POSTED, then reversed the only way the DB allows (PaymentReversal first).
+      tx.payment.create({ data: { companyId, number: 'PAY-TEST-LP-2', customerId, amount: '2000.00', method: 'CASH' } }).then(async (p) => {
+        await tx.paymentReversal.create({ data: { companyId, reversesPaymentId: p.id, reason: 'test', actorId: user.id } });
+        await tx.payment.update({ where: { id: p.id }, data: { status: 'REVERSED' } });
+      }),
+    );
+
+    const detail = await tenantPrisma.run(companyId, () => customers.getById(customerId, user));
+    expect((detail as unknown as { lastPayment: { id: string } | null }).lastPayment?.id).toBe(posted.id);
   });
 
   it('SEC-023 (15.3): a SALES_AGENT only sees customers reached via their own orders/routes/visits', async () => {

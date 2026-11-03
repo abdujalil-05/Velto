@@ -2,16 +2,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HttpException, HttpStatus, Logger, type ArgumentsHost } from '@nestjs/common';
 import * as Sentry from '@sentry/node';
 import { AllExceptionsFilter } from './http-exception.filter';
+import { Prisma } from '@velto/database';
 
 vi.mock('@sentry/node', () => ({ captureException: vi.fn() }));
 
 function mockHost() {
   const json = vi.fn();
   const status = vi.fn(() => ({ json }));
+  const setHeader = vi.fn();
   const host = {
-    switchToHttp: () => ({ getResponse: () => ({ status }) }),
+    switchToHttp: () => ({ getResponse: () => ({ status, setHeader }) }),
   } as unknown as ArgumentsHost;
-  return { host, status, json };
+  return { host, status, json, setHeader };
 }
 
 /** Silences Nest's console output and lets the level (warn vs error) be asserted. */
@@ -189,6 +191,167 @@ describe('AllExceptionsFilter', () => {
       expect(status).toHaveBeenCalledWith(HttpStatus.INTERNAL_SERVER_ERROR);
       expect(json.mock.calls[0]![0].code).toBe('HTTP_500');
       expect(logger.error).toHaveBeenCalledTimes(1);
+      expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('DB pool exhaustion (SERVICE_BUSY)', () => {
+    let logger: ReturnType<typeof spyOnLogger>;
+    beforeEach(() => {
+      logger = spyOnLogger();
+      vi.mocked(Sentry.captureException).mockClear();
+    });
+    afterEach(() => vi.restoreAllMocks());
+
+    const prismaErr = (code: string, message: string) => Object.assign(new Error(message), { code });
+
+    it.each([
+      ['P2024', 'Timed out fetching a new connection from the connection pool.'],
+      ['P2028', 'Unable to start a transaction in the allocated time'],
+      ['P2028', 'Unable to start a transaction in the given time.'],
+    ])('maps %s (%s) to 503 SERVICE_BUSY with Retry-After, warn only, no Sentry', (code, message) => {
+      const filter = new AllExceptionsFilter();
+      const { host, status, json, setHeader } = mockHost();
+
+      filter.catch(prismaErr(code, message), host);
+
+      expect(status).toHaveBeenCalledWith(HttpStatus.SERVICE_UNAVAILABLE);
+      const body = json.mock.calls[0]![0];
+      expect(body.code).toBe('SERVICE_BUSY');
+      expect(Object.keys(body.message).sort()).toEqual(['en', 'ru', 'uz']);
+      expect(setHeader).toHaveBeenCalledWith('Retry-After', '5');
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      'Transaction API error: Transaction already closed: A commit cannot be executed on an expired transaction. The timeout for this transaction was 5000 ms, however 5037 ms passed since the start of the transaction.',
+      'Transaction API error: Transaction already closed: A query cannot be executed on an expired transaction. The timeout for this transaction was 5000 ms',
+    ])('maps P2028 expired tx (%s) to 503 SERVICE_BUSY, same contract as 55P03, warn only, no Sentry', (message) => {
+      const filter = new AllExceptionsFilter();
+      const { host, status, json, setHeader } = mockHost();
+
+      filter.catch(prismaErr('P2028', message), host);
+
+      expect(status).toHaveBeenCalledWith(HttpStatus.SERVICE_UNAVAILABLE);
+      const body = json.mock.calls[0]![0];
+      expect(body.code).toBe('SERVICE_BUSY');
+      expect(Object.keys(body.message).sort()).toEqual(['en', 'ru', 'uz']);
+      expect(setHeader).toHaveBeenCalledWith('Retry-After', '1');
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      'Transaction API error: Transaction already closed: A query cannot be executed on a committed transaction.',
+      'Transaction API error: Transaction not found. Transaction ID is invalid, refers to an old closed transaction',
+    ])('keeps P2028 that does not prove a rollback (%s) as 500 + Sentry', (message) => {
+      const filter = new AllExceptionsFilter();
+      const { host, status, json, setHeader } = mockHost();
+
+      filter.catch(prismaErr('P2028', message), host);
+
+      expect(status).toHaveBeenCalledWith(HttpStatus.INTERNAL_SERVER_ERROR);
+      expect(json.mock.calls[0]![0].code).toBe('HTTP_500');
+      expect(setHeader).not.toHaveBeenCalled();
+      expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not map the expired-tx text without a P2028 code', () => {
+      const filter = new AllExceptionsFilter();
+      const { host, status } = mockHost();
+
+      filter.catch(new Error('Transaction already closed: A commit cannot be executed on an expired transaction'), host);
+
+      expect(status).toHaveBeenCalledWith(HttpStatus.INTERNAL_SERVER_ERROR);
+    });
+
+    it('keeps an unrelated error as 500 + Sentry', () => {
+      const filter = new AllExceptionsFilter();
+      const { host, status } = mockHost();
+
+      filter.catch(new Error('boom'), host);
+
+      expect(status).toHaveBeenCalledWith(HttpStatus.INTERNAL_SERVER_ERROR);
+      expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['P2034', 'Transaction failed due to a write conflict or a deadlock. Please retry your transaction'],
+      ['P2010', 'Raw query failed. Code: `40P01`. Message: `ERROR: deadlock detected`'],
+      ['P2010', 'Raw query failed. Code: `40001`. Message: `could not serialize access due to concurrent update`'],
+      ['40P01', 'deadlock detected'],
+      ['40001', 'serialization failure'],
+      ['55P03', 'lock not available'],
+      ['P2010', 'Raw query failed. Code: `55P03`. Message: `ERROR: canceling statement due to lock timeout`'],
+    ])('maps tx conflict %s (%s) to 503 SERVICE_BUSY Retry-After 1, warn only, no Sentry', (code, message) => {
+      const filter = new AllExceptionsFilter();
+      const { host, status, json, setHeader } = mockHost();
+
+      filter.catch(prismaErr(code, message), host);
+
+      expect(status).toHaveBeenCalledWith(HttpStatus.SERVICE_UNAVAILABLE);
+      expect(json.mock.calls[0]![0].code).toBe('SERVICE_BUSY');
+      expect(setHeader).toHaveBeenCalledWith('Retry-After', '1');
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+    });
+
+    it('maps a plain Error whose text says "deadlock detected" (driver adapter) to 503', () => {
+      const filter = new AllExceptionsFilter();
+      const { host, status, setHeader } = mockHost();
+
+      filter.catch(new Error('ERROR: deadlock detected'), host);
+
+      expect(status).toHaveBeenCalledWith(HttpStatus.SERVICE_UNAVAILABLE);
+      expect(setHeader).toHaveBeenCalledWith('Retry-After', '1');
+    });
+
+    it('does not treat a plain Error merely containing "40001" / "40P01" as a tx conflict (500 + Sentry)', () => {
+      for (const msg of ['order 40001 not found in import', 'code 40P01 in a file name']) {
+        vi.clearAllMocks();
+        const filter = new AllExceptionsFilter();
+        const { host, status, setHeader } = mockHost();
+
+        filter.catch(new Error(msg), host);
+
+        expect(status).toHaveBeenCalledWith(HttpStatus.INTERNAL_SERVER_ERROR);
+        expect(setHeader).not.toHaveBeenCalled();
+        expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it('maps a plain Error "canceling statement due to lock timeout" (55P03, driver adapter) to 503', () => {
+      const filter = new AllExceptionsFilter();
+      const { host, status, json, setHeader } = mockHost();
+
+      filter.catch(new Error('ERROR: canceling statement due to lock timeout'), host);
+
+      expect(status).toHaveBeenCalledWith(HttpStatus.SERVICE_UNAVAILABLE);
+      expect(json.mock.calls[0]![0].code).toBe('SERVICE_BUSY');
+      expect(setHeader).toHaveBeenCalledWith('Retry-After', '1');
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+    });
+
+    it('maps PrismaClientUnknownRequestError carrying 40001 in its text to 503', () => {
+      const filter = new AllExceptionsFilter();
+      const { host, status } = mockHost();
+
+      filter.catch(new Prisma.PrismaClientUnknownRequestError('db error: 40001 serialization', { clientVersion: 'x' }), host);
+
+      expect(status).toHaveBeenCalledWith(HttpStatus.SERVICE_UNAVAILABLE);
+    });
+
+    it('keeps other Prisma errors (P2002) as 500 + Sentry', () => {
+      const filter = new AllExceptionsFilter();
+      const { host, status, setHeader } = mockHost();
+
+      filter.catch(prismaErr('P2002', 'Unique constraint failed'), host);
+
+      expect(status).toHaveBeenCalledWith(HttpStatus.INTERNAL_SERVER_ERROR);
+      expect(setHeader).not.toHaveBeenCalled();
       expect(Sentry.captureException).toHaveBeenCalledTimes(1);
     });
   });

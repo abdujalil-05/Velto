@@ -8,14 +8,14 @@ import { useAuth } from '@/lib/auth/auth-context';
 import { useStockLevelsQuery } from '@/lib/api/stock';
 import { errorMessage } from '@/lib/api/client';
 import { useSort } from '@/lib/hooks/use-sort';
-import { exportToCsv } from '@/lib/export-csv';
-import { formatQty } from '@/lib/format';
+import { exportToCsv, csvDecimal } from '@/lib/export-csv';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { PaginationBar } from '@/components/shared/pagination-bar';
 import { ExportCsvButton } from '@/components/shared/export-csv-button';
+import { MovementsSection } from '@/components/stock/movements-section';
 import { StockTable } from '@/components/stock/stock-table';
 import { cn } from '@/lib/utils';
 
@@ -24,6 +24,8 @@ export default function StockPage() {
   const locale = useLocale();
   const { hasPermission } = useAuth();
 
+  const canMovements = hasPermission('stock.movements.read');
+  const [tab, setTab] = useState<'levels' | 'movements'>('levels');
   const [page, setPage] = useState(1);
   const { sort, toggle: toggleSort } = useSort();
 
@@ -39,9 +41,9 @@ export default function StockPage() {
     exportToCsv(`qoldiq-${new Date().toISOString().slice(0, 10)}.csv`, data.data, [
       { header: t('product'), value: (r) => r.product.name },
       { header: t('warehouse'), value: (r) => r.warehouse.name },
-      { header: t('onHand'), value: (r) => formatQty(r.onHand) },
-      { header: t('reserved'), value: (r) => formatQty(r.reserved) },
-      { header: t('available'), value: (r) => formatQty(r.available) },
+      { header: t('onHand'), value: (r) => csvDecimal(r.onHand, 3) },
+      { header: t('reserved'), value: (r) => csvDecimal(r.reserved, 3) },
+      { header: t('available'), value: (r) => csvDecimal(r.available, 3) },
     ]);
   }
 
@@ -59,6 +61,17 @@ export default function StockPage() {
         </div>
       </div>
 
+      <div role="tablist" className="flex gap-2">
+        {(canMovements ? (['levels', 'movements'] as const) : (['levels'] as const)).map((k) => (
+          <Button key={k} role="tab" aria-selected={tab === k} variant={tab === k ? 'default' : 'outline'} size="sm" onClick={() => setTab(k)}>
+            {t(`tabs.${k}`)}
+          </Button>
+        ))}
+      </div>
+
+      {tab === 'movements' && canMovements && <MovementsSection />}
+
+      {(tab === 'levels' || !canMovements) && <>
       <div className="flex flex-wrap items-center gap-3">
         <Button variant="ghost" size="sm" onClick={() => refetch()} disabled={isFetching}>
           <RefreshCw className={cn('mr-2 h-4 w-4', isFetching && 'animate-spin')} />
@@ -106,6 +119,7 @@ export default function StockPage() {
           </CardContent>
         </Card>
       )}
+      </>}
     </div>
   );
 }

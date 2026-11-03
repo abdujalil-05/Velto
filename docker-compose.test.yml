@@ -1,0 +1,37 @@
+# Isolated, ephemeral test stack. Separate compose project (velto-test), own network,
+# no named volumes (tmpfs) — never shares data with docker-compose.yml (velto_dev).
+# Use via scripts/test-isolated.sh. Host ports: postgres 5435, redis 6381.
+name: velto-test
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    shm_size: 512mb
+    environment:
+      POSTGRES_USER: velto
+      POSTGRES_PASSWORD: velto
+      POSTGRES_DB: velto_test
+    # Test-only durability trade-off: data is disposable.
+    command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off", "-c", "max_connections=300"]
+    ports:
+      - "5435:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U velto -d velto_test"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6381:6379"
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 5s
+      retries: 20

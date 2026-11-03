@@ -1,4 +1,6 @@
 import { Injectable } from '@nestjs/common';
+import { assertClientIdReplayAllowed } from '../../../common/idempotency/client-id-replay';
+import { ConfigService } from '@nestjs/config';
 import { Prisma, withSavepoint, type TenantClient } from '@velto/database';
 import { AuditLogService, toAuditJson } from '../../../common/audit/audit-log.service';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
@@ -6,8 +8,15 @@ import { paginate } from '../../../common/pagination/pagination.dto';
 import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.service';
 import { endOfDay, startOfDay } from '../../analytics/report-utils';
 import { OutletNotFoundException } from '../../customers/customers-exceptions';
-import { AgentNotFoundException, GpsTooFarException, VisitNotFoundException } from '../field-exceptions';
-import { distanceMeters, VISIT_GPS_RADIUS_M } from '../geo';
+import {
+  AgentNotFoundException,
+  VisitNotFoundException,
+  VisitSkipReasonRequiredException,
+  VisitStartedAtInFutureException,
+  VisitStartedAtTooOldException,
+} from '../field-exceptions';
+import { FieldAlertService } from '../field-alert.service';
+import { evaluateGps } from '../geo';
 import type { CreateVisitDto } from './dto/create-visit.dto';
 import type { ListVisitsQueryDto } from './dto/list-visits.query';
 
@@ -16,12 +25,28 @@ const VISIT_INCLUDE = {
   agent: { select: { id: true, firstName: true, lastName: true } },
 } satisfies Prisma.VisitInclude;
 
+/** Device clocks drift; a startedAt further ahead than this is a wrong clock, not a real visit. */
+export const VISIT_FUTURE_SKEW_MS = 5 * 60_000;
+/**
+ * Default max age of an offline visit's startedAt. 30 days (not 7): iOS evicts
+ * IndexedDB after ~7 days of inactivity, and rejecting older visits would lose an
+ * agent's field data (TZ 8.4); 30 days still bounds bogus/wrong-clock dates.
+ */
+export const VISIT_DEFAULT_MAX_AGE_DAYS = 30;
+
 @Injectable()
 export class VisitsService {
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     private readonly auditLog: AuditLogService,
+    private readonly fieldAlerts?: FieldAlertService,
+    private readonly config?: ConfigService,
   ) {}
+
+  private get maxAgeDays(): number {
+    const raw = Number(this.config?.get('VISIT_STARTED_AT_MAX_AGE_DAYS') ?? VISIT_DEFAULT_MAX_AGE_DAYS);
+    return Number.isInteger(raw) && raw >= 1 ? raw : VISIT_DEFAULT_MAX_AGE_DAYS;
+  }
 
   async list(query: ListVisitsQueryDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
@@ -33,6 +58,7 @@ export class VisitsService {
     const where: Prisma.VisitWhereInput = {
       ...(scopedAgentId ? { agentId: scopedAgentId } : {}),
       ...(query.outletId ? { outletId: query.outletId } : {}),
+      ...(query.gpsStatus ? { gpsStatus: query.gpsStatus } : {}),
       ...(query.from || query.to
         ? {
             startedAt: {
@@ -71,33 +97,55 @@ export class VisitsService {
   }
 
   /**
-   * F-M06 / 9.4-follow-up: records a field visit with a hard GPS proximity
-   * check against the outlet's registered coordinates (150m radius) — no
-   * reason-based bypass. When the outlet has no registered coordinates at
-   * all, the check can't run, so `gpsOk` is left `null` (unverifiable, but
-   * not the agent's fault) rather than blocking the visit outright.
+   * F3: records a field visit. GPS problems never block it — the server
+   * classifies the client-reported fix via evaluateGps() (precedence in
+   * geo.ts), stores the status/distance, and only VERIFIED counts as verified.
+   * gpsOk is derived by a DB trigger and never written here.
    * 10.4 offline idempotency: a resubmitted clientId returns the original
    * visit instead of creating a duplicate.
    */
   async create(dto: CreateVisitDto, user: AuthenticatedUser) {
     const tx = this.tenantPrisma.client;
 
+    if (dto.outcome === 'SKIPPED' && !dto.skipReason?.trim()) throw new VisitSkipReasonRequiredException();
+
     if (dto.clientId) {
       const existing = await tx.visit.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: VISIT_INCLUDE });
-      if (existing) return existing;
+      if (existing) {
+        assertClientIdReplayAllowed(existing.agentId, user);
+        return existing;
+      }
     }
 
-    const agentId = user.roles.includes('SALES_AGENT') ? user.id : await this.resolveAgent(tx, dto.agentId);
+    // Clock-skew guard (after the clientId replay check so an already-accepted
+    // visit still resolves to DUPLICATE): REJECTED, never silently clamped.
+    const startedAtMs = new Date(dto.startedAt).getTime();
+    const now = Date.now();
+    if (startedAtMs > now + VISIT_FUTURE_SKEW_MS) throw new VisitStartedAtInFutureException();
+    if (startedAtMs < now - this.maxAgeDays * 86_400_000) throw new VisitStartedAtTooOldException(this.maxAgeDays);
+
+    // SEC-023: only OWNER / SALES_DIRECTOR may record a visit on behalf of another user;
+    // every other role (SALES_AGENT, COURIER, ...) is forced to their own id.
+    const mayDelegate = user.roles.includes('OWNER') || user.roles.includes('SALES_DIRECTOR');
+    const agentId = mayDelegate ? await this.resolveAgent(tx, dto.agentId) : user.id;
 
     const outlet = await tx.outlet.findFirst({ where: { id: dto.outletId, deletedAt: null } });
     if (!outlet) throw new OutletNotFoundException();
 
-    let gpsOk: boolean | null = null;
-    if (outlet.latitude != null && outlet.longitude != null) {
-      const distance = distanceMeters(dto.latitude, dto.longitude, Number(outlet.latitude), Number(outlet.longitude));
-      gpsOk = distance <= VISIT_GPS_RADIUS_M;
-      if (!gpsOk) throw new GpsTooFarException(distance);
-    }
+    const company = await tx.company.findUniqueOrThrow({
+      where: { id: this.tenantPrisma.companyId },
+      select: { visitGpsRadiusM: true, gpsMaxAccuracyM: true },
+    });
+    const gps = evaluateGps({
+      permissionDenied: dto.permissionDenied,
+      latitude: dto.latitude,
+      longitude: dto.longitude,
+      accuracyM: dto.accuracyM,
+      outletLatitude: outlet.latitude == null ? null : Number(outlet.latitude),
+      outletLongitude: outlet.longitude == null ? null : Number(outlet.longitude),
+      radiusM: company.visitGpsRadiusM,
+      maxAccuracyM: company.gpsMaxAccuracyM,
+    });
 
     let visit;
     try {
@@ -112,11 +160,15 @@ export class VisitsService {
             outletId: dto.outletId,
             startedAt: new Date(dto.startedAt),
             endedAt: dto.endedAt ? new Date(dto.endedAt) : null,
-            latitude: dto.latitude,
-            longitude: dto.longitude,
-            gpsOk,
+            latitude: gps.latitude,
+            longitude: gps.longitude,
+            gpsStatus: gps.status,
+            gpsAccuracyM: gps.latitude == null ? null : dto.accuracyM,
+            gpsCapturedAt: gps.latitude == null || !dto.capturedAt ? null : new Date(dto.capturedAt),
+            distanceM: gps.distanceM,
             outcome: dto.outcome,
             noOrderReason: dto.noOrderReason,
+            skipReason: dto.outcome === 'SKIPPED' ? dto.skipReason?.trim() : null,
             clientId: dto.clientId,
           },
           include: VISIT_INCLUDE,
@@ -128,7 +180,10 @@ export class VisitsService {
       // loser hits this unique violation. Return the winner's visit.
       if (dto.clientId && err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
         const existing = await tx.visit.findUnique({ where: { companyId_clientId: { companyId: this.tenantPrisma.companyId, clientId: dto.clientId } }, include: VISIT_INCLUDE });
-        if (existing) return existing;
+        if (existing) {
+          assertClientIdReplayAllowed(existing.agentId, user);
+          return existing;
+        }
       }
       throw err;
     }
@@ -142,6 +197,7 @@ export class VisitsService {
       newValue: toAuditJson(visit),
     });
 
+    this.fieldAlerts?.scheduleGpsUnverified(visit.gpsStatus);
     return visit;
   }
 

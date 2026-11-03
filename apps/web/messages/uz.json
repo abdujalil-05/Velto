@@ -28,7 +28,13 @@
       "title": "Bekor qilishni tasdiqlang",
       "description": "«{name}» ni rostdan ham bekor qilmoqchimisiz? Bu amalni ortga qaytarib bo'lmaydi.",
       "confirm": "Ha, bekor qilish"
-    }
+    },
+    "reverse": {
+      "reason": "Sabab",
+      "reasonHint": "{min}–{max} belgi, majburiy",
+      "confirm": "Bekor qilish"
+    },
+    "openingLabel": "Boshlang'ich qarz/avans"
   },
   "Nav": {
     "dashboard": "Bosh sahifa",
@@ -44,7 +50,11 @@
     "audit": "Audit jurnali",
     "settings": "Sozlamalar",
     "help": "Ma'lumot",
-    "cash": "Kassa va to'lovlar"
+    "cash": "Kassa va to'lovlar",
+    "purchases": "Xarid",
+    "reconciliation": "Solishtirish",
+    "visits": "Tashriflar",
+    "export1c": "1C eksport"
   },
   "LanguageSwitcher": {
     "label": "Til"
@@ -60,6 +70,7 @@
     "submit": "Kirish",
     "forgotPassword": "Parolni unutdingizmi?",
     "reset": {
+      "smsUnavailable": "Parolni SMS orqali tiklash mavjud emas. Parolni tiklash uchun kompaniya egasi/administratoriga murojaat qiling.",
       "title": "Parolni tiklash",
       "phoneStepDescription": "Tasdiqlash kodi SMS orqali yuboriladi",
       "sendCode": "Kod yuborish",
@@ -73,7 +84,52 @@
       "resendIn": "Qayta yuborish ({seconds}s)",
       "success": "Parol yangilandi. Endi yangi parol bilan kiring",
       "back": "Orqaga",
-      "cancel": "Bekor qilish"
+      "cancel": "Bekor qilish",
+      "accountStepDescription": "Bu raqamga bir nechta hisob biriktirilgan. Parol faqat tanlangan hisob uchun o'zgaradi.",
+      "chooseAccount": "Hisobni tanlang",
+      "successAccount": "{account} hisobi uchun parol yangilandi. Boshqa hisoblar o'zgarmadi. Yangi parol bilan kiring"
+    },
+    "chooseCompany": "Qaysi kompaniyaga kirasiz?",
+    "continue": "Davom etish",
+    "backToPassword": "Parol bosqichiga qaytish",
+    "challengeInvalid": "Tanlov muddati tugagan yoki allaqachon ishlatilgan. Telefon raqam va parolni qayta kiriting.",
+    "challengeRateLimited": "Biroz kutib, qayta urinib ko'ring.",
+    "sessionExpired": "Sessiya muddati tugadi. Qaytadan kiring.",
+    "mfa": {
+      "sessionRequired": "Ikki bosqichli autentifikatsiya talab qilinadi. Qaytadan kiring.",
+      "loading": "Yuklanmoqda",
+      "retry": "Qayta urinish",
+      "continue": "Davom etish",
+      "challengeExpired": "Tekshiruv muddati tugagan yoki allaqachon ishlatilgan. Telefon va parolni qaytadan kiriting.",
+      "webLoginRequired": "Bu akkaunt veb-ilova orqali kirishi kerak. Telefon va parolni qaytadan kiriting.",
+      "codeInvalid": "Kod noto'g'ri. Kodni tekshirib, qayta urinib ko'ring.",
+      "rateLimited": "Urinishlar juda ko'p. Bir necha daqiqa kutib, qayta urinib ko'ring.",
+      "serviceUnavailable": "Tekshiruv vaqtincha mavjud emas. Birozdan so'ng qayta urinib ko'ring.",
+      "codeFormat": "6 xonali kodni kiriting",
+      "recoveryRequired": "Zaxira kodni kiriting",
+      "verifyTitle": "Ikki bosqichli tekshiruv",
+      "verifyHint": "Autentifikator ilovasidagi 6 xonali kodni kiriting.",
+      "codeLabel": "Autentifikatsiya kodi",
+      "verify": "Tasdiqlash",
+      "useRecovery": "Zaxira koddan foydalanish",
+      "useAuthenticator": "Ilova kodidan foydalanish",
+      "recoveryPrompt": "Saqlangan zaxira kodlardan birini kiriting. Har biri bir marta ishlaydi.",
+      "recoveryLabel": "Zaxira kod",
+      "enrollTitle": "Ikki bosqichli autentifikatsiyani sozlash",
+      "enrollHint": "QR kodni autentifikator ilovasida skanerlang va ko'rsatilgan 6 xonali kodni kiriting.",
+      "qrAlt": "Autentifikator ilovasi uchun QR kod",
+      "manualKey": "Yoki kalitni qo'lda kiriting",
+      "copy": "Nusxalash",
+      "copied": "Nusxalandi",
+      "confirmCodeLabel": "6 xonali kod",
+      "confirmEnroll": "Tasdiqlash va davom etish",
+      "recoveryTitle": "Zaxira kodlarni saqlang",
+      "recoveryHint": "Autentifikatorni yo'qotsangiz, har bir kod bir marta ishlaydi. Ular faqat hozir ko'rsatiladi.",
+      "download": ".txt yuklab olish",
+      "savedCheck": "Kodlarni xavfsiz joyga saqladim",
+      "enrollmentCodeHint": "Tasdiqlash kodi kompaniya egangizdan olinadi (egalar uchun — Velto qo'llab-quvvatlash xizmatidan). Kod bir martalik.",
+      "enrollmentCodeLabel": "Sozlash kodi",
+      "enrollmentCodeContinue": "Davom etish"
     }
   },
   "NotFound": {
@@ -98,23 +154,24 @@
       "light": "Yorug' rejim (bosib qorong'iga o'tish)",
       "dark": "Qorong'i rejim (bosib tizimga o'tish)",
       "system": "Tizim rejimi (bosib yorug'ga o'tish)"
-    }
+    },
+    "security": "Xavfsizlik"
   },
   "Dashboard": {
     "title": "Bosh sahifa",
     "refresh": "Yangilash",
     "retry": "Qayta urinish",
     "vsYesterday": "kechagiga nisbatan",
-    "todayTurnover": "Bugungi aylanma",
-    "orderCount": "Buyurtmalar soni",
+    "todayTurnover": "Bugungi yetkazilgan aylanma",
+    "orderCount": "Bugun yetkazilgan buyurtmalar",
     "collected": "Yig'ilgan pul",
     "overdueDebt": "Muddati o'tgan qarz",
-    "turnoverTrend": "Oxirgi 30 kun aylanma",
+    "turnoverTrend": "Yetkazilgan aylanma — oxirgi 30 kun",
     "agentsToday": "Bugungi agentlar",
     "agent": "Agent",
     "visits": "Tashrif",
-    "orders": "Buyurtma",
-    "turnover": "Aylanma",
+    "orders": "Yetkazilgan buyurtmalar",
+    "turnover": "Yetkazilgan aylanma",
     "noAgentsToday": "Bugun uchun agent faolligi yo'q",
     "topDebtors": "Eng katta qarzdorlar",
     "noDebtors": "Qarzdorlik yo'q",
@@ -146,7 +203,8 @@
     "filter": {
       "all": "Barchasi",
       "active": "Faol",
-      "blocked": "Bloklangan"
+      "blocked": "Bloklangan",
+      "deleted": "O'chirilgan"
     },
     "form": {
       "required": "Majburiy maydon",
@@ -218,6 +276,50 @@
       "visitOutcome": {
         "ORDERED": "Buyurtma bilan",
         "NO_ORDER": "Buyurtmasiz"
+      },
+      "credit": "Kredit",
+      "advance": "Avans",
+      "allocate": {
+        "action": "Avansni taqsimlash",
+        "title": "Avansni taqsimlash",
+        "success": "Avans taqsimlandi",
+        "retry": "Qayta urinish",
+        "noAdvance": "Mijozda taqsimlanmagan avans yo'q",
+        "noInvoices": "Mijozda taqsimlash uchun ochiq ichki hisoblar yo'q",
+        "payment": "To'lov",
+        "advanceOf": "avans",
+        "outstanding": "Qoldiq",
+        "amount": "Summa",
+        "invalidAmount": "Ichki hisob qoldig'idan oshmagan summa kiriting",
+        "total": "Taqsimlandi",
+        "exceedsAdvance": "avansdan oshib ketdi",
+        "submit": "Taqsimlash"
+      },
+      "inTransit": "Yo'lda ({count} ta to'lov)",
+      "inTransitHint": "Kassir qabul qilmaguncha qarz kamaymaydi"
+    },
+    "credit": "Kredit",
+    "advance": "Avans",
+    "restore": "Tiklash",
+    "confirmRestore": {
+      "title": "Mijozni tiklash",
+      "description": "“{name}” tiklansinmi? Mijoz faol ro'yxatda qayta paydo bo'ladi."
+    },
+    "restoreSuccess": "“{name}” tiklandi.",
+    "restoreCodeConflict": "“{code}” kodli faol mijoz allaqachon mavjud. Avval o'sha faol mijoz kodini o'zgartiring, so'ng bu mijozni tiklang.",
+    "emptyDeleted": "O'chirilgan mijozlar yo'q",
+    "deleteBlockers": {
+      "intro": "O'chirib bo'lmaydi — yopilmagan ma'lumotlar:",
+      "orders": "{status} holatidagi buyurtmalar: {count}",
+      "pendingHandover": "Kassir qabul qilishini kutayotgan to'lovlar: {count}",
+      "debt": "Ochiq qarz: {amount}",
+      "advance": "Qo'llanmagan avans: {amount}",
+      "status": {
+        "DRAFT": "Qoralama",
+        "SUBMITTED": "Yuborilgan",
+        "CONFIRMED": "Tasdiqlangan",
+        "SHIPPED": "Jo'natilgan",
+        "DELIVERED": "Yetkazilgan"
       }
     }
   },
@@ -287,10 +389,40 @@
       "cancel": "Bekor qilish",
       "cancelSuccess": "Buyurtma bekor qilindi",
       "cancelTitle": "Buyurtmani bekor qilish",
-      "cancelReasonLabel": "Sabab (ixtiyoriy)",
+      "cancelReasonLabel": "Sabab",
       "cancelConfirm": "Bekor qilish",
+      "returnToWarehouse": "Omborga qaytarish",
+      "returnTitle": "Buyurtmani omborga qaytarish",
+      "returnConfirm": "Omborga qaytarish",
+      "returnKeep": "Qaytarmaslik",
+      "returnSuccess": "Buyurtma omborga qaytarildi",
+      "courierNotAssigned": "Kuryer tayinlanmagan",
+      "courierSelect": "Kuryer",
+      "courierChoose": "Kuryerni tanlang",
+      "courierLoading": "Yuklanmoqda…",
+      "courierNone": "Mavjud kuryerlar yo'q",
+      "assignCourier": "Tayinlash",
+      "reassignCourier": "Qayta tayinlash",
+      "assignSuccess": "Kuryer tayinlandi",
+      "handover": "Kuryerga topshirish",
+      "handoverTitle": "Buyurtmani kuryerga topshirish",
+      "handoverHint": "Buyurtma kuryerga jismonan topshirilganini tasdiqlang. Holati «Jo'natildi» ga o'tadi.",
+      "handoverNote": "Izoh (ixtiyoriy)",
+      "handoverConfirm": "Topshirishni tasdiqlash",
+      "handoverSuccess": "Buyurtma kuryerga topshirildi",
+      "reassignViaReturnHint": "Kuryer tayinlangan. Kuryerni almashtirish uchun avval buyurtmani omborga qaytaring.",
+      "deliverNeedsHandover": "Yetkazishdan oldin buyurtmani kuryerga topshiring.",
+      "cancelShippedHint": "Buyurtma allaqachon kuryerga topshirilgan. Bekor qilish uchun avval uni omborga qaytaring.",
       "cancelKeep": "Bekor qilmaslik",
-      "courier": "Kuryer"
+      "courier": "Kuryer",
+      "deliverTitle": "Buyurtmani yetkazish",
+      "deliverHint": "Har bir qator bo'yicha haqiqatda chiqarilgan miqdorni kiriting (asosiy birlikda). Odatda — buyurtma qilingan miqdor.",
+      "deliveredQty": "Yetkazildi",
+      "deliveredQtyOver": "Buyurtma miqdoridan oshmasligi kerak",
+      "deliveredQtyInvalid": "To'g'ri manfiy bo'lmagan son kiriting (3 xonagacha kasr)",
+      "deliverRemainderNotice": "Yetkazilmagan qoldiq zaxiradan bo'shatiladi va buyurtma yetkazilgan sifatida yopiladi.",
+      "deliverAllZero": "Kamida bitta qatorda miqdor noldan katta bo'lishi kerak. Buyurtmani to'xtatish uchun uni bekor qiling.",
+      "deliverConfirm": "Yetkazishni tasdiqlash"
     },
     "form": {
       "title": "Yangi buyurtma",
@@ -304,6 +436,8 @@
       "lines": "Qatorlar",
       "addLine": "Qator qo'shish",
       "removeLine": "Qatorni o'chirish",
+      "qtyPrecision": "Miqdor: verguldan keyin ko'pi bilan 3 ta raqam.",
+      "qtyPrecisionBase": "Asosiy birlikdagi miqdor (miqdor × qadoq koeffitsienti) verguldan keyin ko'pi bilan 3 ta raqam bo'lishi kerak.",
       "searchProduct": "Mahsulot qidirish",
       "noProducts": "Mahsulot topilmadi",
       "available": "Mavjud",
@@ -324,11 +458,11 @@
   "Receivables": {
     "customer": "Mijoz",
     "current": "Joriy",
-    "d1to30": "1–30 kun",
     "d31to60": "31–60 kun",
-    "d61to90": "61–90 kun",
-    "d90plus": "90+ kun",
-    "total": "Jami"
+    "total": "Jami",
+    "d1to7": "1–7 kun",
+    "d8to30": "8–30 kun",
+    "d60plus": "60+ kun"
   },
   "Products": {
     "title": "Mahsulotlar",
@@ -423,17 +557,47 @@
         "fifo": "Avtomatik (FIFO)",
         "manual": "Qo'lda taqsimlash"
       },
-      "fifoHint": "Eng eski ochiq fakturadan boshlab avtomatik taqsimlanadi.",
-      "manualHint": "Har bir fakturaga qancha yo'naltirishni o'zingiz belgilang.",
-      "noOpenInvoices": "Ochiq faktura yo'q",
+      "fifoHint": "Eng eski ochiq ichki hisobdan boshlab avtomatik taqsimlanadi.",
+      "manualHint": "Har bir ichki hisobga qancha yo'naltirishni o'zingiz belgilang.",
+      "noOpenInvoices": "Ochiq ichki hisob yo'q",
       "outstanding": "Qoldiq",
       "allocatedTotal": "Taqsimlangan jami",
       "selectCustomerFirst": "Avval mijozni tanlang",
       "invalidAmount": "Summani to'g'ri kiriting",
-      "allocateAtLeastOne": "Kamida bitta fakturaga summa kiriting",
+      "allocateAtLeastOne": "Kamida bitta ichki hisobga summa kiriting",
       "allocationExceedsAmount": "Taqsimlangan summa to'lov summasidan oshib ketdi",
       "submit": "To'lovni saqlash",
-      "created": "To'lov qo'shildi"
+      "created": "To'lov qo'shildi",
+      "idempotencyConflict": "Bu to'lov allaqachon boshqa ma'lumotlar bilan yuborilgan. Yangi to'lov uchun formani qaytadan oching."
+    },
+    "status": "Holati",
+    "actions": "Amallar",
+    "statuses": {
+      "PENDING_HANDOVER": "Yo'lda (kassir qabul qilishi kutilmoqda)",
+      "POSTED": "Hisobga olingan",
+      "REJECTED": "Rad etilgan",
+      "REVERSED": "Bekor qilingan"
+    },
+    "reverse": {
+      "action": "Bekor qilish",
+      "title": "{number} to'lovini bekor qilish",
+      "description": "To'lov bekor qilinadi, ichki hisoblar va mijoz balansi qayta hisoblanadi. Bu amalni qaytarib bo'lmaydi.",
+      "success": "To'lov bekor qilindi"
+    },
+    "handover": {
+      "accept": "Qabul qilish",
+      "reject": "Rad etish",
+      "acceptSuccess": "To'lov qabul qilindi",
+      "rejectSuccess": "To'lov rad etildi",
+      "rejectTitle": "{number} to'lovini rad etish",
+      "rejectDescription": "To'lov rad etiladi, mijoz qarzi kamaymaydi. Sabab majburiy.",
+      "openSession": "Kassa smenasini ochish"
+    },
+    "source": {
+      "label": "Manba",
+      "COLLECTION": "Yig'ilgan to'lovlar",
+      "OPENING": "Boshlang'ich avans",
+      "all": "Barchasi"
     }
   },
   "Stock": {
@@ -460,6 +624,41 @@
       "invalidQty": "Miqdorni to'g'ri kiriting",
       "submit": "Qabul qilish",
       "received": "Qoldiq qo'shildi"
+    },
+    "tabs": {
+      "levels": "Qoldiqlar",
+      "movements": "Harakatlar"
+    },
+    "movements": {
+      "product": "Mahsulot",
+      "warehouse": "Ombor",
+      "type": "Turi",
+      "all": "Hammasi",
+      "to": "Gacha",
+      "refresh": "Yangilash",
+      "retry": "Qayta urinish",
+      "empty": "Bu filtrlar bo'yicha harakatlar yo'q — filtrlarni o'zgartiring yoki tovar qabul qiling",
+      "date": "Sana",
+      "qty": "Miqdor",
+      "reason": "Sabab",
+      "status": "Holat",
+      "actions": "Amallar",
+      "isReversal": "Storno",
+      "reversed": "Bekor qilingan",
+      "types": {
+        "RECEIVE": "Kirim",
+        "ISSUE": "Chiqim",
+        "RESERVE": "Zaxira",
+        "RELEASE": "Zaxirani bo'shatish",
+        "ADJUST": "Tuzatish"
+      },
+      "from": "Dan",
+      "reverse": {
+        "action": "Bekor qilish",
+        "title": "Ombor harakatini bekor qilish",
+        "description": "Harakat qarama-qarshi yozuv bilan bekor qilinadi. Bu amalni qaytarib bo'lmaydi.",
+        "success": "Harakat bekor qilindi"
+      }
     }
   },
   "Users": {
@@ -532,6 +731,45 @@
       "created": "Foydalanuvchi qo'shildi",
       "updated": "O'zgarishlar saqlandi",
       "retry": "Qayta urinish"
+    },
+    "mfaReset": {
+      "action": "MFA ni tiklash",
+      "title": "Ikki bosqichli autentifikatsiyani tiklash",
+      "description": "{name}ning barcha seanslari tugatiladi va keyingi kirishda autentifikatorni qaytadan sozlashi kerak.",
+      "reason": "Sabab (majburiy)",
+      "cancel": "Bekor qilish",
+      "confirm": "MFA ni tiklash",
+      "success": "{name} uchun MFA tiklandi",
+      "sessionsRevoked": "Tugatilgan sessiyalar: {count}",
+      "shownOnce": "{name} uchun bir martalik sozlash kodi. Uni xavfsiz kanal orqali yuboring; qayta ko'rsatilmaydi.",
+      "copy": "Nusxalash",
+      "expires": "Amal qilish muddati: {at}",
+      "noCode": "Sozlash kodi kerak emas: foydalanuvchi keyingi kirishda autentifikatorni sozlay oladi.",
+      "close": "Yopish",
+      "retry": "Qayta urinish",
+      "password": "Sizning parolingiz",
+      "totp": "Joriy 6 xonali TOTP kodi",
+      "totpFormat": "Aynan 6 ta raqam kiriting.",
+      "proofHint": "Xavfsizlik uchun o'z parolingiz va joriy 6 xonali TOTP kodini kiriting. Tiklash kodlari qabul qilinmaydi.",
+      "preparing": "Xavfsiz so'rov tayyorlanmoqda...",
+      "challengeRenewed": "So'rov muddati tugagan yoki ishlatilgan. Yangisi tayyorlandi; parol va yangi TOTP kodini kiriting va qayta urining.",
+      "codeInvalid": "Parol yoki TOTP kodi noto'g'ri.",
+      "rateLimited": "Juda ko'p urinish. Bir necha daqiqa kutib, qayta urining.",
+      "unavailable": "MFA xizmati vaqtincha mavjud emas. Keyinroq urinib ko'ring."
+    },
+    "mfaCode": {
+      "action": "MFA sozlash kodini berish",
+      "title": "MFA sozlash kodi",
+      "description": "{name} uchun bir martalik MFA sozlash kodi yaratiladi. Kod faqat bir marta ko'rsatiladi.",
+      "shownOnce": "{name} uchun kod. Uni xavfsiz yo'l bilan yetkazing — qayta ko'rsatilmaydi.",
+      "copy": "Nusxalash",
+      "expires": "Amal qilish muddati: {at}",
+      "close": "Yopish",
+      "issue": "Kod yaratish",
+      "retry": "Qayta urinish",
+      "password": "Parolingiz",
+      "totp": "Joriy TOTP kodi yoki tiklash kodi",
+      "proofHint": "Xavfsizlik uchun o'z parolingiz va joriy TOTP kodingiz (yoki bitta tiklash kodi)ni kiriting. Kod 1 soat amal qiladi."
     }
   },
   "Onboarding": {
@@ -546,14 +784,16 @@
       "warehouse": "Ombor",
       "product": "Mahsulot",
       "customer": "Mijoz",
-      "agent": "Savdo agenti"
+      "agent": "Savdo agenti",
+      "openingBalances": "Boshlang'ich qoldiqlar"
     },
     "warehouse": {
       "required": "Majburiy maydon",
       "name": "Ombor nomi",
       "address": "Manzil",
       "submit": "Omborni saqlash"
-    }
+    },
+    "continue": "Davom etish"
   },
   "Settings": {
     "title": "Sozlamalar",
@@ -568,7 +808,13 @@
       "address": "Manzil",
       "currency": "Valyuta",
       "timezone": "Vaqt mintaqasi",
-      "submit": "O'zgarishlarni saqlash"
+      "submit": "O'zgarishlarni saqlash",
+      "gpsRadiusRange": "10 dan 5000 gacha butun son",
+      "gpsAccuracyRange": "5 dan 1000 gacha butun son",
+      "gpsRadius": "Tashrif GPS radiusi (m)",
+      "gpsRadiusHelp": "Tashrif tasdiqlangan hisoblanishi uchun agent va nuqta orasidagi eng katta masofa. 10–5000, standart 150.",
+      "gpsAccuracy": "GPS maksimal aniqligi (m)",
+      "gpsAccuracyHelp": "Bundan kam aniq o'lchovlar past aniqlik deb belgilanadi. 5–1000, standart 100."
     }
   },
   "Audit": {
@@ -652,7 +898,7 @@
     "cancel": "Bekor qilish",
     "confirmImport": "Importni tasdiqlash",
     "processing": "Qayta ishlanmoqda...",
-    "doneMessage": "Import yakunlandi",
+    "doneMessage": "Import yakunlandi: {created} ta yaratildi, {skipped} ta o'tkazib yuborildi",
     "failedGeneric": "Import muvaffaqiyatsiz tugadi",
     "totalRows": "Jami qatorlar",
     "validRows": "To'g'ri",
@@ -673,7 +919,11 @@
       "PROCESSING": "Qayta ishlanmoqda",
       "DONE": "Yakunlandi",
       "FAILED": "Xato"
-    }
+    },
+    "noPermissionPage": "Importni ko'rish uchun ruxsatingiz yo'q",
+    "createOnlyNote": "Import faqat yaratadi: kodi/SKU allaqachon mavjud qatorlar o'tkazib yuboriladi, mavjud yozuvlar yangilanmaydi.",
+    "retry": "Qayta urinish",
+    "createdBy": "Yaratgan"
   },
   "Reports": {
     "title": "Hisobotlar",
@@ -688,12 +938,12 @@
       "aging": "Qarzdorlik"
     },
     "sales": {
-      "turnover": "Aylanma",
-      "orderCount": "Buyurtmalar soni",
-      "avgCheck": "O'rtacha chek",
-      "byDay": "Kunlik aylanma",
-      "byAgent": "Agentlar bo'yicha",
-      "topProducts": "Eng ko'p sotilgan mahsulotlar",
+      "turnover": "Yetkazilgan aylanma",
+      "orderCount": "Yetkazilgan buyurtmalar",
+      "avgCheck": "O'rtacha chek (yetkazilgan buyurtmalar bo'yicha)",
+      "byDay": "Kunlik yetkazilgan aylanma",
+      "byAgent": "Agentlar bo'yicha (yetkazilgan)",
+      "topProducts": "Eng ko'p sotilgan mahsulotlar (yetkazilgan)",
       "noData": "Bu davr uchun ma'lumot yo'q"
     },
     "agentPerformance": {
@@ -701,15 +951,15 @@
       "visits": "Tashriflar",
       "routeCompletion": "Marshrut bajarilishi",
       "effectiveVisits": "Effektiv tashriflar",
-      "orderCount": "Buyurtmalar",
-      "turnover": "Aylanma",
-      "avgCheck": "O'rtacha chek",
+      "orderCount": "Yetkazilgan buyurtmalar",
+      "turnover": "Yetkazilgan aylanma",
+      "avgCheck": "O'rtacha chek (yetkazilgan buyurtmalar bo'yicha)",
       "noData": "Bu davr uchun agent faoliyati yo'q"
     },
     "overview": {
-      "turnover": "Aylanma",
-      "orderCount": "Buyurtmalar soni",
-      "avgCheck": "O'rtacha chek",
+      "turnover": "Yetkazilgan aylanma",
+      "orderCount": "Yetkazilgan buyurtmalar",
+      "avgCheck": "O'rtacha chek (yetkazilgan buyurtmalar bo'yicha)",
       "activeCustomers": "Faol mijozlar",
       "newCustomers": "Yangi mijozlar",
       "totalCustomers": "Jami mijozlar",
@@ -720,12 +970,29 @@
     "aging": {
       "customer": "Mijoz",
       "current": "Joriy",
-      "d1to30": "1–30 kun",
       "d31to60": "31–60 kun",
-      "d61to90": "61–90 kun",
-      "d90plus": "90+ kun",
       "total": "Jami",
-      "emptyState": "Qarzdorlik yo'q"
+      "emptyState": "Qarzdorlik yo'q",
+      "d1to7": "1–7 kun",
+      "d8to30": "8–30 kun",
+      "d60plus": "60+ kun",
+      "asOf": "Hisobot sanasi"
+    },
+    "exportCsv": "CSV ga eksport",
+    "info": {
+      "title": "Hisobot ta'rifi",
+      "period": "Davr: {from} – {to} (vaqt zonasi {timeZone})",
+      "asOfDate": "Sana holatiga: {asOf} (vaqt zonasi {timeZone})",
+      "currency": "Valyuta: so'm (UZS)",
+      "statuses": "Hisobga olinadigan buyurtmalar: aylanma va buyurtmalar soni faqat yetkazilgan (DELIVERED, CLOSED) buyurtmalar bo'yicha; boshqa statuslar hisobga olinmaydi",
+      "notes": {
+        "amount": "Summa: yetkazilgan miqdor (ichki hisob jami).",
+        "avgCheck": "O'rtacha chek = Yetkazilgan aylanma / Yetkazilgan buyurtmalar",
+        "routeCompletion": "Marshrut bajarilishi % = Bajarilgan tashriflar / Rejalashtirilgan tashriflar × 100",
+        "effectiveVisit": "Samarali tashrif % = Buyurtma bilan tugagan tashriflar / Bajarilgan tashriflar × 100",
+        "debtSnapshot": "Qarzdorlik joriy holat bo'yicha (davrga bog'liq emas); muddati o'tgan qarz % = Muddati o'tgan qarz / Jami qarzdorlik × 100",
+        "aging": "Kechikish kunlari = hisobot sanasi − (ichki hisob sanasi + mijozning to'lov muddati kunlari), kompaniya vaqt zonasidagi kalendar kunlarida."
+      }
     }
   },
   "Agents": {
@@ -742,8 +1009,8 @@
     "routeCount": "{count} ta marshrut",
     "noRoutes": "Marshrut biriktirilmagan",
     "todayVisits": "Bugungi tashriflar",
-    "todayOrders": "Bugungi buyurtmalar",
-    "todayTurnover": "Bugungi aylanma",
+    "todayOrders": "Bugun yetkazilgan buyurtmalar",
+    "todayTurnover": "Bugungi yetkazilgan aylanma",
     "actions": "Amallar",
     "delete": "O'chirish",
     "deleteSuccess": "«{name}» o'chirildi"
@@ -934,7 +1201,7 @@
               "Qaysi mijoz qancha qarzdor va qachondan beri — bir qarashda ko'rinadi.",
               "Agent qaysi do'konda bo'ldi, qancha buyurtma oldi — kun davomida kuzatib boriladi.",
               "Omborda qancha mahsulot bor, qanchasi buyurtmalarga band qilingan — avtomatik hisoblanadi.",
-              "Kassir qabul qilgan har bir so'm qaysi hisob-fakturaga tushgani yozib boriladi."
+              "Kassir qabul qilgan har bir so'm qaysi ichki hisobga tushgani yozib boriladi."
             ]
           },
           {
@@ -943,8 +1210,8 @@
               "Mijoz — siz mahsulot sotadigan kompaniya yoki tadbirkor. Bitta mijozning bir nechta savdo nuqtasi (do'koni) bo'lishi mumkin.",
               "Savdo nuqtasi — mijozning aniq do'koni va manzili. Marshrutlar aynan nuqtalarga tuziladi.",
               "Buyurtma — mijoz so'ragan mahsulotlar ro'yxati va uning summasi.",
-              "Faktura — buyurtma yetkazilgandan keyin hosil bo'ladigan, to'lanishi kerak bo'lgan hujjat. Qarz shundan hisoblanadi.",
-              "To'lov — mijozdan olingan pul. U fakturalarga taqsimlanadi va qarzni kamaytiradi.",
+              "Ichki hisob — buyurtma yetkazilgandan keyin hosil bo'ladigan, to'lanishi kerak bo'lgan hujjat. Qarz shundan hisoblanadi.",
+              "To'lov — mijozdan olingan pul. U ichki hisoblarga taqsimlanadi va qarzni kamaytiradi.",
               "Marshrut — agent ma'lum hafta kunida aylanib chiqadigan savdo nuqtalari ro'yxati."
             ]
           }
@@ -999,8 +1266,8 @@
             "items": [
               "Yuborilgan — agent yoki operator buyurtmani kiritdi, u ko'rib chiqishni kutmoqda.",
               "Tasdiqlangan — buyurtma qabul qilindi, mahsulot omborda shu mijoz uchun band qilinadi.",
-              "Yetkazilgan — mahsulot mijozga topshirildi. Shu payt ombor qoldig'i kamayadi va faktura hosil bo'ladi.",
-              "Yopilgan — faktura to'liq to'landi, buyurtma bo'yicha ish tugadi.",
+              "Yetkazilgan — mahsulot mijozga topshirildi. Shu payt ombor qoldig'i kamayadi va ichki hisob hosil bo'ladi.",
+              "Yopilgan — ichki hisob to'liq to'landi, buyurtma bo'yicha ish tugadi.",
               "Bekor qilingan — buyurtma amalga oshmadi, band qilingan mahsulot bo'shatiladi."
             ]
           },
@@ -1049,7 +1316,7 @@
             "heading": "Buyurtma kartochkasidagi tugmalar",
             "items": [
               "«Tasdiqlash» — mahsulotni shu mijoz uchun band qiladi.",
-              "«Yetkazildi deb belgilash» — ombor qoldig'ini kamaytiradi va fakturani hosil qiladi.",
+              "«Yetkazildi deb belgilash» — ombor qoldig'ini kamaytiradi va ichki hisobni hosil qiladi.",
               "«Yopish» — to'lov to'liq bo'lgach buyurtmani yakunlaydi.",
               "«Bekor qilish» — sababini yozib qoldirish mumkin; band qilingan mahsulot bo'shaydi."
             ]
@@ -1064,7 +1331,7 @@
             "heading": "Mijoz qo'shishda",
             "items": [
               "Kod — mijozning ichki raqami, takrorlanmasligi kerak.",
-              "To'lov muddati (kun) — mijoz fakturani necha kunda to'lashi kerak. Shu muddat o'tsa, qarz «muddati o'tgan» deb belgilanadi.",
+              "To'lov muddati (kun) — mijoz ichki hisobni necha kunda to'lashi kerak. Shu muddat o'tsa, qarz «muddati o'tgan» deb belgilanadi.",
               "Narx ro'yxati — mijozga qaysi narxlar qo'llanishi.",
               "Savdo nuqtasi — mijozning do'koni. Bittadan ortiq bo'lsa, keyinroq ham qo'shish mumkin."
             ]
@@ -1134,8 +1401,8 @@
           {
             "heading": "To'lovni taqsimlash",
             "items": [
-              "Avtomatik (FIFO) — pul eng eski ochiq fakturadan boshlab taqsimlanadi. Odatda shu variant tanlanadi.",
-              "Qo'lda — mijoz aynan qaysi faktura uchun to'layotganini o'zingiz belgilaysiz.",
+              "Avtomatik (FIFO) — pul eng eski ochiq ichki hisobdan boshlab taqsimlanadi. Odatda shu variant tanlanadi.",
+              "Qo'lda — mijoz aynan qaysi ichki hisob uchun to'layotganini o'zingiz belgilaysiz.",
               "To'lov usuli: naqd, karta yoki bank o'tkazmasi.",
               "Saqlangan to'lov o'chirilmaydi — xato bo'lsa, uni tuzatuvchi yangi yozuv qilinadi."
             ]
@@ -1270,7 +1537,7 @@
               "Buyurtma yaratayotganda mahsulot ro'yxatda yo'q — u hali qo'shilmagan yoki «nofaol» qilib qo'yilgan bo'lishi mumkin.",
               "Mahsulotni sotib bo'lmayapti, «erkin» qoldiq nol — u boshqa tasdiqlangan buyurtmalarga band qilingan yoki ombor qoldig'i kiritilmagan.",
               "To'lov qo'shib bo'lmayapti — kassa smenasi ochilmagan bo'lishi mumkin, avval smenani oching.",
-              "Mijozning qarzi noto'g'ri ko'rinmoqda — faktura buyurtma «Yetkazilgan» bo'lgandan keyin hosil bo'ladi, yetkazilmagan buyurtma qarzga kirmaydi.",
+              "Mijozning qarzi noto'g'ri ko'rinmoqda — ichki hisob buyurtma «Yetkazilgan» bo'lgandan keyin hosil bo'ladi, yetkazilmagan buyurtma qarzga kirmaydi.",
               "Parolni unutdim — kirish sahifasidagi «Parolni unutdingizmi?» orqali telefonga kod keladi. Ishlamasa, admin yangi parol beradi.",
               "Ma'lumotni Excelga yuklash mumkinmi — ha, ro'yxat va hisobot sahifalarida «Excelga eksport» tugmasi bor.",
               "Tilni qanday o'zgartiraman — yuqori o'ng burchakdagi til tugmasi orqali: o'zbek, rus yoki ingliz."
@@ -1293,6 +1560,506 @@
           }
         ]
       }
+    }
+  },
+  "Purchases": {
+    "title": "Xarid",
+    "tabOrders": "Xarid buyurtmalari",
+    "tabSuppliers": "Yetkazib beruvchilar",
+    "newOrder": "Yangi xarid buyurtmasi",
+    "newReceipt": "Kirim/Qabul",
+    "noPermission": "Xarid bo'limini ko'rish uchun ruxsatingiz yo'q",
+    "refresh": "Yangilash",
+    "retry": "Qayta urinish",
+    "emptyOrders": "Hali xarid buyurtmalari yo'q. Birinchi buyurtmani yarating.",
+    "emptyFiltered": "Filtr bo'yicha hech narsa topilmadi",
+    "number": "Raqam",
+    "supplier": "Yetkazib beruvchi",
+    "warehouse": "Ombor",
+    "expectedAt": "Kutilayotgan sana",
+    "total": "Jami",
+    "statusLabel": "Holat",
+    "somUnit": "so'm",
+    "actions": "Amallar",
+    "note": "Izoh",
+    "backToList": "Xaridlarga qaytish",
+    "orderCreated": "{number} buyurtmasi yaratildi",
+    "receiptCreated": "Kirim qabul qilindi",
+    "filters": {
+      "status": "Holat",
+      "allStatuses": "Barcha holatlar",
+      "supplier": "Yetkazib beruvchi",
+      "allSuppliers": "Barcha yetkazib beruvchilar",
+      "from": "Sanadan",
+      "to": "Sanagacha"
+    },
+    "status": {
+      "DRAFT": "Qoralama",
+      "ORDERED": "Buyurtma qilingan",
+      "PARTIALLY_RECEIVED": "Qisman qabul qilingan",
+      "RECEIVED": "Qabul qilingan",
+      "CANCELLED": "Bekor qilingan"
+    },
+    "suppliers": {
+      "new": "Yangi yetkazib beruvchi",
+      "searchPlaceholder": "Nom yoki STIR bo'yicha qidirish",
+      "statusFilter": "Holat bo'yicha filtr",
+      "all": "Barchasi",
+      "active": "Faol",
+      "inactive": "Nofaol",
+      "empty": "Hali yetkazib beruvchilar yo'q. Birinchisini qo'shing.",
+      "edit": "Tahrirlash",
+      "deactivate": "Nofaol qilish",
+      "deactivated": "“{name}” nofaol qilindi",
+      "confirmDeactivate": {
+        "title": "Yetkazib beruvchini nofaol qilish",
+        "description": "“{name}” yangi buyurtmalarda tanlab bo'lmaydi. Davom etasizmi?"
+      }
+    },
+    "supplierForm": {
+      "createTitle": "Yangi yetkazib beruvchi",
+      "editTitle": "Yetkazib beruvchini tahrirlash",
+      "name": "Nomi",
+      "legalName": "Yuridik nomi",
+      "inn": "STIR",
+      "phone": "Telefon",
+      "address": "Manzil",
+      "note": "Izoh",
+      "nameRequired": "Nomini kiriting",
+      "cancel": "Bekor qilish",
+      "save": "Saqlash",
+      "created": "Yetkazib beruvchi qo'shildi",
+      "updated": "Yetkazib beruvchi yangilandi"
+    },
+    "orderForm": {
+      "supplier": "Yetkazib beruvchi",
+      "warehouse": "Ombor",
+      "expectedAt": "Kutilayotgan sana",
+      "chooseSupplier": "Tanlang",
+      "chooseWarehouse": "Tanlang",
+      "lines": "Mahsulotlar",
+      "searchProduct": "Mahsulot qidirish",
+      "noProducts": "Mahsulot topilmadi",
+      "noLines": "Qidiruv orqali mahsulot qo'shing",
+      "product": "Mahsulot",
+      "qty": "Miqdor",
+      "unitPrice": "Narxi (birlik uchun)",
+      "removeLine": "Qatorni o'chirish",
+      "totalsHint": "Yakuniy summa saqlangandan keyin serverda hisoblanadi.",
+      "note": "Izoh",
+      "saveDraft": "Qoralama sifatida saqlash",
+      "saveAndOrder": "Saqlash va buyurtma qilish",
+      "selectSupplier": "Yetkazib beruvchini tanlang",
+      "selectWarehouse": "Omborni tanlang",
+      "addLine": "Kamida bitta mahsulot qo'shing",
+      "invalidQty": "“{name}”: miqdor noto'g'ri (0 dan katta, 3 xonagacha)",
+      "invalidPrice": "“{name}”: narx noto'g'ri (2 xonagacha)"
+    },
+    "detail": {
+      "ordered": "Buyurtma qilindi deb belgilandi",
+      "cancelled": "Buyurtma bekor qilindi",
+      "markOrdered": "Buyurtma qilish",
+      "cancelOrder": "Buyurtmani bekor qilish",
+      "lines": "Mahsulotlar",
+      "product": "Mahsulot",
+      "qty": "Buyurtma miqdori",
+      "qtyReceived": "Qabul qilingan",
+      "remaining": "Qoldiq",
+      "unitPrice": "Narxi",
+      "lineTotal": "Summa",
+      "receipts": "Kirimlar",
+      "noReceipts": "Bu buyurtma bo'yicha hali kirim yo'q",
+      "confirmCancel": {
+        "title": "Buyurtmani bekor qilish",
+        "description": "{number} buyurtmasi bekor qilinadi. Davom etasizmi?"
+      }
+    },
+    "receiptForm": {
+      "product": "Mahsulot",
+      "remaining": "Qoldiq",
+      "qtyNow": "Qabul miqdori",
+      "nothingToReceive": "Qabul qilinadigan miqdorni kiriting",
+      "invalidQty": "“{name}”: miqdor noto'g'ri (0 dan katta, 3 xonagacha)",
+      "exceedsRemaining": "“{name}”: miqdor qoldiqdan ({remaining}) oshmasligi kerak",
+      "fromOrder": "{number} buyurtmasi bo'yicha · {supplier} · {warehouse}",
+      "fullyReceived": "Bu buyurtma to'liq qabul qilingan",
+      "warehouse": "Ombor",
+      "chooseWarehouse": "Tanlang",
+      "supplierOptional": "Yetkazib beruvchi (ixtiyoriy)",
+      "noSupplier": "Ko'rsatilmagan",
+      "lines": "Mahsulotlar",
+      "searchProduct": "Mahsulot qidirish",
+      "noProducts": "Mahsulot topilmadi",
+      "noLines": "Qidiruv orqali mahsulot qo'shing",
+      "unitCost": "Tannarx (birlik uchun)",
+      "removeLine": "Qatorni o'chirish",
+      "note": "Izoh",
+      "selectWarehouse": "Omborni tanlang",
+      "addLine": "Kamida bitta mahsulot qo'shing",
+      "invalidCost": "“{name}”: tannarx noto'g'ri (2 xonagacha)",
+      "submit": "Qabul qilish"
+    },
+    "tabReceipts": "Qabul qilishlar",
+    "receiptsTitle": "Tovar qabul qilish",
+    "emptyReceipts": "Hozircha qabul qilishlar yo'q. Tovarni qabul qiling, u shu yerda ko'rinadi.",
+    "receiptDate": "Sana",
+    "receiptPo": "Xarid buyurtmasi",
+    "noPo": "Buyurtmasiz",
+    "receiptLines": "Qatorlar",
+    "receiptTotalQty": "Jami miqdor",
+    "receivedBy": "Qabul qildi",
+    "allWarehouses": "Barcha omborlar"
+  },
+  "Reconciliation": {
+    "title": "Solishtirish",
+    "subtitle": "Saqlangan qoldiq va mijoz balanslarini jurnal bilan solishtiradi.",
+    "refresh": "Yangilash",
+    "retry": "Qayta urinish",
+    "noPermission": "Solishtirishni ko'rish uchun ruxsatingiz yo'q.",
+    "runNow": "Hozir ishga tushirish",
+    "runDone": "Tekshiruv tugadi: qoldiq bo'yicha {stock}, balans bo'yicha {balance} farq, {healed} ta o'zi tuzaldi.",
+    "runDoneBalanceOnly": "Tekshiruv tugadi: balans bo'yicha {balance} farq, {healed} ta o'zi tuzaldi.",
+    "busy": "Solishtirish allaqachon bajarilmoqda. Bir daqiqadan so'ng qayta urining.",
+    "alreadyConsistent": "Allaqachon mos: saqlangan qiymat jurnalga teng, o'zgarish bo'lmadi.",
+    "fixed": "Proyeksiya jurnal qiymati bilan qayta yozildi.",
+    "fix": "Tuzatish",
+    "empty": "Bu filtrlar bo'yicha farq yo'q. Ma'lumotlar jurnalga mos; qayta tekshirish uchun «Hozir ishga tushirish» tugmasini bosing.",
+    "columnsHint": "Qiymatlar: kutilgan (jurnal) / haqiqiy (saqlangan) / farq (haqiqiy − kutilgan).",
+    "product": "Mahsulot ID",
+    "warehouse": "Ombor ID",
+    "customer": "Mijoz ID",
+    "runsTitle": "So'nggi tekshiruvlar",
+    "runsEmpty": "Hali tekshiruv bo'lmagan. Kundalik tekshiruv shu yerda ko'rinadi yoki «Hozir ishga tushirish» tugmasini bosing.",
+    "filters": {
+      "kind": "Turi",
+      "status": "Holati",
+      "all": "Hammasi"
+    },
+    "kind": {
+      "STOCK": "Qoldiq",
+      "BALANCE": "Balans"
+    },
+    "status": {
+      "OPEN": "Ochiq",
+      "FIXED": "Tuzatilgan"
+    },
+    "trigger": {
+      "SCHEDULED": "Jadval bo'yicha",
+      "MANUAL": "Qo'lda"
+    },
+    "col": {
+      "kind": "Turi",
+      "subject": "Obyekt",
+      "main": "Qoldiq / balans",
+      "reserved": "Zaxira",
+      "status": "Holati",
+      "detected": "Aniqlangan"
+    },
+    "runs": {
+      "started": "Boshlanishi",
+      "trigger": "Ishga tushirish",
+      "stock": "Qoldiq farqlari",
+      "balance": "Balans farqlari",
+      "ratio": "{checked} tadan {found} ta farq"
+    },
+    "fixDialog": {
+      "title": "Farqni tuzatamizmi?",
+      "description": "Saqlangan qoldiq/balans proyeksiyasi jurnal asosida hisoblangan qiymat bilan qayta yoziladi. Jurnalning o'zi o'zgarmaydi. Amal audit jurnaliga yoziladi.",
+      "confirm": "Jurnal qiymati bilan qayta yozish"
+    },
+    "paymentConflicts": {
+      "title": "Oflayn to'lov nizolari",
+      "subtitle": "Server rad etgan va kassir qarorini kutayotgan oflayn to'lovlar.",
+      "warning": "Tasdiqlash faqat qaroringizni qayd etadi. U hech qanday to'lovni yaratmaydi, o'zgartirmaydi va bekor qilmaydi. \"To'lov o'tkazilmagan\" uchun birlamchi hujjat (kvitansiya, bank ko'chirmasi, kassa jurnali) dalili shart.",
+      "retry": "Qayta urinish",
+      "empty": "Ochiq oflayn to'lov nizolari yo'q. Hech narsa qilish shart emas.",
+      "col": {
+        "number": "To'lov",
+        "amount": "Summa",
+        "status": "Holat",
+        "rejections": "Rad etishlar",
+        "last": "Oxirgi rad etish"
+      },
+      "confirmAction": "Qarorni qayd etish",
+      "outcome": {
+        "EXISTING_PAYMENT_CONFIRMED": "Mavjud to'lov to'g'ri",
+        "NOT_POSTED_CONFIRMED": "To'lov o'tkazilmagan"
+      },
+      "form": {
+        "title": "{number} to'lov bo'yicha qaror",
+        "outcome": "Natija",
+        "reason": "Sabab (kamida 10 belgi)",
+        "evidence": "Birlamchi hujjat havolasi",
+        "evidenceHint": "\"To'lov o'tkazilmagan\" uchun majburiy: kvitansiya, ko'chirma yoki kassa jurnali raqami.",
+        "reasonShort": "Sabab kamida {min} belgidan iborat bo'lishi kerak.",
+        "evidenceRequired": "\"To'lov o'tkazilmagan\" uchun birlamchi hujjat havolasi shart.",
+        "submit": "Qarorni qayd etish",
+        "cancel": "Bekor qilish"
+      },
+      "result": {
+        "done": "Qaror qayd etildi. Hech qanday to'lov o'zgarmadi.",
+        "replayed": "Bu qaror avval qayd etilgan. Hech qanday to'lov o'zgarmadi.",
+        "payment": "To'lov"
+      }
+    }
+  },
+  "Visits": {
+    "title": "Tashriflar",
+    "refresh": "Yangilash",
+    "retry": "Qayta urinish",
+    "noPermission": "Tashriflarni ko'rish uchun ruxsatingiz yo'q.",
+    "agent": "Agent",
+    "allAgents": "Barcha agentlar",
+    "outlet": "Nuqta",
+    "startedAt": "Boshlangan",
+    "outcome": "Natija",
+    "gpsStatus": "GPS holati",
+    "allGps": "Barcha GPS holatlari",
+    "distanceM": "Masofa (m)",
+    "accuracyM": "Aniqlik (m)",
+    "reason": "Sabab",
+    "emptyState": "Hozircha tashriflar yo'q. Agentlar nuqtalarga kelganda shu yerda paydo bo'ladi.",
+    "emptyFiltered": "Filtrlarga mos tashrif topilmadi.",
+    "outcomes": {
+      "ORDERED": "Buyurtma",
+      "NO_ORDER": "Buyurtmasiz",
+      "SKIPPED": "O'tkazib yuborilgan"
+    },
+    "gps": {
+      "VERIFIED": "Tasdiqlangan",
+      "OUTSIDE_RADIUS": "Radiusdan tashqarida",
+      "LOW_ACCURACY": "Past aniqlik",
+      "NO_PERMISSION": "GPS ruxsati yo'q",
+      "NO_FIX": "GPS signali yo'q",
+      "OUTLET_NO_COORDS": "Nuqtada koordinata yo'q"
+    }
+  },
+  "Notifications": {
+    "title": "Bildirishnomalar",
+    "bell": "Bildirishnomalar",
+    "bellWithCount": "Bildirishnomalar, o'qilmagan: {count}",
+    "unreadOnly": "Faqat o'qilmagan",
+    "markAllRead": "Hammasini o'qilgan deb belgilash",
+    "empty": "Hozircha bildirishnoma yo'q",
+    "emptyUnread": "O'qilmagan bildirishnoma yo'q",
+    "retry": "Qayta urinish",
+    "unread": "O'qilmagan"
+  },
+  "Export1c": {
+    "legacyNoChecksum": "Bu eski eksport — tasdiqlash/yuklash uchun qayta eksport qiling",
+    "title": "1C eksport",
+    "subtitle": "Davr bo'yicha 1C uchun fayl yarating, yuklab oling va natijani tasdiqlang.",
+    "refresh": "Yangilash",
+    "retry": "Qayta urinish",
+    "noPermission": "1C eksportidan foydalanish uchun ruxsatingiz yo'q.",
+    "throttled": "So'rovlar juda ko'p. Bir daqiqa kutib, qayta urinib ko'ring.",
+    "created": "Eksport navbatga qo'yildi. U quyidagi ro'yxatda paydo bo'ladi.",
+    "empty": "Hali eksport yo'q. Yuqorida davr va formatni tanlab, birinchi eksportni yarating.",
+    "failedUnknown": "Fayl yaratilmadi. Eksportni qayta yarating.",
+    "download": "Yuklab olish",
+    "form": {
+      "from": "Davr boshi",
+      "to": "Davr oxiri",
+      "format": "Format",
+      "formatPlaceholder": "Formatni tanlang",
+      "create": "Eksport yaratish",
+      "hint": "Davr oxiri kechadan kech bo'lmasligi kerak ({date}, kompaniya vaqt zonasi).",
+      "periodInvalid": "To'g'ri davr tanlang: boshi oxiridan keyin bo'lmasin, oxiri kechadan kech bo'lmasin.",
+      "xmlUnverified": "XML/CSV (mapping v2) hali haqiqiy 1C importida tekshirilmagan; chegirmali, nolga teng bo'lmagan QQS yoki qo'llab-quvvatlanmaydigan birlikli hujjatlar rad etiladi. Excel faqat axborot reestri, 1C ga import uchun emas."
+    },
+    "format": {
+      "EXCEL": "Excel (axborot reestri, 1C importi uchun emas)",
+      "CSV": "CSV",
+      "XML": "XML (pilot tasdiqlanmagan)"
+    },
+    "status": {
+      "QUEUED": "Navbatda",
+      "PROCESSING": "Yaratilmoqda",
+      "GENERATED": "Tayyor",
+      "FAILED": "Xato",
+      "ACCOUNTING_ACCEPTED": "Buxgalteriya qabul qildi",
+      "FAILED_REVIEW": "1C da rad etildi"
+    },
+    "col": {
+      "status": "Holat",
+      "period": "Davr",
+      "format": "Format",
+      "records": "Yozuvlar",
+      "file": "Fayl / SHA-256",
+      "generated": "Yaratilgan",
+      "ack": "Tasdiq"
+    },
+    "hash": {
+      "copy": "SHA-256 ni nusxalash",
+      "copied": "SHA-256 nusxalandi.",
+      "copyFailed": "Nusxalab bo'lmadi.",
+      "match": "Yuklangan fayl SHA-256 ga mos",
+      "mismatch": "Yuklangan fayl SHA-256 ga MOS EMAS. Uni 1C ga yuklamang.",
+      "unavailable": "Fayl yuklandi; SHA-256 ni brauzerda solishtirib bo'lmadi."
+    },
+    "ack": {
+      "accept": "Qabul qilindi",
+      "reject": "Xato (rad etildi)",
+      "acceptTitle": "1C da qabul qilinganini tasdiqlash",
+      "acceptDescription": "{file} fayli 1C ga muvaffaqiyatli yuklanganini tasdiqlang. Keyin o'zgartirib bo'lmaydi.",
+      "rejectTitle": "1C dagi xatoni bildirish",
+      "rejectDescription": "{file} fayli 1C tomonidan nega rad etilganini yozing. Keyin o'zgartirib bo'lmaydi.",
+      "doneAccepted": "Qabul qilingan deb belgilandi.",
+      "doneRejected": "Rad etilgan deb belgilandi."
+    },
+    "unsupported": {
+      "total": "Nomuvofiq hujjatlar: {total}",
+      "invoice": "Hujjat",
+      "sku": "SKU",
+      "reasons": "Sabablar",
+      "hint": "Boshqa davrni tanlang. Hujjatlar o'zgartirilmadi; qisman fayl yaratilmadi.",
+      "reason": {
+        "DISCOUNT": "Chegirma",
+        "VAT": "QQS",
+        "QTY_X_PRICE_MISMATCH": "Miqdor × narx mos emas",
+        "UNIT": "Birlik",
+        "TOTAL_MISMATCH": "Jami summa mos emas"
+      }
+    }
+  },
+  "Trial": {
+    "ending": "Sinov muddati {days, plural, =0 {bugun} one {# kun} other {# kun}} ichida tugaydi. Ishni davom ettirish uchun tarifni faollashtiring.",
+    "expired": "Sinov muddati tugagan. Tizim ishlashda davom etadi, lekin tarifni faollashtirish kerak."
+  },
+  "OpeningBalances": {
+    "title": "Boshlang'ich qoldiqlar",
+    "subtitle": "Eski tizimdagi (1C) mijoz qarz/avanslari va ombor qoldig'ini fayldan yuklang: avval ko'rib chiqing, so'ng 1C nazorat jamilari bilan tasdiqlab o'tkazing.",
+    "noPermission": "Boshlang'ich qoldiqlarni ko'rish uchun ruxsatingiz yo'q.",
+    "retry": "Qayta urinish",
+    "uploadOwnerOnly": "Faqat egasi (OWNER) yuklay oladi. Siz yuklangan paketlar ro'yxati va tafsilotini ko'rishingiz mumkin.",
+    "upload": "Fayl yuklash",
+    "uploadRetry": "Boshqa fayl yuklash",
+    "startOver": "Boshidan boshlash",
+    "newUpload": "Yangi fayl yuklash",
+    "kinds": {
+      "CUSTOMER_BALANCE": "Mijoz qarz/avans",
+      "STOCK": "Ombor qoldig'i"
+    },
+    "statuses": {
+      "PREVIEWED": "Ko'rib chiqilgan",
+      "POSTED": "Hisobga olingan",
+      "VOIDED": "Bekor qilingan"
+    },
+    "guide": {
+      "title": "Fayl ustunlari",
+      "CUSTOMER_BALANCE": "customerCode yoki customerId; debt yoki credit (debt — mijoz qarzi, credit — avans, qator uchun bittasi); docRef (debt uchun majburiy — 1C hujjat raqami); docDate (YYYY-MM-DD).",
+      "STOCK": "sku; warehouseName yoki warehouseId; qty (3 xonagacha kasr).",
+      "formats": "Format: .xlsx yoki .csv, birinchi qator — sarlavha, ko'pi bilan 5000 qator. Xato bo'lsa, hech narsa qisman o'tkazilmaydi."
+    },
+    "preview": {
+      "totalRows": "Jami qator",
+      "validRows": "To'g'ri qator",
+      "invalidRows": "Xato qator",
+      "totalDebt": "Jami qarz",
+      "totalCredit": "Jami avans",
+      "totalQty": "Jami miqdor",
+      "hasErrors": "Faylda xato qatorlar bor. Tuzatib, qayta yuklang — boshlang'ich qoldiq qisman o'tkazilmaydi.",
+      "ownerOnly": "Bu paketni faqat Egasi (OWNER) o'tkaza oladi. Siz natijani ko'rishingiz mumkin."
+    },
+    "post": {
+      "title": "O'tkazish va tasdiqlash",
+      "cutover": "Diqqat: tanlangan sanadan keyin eski tizimda qoldiq va qarzlarni o'zgartirib bo'lmaydi — aks holda ikki tizim farq qiladi.",
+      "asOfDate": "Qoldiq sanasi",
+      "source": "Manba",
+      "sourcePlaceholder": "Masalan: 1C, oborotno-saldovaya 30.09",
+      "controlTitle": "1C nazorat jamilari",
+      "controlHint": "1C dagi jami qiymatni kiriting (0 ham bo'ladi). U ko'rib chiqilgan jamilarga aniq teng bo'lishi kerak.",
+      "controlDebt": "1C jami qarz",
+      "controlCredit": "1C jami avans",
+      "controlQty": "1C jami qoldiq",
+      "previewTotals": "Fayl jamilari",
+      "mismatch": "Kiritilgan nazorat jamilari fayl jamilaridan farq qiladi. Server o'tkazishni rad etadi — 1C ma'lumotini va faylni tekshiring.",
+      "mismatchExpected": "Fayl jamilari: qarz {debt}, avans {credit}, miqdor {qty}.",
+      "signOff": "Jamilarni 1C bilan solishtirdim va o'tkazishni tasdiqlayman.",
+      "submit": "O'tkazish",
+      "submitAnyway": "Farq bilan o'tkazishga urinish",
+      "success": "Boshlang'ich qoldiq o'tkazildi",
+      "result": "{kind}: {rows} qator o'tkazildi. Jami:",
+      "dateRequired": "Sanani kiriting",
+      "dateFuture": "Sana kelajakda bo'lishi mumkin emas",
+      "sourceInvalid": "Manbani kiriting (1–200 belgi)",
+      "amountInvalid": "Summani kiriting: raqam, 2 xonagacha kasr (0 ham mumkin)",
+      "qtyInvalid": "Miqdorni kiriting: raqam, 3 xonagacha kasr (0 ham mumkin)",
+      "signOffRequired": "Tasdiqlash majburiy"
+    },
+    "history": {
+      "title": "Paketlar",
+      "empty": "Hali boshlang'ich qoldiq paketi yo'q. Yuqoridan fayl yuklang.",
+      "kind": "Tur",
+      "createdAt": "Sana",
+      "source": "Manba",
+      "rows": "Qatorlar",
+      "totals": "Jamilar",
+      "status": "Holat",
+      "actions": "Amallar",
+      "asOf": "Qoldiq sanasi",
+      "debt": "Qarz",
+      "credit": "Avans"
+    },
+    "void": {
+      "action": "Bekor qilish",
+      "title": "Paketni bekor qilish",
+      "description": "Paket hujjatlari teskari yoziladi. Agar ular keyingi operatsiyalarda ishlatilgan bo'lsa, bekor qilib bo'lmaydi.",
+      "confirm": "Paketni bekor qilish",
+      "success": "Paket bekor qilindi",
+      "touchedHint": "Avval bog'liq to'lov taqsimoti yoki ombor harakatini hal qiling."
+    },
+    "downloadTemplate": "CSV shablonni yuklab olish"
+  },
+  "CompanyExport": {
+    "title": "Kompaniya ma'lumotlarini eksport qilish",
+    "purpose": "Mijozning o'z ma'lumotlariga bo'lgan huquqi va offboarding uchun: kompaniya ma'lumotlarining to'liq nusxasi bitta Excel faylida.",
+    "includes": "Kiradi: mijozlar, savdo nuqtalari, mahsulotlar, narxlar, qoldiqlar, buyurtmalar, ichki hisoblar, to'lovlar, kassa smenalari, foydalanuvchilar (faqat ism, telefon, email, rollar).",
+    "excludes": "Kirmaydi: parollar, tokenlar, Telegram identifikatorlari va boshqa maxfiy kalitlar.",
+    "create": "Eksport yaratish",
+    "inProgress": "Eksport tayyorlanmoqda",
+    "created": "Eksport boshlandi",
+    "throttled": "So'rovlar juda ko'p. Bir daqiqadan so'ng qayta urinib ko'ring.",
+    "retry": "Qayta urinish",
+    "empty": "Hali eksportlar yo'q. Birinchi faylni olish uchun \"Eksport yaratish\" tugmasini bosing.",
+    "failedUnknown": "Eksport yaratib bo'lmadi",
+    "download": "Yuklab olish",
+    "col": {
+      "status": "Holat",
+      "file": "Fayl",
+      "size": "Hajm",
+      "date": "Sana"
+    },
+    "status": {
+      "QUEUED": "Navbatda",
+      "PROCESSING": "Yaratilmoqda",
+      "GENERATED": "Tayyor",
+      "FAILED": "Xato",
+      "ACCOUNTING_ACCEPTED": "Tayyor",
+      "FAILED_REVIEW": "Tayyor"
+    },
+    "hash": {
+      "match": "Nazorat summasi mos keldi",
+      "mismatch": "Nazorat summasi mos kelmadi - faylni ishlatmang",
+      "unavailable": "Nazorat summasini tekshirib bo'lmadi"
+    }
+  },
+  "Security": {
+    "title": "Xavfsizlik",
+    "password": "Parol",
+    "currentCode": "Joriy 6 xonali kod",
+    "reenroll": {
+      "title": "Autentifikatorni almashtirish",
+      "description": "Ikki bosqichli autentifikatsiyani yangi qurilmada sozlang. Parol va joriy kod kerak.",
+      "submit": "Davom etish",
+      "done": "Tayyor",
+      "success": "Autentifikator yangilandi"
+    },
+    "regenerate": {
+      "title": "Yangi zaxira kodlar",
+      "description": "Yangi zaxira kodlar to'plamini yarating. Eskilari ishlamay qoladi.",
+      "submit": "Kodlarni yaratish",
+      "done": "Tayyor"
     }
   }
 }

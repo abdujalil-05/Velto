@@ -1,9 +1,14 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { Logger } from '@nestjs/common';
 import type { Job } from 'bullmq';
+import { getTraceId } from '../../common/trace/trace-context';
+import { IMPORT_COMMIT_FAILED } from './import-exceptions';
 import { Prisma, type TenantClient } from '@velto/database';
 import { AuditLogService, toAuditJson } from '../../common/audit/audit-log.service';
+import { runJobWithTrace } from '../../common/queue/trace-job';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
-import { IMPORT_QUEUE, type ImportJobData, type ImportJobReport, type RowError } from './import.constants';
+import { IMPORT_COMMIT_CHUNK, IMPORT_CHUNK_TX_OPTIONS, IMPORT_QUEUE, type ImportCommitState, type ImportJobData, type ImportJobReport, type RowError } from './import.constants';
+import { localizeRowErrors } from './row-messages';
 import type { CustomerImportRow } from './parsers/customers-parser';
 import type { ProductImportRow } from './parsers/products-parser';
 
@@ -22,8 +27,12 @@ interface CommitResult {
  * findFirst-then-create pattern) since time has passed since validation and
  * another request could have taken the same code/sku meanwhile.
  */
-@Processor(IMPORT_QUEUE)
+// Lock renewal is a timer on the shared event loop (API + worker in one process): under CPU/DB starvation the default 30 s lock expired mid-job
+// ("Missing lock ... moveToFinished"). 120 s lock + tolerant stalled count; safe because the commit resumes from its persisted cursor and is idempotent.
+@Processor(IMPORT_QUEUE, { lockDuration: 120_000, maxStalledCount: 5 })
 export class ImportProcessor extends WorkerHost {
+  private readonly logger = new Logger(ImportProcessor.name);
+
   constructor(
     private readonly tenantPrisma: TenantPrismaService,
     private readonly auditLog: AuditLogService,
@@ -31,26 +40,69 @@ export class ImportProcessor extends WorkerHost {
     super();
   }
 
-  async process(job: Job<ImportJobData>): Promise<void> {
-    const { importJobId, companyId } = job.data;
+  process(job: Job<ImportJobData>): Promise<void> {
+    return runJobWithTrace(job, () => this.handle(job));
+  }
+
+  private async handle(job: Job<ImportJobData>): Promise<void> {
+    const { importJobId, companyId, userId } = job.data;
 
     try {
+      // Idempotency: only a PROCESSING job is worked on. A duplicate/redelivered
+      // job for a DONE (or still PENDING/FAILED) import is a no-op.
+      const importJob = await this.tenantPrisma.run(companyId, (tx) => tx.importJob.findFirst({ where: { id: importJobId } }));
+      if (!importJob || importJob.status !== 'PROCESSING') return;
+
+      const stored = importJob.errorLog as unknown as ImportJobReport<CustomerImportRow | ProductImportRow> | null;
+      const rows = stored?.rows ?? [];
+      const type = importJob.type;
+
+      // Chunked + resumable: each chunk commits its rows AND the cursor
+      // (errorLog.commit: nextIndex + running counters) in ONE transaction.
+      // A retry after a partial failure resumes at nextIndex, so rows created
+      // by an earlier attempt of this job are never re-visited (and never
+      // reported as "already exists"), and the counters stay cumulative.
+      const result: CommitResult = {
+        createdCount: stored?.commit?.createdCount ?? 0,
+        skippedCount: stored?.commit?.skippedCount ?? 0,
+        errors: [...(stored?.commit?.errors ?? [])],
+      };
+      const categoryIdByName = new Map<string, string>();
+      for (let i = stored?.commit?.nextIndex ?? 0; i < rows.length; i += IMPORT_COMMIT_CHUNK) {
+        const chunk = rows.slice(i, i + IMPORT_COMMIT_CHUNK);
+        const progress = Math.min(99, Math.floor(((i + chunk.length) / rows.length) * 100));
+        const part = await this.tenantPrisma.run(companyId, async (tx) => {
+          // Row lock + cursor check: if another run of the same job (e.g. BullMQ stalled-redelivery after a lock expiry) already advanced the cursor, this run yields.
+          const cur = await tx.$queryRaw<{ n: string }[]>`SELECT COALESCE("errorLog"->'commit'->>'nextIndex', '0') AS n FROM "ImportJob" WHERE "id" = ${importJobId}::uuid AND "status" = 'PROCESSING' FOR UPDATE`;
+          if (cur.length === 0 || Number(cur[0].n) !== i) return null;
+          const r =
+            type === 'customers'
+              ? await this.commitCustomers(tx, companyId, chunk as CustomerImportRow[])
+              : await this.commitProducts(tx, companyId, chunk as ProductImportRow[], categoryIdByName);
+          const commit: ImportCommitState = {
+            nextIndex: i + chunk.length,
+            createdCount: result.createdCount + r.createdCount,
+            skippedCount: result.skippedCount + r.skippedCount,
+            errors: [...result.errors, ...r.errors],
+          };
+          // jsonb merge keeps the (large) stored rows untouched on the client side.
+          await tx.$executeRaw`UPDATE "ImportJob" SET "progress" = ${progress}, "errorLog" = COALESCE("errorLog", '{}'::jsonb) || ${JSON.stringify({ commit })}::jsonb WHERE "id" = ${importJobId}::uuid`;
+          return r;
+        }, IMPORT_CHUNK_TX_OPTIONS);
+        // Yield so lock renewal / HTTP handlers run between chunks.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        if (part === null) return; // another run owns this job
+        result.createdCount += part.createdCount;
+        result.skippedCount += part.skippedCount;
+        result.errors.push(...part.errors);
+      }
+
       await this.tenantPrisma.run(companyId, async (tx) => {
-        const importJob = await tx.importJob.findFirst({ where: { id: importJobId } });
-        if (!importJob) return; // job/company mismatch — nothing to commit
-
-        const stored = importJob.errorLog as unknown as ImportJobReport<CustomerImportRow | ProductImportRow> | null;
-        const rows = stored?.rows ?? [];
-
-        const result =
-          importJob.type === 'customers'
-            ? await this.commitCustomers(tx, companyId, rows as CustomerImportRow[])
-            : await this.commitProducts(tx, companyId, rows as ProductImportRow[]);
-
         await this.auditLog.log(tx, {
           companyId,
-          action: importJob.type === 'customers' ? 'customer.import' : 'product.import',
-          entity: importJob.type === 'customers' ? 'Customer' : 'Product',
+          userId,
+          action: type === 'customers' ? 'customer.import' : 'product.import',
+          entity: type === 'customers' ? 'Customer' : 'Product',
           entityId: importJob.id,
           newValue: toAuditJson(result),
         });
@@ -59,23 +111,41 @@ export class ImportProcessor extends WorkerHost {
           totalRows: stored?.totalRows ?? rows.length,
           validCount: stored?.validCount ?? rows.length,
           invalidCount: stored?.invalidCount ?? 0,
-          errors: [...(stored?.errors ?? []), ...result.errors],
+          errors: [...(stored?.errors ?? []), ...localizeRowErrors(result.errors)],
           createdCount: result.createdCount,
           skippedCount: result.skippedCount,
         };
 
         await tx.importJob.update({
           where: { id: importJobId },
-          data: { status: 'DONE', errorLog: finalReport as unknown as Prisma.InputJsonValue },
+          data: { status: 'DONE', progress: 100, errorLog: finalReport as unknown as Prisma.InputJsonValue },
         });
       });
     } catch (err) {
-      await this.tenantPrisma.run(companyId, (tx) =>
-        tx.importJob.update({
-          where: { id: importJobId },
-          data: { status: 'FAILED', errorLog: { message: err instanceof Error ? err.message : String(err) } },
-        }),
-      );
+      // Only the last attempt is terminal; earlier ones stay PROCESSING so the retry can run.
+      const isLastAttempt = (job.attemptsMade ?? 0) + 1 >= (job.opts?.attempts ?? 1);
+      if (isLastAttempt) {
+        this.logger.error(`import ${importJobId}: commit failed trace=${getTraceId() ?? '-'}`, err instanceof Error ? err.stack : String(err));
+        const cur = await this.tenantPrisma.run(companyId, (tx) => tx.importJob.findFirst({ where: { id: importJobId } }));
+        const prev = (cur?.errorLog ?? {}) as unknown as Partial<ImportJobReport<never>>;
+        await this.tenantPrisma.run(companyId, (tx) =>
+          tx.importJob.update({
+            where: { id: importJobId },
+            data: {
+              status: 'FAILED',
+              errorLog: {
+                totalRows: prev.totalRows,
+                validCount: prev.validCount,
+                invalidCount: prev.invalidCount,
+                errors: prev.errors ?? [],
+                createdCount: prev.commit?.createdCount ?? 0,
+                skippedCount: prev.commit?.skippedCount ?? 0,
+                ...IMPORT_COMMIT_FAILED,
+              } as unknown as Prisma.InputJsonValue,
+            },
+          }),
+        );
+      }
       throw err;
     }
   }
@@ -84,9 +154,12 @@ export class ImportProcessor extends WorkerHost {
     let createdCount = 0;
     const errors: RowError[] = [];
 
+    const taken = new Set(
+      (await tx.customer.findMany({ where: { code: { in: rows.map((r) => r.code) }, deletedAt: null }, select: { code: true } })).map((c) => c.code),
+    );
+
     for (const row of rows) {
-      const clash = await tx.customer.findFirst({ where: { code: row.code, deletedAt: null } });
-      if (clash) {
+      if (taken.has(row.code)) {
         errors.push({ row: row.rowNumber, messages: [`code "${row.code}" allaqachon mavjud`] });
         continue;
       }
@@ -118,14 +191,20 @@ export class ImportProcessor extends WorkerHost {
     return { createdCount, skippedCount: errors.length, errors };
   }
 
-  private async commitProducts(tx: TenantClient, companyId: string, rows: ProductImportRow[]): Promise<CommitResult> {
+  private async commitProducts(
+    tx: TenantClient,
+    companyId: string,
+    rows: ProductImportRow[],
+    categoryIdByName: Map<string, string>,
+  ): Promise<CommitResult> {
     let createdCount = 0;
     const errors: RowError[] = [];
-    const categoryIdByName = new Map<string, string>();
+    const taken = new Set(
+      (await tx.product.findMany({ where: { sku: { in: rows.map((r) => r.sku) }, deletedAt: null }, select: { sku: true } })).map((p) => p.sku),
+    );
 
     for (const row of rows) {
-      const clash = await tx.product.findFirst({ where: { sku: row.sku, deletedAt: null } });
-      if (clash) {
+      if (taken.has(row.sku)) {
         errors.push({ row: row.rowNumber, messages: [`sku "${row.sku}" allaqachon mavjud`] });
         continue;
       }

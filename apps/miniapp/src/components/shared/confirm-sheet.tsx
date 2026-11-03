@@ -27,6 +27,8 @@ export interface ConfirmSheetProps {
   confirmLabel?: string;
   cancelLabel?: string;
   onConfirm: () => void | Promise<void>;
+  /** Keeps the confirm button disabled (e.g. a required reason is empty). */
+  confirmDisabled?: boolean;
   /** Extra inputs shown above the actions (e.g. a "reason" textarea). Disabled by the caller while `busy` isn't observable — keep them cheap. */
   children?: React.ReactNode;
 }
@@ -52,6 +54,7 @@ export function ConfirmSheet({
   confirmLabel,
   cancelLabel,
   onConfirm,
+  confirmDisabled = false,
   children,
 }: ConfirmSheetProps) {
   const t = useTranslations('Common.confirmSheet');
@@ -134,7 +137,7 @@ export function ConfirmSheet({
             variant={tone === 'destructive' ? 'destructive' : 'default'}
             size="lg"
             className="w-full"
-            disabled={busy}
+            disabled={busy || confirmDisabled}
             onClick={handleConfirm}
           >
             {busy ? t('working') : (confirmLabel ?? t('delete'))}

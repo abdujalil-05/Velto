@@ -1,4 +1,18 @@
 import { z } from 'zod';
+import { decodeEncryptionKey } from '../crypto/secret-box';
+import { parsePreviousKekSecrets } from './offline-kek-keyring';
+import { hasExampleUrlPassword, hasUrlPassword, isExampleS3AccessKey, isExampleS3SecretKey, isPlaceholderSecret } from './secret-placeholders';
+
+/** Single source of the defaults; trace-job.ts / export-1c.constants.ts fall back to these. */
+export const DEFAULT_QUEUE_ENQUEUE_TIMEOUT_MS = 3000;
+export const DEFAULT_ABANDONED_QUEUED_MS = 24 * 60 * 60_000;
+export const DEFAULT_DASHBOARD_CACHE_TTL_S = 30;
+export const DEFAULT_REPORT_MAX_CONCURRENCY = 2;
+export const DEFAULT_REPORT_QUEUE_MAX = 20;
+export const DEFAULT_REPORT_QUEUE_TIMEOUT_MS = 10_000;
+export const DEFAULT_REPORT_TENANT_MAX_CONCURRENCY = 1;
+export const DEFAULT_REPORT_TENANT_QUEUE_MAX = 5;
+export const DEFAULT_HEALTH_READY_CACHE_MS = 1000;
 
 /** Fails fast on boot if required env vars are missing/malformed, instead of failing on the first request that needs them. */
 export const envSchema = z.object({
@@ -11,15 +25,42 @@ export const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
   DATABASE_SYSTEM_URL: z.string().min(1),
   REDIS_URL: z.string().min(1),
+  // BullMQ key prefix (BullMQ's own default is 'bull', so keys are unchanged unless set). Applied once in QueueModule to every queue/worker/scheduler; use distinct values per environment sharing a Redis.
+  BULLMQ_PREFIX: z.string().min(1).default('bull'),
   JWT_ACCESS_SECRET: z.string().min(32),
   JWT_ACCESS_TTL: z.string().default('15m'),
   JWT_REFRESH_TTL: z.string().default('30d'),
+  // ADR-058: AES-256-GCM key (base64 of exactly 32 bytes) sealing TOTP secrets. Required, no default.
+  MFA_ENCRYPTION_KEY: z.string().refine((v) => decodeEncryptionKey(v) !== null, 'must be base64 of exactly 32 bytes'),
+  // Offline KEK root secret (HMAC key for GET /auth/offline-kek). Required, no default; rotating it invalidates every wrapped on-device DEK.
+  OFFLINE_KEK_SECRET: z.string().min(32),
+  // Keyring: OFFLINE_KEK_SECRET is the secret for OFFLINE_KEK_VERSION; older versions stay requestable via "<ver>:<secret>;..." until removed (then 410).
+  OFFLINE_KEK_VERSION: z.coerce.number().int().min(1).default(1),
+  OFFLINE_KEK_PREVIOUS_SECRETS: z.string().optional(),
   TELEGRAM_BOT_TOKEN: z.string().default(''),
+  // Telegram initData replay policy — rationale next to LoginRateLimiterService.recordTelegramInitDataUse.
+  TELEGRAM_INITDATA_MAX_AGE_SECONDS: z.coerce.number().int().positive().default(600),
+  TELEGRAM_INITDATA_MAX_USES: z.coerce.number().int().positive().default(20),
   // Verified against Telegram's `X-Telegram-Bot-Api-Secret-Token` header on
   // every /auth/telegram/webhook call (set via setWebhook's secret_token) —
   // empty means the webhook route always rejects, same fail-closed default
   // as an unset bot token.
   TELEGRAM_WEBHOOK_SECRET: z.string().default(''),
+  // 10.3 / F4: max documents per POST /sync/push (TZ default 20). Capped at
+  // SYNC_PUSH_HARD_MAX_BATCH (sync-push.dto.ts) — the whole batch shares one
+  // request transaction under Prisma's 5s timeout, so a larger value would
+  // only trade a 400 for a timed-out (RETRY-everything) batch.
+  SYNC_PUSH_MAX_BATCH: z.coerce.number().int().min(1).max(100).default(20),
+  // GET /sync/pull lookback (seconds): the cursor never advances past rows
+  // younger than this, so a slow transaction that commits a lower changeSeq
+  // after a higher one is still re-sent. Must exceed 2x the request-transaction
+  // timeout (5s) plus app/DB clock skew — see SyncService.pull.
+  SYNC_PULL_LOOKBACK_SECONDS: z.coerce.number().int().min(20).max(3600).default(60),
+  // Visit.startedAt older than this many days is REJECTED (offline queue must
+  // sync within the window); more than 5 minutes in the future is always rejected.
+  // 30 days: iOS evicts IndexedDB after ~7 days of inactivity, so a 7-day cap
+  // would lose field data (TZ 8.4); 30 days still bounds bogus dates.
+  VISIT_STARTED_AT_MAX_AGE_DAYS: z.coerce.number().int().min(1).max(90).default(30),
   // Comma-separated list of origins allowed to call the API with credentials
   // (SEC-040..048: CORS must not be wide-open). Web and Mini App dev ports by default.
   CORS_ORIGINS: z.string().default('http://localhost:3000,http://localhost:3002'),
@@ -32,6 +73,42 @@ export const envSchema = z.object({
   // instead of sending it, so the reset flow works in dev without an account.
   SMS_API_TOKEN: z.string().default(''),
   SMS_SENDER: z.string().default('4546'),
+  // Build info surfaced by GET /health/ready (set by the deploy script; 'dev' locally).
+  APP_VERSION: z.string().default('dev'),
+  GIT_SHA: z.string().default('dev'),
+  // Maintenance mode (ADR-051): when 'true', every POST/PUT/PATCH/DELETE answers 503
+  // MAINTENANCE_READ_ONLY except routes marked @AllowDuringMaintenance (login/refresh/logout/telegram login).
+  // Same literal-enum pattern as S3_FORCE_PATH_STYLE (z.coerce.boolean would turn "false" into true).
+  READ_ONLY_MODE: z
+    .enum(['true', 'false'])
+    .optional()
+    .default('false')
+    .transform((v) => v === 'true'),
+  // NFR-REL-006: per-enqueue timeout so a Redis outage cannot hang a request.
+  QUEUE_ENQUEUE_TIMEOUT_MS: z.coerce.number().int().min(100).max(60_000).default(DEFAULT_QUEUE_ENQUEUE_TIMEOUT_MS),
+  // ADR-047: an orphaned QUEUED export job older than this is failed. Min 15 minutes.
+  ABANDONED_QUEUED_MS: z.coerce.number().int().min(15 * 60_000).default(DEFAULT_ABANDONED_QUEUED_MS),
+  // Prisma pool sizing; bounds/defaults mirror packages/database/src/pool-config.ts (kept in sync by env.schema.test.ts).
+  PRISMA_POOL_SIZE: z.coerce.number().int().min(1).max(95).default(30),
+  PRISMA_SYSTEM_POOL_SIZE: z.coerce.number().int().min(1).max(95).default(5),
+  PRISMA_POOL_TIMEOUT_S: z.coerce.number().int().min(1).max(120).default(10),
+  // Dashboard JSON per-company in-memory cache TTL (seconds); 0 = off. Single process only (PM2 instances=1, ADR-051); multi-process needs Redis.
+  DASHBOARD_CACHE_TTL_S: z.coerce.number().int().min(0).max(600).default(DEFAULT_DASHBOARD_CACHE_TTL_S),
+  REPORT_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(DEFAULT_REPORT_MAX_CONCURRENCY),
+  REPORT_QUEUE_MAX: z.coerce.number().int().min(0).max(1000).default(DEFAULT_REPORT_QUEUE_MAX),
+  REPORT_QUEUE_TIMEOUT_MS: z.coerce.number().int().min(1).max(120_000).default(DEFAULT_REPORT_QUEUE_TIMEOUT_MS),
+  // Per-tenant share of the report semaphore (noisy-neighbour guard); must be <= REPORT_MAX_CONCURRENCY (checked below).
+  REPORT_TENANT_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(DEFAULT_REPORT_TENANT_MAX_CONCURRENCY),
+  REPORT_TENANT_QUEUE_MAX: z.coerce.number().int().min(0).max(1000).default(DEFAULT_REPORT_TENANT_QUEUE_MAX),
+  // Dashboard's own limiter lane (separate from the heavy-report semaphore); tenant cap must be <= DASHBOARD_MAX_CONCURRENCY (checked below).
+  DASHBOARD_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(DEFAULT_REPORT_MAX_CONCURRENCY),
+  DASHBOARD_TENANT_MAX_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(DEFAULT_REPORT_TENANT_MAX_CONCURRENCY),
+  DASHBOARD_QUEUE_MAX: z.coerce.number().int().min(0).max(1000).default(DEFAULT_REPORT_QUEUE_MAX),
+  DASHBOARD_QUEUE_TIMEOUT_MS: z.coerce.number().int().min(1).max(120_000).default(DEFAULT_REPORT_QUEUE_TIMEOUT_MS),
+  DASHBOARD_TENANT_QUEUE_MAX: z.coerce.number().int().min(0).max(1000).default(DEFAULT_REPORT_TENANT_QUEUE_MAX),
+  // /health/ready result cache (ms); concurrent probes share one in-flight check. 0 = no cache (still single-flight).
+  HEALTH_READY_CACHE_MS: z.coerce.number().int().min(0).max(30_000).default(DEFAULT_HEALTH_READY_CACHE_MS),
+  IMPORT_RECOVERY_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(50).default(5),
   S3_ENDPOINT: z.string().min(1),
   S3_REGION: z.string().default('us-east-1'),
   S3_ACCESS_KEY: z.string().min(1),
@@ -59,7 +136,74 @@ export const envSchema = z.object({
     .optional()
     .default('false')
     .transform((v) => v === 'true'),
-});
+  // Diagnostic perf metrics (event-loop delay, tx pool wait, dashboard compute),
+  // logged as `perf {json}` lines. Off by default: no timers, no overhead.
+  PERF_METRICS: z
+    .enum(['true', 'false'])
+    .optional()
+    .default('false')
+    .transform((v) => v === 'true'),
+})
+  .refine((e) => !parsePreviousKekSecrets(e.OFFLINE_KEK_PREVIOUS_SECRETS, e.OFFLINE_KEK_VERSION).error, {
+    path: ['OFFLINE_KEK_PREVIOUS_SECRETS'],
+    message: 'invalid keyring (format "<ver>:<secret>;...", secrets >= 32 chars, versions < OFFLINE_KEK_VERSION, no duplicates)',
+  })
+  .refine((e) => e.NODE_ENV !== 'production' || !isPlaceholderSecret(e.JWT_ACCESS_SECRET), {
+    path: ['JWT_ACCESS_SECRET'],
+    message: 'must not be an example/CI placeholder in production; generate with: openssl rand -base64 48',
+  })
+  .refine((e) => e.NODE_ENV !== 'production' || !isPlaceholderSecret(e.MFA_ENCRYPTION_KEY), {
+    path: ['MFA_ENCRYPTION_KEY'],
+    message: 'must not be an example/CI placeholder in production; generate with: openssl rand -base64 32',
+  })
+  .refine((e) => e.NODE_ENV !== 'production' || !isExampleS3AccessKey(e.S3_ACCESS_KEY), {
+    path: ['S3_ACCESS_KEY'],
+    message: 'must not be an example/CI credential in production',
+  })
+  .refine((e) => e.NODE_ENV !== 'production' || !isExampleS3SecretKey(e.S3_SECRET_KEY), {
+    path: ['S3_SECRET_KEY'],
+    message: 'must not be an example/CI credential in production',
+  })
+  .refine((e) => e.NODE_ENV !== 'production' || !hasExampleUrlPassword(e.DATABASE_URL), {
+    path: ['DATABASE_URL'],
+    message: 'must not use an example/CI password in production',
+  })
+  .refine((e) => e.NODE_ENV !== 'production' || !hasExampleUrlPassword(e.DATABASE_SYSTEM_URL), {
+    path: ['DATABASE_SYSTEM_URL'],
+    message: 'must not use an example/CI password in production',
+  })
+  .refine((e) => e.NODE_ENV !== 'production' || !hasExampleUrlPassword(e.REDIS_URL), {
+    path: ['REDIS_URL'],
+    message: 'must not use an example/CI password in production',
+  })
+  .refine((e) => e.NODE_ENV !== 'production' || hasUrlPassword(e.REDIS_URL), {
+    path: ['REDIS_URL'],
+    message: 'must include a password (Redis requirepass is mandatory in production)',
+  })
+  .refine((e) => e.NODE_ENV !== 'production' || !isPlaceholderSecret(e.OFFLINE_KEK_SECRET), {
+    path: ['OFFLINE_KEK_SECRET'],
+    message: 'must not be an example/CI placeholder in production; generate with: openssl rand -base64 48',
+  })
+  .refine(
+    (e) =>
+      e.NODE_ENV !== 'production' ||
+      [...parsePreviousKekSecrets(e.OFFLINE_KEK_PREVIOUS_SECRETS, e.OFFLINE_KEK_VERSION).map.values()].every((s) => !isPlaceholderSecret(s)),
+    { path: ['OFFLINE_KEK_PREVIOUS_SECRETS'], message: 'contains an example/CI placeholder secret, not allowed in production' },
+  )
+  .refine((e) => e.REPORT_TENANT_MAX_CONCURRENCY <= e.REPORT_MAX_CONCURRENCY, {
+    path: ['REPORT_TENANT_MAX_CONCURRENCY'],
+    message: 'must be <= REPORT_MAX_CONCURRENCY',
+  })
+  .refine((e) => e.DASHBOARD_TENANT_MAX_CONCURRENCY <= e.DASHBOARD_MAX_CONCURRENCY, {
+    path: ['DASHBOARD_TENANT_MAX_CONCURRENCY'],
+    message: 'must be <= DASHBOARD_MAX_CONCURRENCY',
+  })
+  // A compute holds up to 6 connections; both lanes at capacity plus a 6-connection reserve must fit the app pool
+  // (PRISMA_POOL_SIZE already defaults to DEFAULT_APP_POOL_SIZE, kept in sync by env.schema.test.ts).
+  .refine((e) => e.PRISMA_POOL_SIZE >= 6 * (e.REPORT_MAX_CONCURRENCY + e.DASHBOARD_MAX_CONCURRENCY) + 6, {
+    path: ['PRISMA_POOL_SIZE'],
+    message: 'must be >= 6 x (REPORT_MAX_CONCURRENCY + DASHBOARD_MAX_CONCURRENCY) + 6',
+  });
 
 export type Env = z.infer<typeof envSchema>;
 

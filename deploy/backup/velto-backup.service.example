@@ -1,0 +1,49 @@
+# EXAMPLE, not installed by the repo. Install (user action, on the server, as root):
+#   1. Root-owned copy of the scripts (NOT the writable git checkout: whoever can write the checkout would get root). Re-run after every release.
+#      Source MUST be verified: `git -C <checkout> verify-tag <tag>` then `git archive <tag> deploy | tar -x -C /root/velto-src` as root (root-owned dir),
+#      or review `diff -r <checkout>/deploy /opt/velto/deploy` before copying. Everything under /opt/velto is root:root, dirs 0755, scripts 0755, never group/world-writable
+#      (backup-run.sh refuses to run otherwise):
+#        install -d -m 755 -o root -g root /opt/velto /opt/velto/deploy /opt/velto/deploy/backup /opt/velto/deploy/monitoring
+#        install -m 755 -o root -g root /root/velto-src/deploy/backup/{backup-run,backup,objects-backup,restore-objects,offsite-sync,pg-conn,backup-common,backup-status-lib,fingerprint-lib}.sh /opt/velto/deploy/backup/
+#        install -m 755 -o root -g root /root/velto-src/deploy/env-file.js /opt/velto/deploy/
+#        install -m 755 -o root -g root /root/velto-src/deploy/monitoring/velto-monitor.sh /opt/velto/deploy/monitoring/   # + /usr/local/bin/velto-monitor (see monitoring/README.md)
+#   2. Users, dirs, sudoers: deploy/system/ (README + provision-users.sh.example). /etc/velto/backup.env from backup.env.example (root 600).
+#   3. cp velto-backup.service.example /etc/systemd/system/velto-backup.service ; cp velto-backup.timer.example /etc/systemd/system/velto-backup.timer
+#      systemctl daemon-reload && systemctl enable --now velto-backup.timer
+#   Check the sandbox: systemd-analyze security velto-backup.service ; first run: systemctl start velto-backup.service && journalctl -u velto-backup -n 30
+# Why root: it is the only identity that holds the backup passphrase, backup.env (DB backup role, read-only S3 key, offsite put-only key) and writes the
+# status attestation (/var/lib/velto-backup/status, root:root 0644 in a root:root 0755 dir) that deploy.sh (velto-deploy) can read but never forge.
+# velto-deploy may START this unit (single sudoers rule) and may read the ciphertext (group), never the passphrase or keys. The runtime user `velto` reads none of it.
+# Type=oneshot: `systemctl start` blocks until the run ends and exits non-zero if it failed -> deploy.sh aborts.
+[Unit]
+Description=Velto backup: DB + object store + offsite + status attestation
+# Optional: OnFailure=velto-backup-alert.service  (a oneshot that calls your alert channel)
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/velto/backup.env
+ExecStart=/opt/velto/deploy/backup/backup-run.sh
+Environment=VELTO_MONITOR_BIN=/usr/local/bin/velto-monitor
+TimeoutStartSec=45min   # a run must end well before the monitor CRIT (50 min offsite age); the 20-min timer + flock never start a second one meanwhile
+Nice=10
+IOSchedulingClass=idle
+# --- sandbox ---
+NoNewPrivileges=yes
+ProtectSystem=strict
+# backups + status attestation + monitor dedup state (written by the velto-monitor user via runuser). All must exist before start (see deploy/system/velto-tmpfiles.conf).
+ReadWritePaths=/var/backups/velto /var/lib/velto-backup /var/lib/velto-monitor /var/lib/velto-backup-sign
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# SETUID/SETGID: runuser (alert as velto-monitor). CHOWN: chgrp of the ciphertext to the deploy group. DAC_READ_SEARCH: root reads /etc/velto/app.env (velto:velto 0600) only to compare S3_ACCESS_KEY.
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_DAC_READ_SEARCH
+# gpg/rclone want a home dir; /root is hidden by ProtectHome, so give them a private tmpfs-backed one.
+RuntimeDirectory=velto-backup
+RuntimeDirectoryMode=0700
+Environment=HOME=/run/velto-backup GNUPGHOME=/run/velto-backup/gnupg XDG_CACHE_HOME=/run/velto-backup

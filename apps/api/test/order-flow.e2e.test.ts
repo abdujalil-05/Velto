@@ -6,6 +6,7 @@ import request from 'supertest';
 import { prisma, systemPrisma } from '@velto/database';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
+import { uniquePhone } from './unique-phone';
 
 /**
  * 16 / 11.4: a real end-to-end run of the MVP's core acceptance scenario —
@@ -26,7 +27,7 @@ describe('E2E: order → confirm → deliver → payment → balance (real HTTP)
   let customerId: string;
   let productId: string;
   let packagingId: string;
-  const phone = `+99890${Math.floor(1_000_000 + Math.random() * 8_000_000)}`;
+  const phone = uniquePhone();
   // Test-fixture password for a throwaway user this file creates itself —
   // not a real credential.
   const password = 'CorrectHorseBattery9'; // nosemgrep: ajinabraham.njsscan.generic.hardcoded_secrets.node_password
@@ -35,7 +36,8 @@ describe('E2E: order → confirm → deliver → payment → balance (real HTTP)
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
     app = moduleRef.createNestApplication();
     configureApp(app, ['http://localhost:3000']);
-    await app.init();
+    // Loopback-only listen: supertest's default `::` bind can collide with a foreign 127.0.0.1 listener (e.g. VS Code helper) => random 4xx.
+    await app.listen(0, '127.0.0.1');
 
     const tenant = await systemPrisma.tenant.create({
       data: { slug: `test-e2e-${Date.now()}`, name: 'E2E Test Tenant' },
@@ -120,7 +122,7 @@ describe('E2E: order → confirm → deliver → payment → balance (real HTTP)
 
     expect(res.body.status).toBe('SUBMITTED');
     // 5 * 10000 * 1.12 VAT — client never sends a price (8.2).
-    expect(res.body.total).toBe('56000');
+    expect(res.body.total).toBe('56000.00');
     orderId = res.body.id;
   });
 
@@ -143,21 +145,22 @@ describe('E2E: order → confirm → deliver → payment → balance (real HTTP)
       .get(`/customers/${customerId}/balance`)
       .set('Authorization', `Bearer ${accessToken}`)
       .expect(200);
-    expect(res.body.balance).toBe('56000');
+    expect(res.body.balance).toBe('56000.00');
   });
 
   it('accepts a partial payment over HTTP and reduces the balance (8.4 FIFO)', async () => {
-    await request(app.getHttpServer())
+    const pay = await request(app.getHttpServer())
       .post('/payments')
       .set('Authorization', `Bearer ${accessToken}`)
-      .send({ customerId, amount: 20000, method: 'CASH' })
-      .expect(201);
+      .send({ customerId, amount: 20000, method: 'CASH' });
+    // Diagnostic: a rare 404 was seen once in full-suite runs; keep code/message/ids in the failure text.
+    expect(JSON.stringify({ status: pay.status, body: pay.body, customerId, companyId }), 'payment create').toContain('"status":201');
 
     const res = await request(app.getHttpServer())
       .get(`/customers/${customerId}/balance`)
       .set('Authorization', `Bearer ${accessToken}`)
       .expect(200);
-    expect(res.body.balance).toBe('36000');
+    expect(res.body.balance).toBe('36000.00');
   });
 
   it('rejects a client-supplied price override — DTO whitelist strips unknown fields (SEC-040..048)', async () => {

@@ -1,0 +1,13 @@
+# /etc/sudoers.d/velto-deploy   (root:root 0440; validate with: visudo -cf /etc/sudoers.d/velto-deploy)
+# The release user may do exactly two kinds of privileged things. NO "ALL", no wildcards, no shell, no editor, no pnpm/node as another user.
+# Replace /srv/velto/app with the real checkout path (the argument must match deploy.sh's "$ROOT/deploy/ecosystem.config.js" byte for byte).
+
+# 1. Ask root's backup service for a FRESH backup before migrating (Type=oneshot: blocks until done, exit code = result).
+velto-deploy ALL=(root) NOPASSWD: /usr/bin/systemctl start velto-backup.service
+
+# 2. (Re)start the three PM2 apps as the unprivileged runtime user. ecosystem.config.js runs as `velto` and reads /etc/velto/app.env as `velto`; velto-deploy owns that file, so it is TRUSTED with runtime secrets (not with backup secrets).
+velto-deploy ALL=(velto) NOPASSWD: /usr/bin/pm2 startOrReload /srv/velto/app/deploy/ecosystem.config.js --update-env, /usr/bin/pm2 save --force
+
+# pm2 needs HOME=/var/lib/velto when run as velto (its ~/.pm2); keep the rest of the environment reset.
+Defaults>velto always_set_home
+Defaults:velto-deploy !requiretty

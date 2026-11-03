@@ -11,8 +11,7 @@ import { useCategoriesQuery } from '@/lib/api/categories';
 import { errorMessage } from '@/lib/api/client';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
 import { useSort } from '@/lib/hooks/use-sort';
-import { exportToCsv } from '@/lib/export-csv';
-import { formatMoney } from '@/lib/format';
+import { exportToCsv, csvDecimal } from '@/lib/export-csv';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
@@ -72,7 +71,7 @@ export default function ProductsPage() {
       { header: t('name'), value: (p) => p.name },
       { header: t('brand'), value: (p) => p.brand ?? '' },
       { header: t('category'), value: (p) => p.category?.name ?? '' },
-      { header: t('price'), value: (p) => (p.price ? formatMoney(p.price) : '') },
+      { header: t('price'), value: (p) => (p.price ? csvDecimal(p.price, 2) : '') },
       { header: t('status'), value: (p) => (p.isActive ? t('active') : t('inactive')) },
     ]);
   }

@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12 <27"
   },
   "packageManager": "pnpm@11.17.0",
   "scripts": {
@@ -11,7 +11,8 @@
     "dev": "turbo run dev",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
-    "test": "turbo run test",
+    "test": "node scripts/assert-test-db.mjs && turbo run test",
+    "test:perf": "turbo run test:perf",
     "db:generate": "pnpm --filter @velto/database generate",
     "db:migrate": "pnpm --filter @velto/database migrate:dev",
     "db:seed": "pnpm --filter @velto/database seed"

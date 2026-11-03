@@ -43,26 +43,88 @@ export const SYSTEM_ROLES: { code: string; name: string }[] = [
 // the TZ — a reasonable module/action split covering MVP scope (5.3), grants
 // per role loosely matching the responsibilities in 4.1.
 export const PERMISSION_DEFS: { module: string; actions: string[] }[] = [
-  { module: 'customers', actions: ['read', 'create', 'update', 'delete'] },
+  // `restore` (ADR-061b): undo a customer soft-delete. OWNER only — restore can
+  // collide with a live customer's `code` (partial unique index), which only
+  // the owner may resolve.
+  { module: 'customers', actions: ['read', 'create', 'update', 'delete', 'restore'] },
   { module: 'catalog', actions: ['read', 'create', 'update', 'delete'] },
-  { module: 'stock', actions: ['read', 'receive', 'adjust'] },
+  // `reverse` (F2.1): post a compensating StockMovement / PaymentReversal.
+  // OWNER + SALES_DIRECTOR only — never ACCOUNTANT (ADR-003c: read/export-only).
+  // `movements.read` (ADR-061a): the StockMovement ledger, split from
+  // `stock.read` (levels) — every stock.read holder except SALES_AGENT. Note the
+  // action itself contains a dot: always parse keys with parsePermissionKey().
+  { module: 'stock', actions: ['read', 'receive', 'adjust', 'reverse', 'movements.read'] },
+  // M08 Xarid (ADR-011): suppliers + purchase orders + goods receipts.
+  // `receive` posts a GoodsReceipt (and its StockMovement RECEIVE rows) — kept
+  // separate from `create` so a warehouse keeper can receive without being
+  // able to raise or edit POs.
+  { module: 'purchases', actions: ['read', 'create', 'receive'] },
   // `deliver` is deliberately separate from `update`: `update` guards confirm/
   // close/cancel/delete and courier assignment, so granting it to a courier
   // would let them drive or delete any order in the tenant. `deliver` is the
   // narrow "mark my delivery done" transition (CONFIRMED -> DELIVERED).
-  { module: 'orders', actions: ['read', 'create', 'update', 'cancel', 'deliver'] },
+  // `assignCourier` (PO decision, 2026-11): set/replace an order's courier
+  // (uz: "Kuryer biriktirish", ru: "Назначить курьера", en: "Assign courier").
+  // Split from `update` so WAREHOUSE can dispatch without confirm/close/delete
+  // rights. OWNER, SALES_DIRECTOR, WAREHOUSE. Existing tenants: run
+  // backfill-assign-courier.ts.
+  // `dispatch` (PO decision, 2026-11): physical handover of goods to the
+  // courier, CONFIRMED -> SHIPPED. OWNER, WAREHOUSE.
+  // `returnToWarehouse` (PO decision, 2026-11): physical return of goods,
+  // SHIPPED -> CONFIRMED. OWNER, SALES_DIRECTOR, WAREHOUSE.
+  // Existing tenants: run backfill-assign-courier.ts (provisions all three).
+  { module: 'orders', actions: ['read', 'create', 'update', 'cancel', 'deliver', 'assignCourier', 'dispatch', 'returnToWarehouse'] },
   { module: 'invoices', actions: ['read'] },
-  { module: 'payments', actions: ['read', 'create'] },
+  // `allocate` (F2.1): manually apply an advance (unallocated) payment to
+  // invoices (POST /payments/:id/allocate). Separate from `create` so a sales
+  // agent can take a payment but not redistribute advances — OWNER,
+  // SALES_DIRECTOR and CASHIER only, never ACCOUNTANT (ADR-003c).
+  // `handover` (F8.1, ADR-029 / TZ §6.5, §6.7.2): accept an agent's
+  // PENDING_HANDOVER cash into an open cash session (-> POSTED + FIFO) or
+  // reject it with a reason. OWNER and CASHIER only — not SALES_DIRECTOR
+  // (no cash.open, so it cannot run the session; segregation of duties), never
+  // the collecting agent, never ACCOUNTANT (ADR-003c). Tenants that already
+  // granted it to SALES_DIRECTOR: run revoke-director-handover.ts.
+  { module: 'payments', actions: ['read', 'create', 'reverse', 'allocate', 'handover'] },
   { module: 'cash', actions: ['read', 'open', 'close'] },
-  { module: 'routes', actions: ['read', 'create', 'update'] },
+  // `finish` (F3): finish a route / skip a stop. Split from `update` so a
+  // SALES_AGENT can close their own route without edit rights; the agent-only-
+  // own-route rule (SEC-023) is enforced in RoutesService. Backfill existing
+  // tenants with backfill-permissions.ts.
+  { module: 'routes', actions: ['read', 'create', 'update', 'finish'] },
   { module: 'field', actions: ['read', 'create'] },
   { module: 'reports', actions: ['read', 'export'] },
-  { module: 'users', actions: ['read', 'create', 'update', 'delete'] },
+  // `mfa_reset` (ADR-058): clear another user's TOTP enrollment + recovery
+  // codes and revoke their sessions. OWNER only. Existing tenants: run
+  // backfill-mfa-reset-permission.ts (additive, idempotent).
+  { module: 'users', actions: ['read', 'create', 'update', 'delete', 'mfa_reset'] },
   { module: 'roles', actions: ['read'] },
   { module: 'audit', actions: ['read'] },
   { module: 'settings', actions: ['read', 'update'] },
-  { module: 'integrations', actions: ['export1c'] },
+  // `ack1c` (F5.3 / ADR-030): manual "accepted / failed review" confirmation
+  // of a GENERATED 1C export, checksum-matched. OWNER + ACCOUNTANT: the
+  // accountant loads the file into 1C and records the outcome. This is the
+  // single, explicit ADR-003c exception (ACCOUNTANT otherwise read/export-only).
+  { module: 'integrations', actions: ['export1c', 'ack1c'] },
+  // F2.5 (§6.4/§6.5): drift reconciliation. `read` = view runs/findings
+  // (OWNER, ACCOUNTANT — read-only, fits ADR-003c); `fix` = rebuild a
+  // projection from the ledger / mark a finding FIXED — OWNER only.
+  { module: 'reconciliation', actions: ['read', 'fix'] },
+  // F6 opening balances (TZ §6.7.1 openingQty, OpeningBalanceBatch): `read` =
+  // list/view batches (OWNER + ACCOUNTANT, read-only per ADR-003c);
+  // `preview` = upload a file (S3) + write ImportJob + a PREVIEWED batch —
+  // a write, so OWNER only; `post` / `void` move a batch PREVIEWED -> POSTED
+  // -> VOIDED and write the ledger rows — OWNER only (ACCOUNTANT gets no new
+  // write grant).
+  { module: 'opening', actions: ['read', 'preview', 'post', 'void'] },
+  // F6 full company data export (personal data of customers/users) — OWNER
+  // only. Deliberately not ACCOUNTANT even though the action is "export".
+  { module: 'company', actions: ['export'] },
 ];
+
+// ADR-058: system roles that must enroll and pass TOTP MFA. Single source —
+// API guards and UI import this, never a local copy.
+export const MFA_REQUIRED_ROLE_CODES = ['OWNER', 'SALES_DIRECTOR', 'CASHIER'] as const;
 
 // Roles are fixed system roles with no custom-role authoring in MVP
 // (roles.service.ts) — a real tenant has no later way to grant these by hand,
@@ -71,15 +133,19 @@ export const PERMISSION_DEFS: { module: string; actions: string[] }[] = [
 export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
   OWNER: 'ALL',
   SALES_DIRECTOR: [
-    'customers.read', 'customers.update', 'catalog.read', 'stock.read',
-    'orders.read', 'orders.update', 'orders.deliver', 'invoices.read', 'payments.read',
-    'routes.read', 'routes.create', 'routes.update', 'field.read',
+    'customers.read', 'customers.update', 'catalog.read', 'stock.read', 'stock.movements.read',
+    'purchases.read', 'purchases.create',
+    'orders.read', 'orders.update', 'orders.cancel', 'orders.deliver', 'orders.assignCourier',
+    'orders.returnToWarehouse',
+    'invoices.read', 'payments.read',
+    'payments.reverse', 'stock.reverse', 'payments.allocate',
+    'routes.read', 'routes.create', 'routes.update', 'routes.finish', 'field.read',
     'reports.read', 'reports.export', 'users.read', 'users.create',
     'users.update', 'users.delete', 'roles.read',
   ],
   SALES_AGENT: [
     'customers.read', 'catalog.read', 'stock.read', 'orders.read',
-    'orders.create', 'payments.create', 'payments.read', 'invoices.read', 'routes.read', 'field.read', 'field.create',
+    'orders.create', 'payments.create', 'payments.read', 'invoices.read', 'routes.read', 'routes.finish', 'field.read', 'field.create',
   ],
   // Deliberately narrow: a courier only needs to find the customer, see what
   // is on the order and mark their own delivery done. `orders.deliver`, not
@@ -90,17 +156,26 @@ export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
     'customers.read', 'catalog.read', 'orders.read', 'orders.deliver',
   ],
   WAREHOUSE: [
-    'catalog.read', 'stock.read', 'stock.receive', 'stock.adjust',
-    'orders.read', 'orders.update',
+    'catalog.read', 'stock.read', 'stock.movements.read', 'stock.receive', 'stock.adjust',
+    'purchases.read', 'purchases.receive',
+    // No `orders.update` (PO decision, 2026-11): it also guards confirm/close/
+    // cancel/delete. Courier dispatch goes through `orders.assignCourier`.
+    'orders.read',
     'orders.deliver', // marks CONFIRMED orders as DELIVERED
+    'orders.assignCourier',
+    'orders.dispatch', // physical handover to courier, CONFIRMED -> SHIPPED
+    'orders.returnToWarehouse', // physical return, SHIPPED -> CONFIRMED
   ],
   CASHIER: [
-    'customers.read', 'invoices.read', 'payments.read', 'payments.create',
-    'cash.read', 'cash.open', 'cash.close',
+    'customers.read', 'invoices.read', 'payments.read', 'payments.create', 'payments.allocate',
+    'payments.handover', 'cash.read', 'cash.open', 'cash.close',
   ],
   ACCOUNTANT: [
     'customers.read', 'invoices.read', 'payments.read', 'cash.read', 'reports.read',
-    'reports.export', 'integrations.export1c',
+    'reports.export', 'integrations.export1c', 'purchases.read',
+    'reconciliation.read', 'opening.read',
+    // ADR-003c exception (only write ACCOUNTANT holds): manual 1C import ACK.
+    'integrations.ack1c',
   ],
 };
 
@@ -108,6 +183,17 @@ export const ROLE_PERMISSIONS: Record<string, string[] | 'ALL'> = {
 export const ALL_PERMISSION_KEYS: string[] = PERMISSION_DEFS.flatMap((def) =>
   def.actions.map((action) => `${def.module}.${action}`),
 );
+
+/**
+ * Splits a "module.action" key on the FIRST dot only — the action may itself
+ * contain dots (`stock.movements.read` → stock / movements.read). The single
+ * parser for permission keys; never `key.split('.')`.
+ */
+export function parsePermissionKey(key: string): { module: string; code: string } {
+  const dot = key.indexOf('.');
+  if (dot <= 0 || dot === key.length - 1) throw new Error(`Invalid permission key "${key}"`);
+  return { module: key.slice(0, dot), code: key.slice(dot + 1) };
+}
 
 /**
  * Permission keys a system role must hold. Unknown role codes (custom roles,

@@ -5,6 +5,8 @@ import type { PaginatedResult } from './types';
 
 export type InvoiceStatus = 'OPEN' | 'PARTIALLY_PAID' | 'PAID' | 'CANCELLED';
 
+export type InvoiceKind = 'SALE' | 'OPENING';
+
 export interface Invoice {
   id: string;
   number: string;
@@ -12,6 +14,8 @@ export interface Invoice {
   orderId: string | null;
   total: string;
   status: InvoiceStatus;
+  /** OPENING = carried-over opening debt (ADR-041). */
+  kind: InvoiceKind;
   createdAt: string;
   paid: string;
   outstanding: string;

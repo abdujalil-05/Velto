@@ -6,11 +6,12 @@ import { TenantPrismaService } from '../../../common/tenant/tenant-prisma.servic
 import { CustomersService } from '../../customers/customers.service';
 import { InvoiceNotFoundException } from '../finance-exceptions';
 import type { ListInvoicesQueryDto } from '../dto/list-invoices.query';
+import { VALID_ALLOCATION_WHERE } from '../ledger-filters';
 
-const INVOICE_LIST_INCLUDE = { allocations: true } satisfies Prisma.InvoiceInclude;
+const INVOICE_LIST_INCLUDE = { allocations: { where: VALID_ALLOCATION_WHERE } } satisfies Prisma.InvoiceInclude;
 const INVOICE_DETAIL_INCLUDE = {
   lines: true,
-  allocations: { include: { payment: true } },
+  allocations: { where: VALID_ALLOCATION_WHERE, include: { payment: true } },
 } satisfies Prisma.InvoiceInclude;
 
 @Injectable()

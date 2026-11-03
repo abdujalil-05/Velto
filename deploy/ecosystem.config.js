@@ -22,27 +22,27 @@ const root = path.resolve(__dirname, '..');
 // happens while app.module.ts is still being required — before ConfigModule
 // ever runs. pm2 has no env_file option, and `dotenv` isn't resolvable from
 // the workspace root under pnpm, so parse it here.
-function readEnvFile(file) {
-  const out = {};
-  if (!fs.existsSync(file)) return out;
-  for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
-    const match = /^\s*([A-Z0-9_]+)\s*=\s*(.*)$/i.exec(line);
-    if (!match) continue; // comment or blank
-    out[match[1]] = match[2].trim().replace(/^(['"])(.*)\1$/s, '$2');
-  }
-  return out;
-}
+// Parsing rule is shared with deploy.sh (see ./env-file.js): no inline comments, no shell expansion.
+const { readEnvFile } = require('./env-file');
 
-// `.env` is the developer's local file and stays pointed at the dev database;
-// `.env.production.local` (gitignored, chmod 600) holds this deployment's real
-// credentials and wins on every key it defines. Layering rather than replacing
-// means a var added to `.env.example`/`.env` later still has a value here
-// instead of failing env.schema.ts validation at boot.
+// Only `.env.production.local` (gitignored, chmod 600) - or VELTO_ENV_FILE, e.g. /etc/velto/app.env owned by the runtime user - is read: layering the dev
+// `.env` under it would let a key missing in production silently take the
+// dev/example value. A missing var must instead fail env.schema.ts at boot.
+// Order: VELTO_ENV_FILE, else /etc/velto/app.env if it exists (split-user layout, deploy/system/), else the legacy repo-root file.
+// (sudo resets the environment, so the well-known path is what works under `sudo -u velto pm2 ...`.)
+const SPLIT_ENV = '/etc/velto/app.env';
+const envFile = process.env.VELTO_ENV_FILE || (fs.existsSync(SPLIT_ENV) ? SPLIT_ENV : path.join(root, '.env.production.local'));
 const env = {
-  ...readEnvFile(path.join(root, '.env')),
-  ...readEnvFile(path.join(root, '.env.production.local')),
+  ...readEnvFile(envFile),
   NODE_ENV: 'production',
 };
+// Schema-owner / admin credentials are for `prisma migrate deploy` only (see
+// deploy.sh) — the running API must never hold them.
+delete env.DATABASE_MIGRATE_URL;
+delete env.DATABASE_ADMIN_URL;
+// Backup key must never live in app processes (root-only file, used by deploy.sh/backup.sh only).
+delete env.BACKUP_PASSPHRASE;
+delete env.BACKUP_PASSPHRASE_FILE;
 
 // The two Next.js processes get NONE of the above. They need nothing from it:
 // every value they read is a NEXT_PUBLIC_* one, inlined into the bundle at

@@ -47,3 +47,15 @@ export class OutletsController {
     return this.outlets.remove(customerId, outletId, user);
   }
 }
+
+@Controller('outlets')
+export class OutletsQualityController {
+  constructor(private readonly outlets: OutletsService) {}
+
+  // Data-quality list for managers: customers.update is held only by OWNER / SALES_DIRECTOR.
+  @Get('no-coords')
+  @RequirePermission('customers.update')
+  noCoords() {
+    return this.outlets.listNoCoords();
+  }
+}

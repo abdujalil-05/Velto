@@ -1,17 +1,53 @@
+import type { TraceableJobData } from '../../common/queue/trace-job';
+
 export const IMPORT_QUEUE = 'import-commit';
 
 export type ImportType = 'customers' | 'products';
 
-export interface ImportJobData {
+/** ImportJob rows of these types belong to /import; opening-balance previews (opening-balances module) also use ImportJob and are kept out of /import. */
+export const IMPORT_TYPES: ImportType[] = ['customers', 'products'];
+
+/**
+ * ADR-064b: ImportJob.attemptCount = durable automatic recovery enqueues by the sweep (job missing / terminal-orphan in BullMQ).
+ * The initial confirm() dispatch is NOT counted (attempts 0 = user-initiated); BullMQ-internal retries never touch it; never auto-reset.
+ * Capped exponential backoff from updatedAt: base * 2^attemptCount, capped.
+ */
+export const DEFAULT_IMPORT_RECOVERY_MAX_ATTEMPTS = 5;
+export const IMPORT_RECOVERY_BACKOFF_BASE_S = 300;
+export const IMPORT_RECOVERY_BACKOFF_CAP_S = 3600;
+export function importRecoveryMaxAttempts(): number {
+  const n = Number(process.env.IMPORT_RECOVERY_MAX_ATTEMPTS);
+  return Number.isInteger(n) && n >= 1 ? n : DEFAULT_IMPORT_RECOVERY_MAX_ATTEMPTS;
+}
+
+export interface ImportJobData extends TraceableJobData {
   importJobId: string;
   companyId: string;
+  /** Actor who confirmed the import; used for the audit row (ImportJob.createdBy holds the uploader). */
+  userId?: string;
 }
 
 /** Shared shape for a single row's problems, regardless of import type. */
+export interface RowMessage {
+  uz: string;
+  ru: string;
+  en: string;
+}
+
 export interface RowError {
   row: number; // 1-based, matching the spreadsheet's visible row number (header = row 1)
-  messages: string[];
+  messages: string[]; // uz text (legacy shape, kept for the web table)
+  i18n?: RowMessage[]; // same messages, trilingual (parallel to `messages`)
 }
+
+/** Rows per commit transaction; progress is persisted (and visible to pollers) after each chunk. */
+export const IMPORT_COMMIT_CHUNK = 200;
+
+/** A 200-row chunk tx must not hit Prisma's 5 s default under CPU/DB load (it rolled back and failed imports); progress is still persisted per chunk. */
+export const IMPORT_CHUNK_TX_OPTIONS = { timeout: 60_000, maxWait: 10_000 };
+
+/** Queue retry policy: exponential backoff, bounded attempts (7.5). */
+export const IMPORT_JOB_OPTS = { attempts: 3, backoff: { type: 'exponential' as const, delay: 5_000 }, removeOnComplete: 1000, removeOnFail: 5000 };
 
 /**
  * Stored as ImportJob.errorLog (Json?) — despite the field's name (inherited
@@ -30,4 +66,24 @@ export interface ImportJobReport<T> {
   rows?: T[]; // present only between validate() and confirm()
   createdCount?: number; // present only after confirm()
   skippedCount?: number; // present only after confirm()
+  commit?: ImportCommitState; // present only while PROCESSING (chunk cursor)
+}
+
+/** Abuse limits for uploaded workbooks (zip bombs / huge sheets). */
+export const IMPORT_LIMITS = {
+  maxUncompressedBytes: 50 * 1024 * 1024,
+  maxCompressionRatio: 100,
+  maxZipEntries: 1000,
+  maxDataRows: 20_000,
+  /** Physical rows scanned (incl. blank formatted rows) before giving up. */
+  maxScannedRows: 100_000,
+  maxColumns: 100,
+};
+
+/** Resume cursor persisted inside ImportJob.errorLog.commit, updated atomically with every committed chunk. */
+export interface ImportCommitState {
+  nextIndex: number;
+  createdCount: number;
+  skippedCount: number;
+  errors: RowError[];
 }

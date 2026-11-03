@@ -4,10 +4,24 @@
 // direct-companyId tables (Customer) and parent-subquery child tables
 // (RolePermission, isolated via its Role's companyId), plus the fail-closed
 // default and the AuditLog append-only trigger.
+import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { prisma, systemPrisma, withTenant } from '../client';
 
+// The runtime roles hold no TRUNCATE privilege (TRUNCATE ignores RLS — see
+// scripts/provision-roles.sql), so the grant layer rejects it before the
+// append-only statement trigger would. Either rejection is acceptable.
+const TRUNCATE_REJECTED = /append-only|permission denied/i;
+
 describe('tenant isolation (RLS)', () => {
+  // TZ 10.4 / 16.3: a superuser or BYPASSRLS role skips RLS even with FORCE,
+  // which would make every case below pass/fail for the wrong reason.
+  it('runs as an RLS-bound app role (not superuser, not BYPASSRLS)', async () => {
+    const [role] = await prisma.$queryRaw<{ rolsuper: boolean; rolbypassrls: boolean }[]>`
+      SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`;
+    expect(role).toEqual({ rolsuper: false, rolbypassrls: false });
+  });
+
   let tenantId: string;
   let otherTenantId: string;
   let companyAId: string;
@@ -29,6 +43,11 @@ describe('tenant isolation (RLS)', () => {
   let userBId: string;
   let deliveryOrderAId: string;
   let deliveryRouteAId: string;
+  let supplierAId: string;
+  let supplierBId: string;
+  let purchaseOrderAId: string;
+  let purchaseOrderLineAId: string;
+  let goodsReceiptAId: string;
 
   beforeAll(async () => {
     const stamp = Date.now();
@@ -92,7 +111,7 @@ describe('tenant isolation (RLS)', () => {
 
     const period = { periodFrom: new Date(), periodTo: new Date() };
     await withTenant(companyAId, (tx) =>
-      tx.exportJob.create({ data: { companyId: companyAId, type: '1c', format: 'XML', status: 'PENDING', ...period } }),
+      tx.exportJob.create({ data: { companyId: companyAId, type: '1c', format: 'XML', ...period } }),
     );
 
     await withTenant(companyAId, (tx) =>
@@ -103,6 +122,20 @@ describe('tenant isolation (RLS)', () => {
       data: { companyId: companyAId, firstName: 'Notify', lastName: 'Me', phone: '+998900000097' },
     });
     recipientId = recipient.id;
+    await withTenant(companyAId, (tx) =>
+      tx.idempotencyRecord.create({
+        data: {
+          companyId: companyAId,
+          key: 'iso-key-1',
+          userId: recipientId,
+          route: 'POST /orders',
+          requestHash: 'h',
+          responseStatus: 201,
+          responseBody: {},
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+      }),
+    );
     await withTenant(companyAId, (tx) =>
       tx.notification.create({
         data: {
@@ -162,6 +195,64 @@ describe('tenant isolation (RLS)', () => {
     );
     deliveryOrderAId = deliveryOrderA.id;
 
+    // M08 Purchasing (20261012120000_restore_purchasing, ADR-011): one full
+    // Supplier -> PurchaseOrder -> line -> GoodsReceipt -> line chain in
+    // company A, plus a company-B supplier as a cross-tenant FK target.
+    const supplierB = await withTenant(companyBId, (tx) =>
+      tx.supplier.create({ data: { companyId: companyBId, name: 'Supplier B' } }),
+    );
+    supplierBId = supplierB.id;
+    await withTenant(companyAId, async (tx) => {
+      const supplier = await tx.supplier.create({ data: { companyId: companyAId, name: 'Supplier A' } });
+      supplierAId = supplier.id;
+      const po = await tx.purchaseOrder.create({
+        data: {
+          companyId: companyAId,
+          number: 'PO-ISO-A',
+          supplierId: supplierAId,
+          warehouseId: warehouseAId,
+          createdById: recipientId,
+        },
+      });
+      purchaseOrderAId = po.id;
+      const poLine = await tx.purchaseOrderLine.create({
+        data: {
+          companyId: companyAId,
+          purchaseOrderId: po.id,
+          productId: productAId,
+          productName: 'Product A',
+          productSku: 'ISO-A',
+          unit: 'dona',
+          qty: 10,
+          unitPrice: 1000,
+          lineTotal: 10000,
+        },
+      });
+      purchaseOrderLineAId = poLine.id;
+      const receipt = await tx.goodsReceipt.create({
+        data: {
+          companyId: companyAId,
+          warehouseId: warehouseAId,
+          purchaseOrderId: po.id,
+          supplierId: supplierAId,
+          clientId: randomUUID(),
+        },
+      });
+      goodsReceiptAId = receipt.id;
+      await tx.goodsReceiptLine.create({
+        data: {
+          companyId: companyAId,
+          goodsReceiptId: receipt.id,
+          purchaseOrderLineId: poLine.id,
+          productId: productAId,
+          productName: 'Product A',
+          productSku: 'ISO-A',
+          unit: 'dona',
+          qty: 4,
+        },
+      });
+    });
+
     await withTenant(companyAId, async (tx) => {
       const role = await tx.role.create({ data: { companyId: companyAId, code: 'ISO_TEST', name: 'Isolation Test Role' } });
       await tx.rolePermission.create({ data: { roleId: role.id, permissionId } });
@@ -169,6 +260,10 @@ describe('tenant isolation (RLS)', () => {
   });
 
   afterAll(async () => {
+    // F2.5: reconciliation rows RESTRICT-reference users/products/warehouses/
+    // customers, so they go first.
+    await systemPrisma.reconciliationFinding.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
+    await systemPrisma.reconciliationRun.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
     // Company/Tenant are deliberately NOT deleted here: the AuditLog test
     // below creates a row that FK-restricts deletion of its Company, and the
     // log itself can never be deleted (append-only). That's the correct
@@ -177,28 +272,57 @@ describe('tenant isolation (RLS)', () => {
     // the constraint. CI runs against a throwaway database per run anyway.
     await systemPrisma.rolePermission.deleteMany({ where: { permissionId } });
     await systemPrisma.role.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
-    await systemPrisma.exportJob.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
+    // F5.3: ExportJob rows are undeletable (DB trigger, export evidence) and
+    // left behind like the AuditLog row.
     await systemPrisma.documentCounter.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
     await systemPrisma.notification.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
+    await systemPrisma.idempotencyRecord.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
     await systemPrisma.routeRun.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
     await systemPrisma.routeStop.deleteMany({ where: { routeId: routeAId } });
     await systemPrisma.route.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
     const scopedCompanies = { companyId: { in: [companyAId, companyBId, companyCId] } };
     // Orders before users: "SalesOrder"."courierId" is ON DELETE SET NULL, but
     // deleting the rows outright keeps the fixture cleanup exact.
+    await systemPrisma.salesOrderLine.deleteMany({ where: { order: scopedCompanies } });
+    await systemPrisma.productPackaging.deleteMany({ where: { product: scopedCompanies } });
     await systemPrisma.salesOrder.deleteMany({ where: scopedCompanies });
+    // GoodsReceipt/GoodsReceiptLine are append-only (DB triggers, even for
+    // velto_system) and their FKs are RESTRICT, so — like the AuditLog row —
+    // company A's receipt chain (receipt, its PO/line/supplier, warehouse A,
+    // product A) is left behind; only unreferenced rows are deleted.
+    await systemPrisma.purchaseOrderLine.deleteMany({ where: { ...scopedCompanies, receiptLines: { none: {} } } });
+    await systemPrisma.purchaseOrder.deleteMany({
+      where: { ...scopedCompanies, goodsReceipts: { none: {} }, lines: { none: {} } },
+    });
+    await systemPrisma.supplier.deleteMany({
+      where: { ...scopedCompanies, purchaseOrders: { none: {} }, goodsReceipts: { none: {} } },
+    });
     await systemPrisma.user.delete({ where: { id: recipientId } });
     await systemPrisma.user.delete({ where: { id: courierAId } });
     await systemPrisma.user.delete({ where: { id: userBId } });
     await systemPrisma.priceListItem.deleteMany({ where: { priceListId: priceListAId } });
     await systemPrisma.stockLevel.deleteMany({ where: { warehouseId: { in: [warehouseAId, warehouseBId] } } });
     await systemPrisma.productCategory.deleteMany({ where: scopedCompanies });
-    await systemPrisma.product.deleteMany({ where: scopedCompanies });
-    await systemPrisma.warehouse.deleteMany({ where: scopedCompanies });
+    await systemPrisma.product.deleteMany({
+      where: {
+        ...scopedCompanies,
+        goodsReceiptLines: { none: {} },
+        purchaseOrderLines: { none: {} },
+        stockMovements: { none: {} },
+      },
+    });
+    await systemPrisma.warehouse.deleteMany({
+      where: { ...scopedCompanies, goodsReceipts: { none: {} }, purchaseOrders: { none: {} }, stockMovements: { none: {} } },
+    });
     await systemPrisma.outlet.deleteMany({ where: scopedCompanies });
     await systemPrisma.customer.updateMany({ where: scopedCompanies, data: { priceListId: null } });
     await systemPrisma.priceList.deleteMany({ where: scopedCompanies });
-    await systemPrisma.customer.deleteMany({ where: scopedCompanies });
+    // F2.1: Payment/PaymentAllocation/StockMovement/PaymentReversal are
+    // append-only (DB triggers) with RESTRICT FKs — the reversal fixture's
+    // customer/invoice/actor chain is left behind like the AuditLog row.
+    await systemPrisma.customer.deleteMany({
+      where: { ...scopedCompanies, payments: { none: {} }, invoices: { none: {} } },
+    });
     await systemPrisma.permission.deleteMany({ where: { id: permissionId } });
     await prisma.$disconnect();
     await systemPrisma.$disconnect();
@@ -226,6 +350,26 @@ describe('tenant isolation (RLS)', () => {
 
     expect(seenFromA).toHaveLength(1);
     expect(seenFromB).toHaveLength(0);
+
+    // ADR-060 delivery columns: company B can neither see nor update A's
+    // Telegram delivery state.
+    const tgFromB = await withTenant(companyBId, (tx) =>
+      tx.notification.findMany({ where: { telegramStatus: null }, select: { id: true, telegramAttempts: true } }),
+    );
+    expect(tgFromB).toHaveLength(0);
+    const updatedFromB = await withTenant(companyBId, (tx) =>
+      tx.notification.updateMany({
+        where: { id: seenFromA[0]!.id },
+        data: { telegramStatus: 'SENT', telegramAttempts: 9, dedupKey: 'x:1', telegramLastError: 'leak' },
+      }),
+    );
+    expect(updatedFromB.count).toBe(0);
+    const afterA = await withTenant(companyAId, (tx) =>
+      tx.notification.findUniqueOrThrow({ where: { id: seenFromA[0]!.id } }),
+    );
+    expect(afterA.telegramStatus).toBeNull();
+    expect(afterA.telegramAttempts).toBe(0);
+    expect(afterA.dedupKey).toBeNull();
   });
 
   it('a direct-companyId table (DocumentCounter, 11.2 document numbering) is scoped per tenant', async () => {
@@ -234,6 +378,184 @@ describe('tenant isolation (RLS)', () => {
 
     expect(seenFromA).toHaveLength(1);
     expect(seenFromB).toHaveLength(0);
+  });
+
+  it('a direct-companyId table (IdempotencyRecord, F1.3) is scoped per tenant and rejects a cross-tenant userId', async () => {
+    const seenFromA = await withTenant(companyAId, (tx) => tx.idempotencyRecord.findMany());
+    const seenFromB = await withTenant(companyBId, (tx) => tx.idempotencyRecord.findMany());
+
+    expect(seenFromA.map((r) => r.key)).toEqual(['iso-key-1']);
+    expect(seenFromB).toHaveLength(0);
+    // Outside withTenant: zero rows or the '' ::uuid cast error — both fail
+    // closed (see the 'fails closed' case below).
+    try {
+      expect(await prisma.idempotencyRecord.findMany()).toHaveLength(0);
+    } catch (err) {
+      expect(String(err)).toMatch(/uuid/i);
+    }
+
+    // FK guard trigger: company B cannot store company A's user.
+    await expect(
+      withTenant(companyBId, (tx) =>
+        tx.idempotencyRecord.create({
+          data: {
+            companyId: companyBId,
+            key: 'iso-key-1',
+            userId: recipientId, // company A's user
+            route: 'POST /orders',
+            requestHash: 'h',
+            responseStatus: 201,
+            responseBody: {},
+            expiresAt: new Date(Date.now() + 60_000),
+          },
+        }),
+      ),
+    ).rejects.toThrow();
+  });
+
+  it('ADR-058 UserMfa / UserMfaRecoveryCode are scoped per tenant; cross-tenant writes and foreign RefreshToken.mfaId rejected', async () => {
+    const HASH = '$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$aGFzaA';
+    const mfaData = (companyId: string, userId: string, confirmed: boolean) => ({
+      companyId,
+      userId,
+      secretCiphertext: Buffer.from('ct'),
+      secretIv: Buffer.alloc(12),
+      secretTag: Buffer.alloc(16),
+      keyVersion: 1,
+      confirmedAt: confirmed ? new Date() : null,
+    });
+    const tokenData = (userId: string, mfaId: string) => ({
+      userId,
+      tokenHash: randomUUID(),
+      familyId: randomUUID(),
+      expiresAt: new Date(Date.now() + 60_000),
+      mfaId,
+    });
+    const users = { userId: { in: [recipientId, courierAId, userBId] } };
+    try {
+      const mfaA = await withTenant(companyAId, async (tx) => {
+        const mfa = await tx.userMfa.create({ data: mfaData(companyAId, recipientId, true) });
+        await tx.userMfaRecoveryCode.create({ data: { companyId: companyAId, userId: recipientId, codeHash: HASH } });
+        return mfa;
+      });
+      const pendingA = await withTenant(companyAId, (tx) =>
+        tx.userMfa.create({ data: mfaData(companyAId, courierAId, false) }),
+      );
+      await withTenant(companyBId, async (tx) => {
+        await tx.userMfa.create({ data: mfaData(companyBId, userBId, true) });
+        await tx.userMfaRecoveryCode.create({ data: { companyId: companyBId, userId: userBId, codeHash: HASH } });
+      });
+
+      // Reads: each tenant sees only its own rows.
+      const seen = (companyId: string) =>
+        withTenant(companyId, async (tx) => ({
+          mfa: (await tx.userMfa.findMany()).map((m) => m.userId).sort(),
+          codes: (await tx.userMfaRecoveryCode.findMany()).map((c) => c.userId),
+        }));
+      expect(await seen(companyAId)).toEqual({ mfa: [recipientId, courierAId].sort(), codes: [recipientId] });
+      expect(await seen(companyBId)).toEqual({ mfa: [userBId], codes: [userBId] });
+
+      // No tenant context: zero rows or the '' ::uuid cast error — both fail closed.
+      for (const read of [() => prisma.userMfa.findMany(), () => prisma.userMfaRecoveryCode.findMany()]) {
+        try {
+          expect(await read()).toHaveLength(0);
+        } catch (err) {
+          expect(String(err)).toMatch(/uuid/i);
+        }
+      }
+
+      // Writes: B cannot claim A's companyId, nor store A's user under its own.
+      await expect(
+        withTenant(companyBId, (tx) => tx.userMfaRecoveryCode.create({ data: { companyId: companyAId, userId: recipientId, codeHash: HASH } })),
+      ).rejects.toThrow();
+      await expect(
+        withTenant(companyBId, (tx) => tx.userMfaRecoveryCode.create({ data: { companyId: companyBId, userId: recipientId, codeHash: HASH } })),
+      ).rejects.toThrow();
+      await expect(
+        withTenant(companyBId, (tx) => tx.userMfa.create({ data: mfaData(companyBId, courierAId, true) })),
+      ).rejects.toThrow();
+      // Plain recovery codes are refused (argon2id hash only).
+      await expect(
+        withTenant(companyAId, (tx) => tx.userMfaRecoveryCode.create({ data: { companyId: companyAId, userId: recipientId, codeHash: 'ABCD-1234' } })),
+      ).rejects.toThrow();
+
+      // B cannot UPDATE/DELETE A's rows (invisible, never matched).
+      const tampered = await withTenant(companyBId, async (tx) => ({
+        upd: (await tx.userMfa.updateMany({ where: { id: mfaA.id }, data: { lastUsedStep: 99n } })).count,
+        delMfa: (await tx.userMfa.deleteMany({ where: { id: mfaA.id } })).count,
+        delCodes: (await tx.userMfaRecoveryCode.deleteMany({ where: { userId: recipientId } })).count,
+      }));
+      expect(tampered).toEqual({ upd: 0, delMfa: 0, delCodes: 0 });
+      expect(await systemPrisma.userMfa.findUniqueOrThrow({ where: { id: mfaA.id } })).toMatchObject({ lastUsedStep: -1n });
+
+      // RefreshToken.mfaId: own confirmed MFA ok; another user's / another
+      // tenant's / pending MFA rejected — even via velto_system.
+      await withTenant(companyAId, (tx) => tx.refreshToken.create({ data: tokenData(recipientId, mfaA.id) }));
+      await expect(systemPrisma.refreshToken.create({ data: tokenData(userBId, mfaA.id) })).rejects.toThrow(/confirmed MFA/);
+      await expect(systemPrisma.refreshToken.create({ data: tokenData(courierAId, mfaA.id) })).rejects.toThrow(/confirmed MFA/);
+      await expect(systemPrisma.refreshToken.create({ data: tokenData(courierAId, pendingA.id) })).rejects.toThrow(/confirmed MFA/);
+    } finally {
+      await systemPrisma.refreshToken.deleteMany({ where: users });
+      await systemPrisma.userMfaRecoveryCode.deleteMany({ where: users });
+      await systemPrisma.userMfa.deleteMany({ where: users });
+    }
+  });
+
+  it('ADR-058 MfaEnrollmentCode is scoped per tenant; cross-tenant user/issuer and plain codes rejected', async () => {
+    const hash = () => createHash('sha256').update(randomUUID()).digest('hex');
+    const codeData = (companyId: string, userId: string, createdById: string | null = null) => ({
+      companyId,
+      userId,
+      createdById,
+      codeHash: hash(),
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const users = { userId: { in: [recipientId, courierAId, userBId] } };
+    try {
+      const codeA = await withTenant(companyAId, (tx) =>
+        tx.mfaEnrollmentCode.create({ data: codeData(companyAId, recipientId, courierAId) }),
+      );
+      await withTenant(companyBId, (tx) => tx.mfaEnrollmentCode.create({ data: codeData(companyBId, userBId) }));
+
+      const seen = (companyId: string) =>
+        withTenant(companyId, async (tx) => (await tx.mfaEnrollmentCode.findMany()).map((c) => c.userId));
+      expect(await seen(companyAId)).toEqual([recipientId]);
+      expect(await seen(companyBId)).toEqual([userBId]);
+
+      // No tenant context: zero rows or the '' ::uuid cast error — both fail closed.
+      try {
+        expect(await prisma.mfaEnrollmentCode.findMany()).toHaveLength(0);
+      } catch (err) {
+        expect(String(err)).toMatch(/uuid/i);
+      }
+
+      // B cannot claim A's companyId, store A's user, or name A's user as issuer.
+      await expect(
+        withTenant(companyBId, (tx) => tx.mfaEnrollmentCode.create({ data: codeData(companyAId, recipientId) })),
+      ).rejects.toThrow();
+      await expect(
+        withTenant(companyBId, (tx) => tx.mfaEnrollmentCode.create({ data: codeData(companyBId, recipientId) })),
+      ).rejects.toThrow();
+      await expect(
+        withTenant(companyBId, (tx) => tx.mfaEnrollmentCode.create({ data: codeData(companyBId, userBId, courierAId) })),
+      ).rejects.toThrow();
+      // Plain codes are refused (sha256 hex only).
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.mfaEnrollmentCode.create({ data: { ...codeData(companyAId, recipientId), codeHash: 'ABCDEFGH1234' } }),
+        ),
+      ).rejects.toThrow();
+
+      // B cannot consume/delete A's code (invisible, never matched).
+      const tampered = await withTenant(companyBId, async (tx) => ({
+        upd: (await tx.mfaEnrollmentCode.updateMany({ where: { id: codeA.id }, data: { usedAt: new Date() } })).count,
+        del: (await tx.mfaEnrollmentCode.deleteMany({ where: { id: codeA.id } })).count,
+      }));
+      expect(tampered).toEqual({ upd: 0, del: 0 });
+      expect(await systemPrisma.mfaEnrollmentCode.findUniqueOrThrow({ where: { id: codeA.id } })).toMatchObject({ usedAt: null });
+    } finally {
+      await systemPrisma.mfaEnrollmentCode.deleteMany({ where: users });
+    }
   });
 
   it('a direct-companyId table (RouteRun, 9.4 route finish) is scoped per tenant', async () => {
@@ -252,6 +574,137 @@ describe('tenant isolation (RLS)', () => {
     // see neither.
     expect(new Set(seenFromA.map((r) => r.id))).toEqual(new Set([routeAId, deliveryRouteAId]));
     expect(seenFromB).toHaveLength(0);
+  });
+
+  it('M08 purchasing tables (Supplier/PurchaseOrder/PurchaseOrderLine/GoodsReceipt/GoodsReceiptLine) are scoped per tenant', async () => {
+    const read = (companyId: string) =>
+      withTenant(companyId, async (tx) => ({
+        suppliers: await tx.supplier.findMany(),
+        orders: await tx.purchaseOrder.findMany(),
+        orderLines: await tx.purchaseOrderLine.findMany(),
+        receipts: await tx.goodsReceipt.findMany(),
+        receiptLines: await tx.goodsReceiptLine.findMany(),
+      }));
+    const fromA = await read(companyAId);
+    const fromB = await read(companyBId);
+
+    expect(fromA.suppliers.map((s) => s.id)).toEqual([supplierAId]);
+    expect(fromA.orders.map((o) => o.id)).toEqual([purchaseOrderAId]);
+    expect(fromA.orderLines.map((l) => l.id)).toEqual([purchaseOrderLineAId]);
+    expect(fromA.receipts.map((r) => r.id)).toEqual([goodsReceiptAId]);
+    expect(fromA.receiptLines).toHaveLength(1);
+
+    expect(fromB.suppliers.map((s) => s.id)).toEqual([supplierBId]);
+    expect(fromB.orders).toHaveLength(0);
+    expect(fromB.orderLines).toHaveLength(0);
+    expect(fromB.receipts).toHaveLength(0);
+    expect(fromB.receiptLines).toHaveLength(0);
+
+    // Writes aimed at A's purchasing rows from B match nothing.
+    const updated = await withTenant(companyBId, (tx) =>
+      tx.purchaseOrder.updateMany({ where: { id: purchaseOrderAId }, data: { note: 'Hijacked' } }),
+    );
+    expect(updated.count).toBe(0);
+  });
+
+  it('rejects purchasing rows that reference another tenant’s supplier/warehouse/product/PO', async () => {
+    await expect(
+      systemPrisma.purchaseOrder.create({
+        data: { companyId: companyAId, number: 'PO-ISO-XT-1', supplierId: supplierBId, warehouseId: warehouseAId },
+      }),
+    ).rejects.toThrow(/cross-tenant/i);
+    await expect(
+      systemPrisma.purchaseOrder.create({
+        data: { companyId: companyAId, number: 'PO-ISO-XT-2', supplierId: supplierAId, warehouseId: warehouseBId },
+      }),
+    ).rejects.toThrow(/cross-tenant/i);
+
+    const line = { productName: 'X', productSku: 'X', unit: 'dona', qty: 1, unitPrice: 1, lineTotal: 1 };
+    await expect(
+      systemPrisma.purchaseOrderLine.create({
+        data: { ...line, companyId: companyAId, purchaseOrderId: purchaseOrderAId, productId: productBId },
+      }),
+    ).rejects.toThrow(/cross-tenant/i);
+    // A company-B line smuggled onto company A's PO.
+    await expect(
+      systemPrisma.purchaseOrderLine.create({
+        data: { ...line, companyId: companyBId, purchaseOrderId: purchaseOrderAId, productId: productBId },
+      }),
+    ).rejects.toThrow(/cross-tenant/i);
+
+    await expect(
+      systemPrisma.goodsReceipt.create({
+        data: {
+          companyId: companyBId,
+          warehouseId: warehouseBId,
+          purchaseOrderId: purchaseOrderAId,
+          clientId: randomUUID(),
+        },
+      }),
+    ).rejects.toThrow(/cross-tenant/i);
+    await expect(
+      systemPrisma.goodsReceiptLine.create({
+        data: {
+          companyId: companyAId,
+          goodsReceiptId: goodsReceiptAId,
+          productId: productBId,
+          productName: 'X',
+          productSku: 'X',
+          unit: 'dona',
+          qty: 1,
+        },
+      }),
+    ).rejects.toThrow(/cross-tenant/i);
+  });
+
+  it('GoodsReceipt/GoodsReceiptLine are append-only — UPDATE/DELETE/TRUNCATE rejected, even for velto_system', async () => {
+    // Owning tenant through the app role.
+    await expect(
+      withTenant(companyAId, (tx) =>
+        tx.$executeRaw`UPDATE "GoodsReceipt" SET note = 'changed' WHERE id = ${goodsReceiptAId}::uuid`,
+      ),
+    ).rejects.toThrow(/append-only/i);
+    await expect(
+      withTenant(companyAId, (tx) => tx.$executeRaw`DELETE FROM "GoodsReceipt" WHERE id = ${goodsReceiptAId}::uuid`),
+    ).rejects.toThrow(/append-only/i);
+    await expect(
+      withTenant(companyAId, (tx) =>
+        tx.$executeRaw`UPDATE "GoodsReceiptLine" SET qty = 5 WHERE "goodsReceiptId" = ${goodsReceiptAId}::uuid`,
+      ),
+    ).rejects.toThrow(/append-only/i);
+    await expect(
+      withTenant(companyAId, (tx) =>
+        tx.$executeRaw`DELETE FROM "GoodsReceiptLine" WHERE "goodsReceiptId" = ${goodsReceiptAId}::uuid`,
+      ),
+    ).rejects.toThrow(/append-only/i);
+    await expect(
+      withTenant(companyAId, (tx) => tx.$executeRawUnsafe('TRUNCATE TABLE "GoodsReceiptLine"')),
+    ).rejects.toThrow(TRUNCATE_REJECTED);
+
+    // BYPASSRLS does not skip triggers: velto_system is blocked too.
+    await expect(
+      systemPrisma.goodsReceipt.update({ where: { id: goodsReceiptAId }, data: { note: 'changed' } }),
+    ).rejects.toThrow(/append-only/i);
+    await expect(
+      systemPrisma.goodsReceiptLine.deleteMany({ where: { goodsReceiptId: goodsReceiptAId } }),
+    ).rejects.toThrow(/append-only/i);
+    await expect(systemPrisma.$executeRawUnsafe('TRUNCATE TABLE "GoodsReceipt" CASCADE')).rejects.toThrow(
+      TRUNCATE_REJECTED,
+    );
+
+    // A receipt's referenced PO line can no longer be removed out from under
+    // it (RESTRICT, not a SET NULL cascade that would rewrite history).
+    await expect(
+      systemPrisma.purchaseOrderLine.delete({ where: { id: purchaseOrderLineAId } }),
+    ).rejects.toThrow();
+
+    // History intact.
+    const after = await withTenant(companyAId, (tx) =>
+      tx.goodsReceipt.findUnique({ where: { id: goodsReceiptAId }, include: { lines: true } }),
+    );
+    expect(after?.note).toBeNull();
+    expect(after?.lines).toHaveLength(1);
+    expect(after?.lines[0]?.qty.toString()).toBe('4');
   });
 
   // 20260808120000_tenant_scoped_keys_and_fk_guards: Tenant was the last table
@@ -284,6 +737,46 @@ describe('tenant isolation (RLS)', () => {
   // same company. These cases cover the BEFORE-INSERT guards added in
   // 20260808120000, including via `systemPrisma`, which is BYPASSRLS and would
   // otherwise be able to stitch two tenants' rows together.
+  it('SalesOrderLine (parent-subquery policy) is scoped per tenant; deliveredQty defaults to 0 and stays within 0..qty (F2.4)', async () => {
+    const line = await withTenant(companyAId, async (tx) => {
+      const packaging = await tx.productPackaging.create({
+        data: { productId: productAId, name: 'dona', qtyInBaseUnit: '1', isDefault: true },
+      });
+      return tx.salesOrderLine.create({
+        data: {
+          orderId: deliveryOrderAId,
+          productId: productAId,
+          packagingId: packaging.id,
+          qty: '5',
+          unitPrice: '1000',
+          vatRate: '12',
+          lineTotal: '5000',
+        },
+      });
+    });
+    expect(line.deliveredQty.toString()).toBe('0');
+
+    const seenFromA = await withTenant(companyAId, (tx) => tx.salesOrderLine.findMany({ where: { id: line.id } }));
+    const seenFromB = await withTenant(companyBId, (tx) => tx.salesOrderLine.findMany({ where: { id: line.id } }));
+    expect(seenFromA).toHaveLength(1);
+    expect(seenFromB).toHaveLength(0);
+    const updatedFromB = await withTenant(companyBId, (tx) =>
+      tx.salesOrderLine.updateMany({ where: { id: line.id }, data: { deliveredQty: '1' } }),
+    );
+    expect(updatedFromB.count).toBe(0);
+
+    await expect(
+      withTenant(companyAId, (tx) => tx.salesOrderLine.update({ where: { id: line.id }, data: { deliveredQty: '5.001' } })),
+    ).rejects.toThrow(/SalesOrderLine_deliveredQty_range_check/);
+    await expect(
+      withTenant(companyAId, (tx) => tx.salesOrderLine.update({ where: { id: line.id }, data: { deliveredQty: '-1' } })),
+    ).rejects.toThrow(/SalesOrderLine_deliveredQty_range_check/);
+    const full = await withTenant(companyAId, (tx) =>
+      tx.salesOrderLine.update({ where: { id: line.id }, data: { deliveredQty: '5' } }),
+    );
+    expect(full.deliveredQty.toString()).toBe('5');
+  });
+
   it('rejects a SalesOrder pointing at another tenant’s customer/outlet/warehouse', async () => {
     const base = {
       companyId: companyAId,
@@ -674,9 +1167,1618 @@ describe('tenant isolation (RLS)', () => {
     // UPDATE/DELETE guard above doesn't cover it on its own (20260730224500).
     await expect(
       withTenant(companyAId, (tx) => tx.$executeRawUnsafe('TRUNCATE TABLE "AuditLog"')),
-    ).rejects.toThrow(/append-only/i);
+    ).rejects.toThrow(TRUNCATE_REJECTED);
 
     // No cleanup: the row is append-only by design, even for the BYPASSRLS
     // role — this one test log entry is expected to remain in dev/test data.
+  });
+
+  // F2.1: payment / stock-movement reversal. PaymentReversal is a new
+  // direct-companyId table; Payment/PaymentAllocation/StockMovement/
+  // PaymentReversal are append-only except Payment.status POSTED -> REVERSED.
+  describe('F2.1 reversal tables and append-only locks', () => {
+    let payCustomerId: string;
+    let invoiceId: string;
+    let paymentId: string;
+    let allocationId: string;
+    let actorId: string;
+    let movementAId: string;
+    let movementBId: string;
+
+    beforeAll(async () => {
+      const actor = await systemPrisma.user.create({
+        data: {
+          companyId: companyAId,
+          firstName: 'Reversal',
+          lastName: 'Actor',
+          phone: `+99891${Date.now().toString().slice(-7)}`,
+        },
+      });
+      actorId = actor.id;
+      await withTenant(companyAId, async (tx) => {
+        const customer = await tx.customer.create({ data: { companyId: companyAId, code: 'A-PAY', name: 'Payer A' } });
+        payCustomerId = customer.id;
+        const invoice = await tx.invoice.create({
+          data: { companyId: companyAId, number: 'INV-ISO-1', customerId: payCustomerId, total: '100.00' },
+        });
+        invoiceId = invoice.id;
+        const payment = await tx.payment.create({
+          data: { companyId: companyAId, number: 'PAY-ISO-1', customerId: payCustomerId, amount: '100.00', method: 'CASH' },
+        });
+        paymentId = payment.id;
+        const allocation = await tx.paymentAllocation.create({
+          data: { paymentId, invoiceId, amount: '100.00' },
+        });
+        allocationId = allocation.id;
+        const movement = await tx.stockMovement.create({
+          data: { companyId: companyAId, productId: productAId, warehouseId: warehouseAId, type: 'ADJUST', qty: '2.000' },
+        });
+        movementAId = movement.id;
+      });
+      const movementB = await withTenant(companyBId, (tx) =>
+        tx.stockMovement.create({
+          data: { companyId: companyBId, productId: productBId, warehouseId: warehouseBId, type: 'ADJUST', qty: '1.000' },
+        }),
+      );
+      movementBId = movementB.id;
+    });
+
+    it('Payment.status defaults to POSTED', async () => {
+      const p = await withTenant(companyAId, (tx) => tx.payment.findUnique({ where: { id: paymentId } }));
+      expect(p?.status).toBe('POSTED');
+    });
+
+    it('Payment cannot flip to REVERSED before its PaymentReversal row exists', async () => {
+      await expect(
+        withTenant(companyAId, (tx) => tx.payment.update({ where: { id: paymentId }, data: { status: 'REVERSED' } })),
+      ).rejects.toThrow(/PaymentReversal/);
+    });
+
+    it('PaymentReversal rejects a cross-tenant payment or actor and an empty reason', async () => {
+      // Company B cannot reverse company A's payment …
+      await expect(
+        withTenant(companyBId, (tx) =>
+          tx.paymentReversal.create({
+            data: { companyId: companyBId, reversesPaymentId: paymentId, reason: 'x', actorId: userBId },
+          }),
+        ),
+      ).rejects.toThrow();
+      // … nor can company A record company B's user as the actor.
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.paymentReversal.create({
+            data: { companyId: companyAId, reversesPaymentId: paymentId, reason: 'x', actorId: userBId },
+          }),
+        ),
+      ).rejects.toThrow();
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.paymentReversal.create({
+            data: { companyId: companyAId, reversesPaymentId: paymentId, reason: '  ', actorId },
+          }),
+        ),
+      ).rejects.toThrow();
+    });
+
+    it('a direct-companyId table (PaymentReversal) is scoped per tenant; Payment flips POSTED -> REVERSED once', async () => {
+      await withTenant(companyAId, async (tx) => {
+        await tx.paymentReversal.create({
+          data: { companyId: companyAId, reversesPaymentId: paymentId, reason: 'duplicate entry', actorId },
+        });
+        await tx.payment.update({ where: { id: paymentId }, data: { status: 'REVERSED' } });
+      });
+
+      const seenFromA = await withTenant(companyAId, (tx) => tx.paymentReversal.findMany());
+      const seenFromB = await withTenant(companyBId, (tx) => tx.paymentReversal.findMany());
+      expect(seenFromA.map((r) => r.reversesPaymentId)).toEqual([paymentId]);
+      expect(seenFromB).toHaveLength(0);
+      try {
+        expect(await prisma.paymentReversal.findMany()).toHaveLength(0);
+      } catch (err) {
+        expect(String(err)).toMatch(/uuid/i);
+      }
+
+      // One reversal per payment.
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.paymentReversal.create({
+            data: { companyId: companyAId, reversesPaymentId: paymentId, reason: 'again', actorId },
+          }),
+        ),
+      ).rejects.toThrow();
+      // REVERSED is terminal.
+      await expect(
+        withTenant(companyAId, (tx) => tx.payment.update({ where: { id: paymentId }, data: { status: 'POSTED' } })),
+      ).rejects.toThrow(/append-only/i);
+      const p = await withTenant(companyAId, (tx) => tx.payment.findUnique({ where: { id: paymentId } }));
+      expect(p?.status).toBe('REVERSED');
+      expect(p?.amount.toString()).toBe('100');
+    });
+
+    it('Payment/PaymentAllocation/PaymentReversal are append-only — UPDATE/DELETE/TRUNCATE rejected, even for velto_system', async () => {
+      await expect(
+        withTenant(companyAId, (tx) => tx.$executeRaw`UPDATE "Payment" SET amount = 1 WHERE id = ${paymentId}::uuid`),
+      ).rejects.toThrow(/append-only/i);
+      await expect(
+        withTenant(companyAId, (tx) => tx.$executeRaw`DELETE FROM "Payment" WHERE id = ${paymentId}::uuid`),
+      ).rejects.toThrow(/append-only/i);
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.$executeRaw`UPDATE "PaymentAllocation" SET amount = 1 WHERE id = ${allocationId}::uuid`,
+        ),
+      ).rejects.toThrow(/append-only/i);
+      await expect(
+        withTenant(companyAId, (tx) => tx.$executeRaw`DELETE FROM "PaymentAllocation" WHERE id = ${allocationId}::uuid`),
+      ).rejects.toThrow(/append-only/i);
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.$executeRaw`UPDATE "PaymentReversal" SET reason = 'changed' WHERE "reversesPaymentId" = ${paymentId}::uuid`,
+        ),
+      ).rejects.toThrow(/append-only/i);
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.$executeRaw`DELETE FROM "PaymentReversal" WHERE "reversesPaymentId" = ${paymentId}::uuid`,
+        ),
+      ).rejects.toThrow(/append-only/i);
+      for (const table of ['Payment', 'PaymentAllocation', 'PaymentReversal']) {
+        await expect(
+          withTenant(companyAId, (tx) => tx.$executeRawUnsafe(`TRUNCATE TABLE "${table}" CASCADE`)),
+        ).rejects.toThrow(TRUNCATE_REJECTED);
+      }
+
+      // BYPASSRLS does not skip triggers.
+      await expect(
+        systemPrisma.payment.update({ where: { id: paymentId }, data: { method: 'CARD' } }),
+      ).rejects.toThrow(/append-only/i);
+      await expect(systemPrisma.payment.delete({ where: { id: paymentId } })).rejects.toThrow(/append-only/i);
+      await expect(
+        systemPrisma.paymentAllocation.update({ where: { id: allocationId }, data: { amount: '1.00' } }),
+      ).rejects.toThrow(/append-only/i);
+      await expect(
+        systemPrisma.paymentAllocation.deleteMany({ where: { id: allocationId } }),
+      ).rejects.toThrow(/append-only/i);
+
+      const alloc = await withTenant(companyAId, (tx) => tx.paymentAllocation.findUnique({ where: { id: allocationId } }));
+      expect(alloc?.amount.toString()).toBe('100');
+    });
+
+    it('StockMovement is append-only; a reversal is a new row (reason required, once, same tenant)', async () => {
+      await expect(
+        withTenant(companyAId, (tx) => tx.$executeRaw`UPDATE "StockMovement" SET qty = 9 WHERE id = ${movementAId}::uuid`),
+      ).rejects.toThrow(/append-only/i);
+      await expect(
+        withTenant(companyAId, (tx) => tx.$executeRaw`DELETE FROM "StockMovement" WHERE id = ${movementAId}::uuid`),
+      ).rejects.toThrow(/append-only/i);
+      await expect(
+        withTenant(companyAId, (tx) => tx.$executeRawUnsafe('TRUNCATE TABLE "StockMovement"')),
+      ).rejects.toThrow(TRUNCATE_REJECTED);
+      await expect(
+        systemPrisma.stockMovement.update({ where: { id: movementAId }, data: { note: 'changed' } }),
+      ).rejects.toThrow(/append-only/i);
+      await expect(systemPrisma.stockMovement.delete({ where: { id: movementAId } })).rejects.toThrow(/append-only/i);
+
+      const reversal = (extra: { reason?: string; reversesMovementId: string }) => ({
+        companyId: companyAId,
+        productId: productAId,
+        warehouseId: warehouseAId,
+        type: 'ADJUST' as const,
+        qty: '-2.000',
+        ...extra,
+      });
+      // Reason required.
+      await expect(
+        withTenant(companyAId, (tx) => tx.stockMovement.create({ data: reversal({ reversesMovementId: movementAId }) })),
+      ).rejects.toThrow();
+      // Cannot reverse another tenant's movement.
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.stockMovement.create({ data: reversal({ reversesMovementId: movementBId, reason: 'x' }) }),
+        ),
+      ).rejects.toThrow();
+      const rev = await withTenant(companyAId, (tx) =>
+        tx.stockMovement.create({ data: reversal({ reversesMovementId: movementAId, reason: 'miscount' }) }),
+      );
+      expect(rev.reversesMovementId).toBe(movementAId);
+      // At most one reversal per movement.
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.stockMovement.create({ data: reversal({ reversesMovementId: movementAId, reason: 'again' }) }),
+        ),
+      ).rejects.toThrow();
+      // Invisible cross-tenant.
+      const fromB = await withTenant(companyBId, (tx) => tx.stockMovement.findMany({ where: { id: rev.id } }));
+      expect(fromB).toHaveLength(0);
+    });
+  });
+
+  describe('F2.5 reconciliation tables (ReconciliationRun / ReconciliationFinding)', () => {
+    let runAId: string;
+    let runBId: string;
+    const stockFinding = (runId: string, extra: Record<string, unknown> = {}) => ({
+      companyId: companyAId,
+      runId,
+      lastRunId: runId,
+      kind: 'STOCK' as const,
+      productId: productAId,
+      warehouseId: warehouseAId,
+      expectedOnHand: '10.000',
+      actualOnHand: '12.000',
+      diffOnHand: '2.000',
+      expectedReserved: '0.000',
+      actualReserved: '0.000',
+      diffReserved: '0.000',
+      ...extra,
+    });
+    const balanceFinding = (runId: string, extra: Record<string, unknown> = {}) => ({
+      companyId: companyAId,
+      runId,
+      lastRunId: runId,
+      kind: 'BALANCE' as const,
+      customerId: customerAId,
+      expectedBalance: '100.00',
+      actualBalance: '90.00',
+      diffBalance: '-10.00',
+      ...extra,
+    });
+
+    beforeAll(async () => {
+      const runA = await withTenant(companyAId, (tx) =>
+        tx.reconciliationRun.create({ data: { companyId: companyAId, trigger: 'MANUAL', triggeredById: courierAId } }),
+      );
+      runAId = runA.id;
+      const runB = await withTenant(companyBId, (tx) =>
+        tx.reconciliationRun.create({ data: { companyId: companyBId, trigger: 'SCHEDULED' } }),
+      );
+      runBId = runB.id;
+      await withTenant(companyAId, (tx) => tx.reconciliationFinding.create({ data: stockFinding(runAId) }));
+    });
+
+    it('runs and findings are scoped per tenant and fail closed without a tenant context', async () => {
+      const [runsA, findingsA] = await withTenant(companyAId, (tx) =>
+        Promise.all([tx.reconciliationRun.findMany(), tx.reconciliationFinding.findMany()]),
+      );
+      const [runsB, findingsB] = await withTenant(companyBId, (tx) =>
+        Promise.all([tx.reconciliationRun.findMany(), tx.reconciliationFinding.findMany()]),
+      );
+      expect(runsA.map((r) => r.id)).toEqual([runAId]);
+      expect(findingsA).toHaveLength(1);
+      expect(findingsA[0]!.status).toBe('OPEN');
+      expect(runsB.map((r) => r.id)).toEqual([runBId]);
+      expect(findingsB).toHaveLength(0);
+      // Outside withTenant: zero rows or the '' GUC ::uuid cast error — both
+      // fail closed (see the generic fail-closed case above).
+      for (const read of [() => prisma.reconciliationRun.findMany(), () => prisma.reconciliationFinding.findMany()]) {
+        try {
+          expect(await read()).toHaveLength(0);
+        } catch (err) {
+          expect(String(err)).toMatch(/uuid/i);
+        }
+      }
+    });
+
+    it('rejects cross-tenant run/product/warehouse/customer/user references', async () => {
+      const bad: Record<string, unknown>[] = [
+        stockFinding(runAId, { runId: runBId }),
+        stockFinding(runAId, { lastRunId: runBId }),
+        stockFinding(runAId, { productId: productBId }),
+        stockFinding(runAId, { warehouseId: warehouseBId }),
+        balanceFinding(runAId, { customerId: customerBId }),
+      ];
+      for (const data of bad) {
+        await expect(
+          withTenant(companyAId, (tx) => tx.reconciliationFinding.create({ data: data as never })),
+        ).rejects.toThrow();
+      }
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.reconciliationRun.create({ data: { companyId: companyAId, trigger: 'MANUAL', triggeredById: userBId } }),
+        ),
+      ).rejects.toThrow();
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.reconciliationRun.create({ data: { companyId: companyBId, trigger: 'SCHEDULED' } }),
+        ),
+      ).rejects.toThrow();
+    });
+
+    it('enforces per-kind shape, diff = actual − expected, and MANUAL ⇒ triggeredBy', async () => {
+      const bad: Record<string, unknown>[] = [
+        stockFinding(runAId, { productId: null }),
+        stockFinding(runAId, { customerId: customerAId }),
+        stockFinding(runAId, { diffOnHand: '5.000' }),
+        stockFinding(runAId, { expectedBalance: '1.00', actualBalance: '1.00', diffBalance: '0.00' }),
+        balanceFinding(runAId, { diffBalance: '10.00' }),
+        stockFinding(runAId, { status: 'FIXED' }),
+      ];
+      for (const data of bad) {
+        await expect(
+          withTenant(companyAId, (tx) => tx.reconciliationFinding.create({ data: data as never })),
+        ).rejects.toThrow();
+      }
+      await expect(
+        withTenant(companyAId, (tx) => tx.reconciliationRun.create({ data: { companyId: companyAId, trigger: 'MANUAL' } })),
+      ).rejects.toThrow();
+    });
+
+    it('at most one OPEN finding per (company, kind, subject); FIXED frees the slot', async () => {
+      await expect(
+        withTenant(companyAId, (tx) => tx.reconciliationFinding.create({ data: stockFinding(runAId) })),
+      ).rejects.toThrow();
+      const balance = await withTenant(companyAId, (tx) => tx.reconciliationFinding.create({ data: balanceFinding(runAId) }));
+      await expect(
+        withTenant(companyAId, (tx) => tx.reconciliationFinding.create({ data: balanceFinding(runAId) })),
+      ).rejects.toThrow();
+      await withTenant(companyAId, (tx) =>
+        tx.reconciliationFinding.update({
+          where: { id: balance.id },
+          data: { status: 'FIXED', fixedAt: new Date(), fixedById: courierAId },
+        }),
+      );
+      const reopened = await withTenant(companyAId, (tx) => tx.reconciliationFinding.create({ data: balanceFinding(runAId) }));
+      expect(reopened.status).toBe('OPEN');
+      // A FIXED finding cannot name another tenant's user as fixer.
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.reconciliationFinding.update({
+            where: { id: reopened.id },
+            data: { status: 'FIXED', fixedAt: new Date(), fixedById: userBId },
+          }),
+        ),
+      ).rejects.toThrow();
+      // Company B cannot touch A's finding (invisible → no match).
+      const touched = await withTenant(companyBId, (tx) =>
+        tx.reconciliationFinding.updateMany({ where: { id: reopened.id }, data: { lastRunId: runBId } }),
+      );
+      expect(touched.count).toBe(0);
+    });
+  });
+
+  describe('F3 Visit GPS status / SKIPPED and Company GPS thresholds', () => {
+    const base = () => ({
+      companyId: companyAId,
+      agentId: courierAId,
+      outletId: outletAId,
+      startedAt: new Date(),
+    });
+    const CHECK = /check constraint|violates/i;
+
+    afterAll(async () => {
+      await systemPrisma.visit.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
+    });
+
+    it('Company thresholds default to 150/100 and are range-checked', async () => {
+      const company = await withTenant(companyAId, (tx) => tx.company.findUniqueOrThrow({ where: { id: companyAId } }));
+      expect(company.visitGpsRadiusM).toBe(150);
+      expect(company.gpsMaxAccuracyM).toBe(100);
+      for (const data of [{ visitGpsRadiusM: 9 }, { visitGpsRadiusM: 5001 }]) {
+        await expect(
+          withTenant(companyAId, (tx) => tx.company.update({ where: { id: companyAId }, data })),
+        ).rejects.toThrow(/Company_visitGpsRadiusM_range_check|check constraint/i);
+      }
+      for (const data of [{ gpsMaxAccuracyM: 4 }, { gpsMaxAccuracyM: 1001 }]) {
+        await expect(
+          withTenant(companyAId, (tx) => tx.company.update({ where: { id: companyAId }, data })),
+        ).rejects.toThrow(/Company_gpsMaxAccuracyM_range_check|check constraint/i);
+      }
+      // Another tenant cannot change A's thresholds (invisible, never matched).
+      const touched = await withTenant(companyBId, (tx) =>
+        tx.company.updateMany({ where: { id: companyAId }, data: { visitGpsRadiusM: 500 } }),
+      );
+      expect(touched.count).toBe(0);
+    });
+
+    it('a Visit with gpsStatus/skipReason is scoped per tenant; gpsOk is derived from gpsStatus', async () => {
+      const verified = await withTenant(companyAId, (tx) =>
+        tx.visit.create({
+          data: {
+            ...base(),
+            latitude: 41.3,
+            longitude: 69.2,
+            gpsStatus: 'VERIFIED',
+            gpsAccuracyM: 12.5,
+            gpsCapturedAt: new Date(),
+            distanceM: 40,
+            gpsOk: false, // overwritten by the Visit_gps_sync trigger
+            outcome: 'ORDERED',
+          },
+        }),
+      );
+      expect(verified.gpsOk).toBe(true);
+      const skipped = await withTenant(companyAId, (tx) =>
+        tx.visit.create({
+          data: { ...base(), gpsStatus: 'NO_PERMISSION', outcome: 'SKIPPED', skipReason: 'Yopiq edi' },
+        }),
+      );
+      expect(skipped.gpsOk).toBeNull();
+      expect(skipped.latitude).toBeNull();
+
+      const seenFromA = await withTenant(companyAId, (tx) => tx.visit.findMany({ where: { companyId: companyAId } }));
+      const seenFromB = await withTenant(companyBId, (tx) => tx.visit.findMany());
+      expect(new Set(seenFromA.map((v) => v.id))).toEqual(new Set([verified.id, skipped.id]));
+      expect(seenFromB).toHaveLength(0);
+      const touched = await withTenant(companyBId, (tx) =>
+        tx.visit.updateMany({ where: { id: skipped.id }, data: { skipReason: 'x' } }),
+      );
+      expect(touched.count).toBe(0);
+    });
+
+    it('a pre-F3 writer (coords + gpsOk, no status) gets gpsStatus derived', async () => {
+      const legacy = await withTenant(companyAId, (tx) =>
+        tx.visit.create({ data: { ...base(), latitude: 41.3, longitude: 69.2, gpsOk: true, outcome: 'NO_ORDER' } }),
+      );
+      expect(legacy.gpsStatus).toBe('VERIFIED');
+      const noOutletCoords = await withTenant(companyAId, (tx) =>
+        tx.visit.create({ data: { ...base(), latitude: 41.3, longitude: 69.2, gpsOk: null, outcome: 'NO_ORDER' } }),
+      );
+      expect(noOutletCoords.gpsStatus).toBe('OUTLET_NO_COORDS');
+    });
+
+    it('rejects half coordinates, status/coords mismatch, negative metrics and bad skipReason', async () => {
+      const rejected = [
+        // Visit_coords_pair_check
+        { latitude: 41.3, gpsStatus: 'LOW_ACCURACY', outcome: 'ORDERED' },
+        // Visit_gpsStatus_coords_check: VERIFIED without coordinates
+        { gpsStatus: 'VERIFIED', outcome: 'ORDERED' },
+        // Visit_gpsStatus_coords_check: NO_FIX with GPS metadata and coordinates
+        { latitude: 41.3, longitude: 69.2, gpsStatus: 'NO_FIX', gpsCapturedAt: new Date(), outcome: 'ORDERED' },
+        // Visit_gps_metrics_nonneg_check
+        { latitude: 41.3, longitude: 69.2, gpsStatus: 'VERIFIED', distanceM: -1, outcome: 'ORDERED' },
+        { latitude: 41.3, longitude: 69.2, gpsStatus: 'VERIFIED', gpsAccuracyM: -1, outcome: 'ORDERED' },
+        // Visit_skipReason_check: SKIPPED without / with blank reason, reason on a non-skip
+        { gpsStatus: 'NO_FIX', outcome: 'SKIPPED' },
+        { gpsStatus: 'NO_FIX', outcome: 'SKIPPED', skipReason: '   ' },
+        { gpsStatus: 'NO_FIX', outcome: 'NO_ORDER', skipReason: 'Yopiq edi' },
+      ] as const;
+      for (const data of rejected) {
+        await expect(
+          withTenant(companyAId, (tx) => tx.visit.create({ data: { ...base(), ...data } })),
+        ).rejects.toThrow(CHECK);
+      }
+    });
+
+    // 20261013190000_visit_route_fk_guards: FK guards fire for every writer,
+    // including BYPASSRLS velto_system.
+    it('rejects a Visit/Route/RouteRun referencing another tenant’s user/outlet/route (even via velto_system)', async () => {
+      const CROSS = /cross-tenant/i;
+      for (const data of [
+        { ...base(), agentId: userBId, outcome: 'NO_ORDER' as const },
+        { ...base(), outletId: outletBId, outcome: 'NO_ORDER' as const },
+      ]) {
+        await expect(withTenant(companyAId, (tx) => tx.visit.create({ data }))).rejects.toThrow(CROSS);
+        await expect(systemPrisma.visit.create({ data })).rejects.toThrow(CROSS);
+      }
+      const ok = await systemPrisma.visit.create({ data: { ...base(), outcome: 'NO_ORDER' } });
+      await expect(
+        systemPrisma.visit.update({ where: { id: ok.id }, data: { agentId: userBId } }),
+      ).rejects.toThrow(CROSS);
+      await expect(
+        systemPrisma.visit.update({ where: { id: ok.id }, data: { outletId: outletBId } }),
+      ).rejects.toThrow(CROSS);
+
+      await expect(
+        systemPrisma.route.create({ data: { companyId: companyAId, agentId: userBId, weekday: 2, name: 'x' } }),
+      ).rejects.toThrow(CROSS);
+      await expect(
+        systemPrisma.routeRun.create({ data: { companyId: companyBId, routeId: routeAId, date: new Date('2026-08-09') } }),
+      ).rejects.toThrow(CROSS);
+    });
+  });
+
+  // 20261013200000_sync_change_seq_tombstones: global changeSeq cursor on the
+  // synced tables + trigger-written SyncTombstone (RLS + FORCE).
+  describe('F4 sync changeSeq and SyncTombstone', () => {
+    const createdProductIds: string[] = [];
+    const newProduct = async (sku: string) => {
+      const p = await withTenant(companyAId, (tx) =>
+        tx.product.create({ data: { companyId: companyAId, sku: `${sku}-${Date.now()}`, name: sku, baseUnit: 'dona' } }),
+      );
+      createdProductIds.push(p.id);
+      return p;
+    };
+    const tombstonesFor = (companyId: string, entityId: string) =>
+      withTenant(companyId, (tx) => tx.syncTombstone.findMany({ where: { entityId }, orderBy: { changeSeq: 'asc' } }));
+
+    afterAll(async () => {
+      await systemPrisma.priceListItem.deleteMany({ where: { productId: { in: createdProductIds } } });
+      await systemPrisma.stockLevel.deleteMany({ where: { productId: { in: createdProductIds } } });
+      await systemPrisma.productPackaging.deleteMany({ where: { productId: { in: createdProductIds } } });
+      await systemPrisma.product.deleteMany({ where: { id: { in: createdProductIds } } });
+    });
+
+    it('changeSeq is stamped on insert, increases on every update and ignores a writer-supplied value', async () => {
+      const p = await newProduct('SEQ');
+      const before = p.changeSeq;
+      const updated = await withTenant(companyAId, (tx) =>
+        tx.product.update({ where: { id: p.id }, data: { name: 'SEQ renamed', changeSeq: 1n } }),
+      );
+      expect(updated.changeSeq).toBeGreaterThan(before);
+      const pkg = await withTenant(companyAId, (tx) =>
+        tx.productPackaging.create({ data: { productId: p.id, name: 'blok', qtyInBaseUnit: 10, changeSeq: 1n } }),
+      );
+      expect(pkg.changeSeq).toBeGreaterThan(updated.changeSeq);
+      const pkg2 = await withTenant(companyAId, (tx) =>
+        tx.productPackaging.update({ where: { id: pkg.id }, data: { qtyInBaseUnit: 12 } }),
+      );
+      expect(pkg2.changeSeq).toBeGreaterThan(pkg.changeSeq);
+    });
+
+    it('hard DELETE writes a tombstone (direct and parent-resolved companyId, composite natural key)', async () => {
+      const p = await newProduct('TOMB');
+      const [pkg, item, stock] = await withTenant(companyAId, async (tx) => [
+        await tx.productPackaging.create({ data: { productId: p.id, name: 'quti', qtyInBaseUnit: 20 } }),
+        await tx.priceListItem.create({ data: { priceListId: priceListAId, productId: p.id, price: 1000 } }),
+        await tx.stockLevel.create({ data: { productId: p.id, warehouseId: warehouseAId } }),
+      ] as const);
+      await withTenant(companyAId, async (tx) => {
+        await tx.productPackaging.delete({ where: { id: pkg.id } });
+        await tx.priceListItem.delete({ where: { id: item.id } });
+        await tx.stockLevel.delete({ where: { productId_warehouseId: { productId: p.id, warehouseId: warehouseAId } } });
+        await tx.product.delete({ where: { id: p.id } });
+      });
+
+      const [pkgT] = await tombstonesFor(companyAId, pkg.id);
+      expect(pkgT).toMatchObject({ companyId: companyAId, entity: 'ProductPackaging', entityKey: null });
+      expect(pkgT!.changeSeq).toBeGreaterThan(pkg.changeSeq);
+      const [itemT] = await tombstonesFor(companyAId, item.id);
+      expect(itemT).toMatchObject({
+        companyId: companyAId,
+        entity: 'PriceListItem',
+        entityKey: { priceListId: priceListAId, productId: p.id },
+      });
+      const [stockT] = await tombstonesFor(companyAId, `${p.id}:${warehouseAId}`);
+      expect(stockT).toMatchObject({
+        companyId: companyAId,
+        entity: 'StockLevel',
+        entityKey: { productId: p.id, warehouseId: warehouseAId },
+      });
+      expect(stockT!.changeSeq).toBeGreaterThan(stock.changeSeq);
+      const [productT] = await tombstonesFor(companyAId, p.id);
+      expect(productT).toMatchObject({ companyId: companyAId, entity: 'Product' });
+    });
+
+    it('soft delete / deactivation writes a tombstone; reactivation bumps the row above it', async () => {
+      const p = await newProduct('DEACT');
+      await withTenant(companyAId, (tx) => tx.product.update({ where: { id: p.id }, data: { name: 'no-op for tombstones' } }));
+      expect(await tombstonesFor(companyAId, p.id)).toHaveLength(0);
+
+      await withTenant(companyAId, (tx) => tx.product.update({ where: { id: p.id }, data: { isActive: false } }));
+      const [t1] = await tombstonesFor(companyAId, p.id);
+      expect(t1).toMatchObject({ entity: 'Product', companyId: companyAId });
+
+      const reactivated = await withTenant(companyAId, (tx) =>
+        tx.product.update({ where: { id: p.id }, data: { isActive: true } }),
+      );
+      expect(reactivated.changeSeq).toBeGreaterThan(t1!.changeSeq);
+
+      await withTenant(companyAId, (tx) => tx.customer.update({ where: { id: customerAId }, data: { deletedAt: new Date() } }));
+      await withTenant(companyAId, (tx) => tx.customer.update({ where: { id: customerAId }, data: { deletedAt: null } }));
+      const customerT = await tombstonesFor(companyAId, customerAId);
+      expect(customerT).toHaveLength(1);
+      expect(customerT[0]).toMatchObject({ entity: 'Customer', companyId: companyAId });
+    });
+
+    it('reactivating a Product re-stamps its packagings/prices/stock above the tombstone (deactivate is unchanged)', async () => {
+      const p = await newProduct('REACT');
+      const [pkg, item, stock] = await withTenant(companyAId, async (tx) => [
+        await tx.productPackaging.create({ data: { productId: p.id, name: 'blok', qtyInBaseUnit: 10 } }),
+        await tx.priceListItem.create({ data: { priceListId: priceListAId, productId: p.id, price: 1000 } }),
+        await tx.stockLevel.create({ data: { productId: p.id, warehouseId: warehouseAId } }),
+      ] as const);
+      const children = () =>
+        withTenant(companyAId, async (tx) => [
+          (await tx.productPackaging.findUniqueOrThrow({ where: { id: pkg.id } })).changeSeq,
+          (await tx.priceListItem.findUniqueOrThrow({ where: { id: item.id } })).changeSeq,
+          (await tx.stockLevel.findUniqueOrThrow({
+            where: { productId_warehouseId: { productId: p.id, warehouseId: warehouseAId } },
+          })).changeSeq,
+        ]);
+
+      // Deactivation: tombstone as before, children untouched.
+      await withTenant(companyAId, (tx) => tx.product.update({ where: { id: p.id }, data: { isActive: false } }));
+      const [t1] = await tombstonesFor(companyAId, p.id);
+      expect(t1).toMatchObject({ entity: 'Product', companyId: companyAId });
+      expect(await children()).toEqual([pkg.changeSeq, item.changeSeq, stock.changeSeq]);
+
+      const reactivated = await withTenant(companyAId, (tx) =>
+        tx.product.update({ where: { id: p.id }, data: { isActive: true } }),
+      );
+      const after = await children();
+      for (const [i, seq] of [pkg.changeSeq, item.changeSeq, stock.changeSeq].entries()) {
+        expect(after[i]).toBeGreaterThan(seq);
+        expect(after[i]).toBeGreaterThan(t1!.changeSeq);
+      }
+      expect(reactivated.changeSeq).toBeGreaterThan(t1!.changeSeq);
+      expect(await tombstonesFor(companyAId, p.id)).toHaveLength(1);
+
+      // Soft delete -> undelete also counts; a plain update does not touch children.
+      await withTenant(companyAId, (tx) => tx.product.update({ where: { id: p.id }, data: { deletedAt: new Date() } }));
+      const beforeUndelete = await children();
+      await withTenant(companyAId, (tx) => tx.product.update({ where: { id: p.id }, data: { deletedAt: null } }));
+      const afterUndelete = await children();
+      afterUndelete.forEach((seq, i) => expect(seq).toBeGreaterThan(beforeUndelete[i]!));
+      await withTenant(companyAId, (tx) => tx.product.update({ where: { id: p.id }, data: { name: 'renamed' } }));
+      expect(await children()).toEqual(afterUndelete);
+    });
+
+    it('reactivating a Customer re-stamps its live outlets only, never another tenant’s', async () => {
+      const outletSeq = (companyId: string, id: string) =>
+        withTenant(companyId, async (tx) => (await tx.outlet.findUniqueOrThrow({ where: { id } })).changeSeq);
+      const a0 = await outletSeq(companyAId, outletAId);
+      const b0 = await outletSeq(companyBId, outletBId);
+
+      await withTenant(companyAId, (tx) => tx.customer.update({ where: { id: customerAId }, data: { isActive: false } }));
+      const [t] = (await tombstonesFor(companyAId, customerAId)).slice(-1);
+      expect(t).toMatchObject({ entity: 'Customer', companyId: companyAId });
+      expect(await outletSeq(companyAId, outletAId)).toBe(a0);
+
+      await withTenant(companyAId, (tx) => tx.customer.update({ where: { id: customerAId }, data: { isActive: true } }));
+      const a1 = await outletSeq(companyAId, outletAId);
+      expect(a1).toBeGreaterThan(a0);
+      expect(a1).toBeGreaterThan(t!.changeSeq);
+      expect(await outletSeq(companyBId, outletBId)).toBe(b0);
+    });
+
+    it('SyncTombstone is scoped per tenant and fails closed without a tenant context', async () => {
+      const p = await newProduct('RLS');
+      await withTenant(companyAId, (tx) => tx.product.delete({ where: { id: p.id } }));
+      expect(await tombstonesFor(companyAId, p.id)).toHaveLength(1);
+      expect(await tombstonesFor(companyBId, p.id)).toHaveLength(0);
+      // No tenant context: zero rows or a ''::uuid cast error — both fail
+      // closed (see 'fails closed (never leaks)…' above).
+      try {
+        expect(await prisma.syncTombstone.findMany({ where: { entityId: p.id } })).toHaveLength(0);
+      } catch (err) {
+        expect(String(err)).toMatch(/uuid/i);
+      }
+
+      const touched = await withTenant(companyBId, (tx) =>
+        tx.syncTombstone.deleteMany({ where: { entityId: p.id } }),
+      );
+      expect(touched.count).toBe(0);
+      await expect(
+        withTenant(companyBId, (tx) =>
+          tx.syncTombstone.create({ data: { companyId: companyAId, entity: 'Product', entityId: p.id } }),
+        ),
+      ).rejects.toThrow(/row-level security/i);
+    });
+  });
+  describe('F5 ExportJob / ImportJob tracking columns and guards', () => {
+    const CHECK = /check constraint|violates/i;
+    const CROSS = /cross-tenant reference/i;
+    const UNIQUE = /Unique constraint|unique/i;
+    const HASH = 'a'.repeat(64);
+    type ExportOver = { format?: 'XML' | 'EXCEL' | 'CSV'; requestedBy?: string; periodFrom?: Date; periodTo?: Date };
+    const exportData = (companyId: string, over: ExportOver = {}) => ({
+      companyId,
+      type: '1c',
+      format: 'XML' as const,
+      periodFrom: new Date('2031-01-01T00:00:00Z'),
+      periodTo: new Date('2031-01-31T23:59:59Z'),
+      ...over,
+    });
+
+    afterAll(async () => {
+      await systemPrisma.importJob.deleteMany({ where: { companyId: { in: [companyAId, companyBId] } } });
+    });
+
+    it('ExportJob tracking columns default safely, are CHECKed, and stay tenant-scoped', async () => {
+      const job = await withTenant(companyAId, (tx) =>
+        tx.exportJob.create({ data: exportData(companyAId, { format: 'EXCEL', requestedBy: courierAId }) }),
+      );
+      expect(job.attemptCount).toBe(0);
+      expect(job.fileHash).toBeNull();
+      expect(job.recordCount).toBeNull();
+      expect(job.mappingVersion).toBeNull();
+
+      const done = await withTenant(companyAId, (tx) =>
+        tx.exportJob.update({
+          where: { id: job.id },
+          data: { status: 'PROCESSING', fileHash: HASH, recordCount: 0, mappingVersion: 1, attemptCount: 1 },
+        }),
+      );
+      expect(done.fileHash).toBe(HASH);
+
+      for (const data of [
+        { fileHash: 'A'.repeat(64) },
+        { fileHash: 'abc' },
+        { recordCount: -1 },
+        { mappingVersion: 0 },
+        { attemptCount: -1 },
+      ]) {
+        await expect(
+          withTenant(companyAId, (tx) => tx.exportJob.update({ where: { id: job.id }, data })),
+        ).rejects.toThrow(CHECK);
+      }
+
+      expect(await withTenant(companyBId, (tx) => tx.exportJob.findMany({ where: { id: job.id } }))).toHaveLength(0);
+      const touched = await withTenant(companyBId, (tx) =>
+        tx.exportJob.updateMany({ where: { id: job.id }, data: { attemptCount: 9 } }),
+      );
+      expect(touched.count).toBe(0);
+    });
+
+    it('ExportJob.requestedBy cannot point at another tenant’s user', async () => {
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.exportJob.create({
+            data: exportData(companyAId, { periodFrom: new Date('2031-03-01T00:00:00Z'), requestedBy: userBId }),
+          }),
+        ),
+      ).rejects.toThrow(CROSS);
+    });
+
+    it('at most one active (QUEUED/PROCESSING) export per company+type+format+period; GENERATED/FAILED never block', async () => {
+      const key = { periodFrom: new Date('2031-02-01T00:00:00Z'), periodTo: new Date('2031-02-28T23:59:59Z') };
+      const first = await withTenant(companyAId, (tx) => tx.exportJob.create({ data: exportData(companyAId, key) }));
+
+      await expect(
+        withTenant(companyAId, (tx) => tx.exportJob.create({ data: exportData(companyAId, key) })),
+      ).rejects.toThrow(UNIQUE);
+      await withTenant(companyAId, (tx) => tx.exportJob.update({ where: { id: first.id }, data: { status: 'PROCESSING' } }));
+      await expect(
+        withTenant(companyAId, (tx) => tx.exportJob.create({ data: exportData(companyAId, key) })),
+      ).rejects.toThrow(UNIQUE);
+
+      // Other format and other tenant are independent keys.
+      await withTenant(companyAId, (tx) => tx.exportJob.create({ data: exportData(companyAId, { ...key, format: 'EXCEL' }) }));
+      await withTenant(companyBId, (tx) => tx.exportJob.create({ data: exportData(companyBId, key) }));
+
+      // Re-export allowed once the active one finishes (GENERATED or FAILED).
+      await withTenant(companyAId, (tx) =>
+        tx.exportJob.update({
+          where: { id: first.id },
+          data: { status: 'GENERATED', fileHash: HASH, storageKey: 'exports/1c/a/f.xml', recordCount: 0 },
+        }),
+      );
+      const second = await withTenant(companyAId, (tx) => tx.exportJob.create({ data: exportData(companyAId, key) }));
+      await withTenant(companyAId, (tx) => tx.exportJob.update({ where: { id: second.id }, data: { status: 'PROCESSING' } }));
+      await withTenant(companyAId, (tx) => tx.exportJob.update({ where: { id: second.id }, data: { status: 'FAILED' } }));
+      await withTenant(companyAId, (tx) => tx.exportJob.create({ data: exportData(companyAId, key) }));
+    });
+
+    it('ImportJob.createdBy is same-tenant only, progress is 0..100, rows stay tenant-scoped', async () => {
+      const base = { companyId: companyAId, type: 'customers', status: 'PENDING', fileUrl: 'import/f5-test.xlsx' };
+      const legacy = await withTenant(companyAId, (tx) => tx.importJob.create({ data: base }));
+      expect(legacy.createdBy).toBeNull();
+      expect(legacy.progress).toBeNull();
+
+      const job = await withTenant(companyAId, (tx) =>
+        tx.importJob.create({ data: { ...base, createdBy: courierAId, progress: 0 } }),
+      );
+      await withTenant(companyAId, (tx) => tx.importJob.update({ where: { id: job.id }, data: { progress: 100 } }));
+
+      await expect(
+        withTenant(companyAId, (tx) => tx.importJob.create({ data: { ...base, createdBy: userBId } })),
+      ).rejects.toThrow(CROSS);
+      await expect(
+        withTenant(companyAId, (tx) => tx.importJob.update({ where: { id: job.id }, data: { createdBy: userBId } })),
+      ).rejects.toThrow(CROSS);
+      for (const progress of [-1, 101]) {
+        await expect(
+          withTenant(companyAId, (tx) => tx.importJob.update({ where: { id: job.id }, data: { progress } })),
+        ).rejects.toThrow(CHECK);
+      }
+
+      const listed = await withTenant(companyAId, (tx) =>
+        tx.importJob.findMany({ where: { companyId: companyAId }, orderBy: { createdAt: 'desc' } }),
+      );
+      expect(new Set(listed.map((j) => j.id))).toEqual(new Set([legacy.id, job.id]));
+      expect(await withTenant(companyBId, (tx) => tx.importJob.findMany())).toHaveLength(0);
+      const touched = await withTenant(companyBId, (tx) =>
+        tx.importJob.updateMany({ where: { id: job.id }, data: { progress: 50 } }),
+      );
+      expect(touched.count).toBe(0);
+    });
+  });
+  describe('F5.3 ExportJob lifecycle + accountant ACK (ADR-030)', () => {
+    const CHECK = /check constraint|violates/i;
+    const CROSS = /cross-tenant reference/i;
+    const TRANSITION = /transition .* is not allowed/i;
+    const HASH = 'b'.repeat(64);
+    const phone = () => `+99894${Math.floor(1_000_000 + Math.random() * 8_999_999)}`;
+    let accountantAId: string;
+    let accountantBId: string;
+    let seq = 0;
+
+    // Each job gets its own period so the active-period unique index never interferes.
+    const newQueued = (companyId: string) => {
+      const day = new Date(Date.UTC(2032, 0, 1 + ++seq));
+      return withTenant(companyId, (tx) =>
+        tx.exportJob.create({ data: { companyId, type: '1c', format: 'EXCEL', periodFrom: day, periodTo: day } }),
+      );
+    };
+    const setStatus = (companyId: string, id: string, data: Record<string, unknown>) =>
+      withTenant(companyId, (tx) => tx.exportJob.update({ where: { id }, data }));
+    const artifact = { fileHash: HASH, storageKey: 'exports/1c/a/x.xlsx', recordCount: 3, fileName: 'x.xlsx', fileSize: 10, generatedAt: new Date() };
+    const newGenerated = async (companyId = companyAId) => {
+      const job = await newQueued(companyId);
+      await setStatus(companyId, job.id, { status: 'PROCESSING' });
+      return setStatus(companyId, job.id, { status: 'GENERATED', ...artifact });
+    };
+    const ack = (byId: string, over: Record<string, unknown> = {}) => ({
+      status: 'ACCOUNTING_ACCEPTED',
+      acknowledgedBy: byId,
+      acknowledgedAt: new Date(),
+      ackChecksum: HASH,
+      ...over,
+    });
+
+    beforeAll(async () => {
+      const mk = (companyId: string, firstName: string) =>
+        systemPrisma.user.create({ data: { companyId, firstName, lastName: 'ACK', phone: phone() } });
+      accountantAId = (await mk(companyAId, 'Buxgalter')).id;
+      accountantBId = (await mk(companyBId, 'BuxgalterB')).id;
+    });
+
+    it('legacy backfill maps PENDING->QUEUED, DONE->GENERATED (PROCESSING/FAILED kept); legacy literals are rejected', async () => {
+      const rows = await prisma.$queryRaw<{ v: string; s: string | null }[]>`
+        SELECT v, velto_export_job_status_from_legacy(v)::text AS s
+        FROM unnest(ARRAY['PENDING', 'PROCESSING', 'DONE', 'FAILED', 'BOGUS']) AS v`;
+      expect(Object.fromEntries(rows.map((r) => [r.v, r.s]))).toEqual({
+        PENDING: 'QUEUED',
+        PROCESSING: 'PROCESSING',
+        DONE: 'GENERATED',
+        FAILED: 'FAILED',
+        BOGUS: null,
+      });
+      const formats = await prisma.$queryRaw<{ v: string; f: string | null }[]>`
+        SELECT v, velto_export_format_from_legacy(v)::text AS f FROM unnest(ARRAY['XML', 'EXCEL', 'CSV', 'PDF']) AS v`;
+      expect(Object.fromEntries(formats.map((r) => [r.v, r.f]))).toEqual({ XML: 'XML', EXCEL: 'EXCEL', CSV: 'CSV', PDF: null });
+
+      const job = await newQueued(companyAId);
+      for (const legacy of ['PENDING', 'DONE']) {
+        await expect(
+          withTenant(companyAId, (tx) => tx.$executeRawUnsafe(`UPDATE "ExportJob" SET "status" = '${legacy}' WHERE "id" = '${job.id}'`)),
+        ).rejects.toThrow(/invalid input value for enum/i);
+      }
+    });
+
+    it('insert only as QUEUED and without an artifact', async () => {
+      const day = new Date(Date.UTC(2032, 6, 1));
+      const base = { companyId: companyAId, type: '1c', format: 'EXCEL' as const, periodFrom: day, periodTo: day };
+      for (const data of [{ status: 'GENERATED' as const, ...artifact }, { status: 'PROCESSING' as const }, { fileHash: HASH }]) {
+        await expect(withTenant(companyAId, (tx) => tx.exportJob.create({ data: { ...base, ...data } }))).rejects.toThrow(
+          /must be inserted/i,
+        );
+      }
+    });
+
+    it('rejects illegal transitions; FAILED / ACCOUNTING_ACCEPTED / FAILED_REVIEW are terminal', async () => {
+      const queued = await newQueued(companyAId);
+      for (const status of ['GENERATED', 'FAILED', 'ACCOUNTING_ACCEPTED'] as const) {
+        await expect(setStatus(companyAId, queued.id, { status })).rejects.toThrow(TRANSITION);
+      }
+      await setStatus(companyAId, queued.id, { status: 'PROCESSING' });
+      await setStatus(companyAId, queued.id, { status: 'QUEUED' }); // retry
+      await setStatus(companyAId, queued.id, { status: 'PROCESSING' });
+      // GENERATED without the artifact fails the row-shape CHECK.
+      await expect(setStatus(companyAId, queued.id, { status: 'GENERATED' })).rejects.toThrow(CHECK);
+      await setStatus(companyAId, queued.id, { status: 'FAILED' });
+      await expect(setStatus(companyAId, queued.id, { status: 'PROCESSING' })).rejects.toThrow(TRANSITION);
+
+      const generated = await newGenerated();
+      await expect(setStatus(companyAId, generated.id, { status: 'QUEUED' })).rejects.toThrow(TRANSITION);
+      await setStatus(companyAId, generated.id, ack(accountantAId));
+      await expect(
+        setStatus(companyAId, generated.id, { status: 'FAILED_REVIEW', ackNote: 'qayta' }),
+      ).rejects.toThrow(TRANSITION);
+    });
+
+    it('ACK: checksum must equal fileHash, actor+time required, FAILED_REVIEW needs a note of >= 3 chars', async () => {
+      const job = await newGenerated();
+      for (const data of [
+        ack(accountantAId, { ackChecksum: 'c'.repeat(64) }),
+        ack(accountantAId, { ackChecksum: null }),
+        ack(accountantAId, { acknowledgedBy: null }),
+        ack(accountantAId, { acknowledgedAt: null }),
+        ack(accountantAId, { status: 'FAILED_REVIEW' }),
+        ack(accountantAId, { status: 'FAILED_REVIEW', ackNote: '  ab  ' }),
+      ]) {
+        await expect(setStatus(companyAId, job.id, data)).rejects.toThrow(CHECK);
+      }
+      await expect(setStatus(companyAId, job.id, ack(accountantAId, { ackNote: 'x'.repeat(1001) }))).rejects.toThrow(
+        /too long|value too long/i,
+      );
+      // ACK columns outside an ACK status are rejected (write-once on the transition only).
+      await expect(setStatus(companyAId, job.id, { ackNote: 'early' })).rejects.toThrow(/write-once|check constraint/i);
+
+      const reviewed = await setStatus(companyAId, job.id, ack(accountantAId, { status: 'FAILED_REVIEW', ackNote: 'Summalar mos emas' }));
+      expect(reviewed.status).toBe('FAILED_REVIEW');
+      await expect(setStatus(companyAId, job.id, { ackNote: 'boshqa izoh' })).rejects.toThrow(/write-once/i);
+      await expect(setStatus(companyAId, job.id, { acknowledgedBy: null })).rejects.toThrow(/write-once/i);
+    });
+
+    it('from GENERATED on, artifact/period/format are immutable; DELETE/TRUNCATE rejected even for velto_system', async () => {
+      const job = await newGenerated();
+      for (const data of [
+        { storageKey: 'exports/1c/a/other.xlsx' },
+        { fileHash: 'd'.repeat(64) },
+        { recordCount: 4 },
+        { periodTo: new Date(Date.UTC(2033, 0, 1)) },
+        { format: 'CSV' },
+      ]) {
+        await expect(setStatus(companyAId, job.id, data)).rejects.toThrow(/immutable/i);
+      }
+      await expect(withTenant(companyAId, (tx) => tx.exportJob.delete({ where: { id: job.id } }))).rejects.toThrow(/append-only/i);
+      await expect(systemPrisma.exportJob.delete({ where: { id: job.id } })).rejects.toThrow(/append-only/i);
+      await expect(systemPrisma.$executeRawUnsafe('TRUNCATE "ExportJob"')).rejects.toThrow(TRUNCATE_REJECTED);
+    });
+
+    it('tenant B cannot see or ACK tenant A’s export; ACK by another tenant’s user is rejected', async () => {
+      const job = await newGenerated();
+      const touched = await withTenant(companyBId, (tx) =>
+        tx.exportJob.updateMany({ where: { id: job.id }, data: ack(accountantBId) as never }),
+      );
+      expect(touched.count).toBe(0);
+      expect(await withTenant(companyBId, (tx) => tx.exportJob.findMany({ where: { id: job.id } }))).toHaveLength(0);
+      await expect(setStatus(companyAId, job.id, ack(accountantBId))).rejects.toThrow(CROSS);
+
+      const still = await withTenant(companyAId, (tx) => tx.exportJob.findUniqueOrThrow({ where: { id: job.id } }));
+      expect(still.status).toBe('GENERATED');
+      expect(still.acknowledgedBy).toBeNull();
+      const accepted = await setStatus(companyAId, job.id, ack(accountantAId));
+      expect(accepted.status).toBe('ACCOUNTING_ACCEPTED');
+    });
+  });
+  describe('F8.1 payment handover (ADR-029): PENDING_HANDOVER -> POSTED / REJECTED', () => {
+    const phone = () => `+99893${Math.floor(1_000_000 + Math.random() * 8_999_999)}`;
+    let agentId: string;
+    let cashierId: string;
+    let otherCashierId: string;
+    let cashierBId: string;
+    let customerId: string;
+    let invoiceId: string;
+    let openSessionId: string;
+    let closedSessionId: string;
+    let otherSessionId: string;
+    let sessionBId: string;
+    let seq = 0;
+
+    const newPending = (amount = '50.00') =>
+      withTenant(companyAId, (tx) =>
+        tx.payment.create({
+          data: {
+            companyId: companyAId,
+            number: `PAY-HO-${Date.now()}-${++seq}`,
+            customerId,
+            amount,
+            method: 'CASH',
+            status: 'PENDING_HANDOVER',
+            collectedBy: agentId,
+          },
+        }),
+      );
+    const accept = (id: string, extra: Record<string, unknown> = {}) =>
+      withTenant(companyAId, (tx) =>
+        tx.payment.update({
+          where: { id },
+          data: {
+            status: 'POSTED',
+            handoverActorId: cashierId,
+            handoverAt: new Date(),
+            handoverCashSessionId: openSessionId,
+            ...extra,
+          },
+        }),
+      );
+
+    beforeAll(async () => {
+      const mk = (companyId: string, firstName: string) =>
+        systemPrisma.user.create({ data: { companyId, firstName, lastName: 'HO', phone: phone() } });
+      agentId = (await mk(companyAId, 'Agent')).id;
+      cashierId = (await mk(companyAId, 'Kassir')).id;
+      otherCashierId = (await mk(companyAId, 'Kassir2')).id;
+      cashierBId = (await mk(companyBId, 'KassirB')).id;
+      await withTenant(companyAId, async (tx) => {
+        customerId = (await tx.customer.create({ data: { companyId: companyAId, code: 'A-HO', name: 'Handover A' } })).id;
+        invoiceId = (
+          await tx.invoice.create({ data: { companyId: companyAId, number: 'INV-HO-1', customerId, total: '500.00' } })
+        ).id;
+        closedSessionId = (
+          await tx.cashSession.create({
+            data: { companyId: companyAId, userId: cashierId, openAmount: '0.00', closedAt: new Date(), closeAmount: '0.00' },
+          })
+        ).id;
+        openSessionId = (await tx.cashSession.create({ data: { companyId: companyAId, userId: cashierId, openAmount: '0.00' } })).id;
+        otherSessionId = (
+          await tx.cashSession.create({ data: { companyId: companyAId, userId: otherCashierId, openAmount: '0.00' } })
+        ).id;
+      });
+      sessionBId = (
+        await withTenant(companyBId, (tx) =>
+          tx.cashSession.create({ data: { companyId: companyBId, userId: cashierBId, openAmount: '0.00' } }),
+        )
+      ).id;
+    });
+
+    it('insert: only PENDING_HANDOVER (agent-collected) or POSTED, never pre-resolved', async () => {
+      const base = { companyId: companyAId, customerId, amount: '1.00', method: 'CASH' as const, collectedBy: agentId };
+      for (const status of ['REJECTED', 'REVERSED'] as const) {
+        await expect(
+          withTenant(companyAId, (tx) => tx.payment.create({ data: { ...base, number: `PAY-HO-BAD-${status}`, status } })),
+        ).rejects.toThrow(/inserted as PENDING_HANDOVER or POSTED/);
+      }
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.payment.create({
+            data: { ...base, number: 'PAY-HO-BAD-PRE', handoverActorId: cashierId, handoverAt: new Date(), handoverCashSessionId: openSessionId },
+          }),
+        ),
+      ).rejects.toThrow(/handover columns/);
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.payment.create({ data: { ...base, number: 'PAY-HO-BAD-NOAGENT', collectedBy: null, status: 'PENDING_HANDOVER' } }),
+        ),
+      ).rejects.toThrow();
+    });
+
+    it('agent CARD/TRANSFER payments are PENDING_HANDOVER too, and can be accepted', async () => {
+      for (const method of ['CARD', 'TRANSFER'] as const) {
+        const p = await withTenant(companyAId, (tx) =>
+          tx.payment.create({
+            data: {
+              companyId: companyAId,
+              number: `PAY-HO-${method}-${Date.now()}-${++seq}`,
+              customerId,
+              amount: '10.00',
+              method,
+              status: 'PENDING_HANDOVER',
+              collectedBy: agentId,
+            },
+          }),
+        );
+        expect(p.status).toBe('PENDING_HANDOVER');
+        expect((await accept(p.id)).status).toBe('POSTED');
+      }
+    });
+
+    it('self-resolve is forbidden at DB level: collector cannot accept or reject own handover', async () => {
+      const agentSessionId = (
+        await withTenant(companyAId, (tx) => tx.cashSession.create({ data: { companyId: companyAId, userId: agentId, openAmount: '0.00' } }))
+      ).id;
+      const p = await newPending();
+      await expect(accept(p.id, { handoverActorId: agentId, handoverCashSessionId: agentSessionId })).rejects.toThrow(
+        /may not resolve their own handover/,
+      );
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.payment.update({
+            where: { id: p.id },
+            data: { status: 'REJECTED', handoverActorId: agentId, handoverAt: new Date(), handoverRejectReason: 'x' },
+          }),
+        ),
+      ).rejects.toThrow(/may not resolve their own handover/);
+      const still = await withTenant(companyAId, (tx) => tx.payment.findUniqueOrThrow({ where: { id: p.id } }));
+      expect(still.status).toBe('PENDING_HANDOVER');
+    });
+
+    it('PENDING_HANDOVER cannot be allocated (no FIFO in transit)', async () => {
+      const p = await newPending();
+      await expect(
+        withTenant(companyAId, (tx) => tx.paymentAllocation.create({ data: { paymentId: p.id, invoiceId, amount: '50.00' } })),
+      ).rejects.toThrow(/requires a POSTED payment/);
+    });
+
+    it('accept needs the actor\'s own OPEN, same-company session and full metadata', async () => {
+      const p = await newPending();
+      await expect(accept(p.id, { handoverCashSessionId: closedSessionId })).rejects.toThrow(/is closed/);
+      await expect(accept(p.id, { handoverCashSessionId: otherSessionId })).rejects.toThrow(/does not belong/);
+      await expect(accept(p.id, { handoverCashSessionId: sessionBId })).rejects.toThrow(/cross-tenant|not found/);
+      await expect(accept(p.id, { handoverActorId: cashierBId })).rejects.toThrow(/cross-tenant|does not belong/);
+      await expect(accept(p.id, { handoverAt: null })).rejects.toThrow();
+      await expect(accept(p.id, { handoverRejectReason: 'x' })).rejects.toThrow();
+      // Immutable columns cannot ride along with the transition.
+      await expect(accept(p.id, { amount: '49.00' })).rejects.toThrow(/append-only/);
+      await expect(accept(p.id, { customerId: customerBId })).rejects.toThrow();
+      const still = await withTenant(companyAId, (tx) => tx.payment.findUniqueOrThrow({ where: { id: p.id } }));
+      expect(still.status).toBe('PENDING_HANDOVER');
+    });
+
+    it('accept -> POSTED once; then allocatable, handover columns frozen, no way back', async () => {
+      const p = await newPending();
+      const posted = await accept(p.id);
+      expect(posted.status).toBe('POSTED');
+      expect(posted.handoverCashSessionId).toBe(openSessionId);
+      expect(posted.amount.toString()).toBe('50');
+
+      await withTenant(companyAId, (tx) => tx.paymentAllocation.create({ data: { paymentId: p.id, invoiceId, amount: '50.00' } }));
+
+      await expect(
+        withTenant(companyAId, (tx) => tx.payment.update({ where: { id: p.id }, data: { handoverAt: new Date(0) } })),
+      ).rejects.toThrow(/not allowed/);
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.payment.update({ where: { id: p.id }, data: { status: 'PENDING_HANDOVER', handoverActorId: null, handoverAt: null, handoverCashSessionId: null } }),
+        ),
+      ).rejects.toThrow(/not allowed/);
+
+      // An accepted handover is still reversible (F2.1), without touching handover columns.
+      await expect(
+        withTenant(companyAId, async (tx) => {
+          await tx.paymentReversal.create({ data: { companyId: companyAId, reversesPaymentId: p.id, reason: 'test', actorId: cashierId } });
+          await tx.payment.update({ where: { id: p.id }, data: { status: 'REVERSED', handoverActorId: otherCashierId } });
+        }),
+      ).rejects.toThrow(/reversal may not change handover columns/);
+      const reversed = await withTenant(companyAId, async (tx) => {
+        await tx.paymentReversal.create({ data: { companyId: companyAId, reversesPaymentId: p.id, reason: 'test', actorId: cashierId } });
+        return tx.payment.update({ where: { id: p.id }, data: { status: 'REVERSED' } });
+      });
+      expect(reversed.status).toBe('REVERSED');
+      expect(reversed.handoverActorId).toBe(cashierId);
+    });
+
+    it('reject -> REJECTED needs actor, time and a reason; it is terminal', async () => {
+      const p = await newPending();
+      const reject = (extra: Record<string, unknown>) =>
+        withTenant(companyAId, (tx) =>
+          tx.payment.update({
+            where: { id: p.id },
+            data: { status: 'REJECTED', handoverActorId: cashierId, handoverAt: new Date(), ...extra },
+          }),
+        );
+      await expect(reject({ handoverRejectReason: '   ' })).rejects.toThrow();
+      await expect(reject({ handoverRejectReason: null })).rejects.toThrow();
+      await expect(reject({ handoverRejectReason: 'kam keldi', handoverCashSessionId: openSessionId })).rejects.toThrow();
+      const rejected = await reject({ handoverRejectReason: 'kam keldi' });
+      expect(rejected.status).toBe('REJECTED');
+
+      await expect(accept(p.id, { handoverRejectReason: null })).rejects.toThrow(/not allowed/);
+      await expect(
+        withTenant(companyAId, (tx) => tx.paymentAllocation.create({ data: { paymentId: p.id, invoiceId, amount: '1.00' } })),
+      ).rejects.toThrow(/requires a POSTED payment/);
+    });
+
+    it('RLS: another tenant can neither see nor resolve a pending handover; no context = zero rows', async () => {
+      const p = await newPending();
+      expect(await withTenant(companyBId, (tx) => tx.payment.findMany({ where: { id: p.id } }))).toHaveLength(0);
+      const touched = await withTenant(companyBId, (tx) =>
+        tx.payment.updateMany({
+          where: { id: p.id },
+          data: { status: 'POSTED', handoverActorId: cashierBId, handoverAt: new Date(), handoverCashSessionId: sessionBId },
+        }),
+      );
+      expect(touched.count).toBe(0);
+      try {
+        expect(await prisma.payment.findMany({ where: { id: p.id } })).toHaveLength(0);
+      } catch (err) {
+        expect(String(err)).toMatch(/uuid/i);
+      }
+      const still = await withTenant(companyAId, (tx) => tx.payment.findUniqueOrThrow({ where: { id: p.id } }));
+      expect(still.status).toBe('PENDING_HANDOVER');
+    });
+  });
+
+  describe('F6 opening balances (OpeningBalanceBatch, OPENING invoice/payment/stock) + SalesOrder cancel reason', () => {
+    const phone = () => `+99894${Math.floor(1_000_000 + Math.random() * 8_999_999)}`;
+    let ownerAId: string;
+    let ownerBId: string;
+    let custId: string;
+    let cust2Id: string;
+    let custBId: string;
+    let whId: string;
+    let prodId: string;
+    let seq = 0;
+    const ob = () => `OB-2026-${String(Date.now()).slice(-6)}${++seq}`;
+
+    const newBatch = (kind: 'CUSTOMER_BALANCE' | 'STOCK', extra: Record<string, unknown> = {}) =>
+      withTenant(companyAId, (tx) =>
+        tx.openingBalanceBatch.create({
+          data: { companyId: companyAId, kind, asOfDate: new Date('2026-10-01'), source: 'ob.xlsx', fileHash: `h-${++seq}`, createdBy: ownerAId, ...extra },
+        }),
+      );
+    const openingInvoice = (batchId: string, extra: Record<string, unknown> = {}) =>
+      withTenant(companyAId, (tx) =>
+        tx.invoice.create({
+          data: { companyId: companyAId, number: ob(), customerId: custId, total: '100.00', kind: 'OPENING', openingBatchId: batchId, ...extra },
+        }),
+      );
+    const openingPayment = (batchId: string, extra: Record<string, unknown> = {}) =>
+      withTenant(companyAId, (tx) =>
+        tx.payment.create({
+          data: { companyId: companyAId, number: ob(), customerId: cust2Id, amount: '30.00', source: 'OPENING', method: null, openingBatchId: batchId, ...extra },
+        }),
+      );
+    const setBatch = (id: string, data: Record<string, unknown>) =>
+      withTenant(companyAId, (tx) => tx.openingBalanceBatch.update({ where: { id }, data }));
+    const post = (id: string, extra: Record<string, unknown> = {}) =>
+      setBatch(id, { status: 'POSTED', postedBy: ownerAId, postedAt: new Date(), ...extra });
+    const voidIt = (id: string) =>
+      setBatch(id, { status: 'VOIDED', voidedBy: ownerAId, voidedAt: new Date(), voidReason: 'xato fayl' });
+
+    beforeAll(async () => {
+      ownerAId = (await systemPrisma.user.create({ data: { companyId: companyAId, firstName: 'Owner', lastName: 'OB', phone: phone() } })).id;
+      ownerBId = (await systemPrisma.user.create({ data: { companyId: companyBId, firstName: 'OwnerB', lastName: 'OB', phone: phone() } })).id;
+      await withTenant(companyAId, async (tx) => {
+        custId = (await tx.customer.create({ data: { companyId: companyAId, code: 'A-OB-1', name: 'Opening A1' } })).id;
+        cust2Id = (await tx.customer.create({ data: { companyId: companyAId, code: 'A-OB-2', name: 'Opening A2' } })).id;
+        whId = (await tx.warehouse.create({ data: { companyId: companyAId, name: 'OB Warehouse' } })).id;
+        prodId = (await tx.product.create({ data: { companyId: companyAId, sku: 'ISO-OB', name: 'OB Product', baseUnit: 'dona' } })).id;
+      });
+      custBId = (await withTenant(companyBId, (tx) => tx.customer.create({ data: { companyId: companyBId, code: 'B-OB', name: 'Opening B' } }))).id;
+    });
+
+    it('batch RLS: other tenant cannot see/update/insert-into; no context = zero rows; cross-tenant actor rejected', async () => {
+      const b = await newBatch('CUSTOMER_BALANCE');
+      expect(await withTenant(companyBId, (tx) => tx.openingBalanceBatch.findMany({ where: { id: b.id } }))).toHaveLength(0);
+      const touched = await withTenant(companyBId, (tx) => tx.openingBalanceBatch.updateMany({ where: { id: b.id }, data: { fileHash: 'x' } }));
+      expect(touched.count).toBe(0);
+      try {
+        expect(await prisma.openingBalanceBatch.findMany({ where: { id: b.id } })).toHaveLength(0);
+      } catch (err) {
+        expect(String(err)).toMatch(/uuid/i);
+      }
+      await expect(
+        withTenant(companyBId, (tx) =>
+          tx.openingBalanceBatch.create({
+            data: { companyId: companyAId, kind: 'STOCK', asOfDate: new Date(), source: 's', fileHash: 'h', createdBy: ownerAId },
+          }),
+        ),
+      ).rejects.toThrow();
+      await expect(newBatch('STOCK', { createdBy: ownerBId })).rejects.toThrow(/cross-tenant/);
+      // Tenant B cannot hang its ledger rows on A's batch.
+      await expect(
+        withTenant(companyBId, (tx) =>
+          tx.invoice.create({ data: { companyId: companyBId, number: ob(), customerId: custBId, total: '1.00', kind: 'OPENING', openingBatchId: b.id } }),
+        ),
+      ).rejects.toThrow(/cross-tenant/);
+    });
+
+    it('batch: insert only PREVIEWED, never deleted, kind-specific totals', async () => {
+      await expect(newBatch('CUSTOMER_BALANCE', { status: 'POSTED', postedBy: ownerAId, postedAt: new Date() })).rejects.toThrow(/inserted as PREVIEWED/);
+      await expect(newBatch('STOCK', { debtTotal: '1.00' })).rejects.toThrow();
+      const b = await newBatch('STOCK');
+      await expect(withTenant(companyAId, (tx) => tx.openingBalanceBatch.delete({ where: { id: b.id } }))).rejects.toThrow(/append-only/);
+    });
+
+    it('OPENING invoice/payment shape CHECKs, no lines, partial uniques', async () => {
+      const b = await newBatch('CUSTOMER_BALANCE');
+      const inv = await openingInvoice(b.id, { externalDocRef: 'DOC-1' });
+      expect(inv.kind).toBe('OPENING');
+      await expect(openingInvoice(b.id, { externalDocRef: 'DOC-1' })).rejects.toThrow(/Unique constraint|unique/i);
+      await expect(openingInvoice(b.id, { total: '0.00' })).rejects.toThrow();
+      await expect(openingInvoice(b.id, { number: `INV-OB-${++seq}` })).rejects.toThrow();
+      await expect(openingInvoice(b.id, { openingBatchId: null })).rejects.toThrow();
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.invoice.create({ data: { companyId: companyAId, number: `INV-OB-${++seq}`, customerId: custId, total: '1.00', openingBatchId: b.id } }),
+        ),
+      ).rejects.toThrow();
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.invoiceLine.create({ data: { invoiceId: inv.id, productId: prodId, qty: 1, unitPrice: 1, vatRate: 0, lineTotal: 1 } }),
+        ),
+      ).rejects.toThrow(/has no lines/);
+      await expect(
+        withTenant(companyAId, (tx) => tx.invoice.update({ where: { id: inv.id }, data: { total: '99.00' } })),
+      ).rejects.toThrow(/may only change status/);
+      await expect(
+        withTenant(companyAId, (tx) => tx.invoice.update({ where: { id: inv.id }, data: { externalDocRef: 'DOC-2' } })),
+      ).rejects.toThrow(/immutable/);
+
+      await expect(openingPayment(b.id, { method: 'CASH' })).rejects.toThrow();
+      await expect(openingPayment(b.id, { collectedBy: ownerAId })).rejects.toThrow();
+      await expect(openingPayment(b.id, { status: 'PENDING_HANDOVER' })).rejects.toThrow();
+      await expect(openingPayment(b.id, { number: `PAY-OB-${++seq}` })).rejects.toThrow();
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.payment.create({ data: { companyId: companyAId, number: `PAY-OB-${++seq}`, customerId: custId, amount: '1.00', method: null } }),
+        ),
+      ).rejects.toThrow();
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.payment.create({ data: { companyId: companyAId, number: `PAY-OB-${++seq}`, customerId: custId, amount: '1.00', method: 'CASH', openingBatchId: b.id } }),
+        ),
+      ).rejects.toThrow();
+      const pay = await openingPayment(b.id);
+      expect(pay.method).toBeNull();
+      expect(pay.status).toBe('POSTED');
+      await expect(openingPayment(b.id)).rejects.toThrow(/Unique constraint|unique/i);
+
+      const stockBatch = await newBatch('STOCK');
+      await expect(openingInvoice(stockBatch.id, { customerId: cust2Id })).rejects.toThrow(/expected CUSTOMER_BALANCE/);
+    });
+
+    it('post: totals must match ledger; POSTED is frozen; no rows added after; void needs compensation first', async () => {
+      const b = await newBatch('CUSTOMER_BALANCE', { rowCount: 2 });
+      const inv = await openingInvoice(b.id, { customerId: cust2Id, externalDocRef: 'DOC-P' });
+      await expect(post(b.id, { debtTotal: '99.00' })).rejects.toThrow(/do not match/);
+      const posted = await post(b.id, { debtTotal: '100.00' });
+      expect(posted.status).toBe('POSTED');
+
+      await expect(setBatch(b.id, { fileHash: 'other' })).rejects.toThrow(/not allowed/);
+      await expect(setBatch(b.id, { asOfDate: new Date('2025-01-01') })).rejects.toThrow(/not allowed/);
+      await expect(setBatch(b.id, { status: 'PREVIEWED', postedBy: null, postedAt: null })).rejects.toThrow(/not allowed/);
+      await expect(openingInvoice(b.id, { externalDocRef: 'DOC-LATE' })).rejects.toThrow(/only be added while PREVIEWED/);
+      await expect(
+        setBatch(b.id, { status: 'VOIDED', voidedBy: ownerAId, voidedAt: new Date(), voidReason: 'x', debtTotal: '0.00' }),
+      ).rejects.toThrow(/frozen/);
+      await expect(voidIt(b.id)).rejects.toThrow(/compensated first/);
+      await expect(setBatch(b.id, { status: 'VOIDED', voidedBy: ownerAId, voidedAt: new Date(), voidReason: ' ' })).rejects.toThrow();
+
+      await withTenant(companyAId, (tx) => tx.invoice.update({ where: { id: inv.id }, data: { status: 'CANCELLED' } }));
+      const voided = await voidIt(b.id);
+      expect(voided.status).toBe('VOIDED');
+      await expect(setBatch(b.id, { voidReason: 'boshqa' })).rejects.toThrow(/not allowed/);
+      await expect(post(b.id)).rejects.toThrow();
+    });
+
+    it('voided opening payment (REVERSED) frees the per-customer unique for a re-import', async () => {
+      const b = await newBatch('CUSTOMER_BALANCE');
+      const customer3 = (await withTenant(companyAId, (tx) => tx.customer.create({ data: { companyId: companyAId, code: 'A-OB-3', name: 'Opening A3' } }))).id;
+      const pay = await openingPayment(b.id, { customerId: customer3 });
+      await post(b.id, { creditTotal: '30.00' });
+      await expect(voidIt(b.id)).rejects.toThrow(/compensated first/);
+      await withTenant(companyAId, async (tx) => {
+        await tx.paymentReversal.create({ data: { companyId: companyAId, reversesPaymentId: pay.id, reason: 'void', actorId: ownerAId } });
+        await tx.payment.update({ where: { id: pay.id }, data: { status: 'REVERSED' } });
+      });
+      expect((await voidIt(b.id)).status).toBe('VOIDED');
+      const b2 = await newBatch('CUSTOMER_BALANCE');
+      expect((await openingPayment(b2.id, { customerId: customer3 })).status).toBe('POSTED');
+    });
+
+    it('opening stock: ADJUST only, qty > 0, one per product/warehouse, totals + reversal before void', async () => {
+      const b = await newBatch('STOCK');
+      const mv = (extra: Record<string, unknown> = {}) =>
+        withTenant(companyAId, (tx) =>
+          tx.stockMovement.create({
+            data: { companyId: companyAId, productId: prodId, warehouseId: whId, type: 'ADJUST', qty: '5.000', refType: 'OpeningBalance', refId: b.id, ...extra },
+          }),
+        );
+      await expect(mv({ type: 'RECEIVE' })).rejects.toThrow();
+      await expect(mv({ qty: '-1.000' })).rejects.toThrow();
+      await expect(mv({ refId: null })).rejects.toThrow();
+      const custBatch = await newBatch('CUSTOMER_BALANCE');
+      await expect(mv({ refId: custBatch.id })).rejects.toThrow(/expected STOCK/);
+      const original = await mv();
+      await expect(mv()).rejects.toThrow(/opening stock already exists/);
+      await expect(post(b.id, { qtyTotal: '4.000' })).rejects.toThrow(/do not match/);
+      await post(b.id, { qtyTotal: '5.000' });
+      await expect(withTenant(companyAId, (tx) => tx.stockMovement.update({ where: { id: original.id }, data: { qty: '6.000' } }))).rejects.toThrow(/append-only/);
+      await expect(voidIt(b.id)).rejects.toThrow(/compensated first/);
+      await mv({ qty: '-5.000', reversesMovementId: original.id, reason: 'void' });
+      expect((await voidIt(b.id)).status).toBe('VOIDED');
+    });
+
+    const newProduct = async () =>
+      (await withTenant(companyAId, (tx) =>
+        tx.product.create({ data: { companyId: companyAId, sku: `ISO-OB-${++seq}`, name: 'OB Product', baseUnit: 'dona' } }),
+      )).id;
+    const openingMv = (batchId: string, productId: string, extra: Record<string, unknown> = {}) =>
+      withTenant(companyAId, (tx) =>
+        tx.stockMovement.create({
+          data: { companyId: companyAId, productId, warehouseId: whId, type: 'ADJUST', qty: '5.000', refType: 'OpeningBalance', refId: batchId, ...extra },
+        }),
+      );
+
+    it('void -> re-import of the same invoice externalDocRef / payment customer / stock pair is allowed', async () => {
+      const customer4 = (await withTenant(companyAId, (tx) => tx.customer.create({ data: { companyId: companyAId, code: 'A-OB-4', name: 'Opening A4' } }))).id;
+      const p = await newProduct();
+      const b = await newBatch('CUSTOMER_BALANCE');
+      const inv = await openingInvoice(b.id, { customerId: customer4, externalDocRef: 'DOC-R' });
+      const pay = await openingPayment(b.id, { customerId: customer4 });
+      await post(b.id, { debtTotal: '100.00', creditTotal: '30.00' });
+      const s = await newBatch('STOCK');
+      const m = await openingMv(s.id, p);
+      await post(s.id, { qtyTotal: '5.000' });
+
+      // While the first batches are live, a second import collides on all three.
+      const live = await newBatch('CUSTOMER_BALANCE');
+      await expect(openingInvoice(live.id, { customerId: customer4, externalDocRef: 'DOC-R' })).rejects.toThrow(/Unique constraint|unique/i);
+      await expect(openingPayment(live.id, { customerId: customer4 })).rejects.toThrow(/Unique constraint|unique/i);
+      const liveS = await newBatch('STOCK');
+      await expect(openingMv(liveS.id, p)).rejects.toThrow(/opening stock already exists/);
+
+      await withTenant(companyAId, async (tx) => {
+        await tx.invoice.update({ where: { id: inv.id }, data: { status: 'CANCELLED' } });
+        await tx.paymentReversal.create({ data: { companyId: companyAId, reversesPaymentId: pay.id, reason: 'void', actorId: ownerAId } });
+        await tx.payment.update({ where: { id: pay.id }, data: { status: 'REVERSED' } });
+      });
+      await openingMv(s.id, p, { qty: '-5.000', reversesMovementId: m.id, reason: 'void' });
+      // Reversed but batch not yet VOIDED: stock pair is still held.
+      await expect(openingMv(liveS.id, p)).rejects.toThrow(/opening stock already exists/);
+      expect((await voidIt(b.id)).status).toBe('VOIDED');
+      expect((await voidIt(s.id)).status).toBe('VOIDED');
+
+      const b2 = await newBatch('CUSTOMER_BALANCE');
+      expect((await openingInvoice(b2.id, { customerId: customer4, externalDocRef: 'DOC-R' })).status).toBe('OPEN');
+      expect((await openingPayment(b2.id, { customerId: customer4 })).status).toBe('POSTED');
+      const s2 = await newBatch('STOCK');
+      expect((await openingMv(s2.id, p)).refId).toBe(s2.id);
+      // The re-imported row now holds the pair again.
+      await expect(openingMv(liveS.id, p)).rejects.toThrow(/opening stock already exists/);
+    });
+
+    it('opening stock: two concurrent inserts for one pair from different batches -> exactly one wins', async () => {
+      const p = await newProduct();
+      const [s1, s2] = [await newBatch('STOCK'), await newBatch('STOCK')];
+      const results = await Promise.allSettled([openingMv(s1.id, p), openingMv(s2.id, p)]);
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      const rejected = results.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+      expect(String(rejected.reason)).toMatch(/opening stock already exists/);
+      const [row] = await withTenant(companyAId, (tx) =>
+        tx.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM "StockMovement" WHERE "productId" = ${p}::uuid AND "refType" = 'OpeningBalance'`,
+      );
+      expect(Number(row!.n)).toBe(1);
+    });
+
+    it('SalesOrder: CANCELLED needs an explicit reason; note-marker shim is gone; backfill left no CANCELLED row without reason', async () => {
+      const mk = () =>
+        withTenant(companyAId, (tx) =>
+          tx.salesOrder.create({ data: { companyId: companyAId, number: `SO-OB-${++seq}`, customerId: custId, warehouseId: whId } }),
+        );
+      const o1 = await mk();
+      await expect(
+        withTenant(companyAId, (tx) => tx.salesOrder.update({ where: { id: o1.id }, data: { status: 'CANCELLED' } })),
+      ).rejects.toThrow();
+      await expect(
+        withTenant(companyAId, (tx) => tx.salesOrder.update({ where: { id: o1.id }, data: { status: 'CANCELLED', cancelReason: '  ' } })),
+      ).rejects.toThrow();
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.salesOrder.update({ where: { id: o1.id }, data: { status: 'CANCELLED', cancelReason: 'x', cancelledBy: userBId } }),
+        ),
+      ).rejects.toThrow(/cross-tenant/);
+      const ok = await withTenant(companyAId, (tx) =>
+        tx.salesOrder.update({ where: { id: o1.id }, data: { status: 'CANCELLED', cancelReason: 'mijoz rad etdi', cancelledAt: new Date(), cancelledBy: ownerAId } }),
+      );
+      expect(ok.cancelReason).toBe('mijoz rad etdi');
+
+      // Shim removed (20261019140000): a legacy note marker no longer
+      // satisfies the CHECK — the reason must be written explicitly.
+      const o2 = await mk();
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.salesOrder.update({ where: { id: o2.id }, data: { status: 'CANCELLED', note: 'eski\n[Bekor qilindi]: narx xato' } }),
+        ),
+      ).rejects.toThrow(/SalesOrder_cancel_reason_check/);
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.salesOrder.create({
+            data: { companyId: companyAId, number: `SO-OB-${++seq}`, customerId: custId, warehouseId: whId, status: 'CANCELLED', note: '[Bekor qilindi]: x' },
+          }),
+        ),
+      ).rejects.toThrow(/SalesOrder_cancel_reason_check/);
+      const [shim] = await systemPrisma.$queryRaw<{ t: bigint; f: bigint }[]>`
+        SELECT (SELECT count(*) FROM pg_trigger WHERE tgname = 'salesorder_cancel_reason_from_note') AS t,
+               (SELECT count(*) FROM pg_proc WHERE proname IN ('velto_sales_order_cancel_reason_from_note', 'velto_sales_order_cancel_reason_from_note_trg')) AS f`;
+      expect({ t: Number(shim!.t), f: Number(shim!.f) }).toEqual({ t: 0, f: 0 });
+      const [missing] = await systemPrisma.$queryRaw<{ n: bigint }[]>`
+        SELECT count(*) AS n FROM "SalesOrder" WHERE "status" = 'CANCELLED' AND "cancelReason" IS NULL`;
+      expect(Number(missing!.n)).toBe(0);
+    });
+  });
+
+  // PO 2026-11-02: PaymentIntentResolution — durable reconciliation decision for
+  // a rejected offline payment intent. Direct-companyId, one row per
+  // (companyId, clientId), append-only, same-company guards on all references.
+  describe('PaymentIntentResolution (offline payment reconciliation)', () => {
+    let pirActorId: string;
+    let pirAgentAId: string;
+    let pirUserBId: string;
+    let pirPaymentAId: string;
+    let pirPaymentBId: string;
+    let pirAuditAId: string;
+    let pirAuditBId: string;
+    const clientA = `pir-a-${randomUUID()}`;
+    const clientB = `pir-b-${randomUUID()}`;
+    const row = (over: Record<string, unknown> = {}) => ({
+      companyId: companyAId,
+      clientId: clientA,
+      paymentId: pirPaymentAId,
+      outcome: 'EXISTING_PAYMENT_CONFIRMED' as const,
+      reason: 'matched by cashier',
+      actorId: pirActorId,
+      originalUserId: pirAgentAId,
+      ...over,
+    });
+
+    beforeAll(async () => {
+      const actor = await systemPrisma.user.create({
+        data: { companyId: companyAId, firstName: 'Pir', lastName: 'Actor', phone: `+99893${Date.now().toString().slice(-7)}` },
+      });
+      pirActorId = actor.id;
+      // Dedicated users: resolutions RESTRICT-reference users and are append-only,
+      // so they stay behind like the F2.1 reversal actor (afterAll deletes courierA/userB).
+      const tail = Date.now().toString().slice(-6);
+      pirAgentAId = (await systemPrisma.user.create({
+        data: { companyId: companyAId, firstName: 'Pir', lastName: 'Agent', phone: `+998941${tail}` },
+      })).id;
+      pirUserBId = (await systemPrisma.user.create({
+        data: { companyId: companyBId, firstName: 'Pir', lastName: 'B', phone: `+998951${tail}` },
+      })).id;
+      await withTenant(companyAId, async (tx) => {
+        const customer = await tx.customer.create({ data: { companyId: companyAId, code: 'A-PIR', name: 'Pir A' } });
+        const payment = await tx.payment.create({
+          data: { companyId: companyAId, number: 'PAY-PIR-1', customerId: customer.id, amount: '10.00', method: 'CASH', clientId: clientA },
+        });
+        pirPaymentAId = payment.id;
+        const audit = await tx.auditLog.create({
+          data: { companyId: companyAId, action: 'payment.create_rejected', entity: 'Payment', entityId: payment.id },
+        });
+        pirAuditAId = audit.id;
+      });
+      await withTenant(companyBId, async (tx) => {
+        const customer = await tx.customer.create({ data: { companyId: companyBId, code: 'B-PIR', name: 'Pir B' } });
+        const payment = await tx.payment.create({
+          data: { companyId: companyBId, number: 'PAY-PIR-1', customerId: customer.id, amount: '10.00', method: 'CASH', clientId: clientB },
+        });
+        pirPaymentBId = payment.id;
+        const audit = await tx.auditLog.create({
+          data: { companyId: companyBId, action: 'payment.create_rejected', entity: 'Payment', entityId: payment.id },
+        });
+        pirAuditBId = audit.id;
+      });
+    });
+
+    it('rejects cross-company paymentId / actorId / originalUserId / rejectionAuditId and a foreign clientId', async () => {
+      // Company B cannot reference company A's payment (even with its own clientId).
+      await expect(
+        withTenant(companyBId, (tx) =>
+          tx.paymentIntentResolution.create({
+            data: row({ companyId: companyBId, clientId: clientA, actorId: pirUserBId, originalUserId: pirUserBId }),
+          }),
+        ),
+      ).rejects.toThrow();
+      // Even velto_system (BYPASSRLS) cannot link B's row to A's payment.
+      await expect(
+        systemPrisma.paymentIntentResolution.create({
+          data: row({ companyId: companyBId, clientId: clientA, actorId: pirUserBId, originalUserId: pirUserBId }),
+        }),
+      ).rejects.toThrow(/cross-tenant/);
+      for (const over of [{ actorId: pirUserBId }, { originalUserId: pirUserBId }, { rejectionAuditId: pirAuditBId }]) {
+        await expect(withTenant(companyAId, (tx) => tx.paymentIntentResolution.create({ data: row(over) }))).rejects.toThrow();
+      }
+      // paymentId must carry the same clientId.
+      await expect(
+        withTenant(companyAId, (tx) => tx.paymentIntentResolution.create({ data: row({ clientId: `pir-x-${randomUUID()}` }) })),
+      ).rejects.toThrow();
+      await expect(withTenant(companyAId, (tx) => tx.paymentIntentResolution.create({ data: row({ reason: '  ' }) }))).rejects.toThrow();
+    });
+
+    it('a direct-companyId table (PaymentIntentResolution) is scoped per tenant; one decision per clientId', async () => {
+      const created = await withTenant(companyAId, (tx) =>
+        tx.paymentIntentResolution.create({ data: row({ rejectionAuditId: pirAuditAId, traceId: 'trace-pir' }) }),
+      );
+      expect(await withTenant(companyAId, (tx) => tx.paymentIntentResolution.count({ where: { id: created.id } }))).toBe(1);
+      expect(await withTenant(companyBId, (tx) => tx.paymentIntentResolution.count({ where: { id: created.id } }))).toBe(0);
+      // Outside withTenant: zero rows or the pooled-'' uuid cast error (see the Customer case) — never a leak.
+      try {
+        expect(await prisma.paymentIntentResolution.count({ where: { id: created.id } })).toBe(0);
+      } catch (err) {
+        expect(String(err)).toMatch(/uuid/i);
+      }
+
+      // Second, contradictory decision for the same intent loses on the unique key.
+      await expect(
+        withTenant(companyAId, (tx) =>
+          tx.paymentIntentResolution.create({ data: row({ outcome: 'NOT_POSTED_CONFIRMED', evidenceRef: 'ticket-1' }) }),
+        ),
+      ).rejects.toMatchObject({ code: 'P2002' });
+
+      // B can record its own decision for its own intent.
+      const own = await withTenant(companyBId, (tx) =>
+        tx.paymentIntentResolution.create({
+          data: row({ companyId: companyBId, clientId: clientB, paymentId: pirPaymentBId, actorId: pirUserBId, originalUserId: pirUserBId }),
+        }),
+      );
+      expect(own.companyId).toBe(companyBId);
+    });
+
+    it('is append-only — UPDATE and DELETE are rejected for the app role and velto_system', async () => {
+      const r = await withTenant(companyAId, (tx) => tx.paymentIntentResolution.findUniqueOrThrow({
+        where: { companyId_clientId: { companyId: companyAId, clientId: clientA } },
+      }));
+      await expect(
+        withTenant(companyAId, (tx) => tx.paymentIntentResolution.update({ where: { id: r.id }, data: { reason: 'changed' } })),
+      ).rejects.toThrow(/append-only/i);
+      await expect(
+        withTenant(companyAId, (tx) => tx.paymentIntentResolution.delete({ where: { id: r.id } })),
+      ).rejects.toThrow(/append-only/i);
+      await expect(
+        systemPrisma.paymentIntentResolution.update({ where: { id: r.id }, data: { outcome: 'NOT_POSTED_CONFIRMED' } }),
+      ).rejects.toThrow(/append-only/i);
+      await expect(systemPrisma.paymentIntentResolution.delete({ where: { id: r.id } })).rejects.toThrow(/append-only/i);
+    });
   });
 });

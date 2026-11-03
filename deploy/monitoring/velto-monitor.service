@@ -1,0 +1,33 @@
+[Unit]
+Description=Velto pilot monitor (checks -> Telegram ops bot)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# One-time (root): useradd --system --no-create-home --shell /usr/sbin/nologin velto-monitor
+#   install -d -m 750 -o root -g velto-monitor /etc/velto ; install -m 640 -o root -g velto-monitor monitor.env /etc/velto/monitor.env
+# Install: install -m 755 -o root -g root deploy/monitoring/velto-monitor.sh /usr/local/bin/velto-monitor
+ExecStart=/usr/local/bin/velto-monitor --env /etc/velto/monitor.env
+User=velto-monitor
+Group=velto-monitor
+# No SupplementaryGroups=adm (that group reads ALL of /var/log). Least privilege via ACLs on exactly two things (root, once; see README step 3c):
+#   setfacl -m u:velto-monitor:r /var/log/nginx/access.log      (+ default ACL on the dir and a logrotate postrotate line so rotation keeps it)
+#   setfacl -m u:velto-monitor:rx /var/backups/velto            (directory only: list + stat; the encrypted files stay 0600 root)
+ReadOnlyPaths=-/var/log/nginx -/var/backups/velto
+StateDirectory=velto-monitor
+StateDirectoryMode=0700
+Environment=MONITOR_STATE_DIR=/var/lib/velto-monitor
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Only its env file is readable under /etc/velto (group velto-monitor); BACKUP_DIR and nginx log are read-only inputs (ProtectSystem=strict + ReadOnlyPaths).
+# Exit 1 = alert condition (visible in `systemctl status`/journal); journal holds only check names + numbers.

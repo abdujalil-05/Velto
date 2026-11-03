@@ -5,6 +5,7 @@ import { Loader2 } from 'lucide-react';
 import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
 import { Sidebar } from '@/components/app-shell/sidebar';
+import { TrialBanner } from '@/components/app-shell/trial-banner';
 import { Topbar } from '@/components/app-shell/topbar';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
@@ -30,6 +31,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar />
+        <TrialBanner />
         <main className="flex-1 p-4 md:p-6">{children}</main>
       </div>
     </div>

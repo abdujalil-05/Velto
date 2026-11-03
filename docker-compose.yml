@@ -5,13 +5,18 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
+      # `velto` is the bootstrap SUPERUSER — admin only (provisioning). The
+      # app connects as velto_app, migrations as velto_owner (see
+      # packages/database/scripts/provision-roles.sql, run on first init).
       POSTGRES_USER: velto
       POSTGRES_PASSWORD: velto
-      POSTGRES_DB: velto
+      POSTGRES_DB: velto_dev
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - velto_postgres_data:/var/lib/postgresql/data
+      - ./packages/database/scripts/provision-roles.sql:/velto-scripts/provision-roles.sql:ro
+      - ./packages/database/scripts/docker-initdb-provision-roles.sh:/docker-entrypoint-initdb.d/10-provision-roles.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U velto"]
       interval: 5s
@@ -22,7 +27,7 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - velto_redis_data:/data
     healthcheck:
@@ -32,6 +37,8 @@ services:
       retries: 10
 
   minio:
+    # TODO pin tag/digest (cannot verify offline): Docker Hub minio/minio returned "denied/not found" to anonymous
+    # manifest lookups on 2026-10-19 (upstream stopped publishing public images?). Pick a verified tag/registry, then pin.
     image: minio/minio:latest
     restart: unless-stopped
     command: server /data --console-address ":9001"

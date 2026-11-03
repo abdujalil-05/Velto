@@ -5,11 +5,12 @@ import { StorageModule } from '../../common/storage/storage.module';
 import { IMPORT_QUEUE } from './import.constants';
 import { ImportController } from './import.controller';
 import { ImportProcessor } from './import.processor';
+import { ImportRecoveryService } from './import-recovery.service';
 import { ImportService } from './import.service';
 
 @Module({
   imports: [BullModule.registerQueue({ name: IMPORT_QUEUE }), StorageModule],
   controllers: [ImportController],
-  providers: [ImportService, ImportProcessor, AuditLogService],
+  providers: [ImportService, ImportProcessor, ImportRecoveryService, AuditLogService],
 })
 export class ImportModule {}

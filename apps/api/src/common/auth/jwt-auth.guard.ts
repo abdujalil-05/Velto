@@ -2,6 +2,7 @@ import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from
 import { JwtService } from '@nestjs/jwt';
 import { Reflector } from '@nestjs/core';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
+import { SessionExpiredException } from './auth-exceptions';
 import type { AccessTokenPayload } from './auth.types';
 
 /**
@@ -32,12 +33,16 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException();
     }
 
+    let payload: AccessTokenPayload;
     try {
-      request.tokenPayload = await this.jwtService.verifyAsync<AccessTokenPayload>(token);
-      return true;
+      payload = await this.jwtService.verifyAsync<AccessTokenPayload>(token);
     } catch {
       throw new UnauthorizedException();
     }
+    // ADR-058: tokens issued before `sid` existed are unsupported; the user must sign in again.
+    if (!payload.sid) throw new SessionExpiredException();
+    request.tokenPayload = payload;
+    return true;
   }
 
   private extractToken(header: string | undefined): string | undefined {

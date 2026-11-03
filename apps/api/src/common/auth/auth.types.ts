@@ -3,6 +3,10 @@ export interface AccessTokenPayload {
   sub: string; // userId
   companyId: string;
   roles: string[]; // role codes, e.g. ["OWNER"]
+  /** ADR-058: id of the confirmed UserMfa this session was issued against. Absent for non-privileged sessions. */
+  mfa?: string;
+  /** Session id = refresh-token familyId. Binds step-up challenges to this session; tokens without it cannot start one. */
+  sid?: string;
 }
 
 /** Hydrated fresh from DB every request and attached to `request.user`. */
@@ -13,4 +17,6 @@ export interface AuthenticatedUser {
   lastName: string;
   roles: string[];
   permissions: string[]; // "module.action"
+  /** Session id from the access token (`sid` claim); undefined for tokens issued before step-up existed. */
+  sid?: string;
 }

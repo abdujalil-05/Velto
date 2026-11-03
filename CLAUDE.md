@@ -5,9 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 Velto — a sales & distribution management platform for Uzbekistan distributors (agents, warehouse,
-sales, finance, 1C integration). The full functional/technical spec is [`VELTO-TZ.md`](./VELTO-TZ.md)
-(Uzbek) — comments throughout the codebase cite it by section (e.g. `6.10`, `SEC-020..024`, `9.1`).
-When a comment references a TZ section number and something is unclear, check that doc before guessing.
+sales, finance, 1C integration). The full functional/technical spec is [`docs/VELTO-MASTER-TZ-v5.0-2026-10-19.md`](./docs/VELTO-MASTER-TZ-v5.0-2026-10-19.md)
+(Uzbek, 86 KB — grep `^#` for the outline, never read it whole). Comments throughout the codebase cite the
+**legacy** numbering (`6.10`, `SEC-020..024`, `9.1`); legacy → v4.0: `6.10`/`SEC-001..005` → §10.4, offline `10.x` → §8,
+security `15.x`/`SEC-xxx` → §11, business rules `8.x` → §6.3–6.6. Legacy file: `git show e56389d:VELTO-TZ.md`.
+
+**Fresh session order:** this file → [`docs/STATUS.md`](./docs/STATUS.md) (≤60 lines, current state only). History/ADRs: `docs/STATUS-ARCHIVE.md`, [`docs/PLAN.md`](./docs/PLAN.md) — grep only, never read whole. Token budget rules: WORKING-AGREEMENT §7. Code search/reading goes through read-only `codex exec` (§7), not `scout`/whole-file reads. **Binding working rules:** [`docs/WORKING-AGREEMENT.md`](./docs/WORKING-AGREEMENT.md) — main session never writes code (delegates to subagents), facts-only, SOLID/DRY, STATUS updated after every task, feature branches only.
 
 Turborepo + pnpm monorepo, started from scratch (no shared code/history with any other Velto project).
 
@@ -27,12 +30,14 @@ packages/
 ```bash
 pnpm install
 cp .env.example .env
-docker-compose up -d   # postgres:5432, redis:6379, minio:9000/9001
+docker-compose up -d   # host ports: postgres:5433 (container 5432), redis:6380 (container 6379), minio:9000/9001
 
-# One-time per database, must run as a Postgres superuser (not the app role).
-# Creates the BYPASSRLS `velto_system` role used for phone-lookup login and
-# cross-tenant background jobs.
-psql "$DATABASE_URL" -f packages/database/scripts/provision-roles.sql
+# Roles (packages/database/scripts/provision-roles.sql; docker runs it on first
+# init): velto_owner = schema owner, migrations (DATABASE_MIGRATE_URL);
+# velto_app = RLS-bound app/test role (DATABASE_URL, never superuser/BYPASSRLS);
+# velto_system = BYPASSRLS, login-by-phone + cross-tenant jobs only.
+# Re-run as superuser on a pre-existing volume and after `prisma migrate reset`:
+psql "postgresql://velto:velto@localhost:5433/velto_dev" -v velto_env=dev -f packages/database/scripts/provision-roles.sql
 
 pnpm db:migrate    # prisma migrate dev
 pnpm db:seed       # demo tenant "Demo Distribution" — refuses to run if NODE_ENV=production
@@ -65,7 +70,7 @@ pnpm --filter @velto/database exec prisma migrate dev --name <description>
 ```
 
 `apps/web` currently has no `test` script/suite. CI (`.github/workflows/ci.yml`) is the source of truth
-for exact setup order: install → `prisma generate` → `migrate deploy` → provision-roles.sql → lint →
+for exact setup order: install → `prisma generate` → provision-roles.sql → `migrate deploy` → lint →
 typecheck → test → `pnpm audit --prod` → build, plus a separate Semgrep SAST job. Reproduce that order
 locally when a test needs a real DB — most API and database-package tests are **integration tests against
 real Postgres with RLS enabled**, not mocked.
@@ -112,9 +117,8 @@ Routes opt out of both with `@Public()`. Controllers read the current permission
 `@RequirePermission(...)` and the resolved user via `@CurrentUser()`.
 
 RBAC is fixed system roles only in MVP (no custom-role authoring, `[v1.1]`). The role/permission catalog
-is defined **twice** and must be kept in sync manually:
-- `packages/database/src/seed.ts` (`SYSTEM_ROLES`, `ROLE_PERMISSIONS`, full demo seed)
-- `packages/database/src/bootstrap-owner.ts` (same lists, for a fresh single-Owner tenant)
+lives in one place: `packages/database/src/rbac-catalog.ts` (`SYSTEM_ROLES`, `PERMISSION_DEFS`,
+`permissionKeysForRole`); both `seed.ts` and `bootstrap-owner.ts` import it.
 
 Display names for roles are also duplicated per-locale in `apps/web/messages/{uz,ru,en}.json` under
 `AppShell.roles`, keyed by role `code`. A role rename/add/remove touches all of these plus, for
@@ -169,3 +173,23 @@ Telegram Mini App for sales agents, offline-first (TZ section 10): `src/lib/offl
 (`queue.ts`) that syncs against the API's `/sync/pull` and `/sync/push` (`apps/api/src/modules/sync/`).
 The Dexie schema (`db.ts`) intentionally mirrors what `GET /sync/pull` sends — keep both in sync when
 adding a synced entity. `storage-budget.ts` enforces the 50MB on-device storage cap (TZ 10.3).
+
+## Subagents (`.claude/agents/`, skills in `.claude/skills/velto-*`)
+
+Delegate to keep the main context empty; each agent works in its own context and returns a short Uzbek report.
+Do not pass a `model` override — each agent's frontmatter pins the right one.
+
+| Task | Agent (model) |
+|---|---|
+| Find where something lives | `scout` (haiku) |
+| Plan / scope gate / ADR before a feature | `architect` (opus) |
+| Schema, RLS, migrations, seed | `db-rls` (opus) |
+| Orders, stock, payments, FIFO, invoices | `finance-stock` (opus) |
+| General API endpoints | `api-dev` (sonnet) |
+| 1C / import / export / Telegram / jobs | `integrations-dev` (sonnet) |
+| Web UI | `web-dev` (sonnet) · Mini App / offline: `miniapp-dev` (sonnet) |
+| Tests (P0, race, offline, isolation) | `qa-engineer` (sonnet) |
+| Deploy / CI / backups (never touches prod) | `devops` (sonnet) |
+| Review → fix | `reviewer` (sonnet) → `fixer` (sonnet) |
+| Auth/tenant/RLS/RBAC changes | `security-auditor` (opus) |
+| Lint/typecheck/tests/build | `checks` (haiku) · role/locale sync: `i18n-sync` (haiku) |

@@ -1,33 +1,29 @@
+import { ReportConcurrencyLimiter } from '../../common/concurrency/report-concurrency.limiter';
 import { randomUUID } from 'node:crypto';
-import { afterAll, describe, expect, it } from 'vitest';
-import { InvoiceStatus, OrderStatus, prisma, systemPrisma, VisitOutcome } from '@velto/database';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+import { InvoiceStatus, OrderStatus, PaymentMethod, PaymentStatus, prisma, systemPrisma, VisitOutcome } from '@velto/database';
 import { TenantPrismaService } from '../../common/tenant/tenant-prisma.service';
+import { TenantContext, handlerScopeStore } from '../../common/tenant/tenant-context';
+import ExcelJS from 'exceljs';
 import { AgingReportService } from '../finance/reports/aging-report.service';
+import { buildReportCsv, buildReportXlsx, xlsxHeaderRow } from './report-export';
+import { agentPerformanceTable, overviewReportTable, salesReportTable } from './report-tables';
 import { AgentPerformanceReportService } from './agent-performance.service';
 import { DashboardService } from './dashboard.service';
 import { OverviewReportService } from './overview-report.service';
-import { isoWeekday } from './report-utils';
+import { eachCompanyDay, isoWeekday, localDateString, resolveDateRange } from './report-utils';
 import { SalesReportService } from './sales-report.service';
 
-// isoWeekday() and startOfDay()/endOfDay() (report-utils.ts) all use LOCAL
-// time, so a "today" query string built from it must be local too —
-// Date#toISOString() gives the UTC date instead, which silently disagrees
-// with the local one for part of every day (Tashkent is UTC+5, so from
-// 00:00-04:59 local the UTC date is still "yesterday"). Using it here would
-// make this test flaky specifically in that window.
-function localDateString(d: Date): string {
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
 
 describe('Analytics reports (integration, real Postgres + RLS)', () => {
   const tenantPrisma = new TenantPrismaService();
   const salesReport = new SalesReportService(tenantPrisma);
   const agentPerformance = new AgentPerformanceReportService(tenantPrisma);
   const overview = new OverviewReportService(tenantPrisma);
-  const dashboard = new DashboardService(tenantPrisma, new AgingReportService(tenantPrisma));
+  const dashboard = new DashboardService(tenantPrisma, new AgingReportService(tenantPrisma), new ReportConcurrencyLimiter());
+
+  // Dashboard route is @TenantTx({ scope: 'handler' }): no outer tx.
+  const getDash = (companyId: string) => TenantContext.run(handlerScopeStore(companyId), () => dashboard.getDashboard());
 
   afterAll(async () => {
     await prisma.$disconnect();
@@ -37,11 +33,11 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
   // Each test gets its own tenant/company so aggregate assertions (turnover
   // totals, active-customer counts, ...) aren't polluted by other tests'
   // fixtures sharing the same RLS-scoped company.
-  async function createCompany(slugPrefix: string) {
+  async function createCompany(slugPrefix: string, timezone?: string) {
     const tenant = await systemPrisma.tenant.create({
       data: { slug: `${slugPrefix}-${Date.now()}-${randomUUID().slice(0, 8)}`, name: 'Analytics Test Tenant' },
     });
-    const company = await systemPrisma.company.create({ data: { tenantId: tenant.id, name: 'Analytics Test Co' } });
+    const company = await systemPrisma.company.create({ data: { tenantId: tenant.id, name: 'Analytics Test Co', ...(timezone ? { timezone } : {}) } });
     return company.id;
   }
 
@@ -85,10 +81,17 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
   async function createOrder(
     companyId: string,
     fx: Awaited<ReturnType<typeof seedBaseFixtures>>,
-    opts: { status: OrderStatus; total: string; createdAt?: Date; agentId?: string | null },
+    opts: {
+      status: OrderStatus;
+      total: string;
+      createdAt?: Date;
+      agentId?: string | null;
+      /** F2.4 line snapshot overrides; default is qty 1 × total, 0% discount/VAT. */
+      line?: { qty: string; deliveredQty: string; unitPrice: string; discountPct: string; vatRate: string };
+    },
   ) {
-    return tenantPrisma.run(companyId, (tx) =>
-      tx.salesOrder.create({
+    return tenantPrisma.run(companyId, async (tx) => {
+      const order = await tx.salesOrder.create({
         data: {
           companyId,
           number: `SO-TEST-${randomUUID()}`,
@@ -96,26 +99,35 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
           agentId: opts.agentId === undefined ? fx.agentId : opts.agentId,
           warehouseId: fx.warehouseId,
           status: opts.status,
+          ...(opts.status === OrderStatus.CANCELLED
+            ? { cancelReason: 'test fixture', cancelledAt: new Date(), cancelledBy: fx.agentId }
+            : {}),
           createdAt: opts.createdAt,
           lines: {
             create: [
               {
                 productId: fx.productId,
                 packagingId: fx.packagingId,
-                qty: '1',
-                unitPrice: opts.total,
-                vatRate: '0',
+                qty: opts.line?.qty ?? '1',
+                deliveredQty: opts.line?.deliveredQty ?? '0',
+                unitPrice: opts.line?.unitPrice ?? opts.total,
+                discountPct: opts.line?.discountPct ?? '0',
+                vatRate: opts.line?.vatRate ?? '0',
                 lineTotal: opts.total,
               },
             ],
           },
         },
-      }),
-    );
+      });
+      // Turnover date = SALE invoice createdAt (deliver() writes it); total 0 + PAID keeps debt fixtures unchanged.
+      if (opts.status === OrderStatus.DELIVERED || opts.status === OrderStatus.CLOSED)
+        await tx.invoice.create({ data: { companyId, number: `INV-TO-${randomUUID().slice(0, 8)}`, customerId: fx.customerId, orderId: order.id, total: 0, status: InvoiceStatus.PAID, createdAt: opts.createdAt } });
+      return order;
+    });
   }
 
   describe('SalesReportService', () => {
-    it('only counts orders past DRAFT and excludes CANCELLED', async () => {
+    it('F2.4/PO: DRAFT/CANCELLED/SUBMITTED/CONFIRMED are not turnover (0 sum, 0 orders)', async () => {
       const companyId = await createCompany('sales-report');
       const fx = await seedBaseFixtures(companyId);
 
@@ -125,10 +137,51 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
       await createOrder(companyId, fx, { status: OrderStatus.CONFIRMED, total: '50000' });
 
       const report = await tenantPrisma.run(companyId, () => salesReport.getSalesReport({}));
-      expect(report.summary.orderCount).toBe(2);
-      expect(report.summary.turnover.toString()).toBe('150000');
-      expect(report.byAgent.find((a) => a.agentId === fx.agentId)?.turnover.toString()).toBe('150000');
-      expect(report.topProducts.find((p) => p.productId === fx.productId)?.turnover.toString()).toBe('150000');
+      expect(report.summary.orderCount).toBe(0);
+      expect(report.summary.turnover.toString()).toBe('0');
+      expect(report.byAgent).toEqual([]);
+      expect(report.topProducts).toEqual([]);
+    });
+  });
+
+  describe('F2.4: DELIVERED/CLOSED orders count the delivered amount (= invoice total)', () => {
+    it('sales report, agent performance, overview and dashboard all use orderTotal()', async () => {
+      const companyId = await createCompany('delivered-amount');
+      const fx = await seedBaseFixtures(companyId);
+
+      // Ordered 4 × 33333.33, −10%, +12% VAT = 134399.99 (snapshot); delivered 1
+      // → 33333.33 × 0.9 × 1.12 = 33599.99664 → 33600.00 (half-up, as invoice).
+      await createOrder(companyId, fx, {
+        status: OrderStatus.DELIVERED,
+        total: '134399.99',
+        line: { qty: '4', deliveredQty: '1', unitPrice: '33333.33', discountPct: '10', vatRate: '12' },
+      });
+      // Fully delivered CLOSED order keeps its snapshot lineTotal.
+      await createOrder(companyId, fx, {
+        status: OrderStatus.CLOSED,
+        total: '20000',
+        line: { qty: '2', deliveredQty: '2', unitPrice: '10000', discountPct: '0', vatRate: '0' },
+      });
+      // Not yet delivered: not turnover at all (PO 2026-11-01).
+      await createOrder(companyId, fx, { status: OrderStatus.CONFIRMED, total: '50000' });
+
+      const expected = '53600'; // 33600 + 20000
+      const sales = await tenantPrisma.run(companyId, () => salesReport.getSalesReport({}));
+      expect(sales.summary.turnover.toString()).toBe(expected);
+      expect(sales.byAgent.find((a) => a.agentId === fx.agentId)?.turnover.toString()).toBe(expected);
+      expect(sales.topProducts.find((p) => p.productId === fx.productId)?.turnover.toString()).toBe(expected);
+
+      const perf = await tenantPrisma.run(companyId, () => agentPerformance.getAgentPerformance({}));
+      expect(perf.agents.find((a) => a.agentId === fx.agentId)?.turnover.toString()).toBe(expected);
+
+      const ov = await tenantPrisma.run(companyId, () => overview.getOverview({}));
+      expect(ov.turnover.toString()).toBe(expected);
+
+      const dash = await getDash(companyId);
+      expect(dash.today.turnover.toString()).toBe(expected);
+      expect(dash.agentsToday.find((a) => a.agentId === fx.agentId)?.turnover.toString()).toBe(expected);
+      const todayKey = localDateString(new Date());
+      expect(dash.turnoverLast30Days.find((d) => d.date === todayKey)?.turnover.toString()).toBe(expected);
     });
   });
 
@@ -151,7 +204,7 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
           },
         }),
       );
-      await createOrder(companyId, fx, { status: OrderStatus.CONFIRMED, total: '200000' });
+      await createOrder(companyId, fx, { status: OrderStatus.DELIVERED, total: '200000', line: { qty: '1', deliveredQty: '1', unitPrice: '200000', discountPct: '0', vatRate: '0' } });
 
       const today = localDateString(new Date());
       const report = await tenantPrisma.run(companyId, () => agentPerformance.getAgentPerformance({ from: today, to: today }));
@@ -165,11 +218,52 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
     });
   });
 
+  // Invoice 500000 with two allocations of 100000: one POSTED, one REVERSED payment.
+  async function seedPaidAndReversed(companyId: string, fx: Awaited<ReturnType<typeof seedBaseFixtures>>) {
+    await tenantPrisma.run(companyId, async (tx) => {
+      const invoice = await tx.invoice.create({
+        data: {
+          companyId,
+          number: `INV-TEST-${randomUUID().slice(0, 8)}`,
+          customerId: fx.customerId,
+          total: '500000',
+          status: InvoiceStatus.PARTIALLY_PAID,
+          createdAt: new Date(Date.now() - 2 * 24 * 3600 * 1000),
+        },
+      });
+      for (const status of [PaymentStatus.POSTED, PaymentStatus.REVERSED]) {
+        const payment = await tx.payment.create({
+          data: {
+            companyId,
+            number: `PAY-TEST-${randomUUID().slice(0, 8)}`,
+            customerId: fx.customerId,
+            amount: '100000',
+            method: PaymentMethod.CASH,
+          },
+        });
+        await tx.paymentAllocation.create({ data: { paymentId: payment.id, invoiceId: invoice.id, amount: '100000' } });
+        // DB triggers: insert POSTED only; REVERSED only after its PaymentReversal row.
+        if (status === PaymentStatus.REVERSED) {
+          await tx.paymentReversal.create({ data: { companyId, reversesPaymentId: payment.id, reason: 'test', actorId: fx.agentId } });
+          await tx.payment.update({ where: { id: payment.id }, data: { status } });
+        }
+      }
+    });
+  }
+
   describe('OverviewReportService', () => {
-    it('counts active customers from counted orders and aggregates outstanding debt', async () => {
+    it('ignores allocations of REVERSED payments', async () => {
+      const companyId = await createCompany('overview-rev');
+      const fx = await seedBaseFixtures(companyId);
+      await seedPaidAndReversed(companyId, fx);
+      const report = await tenantPrisma.run(companyId, () => overview.getOverview({}));
+      expect(report.totalDebt.toString()).toBe('400000');
+    });
+
+    it('counts active customers from delivered orders and aggregates outstanding debt', async () => {
       const companyId = await createCompany('overview');
       const fx = await seedBaseFixtures(companyId);
-      await createOrder(companyId, fx, { status: OrderStatus.CONFIRMED, total: '300000' });
+      await createOrder(companyId, fx, { status: OrderStatus.DELIVERED, total: '300000', line: { qty: '1', deliveredQty: '1', unitPrice: '300000', discountPct: '0', vatRate: '0' } });
 
       await tenantPrisma.run(companyId, (tx) =>
         tx.invoice.create({
@@ -192,7 +286,167 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
     });
   });
 
+  describe('DashboardService cache', () => {
+    const withTtl = async (ttl: string | undefined, fn: () => Promise<void>) => {
+      const prev = process.env.DASHBOARD_CACHE_TTL_S;
+      if (ttl === undefined) delete process.env.DASHBOARD_CACHE_TTL_S;
+      else process.env.DASHBOARD_CACHE_TTL_S = ttl;
+      dashboard.clearCache();
+      try {
+        await fn();
+      } finally {
+        if (prev === undefined) delete process.env.DASHBOARD_CACHE_TTL_S;
+        else process.env.DASHBOARD_CACHE_TTL_S = prev;
+        dashboard.clearCache();
+      }
+    };
+
+    it('miss then hit within TTL (same generatedAt), serves stale after TTL and refreshes in background', async () => {
+      const companyId = await createCompany('dash-cache');
+      await withTtl('30', async () => {
+        const a = await getDash(companyId);
+        const b = await getDash(companyId);
+        expect([a.cached, b.cached]).toEqual([false, true]);
+        expect(b.generatedAt).toBe(a.generatedAt);
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(Date.now() + 31_000);
+          const c = await getDash(companyId);
+          // stale-while-revalidate: stale value now, fresh one after the background refresh
+          expect(c.cached).toBe(true);
+          expect(c.generatedAt).toBe(a.generatedAt);
+          await vi.waitFor(async () => expect((await getDash(companyId)).generatedAt).not.toBe(a.generatedAt));
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+
+    it('hit and in-flight waiters take no permit even when the semaphore is saturated; only the compute takes one', async () => {
+      const companyId = await createCompany('dash-permit');
+      const lim = new ReportConcurrencyLimiter({ maxConcurrency: 1, tenantMaxConcurrency: 1, queueMax: 0, tenantQueueMax: 0, queueTimeoutMs: 100 });
+      const dash = new DashboardService(tenantPrisma, new AgingReportService(tenantPrisma), lim);
+      const get = () => TenantContext.run(handlerScopeStore(companyId), () => dash.getDashboard());
+      const acquire = vi.spyOn(lim, 'acquire');
+      await withTtl('30', async () => {
+        const first = get(); // compute takes the single permit
+        const waiters = Array.from({ length: 5 }, () => get()); // join the in-flight compute
+        const results = await Promise.all([first, ...waiters]);
+        expect(acquire).toHaveBeenCalledTimes(1);
+        expect(new Set(results.map((r) => r.generatedAt)).size).toBe(1);
+        expect(lim.stats.active).toBe(0);
+
+        const hold = await lim.acquire(undefined, 'other-tenant'); // saturate with another report call
+        acquire.mockClear();
+        const hits = await Promise.all(Array.from({ length: 5 }, () => get()));
+        expect(hits.every((h) => h.cached)).toBe(true);
+        expect(acquire).not.toHaveBeenCalled();
+        hold();
+      });
+    });
+
+    it('a saturated semaphore fails a real compute fast with SERVICE_BUSY and caches nothing', async () => {
+      const companyId = await createCompany('dash-busy');
+      const lim = new ReportConcurrencyLimiter({ maxConcurrency: 1, tenantMaxConcurrency: 1, queueMax: 0, tenantQueueMax: 0, queueTimeoutMs: 100 });
+      const dash = new DashboardService(tenantPrisma, new AgingReportService(tenantPrisma), lim);
+      const get = () => TenantContext.run(handlerScopeStore(companyId), () => dash.getDashboard());
+      await withTtl('30', async () => {
+        const hold = await lim.acquire(undefined, 'other-tenant');
+        await expect(get()).rejects.toMatchObject({ response: { code: 'SERVICE_BUSY' } });
+        hold();
+        expect((await get()).cached).toBe(false);
+      });
+    });
+
+    it('a queued compute holds no pool connection (permit wait happens before the tx opens)', async () => {
+      const companyId = await createCompany('dash-queued');
+      const lim = new ReportConcurrencyLimiter({ maxConcurrency: 1, tenantMaxConcurrency: 1, queueMax: 5, tenantQueueMax: 5, queueTimeoutMs: 2000 });
+      const dash = new DashboardService(tenantPrisma, new AgingReportService(tenantPrisma), lim);
+      const get = () => TenantContext.run(handlerScopeStore(companyId), () => dash.getDashboard());
+      await withTtl('30', async () => {
+        const hold = await lim.acquire(undefined, 'other-tenant');
+        const runSpy = vi.spyOn(tenantPrisma, 'run');
+        const p = get();
+        // condition wait, not a fixed sleep: the timezone-read tx can exceed 150 ms under parallel forks
+        await vi.waitFor(() => expect(lim.stats.queued).toBe(1), { timeout: 1500, interval: 10 });
+        // only the timezone read ran; the compute tx has not opened while queued
+        expect(runSpy).toHaveBeenCalledTimes(1);
+        expect(lim.stats.queued).toBe(1);
+        hold();
+        await p;
+        runSpy.mockRestore();
+      });
+    });
+
+    it('waiters do not depend on the first caller: shared compute runs in its own tx', async () => {
+      const companyId = await createCompany('dash-own-tx');
+      await withTtl('30', async () => {
+        const first = getDash(companyId); // no outer tx exists at all; compute opens its own
+        const waiter = getDash(companyId);
+        const [a, b] = await Promise.all([first, waiter]);
+        expect(b.generatedAt).toBe(a.generatedAt);
+      });
+    });
+
+    it('TTL 0 disables the cache', async () => {
+      const companyId = await createCompany('dash-nocache');
+      await withTtl('0', async () => {
+        const a = await getDash(companyId);
+        const b = await getDash(companyId);
+        expect([a.cached, b.cached]).toEqual([false, false]);
+      });
+    });
+
+    it('is keyed by company: tenant B never sees tenant A data', async () => {
+      const a = await createCompany('dash-iso-a');
+      const b = await createCompany('dash-iso-b');
+      const fx = await seedBaseFixtures(a);
+      await seedPaidAndReversed(a, fx);
+      await withTtl('30', async () => {
+        const ra = await getDash(a);
+        const rb = await getDash(b);
+        expect(ra.today.collected.toString()).toBe('100000');
+        expect(rb.cached).toBe(false);
+        expect(rb.today.collected.toString()).toBe('0');
+        expect(rb.agentsToday).toEqual([]);
+        const rb2 = await getDash(b);
+        expect(rb2.today.collected.toString()).toBe('0');
+      });
+    });
+
+    it('concurrent misses share one computation', async () => {
+      const companyId = await createCompany('dash-stampede');
+      await withTtl('30', async () => {
+        const spy = vi.spyOn(dashboard as unknown as { compute: () => Promise<unknown> }, 'compute');
+        const results = await Promise.all(
+          Array.from({ length: 8 }, () => getDash(companyId)),
+        );
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(new Set(results.map((r) => r.generatedAt)).size).toBe(1);
+        spy.mockRestore();
+      });
+    });
+
+    it('exports / report services never use the cache', async () => {
+      const companyId = await createCompany('dash-exp');
+      await withTtl('30', async () => {
+        await getDash(companyId);
+        const o1 = await tenantPrisma.run(companyId, () => overview.getOverview({}));
+        expect(o1).not.toHaveProperty('cached');
+      });
+    });
+  });
+
   describe('DashboardService', () => {
+    it('excludes REVERSED payments from collected and overdue debt', async () => {
+      const companyId = await createCompany('dashboard-rev');
+      const fx = await seedBaseFixtures(companyId);
+      await seedPaidAndReversed(companyId, fx);
+      const result = await getDash(companyId);
+      expect(result.today.collected.toString()).toBe('100000');
+      expect(result.today.overdueDebt.toString()).toBe('400000');
+    });
+
     it('reconstructs overdue debt as-of yesterday', async () => {
       const companyId = await createCompany('dashboard');
       const fx = await seedBaseFixtures(companyId);
@@ -213,9 +467,123 @@ describe('Analytics reports (integration, real Postgres + RLS)', () => {
         }),
       );
 
-      const result = await tenantPrisma.run(companyId, () => dashboard.getDashboard());
+      const result = await getDash(companyId);
       expect(result.today.overdueDebt.toString()).toBe('120000');
       expect(result.today.overdueDebtChangePct).toBe(0);
+    });
+  });
+
+  describe('F5.4: export == endpoint (same DTO, same service, same rows)', () => {
+    const generatedAt = new Date('2026-08-10T10:00:00Z');
+
+    async function setup() {
+      const companyId = await createCompany('export-parity');
+      const fx = await seedBaseFixtures(companyId);
+      const day = (n: number) => new Date(Date.now() - n * 24 * 3600 * 1000);
+      await createOrder(companyId, fx, { status: OrderStatus.CONFIRMED, total: '50000', createdAt: day(3) });
+      await createOrder(companyId, fx, {
+        status: OrderStatus.DELIVERED,
+        total: '134399.99',
+        createdAt: day(2),
+        line: { qty: '4', deliveredQty: '1', unitPrice: '33333.33', discountPct: '10', vatRate: '12' },
+      });
+      await createOrder(companyId, fx, { status: OrderStatus.CANCELLED, total: '77777', createdAt: day(2) });
+      await createOrder(companyId, fx, { status: OrderStatus.SUBMITTED, total: '12000', createdAt: day(40) }); // outside window
+      const query = { from: localDateString(day(5)), to: localDateString(day(1)) };
+      return { companyId, query };
+    }
+
+    function parseCsv(buf: Buffer): string[][] {
+      expect([...buf.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+      return buf.toString('utf8').slice(1).trimEnd().split('\r\n').map((l) => l.split(','));
+    }
+    const fmt = (v: unknown) => (typeof v === 'object' && v !== null ? (v as { toFixed(n: number): string }).toFixed(2) : String(v ?? ''));
+
+    it('sales: XLSX and CSV sections equal the endpoint rows; delivered-qty amount kept (F2.4)', async () => {
+      const { companyId, query } = await setup();
+      const report = await tenantPrisma.run(companyId, () => salesReport.getSalesReport(query));
+      const table = salesReportTable(report, generatedAt);
+      expect(report.summary.turnover.toString()).toBe('33600'); // 1 delivered of 4; CONFIRMED/CANCELLED/outside excluded (PO 2026-11-01)
+      expect(table.sections[0]!.rows).toEqual(report.byDay.map((d) => [d.date, d.turnover]));
+      expect(table.sections[1]!.rows).toEqual(report.byAgent.map((a) => [a.agentName, a.orderCount, a.turnover]));
+      expect(table.meta).toContainEqual(['Davr (dan)', query.from]);
+      expect(table.meta).toContainEqual(['Davr (gacha)', query.to]);
+      expect(table.meta).toContainEqual(['Yaratilgan vaqt', '2026-08-10 15:00:00 (Asia/Tashkent)']);
+
+      const csv = parseCsv(buildReportCsv(table)).map((r) => r.join(','));
+      for (const d of report.byDay) expect(csv).toContain(`${d.date},${d.turnover.toFixed(2)}`);
+      expect(csv).toContain(`Aylanma,${report.summary.turnover.toFixed(2)}`);
+
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load((await buildReportXlsx(table)) as never);
+      const days = wb.getWorksheet('Kunlar')!;
+      const headerRow = xlsxHeaderRow(table);
+      expect(days.getRow(headerRow).values).toEqual([undefined, 'Sana', 'Aylanma']);
+      const got: unknown[][] = [];
+      days.eachRow((r, n) => {
+        if (n > headerRow) got.push((r.values as unknown[]).slice(1));
+      });
+      expect(got).toEqual(report.byDay.map((d) => [d.date, d.turnover.toNumber()]));
+    });
+
+    it('agents: export rows == endpoint rows (CSV)', async () => {
+      const { companyId, query } = await setup();
+      const report = await tenantPrisma.run(companyId, () => agentPerformance.getAgentPerformance(query));
+      const rows = parseCsv(buildReportCsv(agentPerformanceTable(report, generatedAt)));
+      const headerIdx = rows.findIndex((r) => r[0] === 'Agent');
+      expect(rows.slice(headerIdx + 1)).toEqual(
+        report.agents.map((a) => [a.agentName, a.plannedVisits, a.completedVisits, a.routeCompletionPct, a.effectiveVisitPct, a.orderCount, a.turnover, a.avgCheck].map(fmt)),
+      );
+      expect(report.agents[0]!.turnover.toString()).toBe('33600');
+    });
+
+    it('overview: export rows == endpoint values (CSV)', async () => {
+      const { companyId, query } = await setup();
+      const report = await tenantPrisma.run(companyId, () => overview.getOverview(query));
+      const rows = parseCsv(buildReportCsv(overviewReportTable(report, generatedAt)));
+      const find = (label: string) => rows.find((r) => r[0] === label)?.[1];
+      expect(find('Aylanma')).toBe(report.turnover.toFixed(2));
+      expect(find('Buyurtmalar soni')).toBe(String(report.orderCount));
+      expect(find('Faol mijozlar')).toBe(String(report.activeCustomers));
+      expect(find('Jami qarzdorlik')).toBe(report.totalDebt.toFixed(2));
+      expect(report.turnover.toString()).toBe('33600');
+    });
+
+    it('CSV escapes quotes/commas/newlines and neutralises formula-leading names', () => {
+      const csv = buildReportCsv({
+        title: 'T',
+        meta: [],
+        notes: [],
+        sections: [{ name: 'S', columns: [{ header: 'A' }, { header: 'B' }], rows: [['a "q", b\nc', '=SUM(A1)']] }],
+      }).toString('utf8');
+      expect(csv).toContain('"a ""q"", b\nc",\'=SUM(A1)');
+    });
+  });
+
+  describe('F5.4: day boundaries follow Company.timezone', () => {
+    it('sales byDay buckets and range use the company zone (Pacific/Auckland), not Tashkent', async () => {
+      const companyId = await createCompany('tz-nz', 'Pacific/Auckland');
+      const fx = await seedBaseFixtures(companyId);
+      // 2026-06-29T13:00Z = 2026-06-30 01:00 NZST (UTC+12); in Tashkent it would be 2026-06-29 18:00.
+      await createOrder(companyId, fx, { status: OrderStatus.DELIVERED, total: '1000', line: { qty: '1', deliveredQty: '1', unitPrice: '1000', discountPct: '0', vatRate: '0' }, createdAt: new Date('2026-06-29T13:00:00Z') });
+      // 2026-06-30T11:59Z = 2026-06-30 23:59 NZST: still the 30th. 12:00Z = next local midnight.
+      await createOrder(companyId, fx, { status: OrderStatus.DELIVERED, total: '10', line: { qty: '1', deliveredQty: '1', unitPrice: '10', discountPct: '0', vatRate: '0' }, createdAt: new Date('2026-06-30T11:59:00Z') });
+      await createOrder(companyId, fx, { status: OrderStatus.DELIVERED, total: '5', line: { qty: '1', deliveredQty: '1', unitPrice: '5', discountPct: '0', vatRate: '0' }, createdAt: new Date('2026-06-30T12:00:00Z') });
+
+      const report = await tenantPrisma.run(companyId, () => salesReport.getSalesReport({ from: '2026-06-30', to: '2026-06-30' }));
+      expect(report.timeZone).toBe('Pacific/Auckland');
+      expect(report.range.from.toISOString()).toBe('2026-06-29T12:00:00.000Z');
+      expect(report.range.to.toISOString()).toBe('2026-06-30T11:59:59.999Z');
+      expect(report.byDay.map((d) => [d.date, d.turnover.toString()])).toEqual([['2026-06-30', '1010']]);
+    });
+
+    it('resolveDateRange / eachCompanyDay: exact local-midnight bounds and ISO weekday per zone', () => {
+      const r = resolveDateRange('2026-06-30', '2026-07-01', 30, 'America/New_York');
+      expect(r.start.toISOString()).toBe('2026-06-30T04:00:00.000Z');
+      expect(r.end.toISOString()).toBe('2026-07-02T03:59:59.999Z');
+      expect(eachCompanyDay(r.start, r.end, 'America/New_York').map((d) => d.date)).toEqual(['2026-06-30', '2026-07-01']);
+      expect(isoWeekday(new Date('2026-06-30T03:00:00Z'), 'America/New_York')).toBe(1); // Mon 29 Jun 23:00 NY
+      expect(isoWeekday(new Date('2026-06-30T03:00:00Z'), 'Asia/Tashkent')).toBe(2);
     });
   });
 });

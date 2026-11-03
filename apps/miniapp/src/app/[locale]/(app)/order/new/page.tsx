@@ -1,8 +1,10 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
+import { FreshnessLabel } from '@/components/freshness-label';
+import { searchCustomers, searchProducts } from '@/lib/offline/search';
 import { toast } from 'sonner';
 import { History, Search } from 'lucide-react';
 import { useRouter } from '@/i18n/navigation';
@@ -16,12 +18,14 @@ import {
   useOfflineProducts,
   useOfflineStock,
 } from '@/lib/offline/use-offline-data';
-import { estimateOrderTotal, resolvePrice } from '@/lib/offline/pricing';
+import { checkQty, estimateOrderTotal, repeatLineQty, resolvePrice, withExpectedUnitPrices } from '@/lib/offline/pricing';
 import type { SyncPackaging } from '@/lib/api/sync';
-import { enqueue } from '@/lib/offline/queue';
+import { enqueueMany, QueueQuotaError, type EnqueueItem } from '@/lib/offline/queue';
+import { ForeignLegacyBlockedError, VaultUnavailableError } from '@/lib/offline/vault';
 import { useSyncEngine } from '@/lib/offline/sync-engine';
 import { useLastOrderQuery, type CreateOrderInput } from '@/lib/api/orders';
 import type { CreateVisitInput } from '@/lib/api/visits';
+import { clearVisitGps, peekVisitGps } from '@/lib/gps-payload';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
 import { useTelegramBackButton } from '@/lib/hooks/use-telegram-back-button';
 import { formatMoney } from '@/lib/format';
@@ -48,8 +52,6 @@ export default function NewOrderPage() {
 
   const outletIdParam = searchParams.get('outletId');
   const visitStartedAt = searchParams.get('visitStartedAt');
-  const visitLat = searchParams.get('visitLat');
-  const visitLng = searchParams.get('visitLng');
 
   const outlets = useOfflineOutlets();
   const customers = useOfflineCustomers();
@@ -76,6 +78,12 @@ export default function NewOrderPage() {
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [lines, setLines] = useState<Record<string, CartLine>>({});
   const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+  // Stable per-document ids, created ONCE when the form opens: every retry/double-click reuses them (queue dedupes).
+  const orderClientIdRef = useRef<string>('');
+  const visitClientIdRef = useRef<string>('');
+  if (!orderClientIdRef.current) orderClientIdRef.current = crypto.randomUUID();
+  if (!visitClientIdRef.current) visitClientIdRef.current = crypto.randomUUID();
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
   const [repeatConfirmOpen, setRepeatConfirmOpen] = useState(false);
 
@@ -118,19 +126,12 @@ export default function NewOrderPage() {
 
   const filteredProducts = useMemo(() => {
     if (!products.data) return [];
-    const q = debouncedSearch.trim().toLowerCase();
-    return products.data
-      .filter((p) => p.isActive)
-      .filter((p) => !categoryId || p.categoryId === categoryId)
-      .filter((p) => !q || p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q) || (p.barcode ?? '').toLowerCase().includes(q))
-      .sort((a, b) => a.name.localeCompare(b.name));
+    return searchProducts(products.data, debouncedSearch, categoryId);
   }, [products.data, debouncedSearch, categoryId]);
 
   const filteredCustomers = useMemo(() => {
     if (outlet || !customers.data) return [];
-    const q = customerQuery.trim().toLowerCase();
-    if (!q) return [];
-    return customers.data.filter((c) => !c.isBlocked && (c.name.toLowerCase().includes(q) || c.code.toLowerCase().includes(q))).slice(0, 15);
+    return searchCustomers(customers.data, customerQuery);
   }, [customers.data, customerQuery, outlet]);
 
   function defaultPackagingId(productId: string): string {
@@ -174,6 +175,16 @@ export default function NewOrderPage() {
     [cartLineInputs, availableByProduct, packagingsByProduct],
   );
 
+  // ADR-059 UX mirror of the server rule: qty ≤3dp and qty × factor ≤3dp. Blocks save, never rounds.
+  const qtyIssue = useMemo(() => {
+    for (const l of cartLineInputs) {
+      const pkg = (packagingsByProduct.get(l.productId) ?? []).find((p) => p.id === l.packagingId);
+      const r = checkQty(l.qty, pkg?.qtyInBaseUnit ?? '1');
+      if (r !== 'ok') return r;
+    }
+    return null;
+  }, [cartLineInputs, packagingsByProduct]);
+
   const cartTotal = useMemo(() => {
     if (!products.data || !packagings.data || !prices.data || defaultPriceListId.data === undefined) return 0;
     return estimateOrderTotal(cartLineInputs, customer?.priceListId ?? null, defaultPriceListId.data, products.data, packagings.data, prices.data);
@@ -182,46 +193,71 @@ export default function NewOrderPage() {
   function repeatLastOrder() {
     if (!lastOrder.data || !packagings.data) return;
     const next: Record<string, CartLine> = {};
+    let manual = 0;
     for (const line of lastOrder.data.lines) {
-      const packaging = packagings.data.find((p) => p.id === line.packagingId);
-      const baseQty = Number(line.qty);
-      const displayQty = packaging ? baseQty / Number(packaging.qtyInBaseUnit) : baseQty;
-      next[line.productId] = { packagingId: line.packagingId, qty: displayQty };
+      // line.qty is in base units; exact BigInt division, else base packaging, else manual (never float/rounded).
+      const res = repeatLineQty(line.qty, line.packagingId, packagingsByProduct.get(line.productId) ?? []);
+      if (!res) {
+        manual += 1;
+        continue;
+      }
+      next[line.productId] = { packagingId: res.packagingId, qty: Number(res.qty) };
     }
     setLines(next);
     setRepeatConfirmOpen(false);
-    toast.success(t('repeated'));
+    if (manual > 0) toast.warning(t('repeatedPartial', { count: manual }));
+    else toast.success(t('repeated'));
+  }
+
+  function saveErrorMessage(err: unknown): string {
+    // Nothing was written in any of these cases; the cart stays in memory with the same clientIds.
+    if (err instanceof VaultUnavailableError) return t('vaultBlocked');
+    if (err instanceof ForeignLegacyBlockedError) return t('foreignLegacyBlocked');
+    return err instanceof QueueQuotaError ? t('saveQuotaFull') : t('saveFailed');
   }
 
   async function handleSave() {
-    if (!customerId || cartLineInputs.length === 0) return;
+    if (!customerId || cartLineInputs.length === 0 || submittingRef.current) return;
+    submittingRef.current = true;
     setSubmitting(true);
+    let written = false;
     try {
       const orderPayload: CreateOrderInput = {
         customerId,
         outletId: outlet?.id,
-        clientId: '',
-        lines: cartLineInputs,
+        clientId: orderClientIdRef.current,
+        lines: withExpectedUnitPrices(cartLineInputs, customer?.priceListId ?? null, defaultPriceListId.data ?? null, prices.data ?? []),
       };
-      await enqueue('order', orderPayload as unknown as Record<string, unknown>);
-
+      const items: EnqueueItem[] = [{ type: 'order', payload: orderPayload as unknown as Record<string, unknown>, clientId: orderClientIdRef.current }];
+      let visitQueued = false;
       if (outlet && visitStartedAt) {
+        visitQueued = true;
         const visitPayload: CreateVisitInput = {
           outletId: outlet.id,
           startedAt: visitStartedAt,
           endedAt: new Date().toISOString(),
-          latitude: Number(visitLat ?? outlet.latitude ?? 0),
-          longitude: Number(visitLng ?? outlet.longitude ?? 0),
+          ...peekVisitGps(outlet.id),
           outcome: 'ORDERED',
-          clientId: '',
+          clientId: visitClientIdRef.current,
         };
-        await enqueue('visit', visitPayload as unknown as Record<string, unknown>);
+        items.push({ type: 'visit', payload: visitPayload as unknown as Record<string, unknown>, clientId: visitClientIdRef.current });
       }
-
+      // One atomic device write: order + visit both land or neither does. Success here means "saved on this device" only.
+      await enqueueMany(items);
+      written = true;
+      // The document is durably queued: the next document on this instance gets fresh ids and an empty cart.
+      orderClientIdRef.current = crypto.randomUUID();
+      visitClientIdRef.current = crypto.randomUUID();
+      setLines({});
+      if (outlet && visitQueued) clearVisitGps(outlet.id);
       syncEngine.notifyQueueChanged();
       toast.success(t('saved'));
       router.push('/route');
+    } catch (err) {
+      // A queue-write error is a failure (cart stays, same clientIds). Anything after a successful write is not.
+      if (!written) toast.error(saveErrorMessage(err));
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   }
@@ -327,6 +363,9 @@ export default function NewOrderPage() {
             </div>
           )}
 
+          <FreshnessLabel dataset="stock" />
+          <FreshnessLabel dataset="prices" />
+
           {filteredProducts.length === 0 && (
             <Card>
               <CardContent className="py-10 text-center text-sm text-muted-foreground">{t('noProducts')}</CardContent>
@@ -357,6 +396,11 @@ export default function NewOrderPage() {
           </div>
 
           <div className="fixed inset-x-0 bottom-0 mx-auto max-w-lg border-t border-border bg-background p-4">
+            {qtyIssue && (
+              <Alert variant="destructive" className="mb-2">
+                <AlertDescription>{qtyIssue === 'qtyScale' ? t('qtyScaleError') : t('qtyBaseScaleError')}</AlertDescription>
+              </Alert>
+            )}
             {hasStockIssues && (
               <Alert variant="destructive" className="mb-2">
                 <AlertDescription>{t('stockExceededBanner')}</AlertDescription>
@@ -368,7 +412,7 @@ export default function NewOrderPage() {
                 {formatMoney(cartTotal)} {tCommon('somUnit')}
               </span>
             </div>
-            <Button size="lg" className="w-full" disabled={cartLineInputs.length === 0 || hasStockIssues || submitting} onClick={handleSave}>
+            <Button size="lg" className="w-full" disabled={cartLineInputs.length === 0 || hasStockIssues || qtyIssue !== null || submitting} onClick={handleSave}>
               {t('save')}
             </Button>
           </div>

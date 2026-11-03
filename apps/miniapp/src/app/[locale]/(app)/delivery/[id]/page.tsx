@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
 import { toast } from 'sonner';
@@ -8,10 +8,10 @@ import { MapPin, Phone, User as UserIcon } from 'lucide-react';
 import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
 import { useCourierOrdersQuery, useDeliverOrderMutation } from '@/lib/api/orders';
-import { errorMessage } from '@/lib/api/client';
+import { ApiError, errorMessage } from '@/lib/api/client';
 import { useTelegramBackButton } from '@/lib/hooks/use-telegram-back-button';
 import { formatDateTime, formatMoney } from '@/lib/format';
-import { orderStatusVariant } from '@/components/courier/order-status';
+import { courierStatusLabelKey, isAwaitingHandover, orderStatusVariant } from '@/components/courier/order-status';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -42,15 +42,29 @@ export default function DeliveryDetailPage() {
 
   const order = orders.data?.data.find((o) => o.id === orderId);
   const phone = order?.customer?.phone ?? null;
+  const awaitingHandover = order ? isAwaitingHandover(order.status) : false;
   const alreadyClosed = order ? ['DELIVERED', 'CLOSED', 'CANCELLED'].includes(order.status) : false;
+
+  // One key per delivery action, reused on every retry until the server accepts it.
+  const idempotencyKey = useRef<string | null>(null);
 
   async function handleDeliver() {
     try {
-      await deliver.mutateAsync(orderId);
+      idempotencyKey.current ??= crypto.randomUUID();
+      await deliver.mutateAsync({ orderId, idempotencyKey: idempotencyKey.current });
+      idempotencyKey.current = null;
       setConfirmOpen(false);
       toast.success(t('deliveredSuccess'));
       router.push('/');
     } catch (err) {
+      if (err instanceof ApiError && err.status === 409 && err.code === 'SALES_ORDER_HANDOVER_REQUIRED') {
+        // Not handed over yet (or already moved on): nothing changed on the server; refresh the list and say why.
+        idempotencyKey.current = null;
+        setConfirmOpen(false);
+        void orders.refetch();
+        toast.warning(t('notHandedOver'));
+        return;
+      }
       toast.error(errorMessage(err, locale));
     }
   }
@@ -88,7 +102,7 @@ export default function DeliveryDetailPage() {
           <h1 className="truncate text-lg font-semibold">{t('orderNumber', { number: order.number })}</h1>
           <p className="text-xs text-muted-foreground">{formatDateTime(order.createdAt, locale)}</p>
         </div>
-        <Badge variant={orderStatusVariant(order.status)}>{t(`status.${order.status}`)}</Badge>
+        <Badge variant={orderStatusVariant(order.status)}>{t(courierStatusLabelKey(order.status))}</Badge>
       </div>
 
       <Card>
@@ -132,10 +146,13 @@ export default function DeliveryDetailPage() {
         </CardContent>
       </Card>
 
+      {awaitingHandover ? (
+        <p className="text-center text-sm text-muted-foreground">{t('awaitingHandoverHint')}</p>
+      ) : null}
       {alreadyClosed ? (
         <p className="text-center text-sm text-muted-foreground">{t('alreadyDelivered')}</p>
       ) : (
-        <Button size="lg" className="w-full" onClick={() => setConfirmOpen(true)} disabled={deliver.isPending}>
+        <Button size="lg" className="w-full" onClick={() => setConfirmOpen(true)} disabled={deliver.isPending || awaitingHandover}>
           {t('markDelivered')}
         </Button>
       )}

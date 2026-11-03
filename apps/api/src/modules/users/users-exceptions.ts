@@ -156,3 +156,33 @@ export class TelegramNotLinkedException extends AppException {
     });
   }
 }
+
+export class CannotResetOwnMfaException extends AppException {
+  constructor() {
+    super(HttpStatus.BAD_REQUEST, 'USER_CANNOT_RESET_OWN_MFA', {
+      uz: "O'zingizning ikki bosqichli tasdiqlashingizni tiklay olmaysiz",
+      ru: 'Вы не можете сбросить собственную двухфакторную аутентификацию',
+      en: 'You cannot reset your own two-factor authentication',
+    });
+  }
+}
+
+export class CannotResetOwnerMfaException extends AppException {
+  constructor() {
+    super(HttpStatus.FORBIDDEN, 'CANNOT_RESET_OWNER_MFA', {
+      uz: "Egasining ikki bosqichli tasdiqlashini bu yerdan tiklab bo'lmaydi",
+      ru: 'Двухфакторную аутентификацию Владельца нельзя сбросить отсюда',
+      en: "An Owner's two-factor authentication cannot be reset here",
+    });
+  }
+}
+
+export class MfaEnrollmentCodeNotApplicableException extends AppException {
+  constructor() {
+    super(HttpStatus.BAD_REQUEST, 'USER_MFA_ENROLLMENT_CODE_NOT_APPLICABLE', {
+      uz: "Bu foydalanuvchi uchun ro'yxatdan o'tkazish kodi berib bo'lmaydi",
+      ru: 'Для этого пользователя нельзя выдать код регистрации',
+      en: 'An enrollment code cannot be issued for this user',
+    });
+  }
+}

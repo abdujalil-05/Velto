@@ -59,6 +59,48 @@ export function onUnauthorized(handler: UnauthorizedHandler): () => void {
   return () => unauthorizedHandlers.delete(handler);
 }
 
+/** Non-secret flag read once by the login page to explain why the session ended (ADR-058). */
+export const AUTH_NOTICE_KEY = 'velto.authNotice';
+
+export function consumeAuthNotice(): string | null {
+  try {
+    const v = window.sessionStorage.getItem(AUTH_NOTICE_KEY);
+    window.sessionStorage.removeItem(AUTH_NOTICE_KEY);
+    return v;
+  } catch {
+    return null;
+  }
+}
+
+/** Codes where refreshing cannot help: the server ended the session (MFA_REQUIRED, legacy token AUTH_SESSION_EXPIRED). */
+const SESSION_END_NOTICES: Record<string, string> = {
+  MFA_REQUIRED: 'mfaRequired',
+  AUTH_SESSION_EXPIRED: 'sessionExpired',
+};
+
+export function isSessionEndCode(code: string): boolean {
+  return code in SESSION_END_NOTICES;
+}
+
+async function sessionEndNotice(res: Response): Promise<string | null> {
+  try {
+    const body = (await res.clone().json()) as { code?: string };
+    return (body?.code && SESSION_END_NOTICES[body.code]) || null;
+  } catch {
+    return null;
+  }
+}
+
+function endSession(notice: string) {
+  clearTokens();
+  try {
+    window.sessionStorage.setItem(AUTH_NOTICE_KEY, notice);
+  } catch {
+    // storage unavailable: the redirect still happens, only the message is lost
+  }
+  unauthorizedHandlers.forEach((handler) => handler());
+}
+
 let refreshInFlight: Promise<string | null> | null = null;
 
 async function refreshAccessToken(): Promise<string | null> {
@@ -119,13 +161,18 @@ export async function apiFetch<T = void>(path: string, options: ApiFetchOptions 
 
   let res = await send(skipAuth ? null : getAccessToken());
 
+  const endNotice = res.status === 401 && !skipAuth ? await sessionEndNotice(res) : null;
+  if (endNotice) {
+    endSession(endNotice);
+    throw new ApiError(401, (await res.json().catch(() => undefined)) as ApiErrorBody);
+  }
+
   if (res.status === 401 && !skipAuth) {
     const refreshed = await refreshAccessToken();
     if (refreshed) {
       res = await send(refreshed);
     } else {
-      clearTokens();
-      unauthorizedHandlers.forEach((handler) => handler());
+      endSession('sessionExpired');
     }
   }
 
@@ -148,7 +195,7 @@ export async function apiFetch<T = void>(path: string, options: ApiFetchOptions 
  * export has to surface the backend's trilingual message like every other
  * error, not a raw English string.
  */
-export async function apiDownload(path: string, fallbackFilename: string): Promise<void> {
+export async function apiDownloadWithHash(path: string, fallbackFilename: string): Promise<{ sha256: string | null }> {
   const send = (token: string | null) =>
     fetch(`${API_URL}${path}`, {
       credentials: 'include',
@@ -157,13 +204,18 @@ export async function apiDownload(path: string, fallbackFilename: string): Promi
 
   let res = await send(getAccessToken());
 
+  const endNotice = res.status === 401 ? await sessionEndNotice(res) : null;
+  if (endNotice) {
+    endSession(endNotice);
+    throw new ApiError(401, (await res.json().catch(() => undefined)) as ApiErrorBody);
+  }
+
   if (res.status === 401) {
     const refreshed = await refreshAccessToken();
     if (refreshed) {
       res = await send(refreshed);
     } else {
-      clearTokens();
-      unauthorizedHandlers.forEach((handler) => handler());
+      endSession('sessionExpired');
     }
   }
 
@@ -186,4 +238,10 @@ export async function apiDownload(path: string, fallbackFilename: string): Promi
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+  // Only readable cross-origin if the API lists it in Access-Control-Expose-Headers.
+  return { sha256: res.headers.get('x-content-sha256') };
+}
+
+export async function apiDownload(path: string, fallbackFilename: string): Promise<void> {
+  await apiDownloadWithHash(path, fallbackFilename);
 }

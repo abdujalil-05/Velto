@@ -16,6 +16,7 @@ import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { SearchSelect } from '@/components/shared/search-select';
+import { qtyPrecisionViolation } from '@/lib/decimal-math';
 import { OrderLineEditor } from './order-line-editor';
 
 export interface OrderLineDraft {
@@ -89,6 +90,15 @@ export function OrderForm({ isSubmitting, submitError, onSubmit }: OrderFormProp
     const validLines = lines.filter((line) => line.product && line.packagingId && Number(line.qty) > 0);
     if (validLines.length === 0) {
       setValidationError(t('emptyLinesError'));
+      return;
+    }
+
+    const precisionBad = validLines.some((line) => {
+      const pkg = line.product!.packagings.find((x) => x.id === line.packagingId);
+      return qtyPrecisionViolation(line.qty, pkg?.qtyInBaseUnit ?? '1') !== null;
+    });
+    if (precisionBad) {
+      setValidationError(t('qtyPrecisionBase'));
       return;
     }
 

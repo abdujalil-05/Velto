@@ -1,12 +1,13 @@
-// 10.2 "Lokal baza shifrlangan holda saqlanadi" — AES-GCM via Web Crypto,
-// applied per-row by `encrypted-store.ts`. Key material is a random 256-bit
-// key generated once on-device and kept in localStorage next to the JWT
-// tokens (lib/auth/tokens.ts) — the same trust boundary the rest of this
-// app already relies on. Nothing stored client-side can defend against a
-// fully compromised device, and there's no server-issued device-key
-// infrastructure to do better; this is the honest MVP-grade reading of the
-// requirement (protects the DB file at rest from casual inspection/backup
-// extraction), not a claim of stronger guarantees.
+// Per-row AES-GCM via Web Crypto, applied by `encrypted-store.ts`. The key is a
+// random 256-bit value generated on-device and kept in localStorage next to the
+// JWT tokens (lib/auth/tokens.ts).
+//
+// THIS IS NOT A SECURITY CONTROL (TZ 8.6): a key stored beside the data it
+// protects only obscures rows from casual inspection of the IndexedDB file; it
+// does not defend against anyone who can run code in this origin or read the
+// device profile. Real protection is the OS/browser device encryption plus
+// wiping the cache on logout / user change (repository.ts) — never describe
+// this layer as "secure" in UI text, docs or reports.
 
 const DB_KEY_STORAGE_KEY = 'velto.dbKey';
 const ALGO = 'AES-GCM';
@@ -49,6 +50,8 @@ function getDeviceKey(): Promise<CryptoKey> {
 export interface EncryptedBlob {
   iv: Uint8Array;
   ct: ArrayBuffer;
+  /** Absent = encrypted under the shared device key. 'uk1' = per-(user, company) vault key (vault.ts). */
+  v?: string;
 }
 
 /** Encrypts an arbitrary JSON-serializable value into a blob Dexie can store directly (structured clone supports ArrayBuffer/Uint8Array natively — no base64 needed at rest). */
@@ -70,4 +73,9 @@ export async function decryptValue<T>(blob: EncryptedBlob): Promise<T> {
 export function clearDeviceKey(): void {
   window.localStorage.removeItem(DB_KEY_STORAGE_KEY);
   cachedKey = null;
+}
+
+/** True while a device key exists in localStorage. */
+export function hasDeviceKey(): boolean {
+  return window.localStorage.getItem(DB_KEY_STORAGE_KEY) !== null;
 }

@@ -1,9 +1,11 @@
 import { memoryStorage } from 'multer';
 import { Controller, Get, Header, Param, ParseUUIDPipe, Post, Query, StreamableFile, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Throttle } from '@nestjs/throttler';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { toImportJobView } from './dto/import-job.view';
 import { ListImportsQueryDto } from './dto/list-imports.query';
 import { validateImportFile } from './file-validation';
 import { ImportService } from './import.service';
@@ -38,25 +40,28 @@ export class ImportController {
   }
 
   @Post('customers')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @RequirePermission(IMPORT_WRITE)
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } }))
   uploadCustomers(@UploadedFile() file: Express.Multer.File | undefined, @CurrentUser() user: AuthenticatedUser) {
     const buffer = validateImportFile(file);
-    return this.importService.uploadAndValidate('customers', buffer, user);
+    return this.importService.uploadAndValidate('customers', buffer, user).then(toImportJobView);
   }
 
   @Post('products')
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @RequirePermission(IMPORT_WRITE)
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } }))
   uploadProducts(@UploadedFile() file: Express.Multer.File | undefined, @CurrentUser() user: AuthenticatedUser) {
     const buffer = validateImportFile(file);
-    return this.importService.uploadAndValidate('products', buffer, user);
+    return this.importService.uploadAndValidate('products', buffer, user).then(toImportJobView);
   }
 
   @Get()
   @RequirePermission(IMPORT_READ)
-  list(@Query() query: ListImportsQueryDto) {
-    return this.importService.list(query);
+  async list(@Query() query: ListImportsQueryDto) {
+    const page = await this.importService.list(query);
+    return { ...page, data: page.data.map(toImportJobView) };
   }
 
   // Polled right after upload for the "validatsiya xatolari jadvali" review
@@ -64,12 +69,12 @@ export class ImportController {
   @Get(':id')
   @RequirePermission(IMPORT_READ)
   getById(@Param('id', ParseUUIDPipe) id: string) {
-    return this.importService.getById(id);
+    return this.importService.getById(id).then(toImportJobView);
   }
 
   @Post(':id/confirm')
   @RequirePermission(IMPORT_WRITE)
   confirm(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.importService.confirm(id, user);
+    return this.importService.confirm(id, user).then(toImportJobView);
   }
 }

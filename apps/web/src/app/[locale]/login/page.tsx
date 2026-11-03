@@ -8,7 +8,11 @@ import { useLocale, useTranslations } from 'next-intl';
 import { Eye, EyeOff, Loader2 } from 'lucide-react';
 import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/lib/auth/auth-context';
-import { errorMessage } from '@/lib/api/client';
+import { ApiError, consumeAuthNotice, errorMessage } from '@/lib/api/client';
+import type { CompanySelectionRequired } from '@/lib/api/auth';
+import { isMfaChallenge, type MfaChallenge } from '@/lib/api/mfa';
+import { MfaFlow } from '@/components/auth/mfa-flow';
+import { AccountPicker } from '@/components/auth/account-picker';
 import { ForgotPasswordDialog } from '@/components/auth/forgot-password-dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -32,11 +36,16 @@ export default function LoginPage() {
   const t = useTranslations('Auth');
   const locale = useLocale();
   const router = useRouter();
-  const { login, status } = useAuth();
+  const { login, selectCompany, completeMfa, status } = useAuth();
 
   const [showPassword, setShowPassword] = useState(false);
   const [showForgotDialog, setShowForgotDialog] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // Held in component state only (ADR-057): never persisted, never in the URL.
+  const [challenge, setChallenge] = useState<CompanySelectionRequired | null>(null);
+  const [optionId, setOptionId] = useState<string | null>(null);
+  const [selecting, setSelecting] = useState(false);
+  const [mfa, setMfa] = useState<MfaChallenge | null>(null);
 
   const schema = loginSchema(t);
   const {
@@ -47,6 +56,13 @@ export default function LoginPage() {
   } = useForm<LoginFormValues>({ resolver: zodResolver(schema), defaultValues: { phoneDigits: '', password: '' } });
 
   useEffect(() => {
+    // Set by apiFetch when the server ended the session with MFA_REQUIRED (ADR-058).
+    const notice = consumeAuthNotice();
+    if (notice === 'mfaRequired') setSubmitError(t('mfa.sessionRequired'));
+    else if (notice === 'sessionExpired') setSubmitError(t('sessionExpired'));
+  }, [t]);
+
+  useEffect(() => {
     if (status === 'authenticated') {
       router.replace('/');
     }
@@ -55,11 +71,61 @@ export default function LoginPage() {
   async function onSubmit(values: LoginFormValues) {
     setSubmitError(null);
     try {
-      await login(`+998${values.phoneDigits}`, values.password);
+      const pending = await login(`+998${values.phoneDigits}`, values.password);
+      if (pending && isMfaChallenge(pending)) {
+        setMfa(pending);
+        return;
+      }
+      if (pending) {
+        setChallenge(pending);
+        setOptionId(null);
+        return;
+      }
       router.replace('/');
     } catch (error) {
       setSubmitError(errorMessage(error, locale));
     }
+  }
+
+  async function onSelectCompany() {
+    if (!challenge || !optionId) return;
+    setSubmitError(null);
+    setSelecting(true);
+    try {
+      const next = await selectCompany(challenge.challengeId, optionId);
+      if (next) {
+        setMfa(next);
+        return;
+      }
+      router.replace('/');
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'AUTH_CHALLENGE_INVALID') {
+        // Challenge is single-use/expired: back to the password step.
+        setChallenge(null);
+        setOptionId(null);
+        setSubmitError(t('challengeInvalid'));
+      } else if (error instanceof ApiError && error.code === 'AUTH_CHALLENGE_RATE_LIMITED') {
+        setSubmitError(`${errorMessage(error, locale)} ${t('challengeRateLimited')}`);
+      } else {
+        setSubmitError(errorMessage(error, locale));
+      }
+    } finally {
+      setSelecting(false);
+    }
+  }
+
+  function restartFromMfa(message: string) {
+    setMfa(null);
+    setChallenge(null);
+    setOptionId(null);
+    setSubmitError(message);
+  }
+
+  function backToPassword() {
+    setMfa(null);
+    setChallenge(null);
+    setOptionId(null);
+    setSubmitError(null);
   }
 
   if (status === 'loading' || status === 'authenticated') {
@@ -83,6 +149,51 @@ export default function LoginPage() {
             <CardDescription>{t('subtitle')}</CardDescription>
           </CardHeader>
           <CardContent>
+            {mfa ? (
+              <div className="space-y-4">
+                {submitError && (
+                  <Alert variant="destructive" role="alert">
+                    <AlertDescription>{submitError}</AlertDescription>
+                  </Alert>
+                )}
+                <MfaFlow
+                  key={mfa.mfaChallenge}
+                  mode={mfa.mfa}
+                  requireEnrollmentCode
+                  challenge={mfa.mfaChallenge}
+                  onAuthenticated={async (tokens) => {
+                    await completeMfa(tokens);
+                    setMfa(null);
+                    router.replace('/');
+                  }}
+                  onRestart={restartFromMfa}
+                />
+                <Button type="button" variant="outline" className="w-full" onClick={backToPassword}>
+                  {t('backToPassword')}
+                </Button>
+              </div>
+            ) : challenge ? (
+              <div className="space-y-4">
+                {submitError && (
+                  <Alert variant="destructive" role="alert">
+                    <AlertDescription>{submitError}</AlertDescription>
+                  </Alert>
+                )}
+                <AccountPicker
+                  legend={t('chooseCompany')}
+                  options={challenge.companies}
+                  value={optionId}
+                  onChange={setOptionId}
+                  disabled={selecting}
+                />
+                <Button type="button" size="lg" className="w-full" disabled={!optionId || selecting} onClick={onSelectCompany}>
+                  {selecting ? <Loader2 className="h-4 w-4 animate-spin" /> : t('continue')}
+                </Button>
+                <Button type="button" variant="outline" className="w-full" disabled={selecting} onClick={backToPassword}>
+                  {t('backToPassword')}
+                </Button>
+              </div>
+            ) : (
             <form className="space-y-4" onSubmit={handleSubmit(onSubmit)} noValidate>
               {submitError && (
                 <Alert variant="destructive">
@@ -152,6 +263,7 @@ export default function LoginPage() {
                 </button>
               </div>
             </form>
+            )}
           </CardContent>
         </Card>
       </div>

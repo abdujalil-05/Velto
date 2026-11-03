@@ -24,3 +24,39 @@ export function clearTokens(): void {
   window.localStorage.removeItem(ACCESS_TOKEN_KEY);
   window.localStorage.removeItem(REFRESH_TOKEN_KEY);
 }
+
+export interface TokenOwner {
+  userId: string;
+  companyId: string;
+}
+
+/** Thrown (before any network I/O) when the bearer token belongs to someone other than the document/vault owner. */
+export class TokenOwnerMismatchError extends Error {
+  readonly code = 'TOKEN_OWNER_MISMATCH';
+  constructor() {
+    super('Access token belongs to a different user than the offline session');
+    this.name = 'TokenOwnerMismatchError';
+  }
+}
+
+/** Local, unverified read of the JWT claims (sub, companyId). Only a client-side owner guard; the server verifies the signature. */
+export function decodeTokenOwner(token: string | null): TokenOwner | null {
+  if (!token) return null;
+  try {
+    const part = token.split('.')[1];
+    if (!part) return null;
+    const b64 = part.replace(/-/g, '+').replace(/_/g, '/');
+    const json = atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4));
+    const c = JSON.parse(json) as { sub?: unknown; companyId?: unknown };
+    return typeof c.sub === 'string' && typeof c.companyId === 'string' ? { userId: c.sub, companyId: c.companyId } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** True when a token exists and its claims are not exactly `owner` (an undecodable token counts as foreign). Missing token = not foreign (plain 401 path). */
+export function tokenIsForeign(token: string | null, owner: TokenOwner): boolean {
+  if (!token) return false;
+  const o = decodeTokenOwner(token);
+  return !o || o.userId !== owner.userId || o.companyId !== owner.companyId;
+}

@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
 import type { AuthenticatedUser } from '../../../common/auth/auth.types';
 import { CurrentUser } from '../../../common/decorators/current-user.decorator';
+import { Idempotent } from '../../../common/idempotency/idempotent.decorator';
 import { RequirePermission } from '../../../common/decorators/require-permission.decorator';
 import { CloseCashSessionDto } from '../dto/close-cash-session.dto';
 import { ListCashSessionsQueryDto } from '../dto/list-cash-sessions.query';
@@ -30,6 +31,7 @@ export class CashSessionsController {
   }
 
   @Post(':id/close')
+  @Idempotent()
   @RequirePermission('cash.close')
   close(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CloseCashSessionDto, @CurrentUser() user: AuthenticatedUser) {
     return this.cashSessions.close(id, dto, user);

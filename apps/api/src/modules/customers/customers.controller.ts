@@ -48,6 +48,13 @@ export class CustomersController {
     return this.customers.remove(id, user);
   }
 
+  // ADR-061: OWNER-only controlled undo of a soft delete.
+  @Post(':id/restore')
+  @RequirePermission('customers.restore')
+  restore(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.customers.restore(id, user);
+  }
+
   @Post(':id/block')
   @RequirePermission('customers.update')
   block(@Param('id', ParseUUIDPipe) id: string, @Body() dto: BlockCustomerDto, @CurrentUser() user: AuthenticatedUser) {

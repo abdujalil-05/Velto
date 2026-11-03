@@ -1,32 +1,26 @@
-import { Body, Controller, ForbiddenException, Get, Headers, HttpCode, HttpStatus, Post, Req, Res } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Headers, HttpCode, HttpStatus, Post, Query, Req, Res } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { SessionExpiredException } from '../../common/auth/auth-exceptions';
-import { AuthService, parseDurationMs, type RequestMeta, type TelegramWebhookUpdate, type TokenPair } from './auth.service';
+import { AuthService, type TelegramWebhookUpdate } from './auth.service';
+import { Throttle } from '@nestjs/throttler';
+import { TenantTx } from '../../common/tenant/tenant-tx-options.decorator';
+import { OfflineKekQueryDto } from './dto/offline-kek-query.dto';
 import { ConfirmPasswordResetDto } from './dto/confirm-password-reset.dto';
 import { LoginDto } from './dto/login.dto';
 import { LogoutDto } from './dto/logout.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
+import { SelectCompanyDto } from './dto/select-company.dto';
+import { SelectResetAccountDto } from './dto/select-reset-account.dto';
 import { TelegramAuthDto } from './dto/telegram-auth.dto';
+import { OfflineKekService, type OfflineKek } from './offline-kek.service';
 import { PasswordResetService } from './password-reset.service';
-
-function requestMeta(req: Request): RequestMeta {
-  return { ip: req.ip, userAgent: req.headers['user-agent'] };
-}
-
-// Scoped to /auth (not the whole API) so it's only ever sent back on the
-// refresh/logout calls that need it. apps/web is the only consumer: it never
-// stores the refresh token itself and relies entirely on this cookie. Telegram
-// Mini App users go through /auth/telegram instead, which never sets this
-// cookie — the app is iframed inside web.telegram.org (see
-// apps/miniapp/next.config.mjs's frame-ancestors), a cross-site embedding
-// where third-party cookie blocking would make a cookie-only flow unreliable.
-// It keeps using its existing body/localStorage refresh token untouched.
-const REFRESH_COOKIE_NAME = 'velto_refresh_token';
+import { REFRESH_COOKIE_NAME, requestMeta, setRefreshCookie, withoutRefreshToken } from './session-http';
+import { AllowDuringMaintenance } from '../../common/maintenance/allow-during-maintenance.decorator';
 
 @Controller('auth')
 export class AuthController {
@@ -34,28 +28,33 @@ export class AuthController {
     private readonly authService: AuthService,
     private readonly configService: ConfigService,
     private readonly passwordResetService: PasswordResetService,
+    private readonly offlineKekService: OfflineKekService,
   ) {}
 
-  private setRefreshCookie(res: Response, refreshToken: string): void {
-    const refreshTtlMs = parseDurationMs(this.configService.get<string>('JWT_REFRESH_TTL', '30d'));
-    res.cookie(REFRESH_COOKIE_NAME, refreshToken, {
-      httpOnly: true,
-      secure: this.configService.get<string>('NODE_ENV', 'development') === 'production',
-      sameSite: 'lax',
-      path: '/auth',
-      maxAge: refreshTtlMs,
-    });
-  }
-
   @Public()
+  @AllowDuringMaintenance()
   @Post('login')
   async login(@Body() dto: LoginDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const result = await this.authService.login(dto, requestMeta(req));
-    this.setRefreshCookie(res, result.refreshToken);
-    return this.withoutRefreshToken(result);
+    if ('requiresCompanySelection' in result || 'mfa' in result) return result;
+    setRefreshCookie(res, this.configService, result.refreshToken);
+    return withoutRefreshToken(result);
+  }
+
+  // ADR-057: second step when a correct password matched several companies.
+  @Public()
+  @AllowDuringMaintenance()
+  @HttpCode(HttpStatus.OK)
+  @Post('login/select-company')
+  async selectCompany(@Body() dto: SelectCompanyDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const result = await this.authService.selectCompany(dto, requestMeta(req));
+    if ('mfa' in result) return result;
+    setRefreshCookie(res, this.configService, result.refreshToken);
+    return withoutRefreshToken(result);
   }
 
   @Public()
+  @AllowDuringMaintenance()
   @Post('telegram')
   telegram(@Body() dto: TelegramAuthDto, @Req() req: Request) {
     return this.authService.telegramLogin(dto, requestMeta(req));
@@ -82,6 +81,7 @@ export class AuthController {
   }
 
   @Public()
+  @AllowDuringMaintenance()
   @Post('refresh')
   async refresh(@Body() dto: RefreshTokenDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const tokenFromCookie = req.cookies?.[REFRESH_COOKIE_NAME] as string | undefined;
@@ -97,8 +97,8 @@ export class AuthController {
     // request that came in with dto.refreshToken instead (apps/miniapp)
     // still gets the body-based shape it has always relied on.
     if (tokenFromCookie) {
-      this.setRefreshCookie(res, result.refreshToken);
-      return this.withoutRefreshToken(result);
+      setRefreshCookie(res, this.configService, result.refreshToken);
+      return withoutRefreshToken(result);
     }
     return result;
   }
@@ -116,8 +116,22 @@ export class AuthController {
   @Public()
   @HttpCode(HttpStatus.NO_CONTENT)
   @Post('password-reset/confirm')
-  async confirmPasswordReset(@Body() dto: ConfirmPasswordResetDto) {
-    await this.passwordResetService.confirm(dto.phone, dto.code, dto.newPassword);
+  async confirmPasswordReset(@Body() dto: ConfirmPasswordResetDto, @Res({ passthrough: true }) res: Response) {
+    // 204 when the phone has exactly one account (password changed); 200 + body when
+    // several accounts need a choice (nothing changed yet — see password-reset/select-account).
+    const result = await this.passwordResetService.confirm(dto.phone, dto.code, dto.newPassword);
+    if (result) {
+      res.status(HttpStatus.OK);
+      return result;
+    }
+  }
+
+  // ADR-057a: after OTP proof, the client picks one account via the single-use handle.
+  @Public()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Post('password-reset/select-account')
+  async selectResetAccount(@Body() dto: SelectResetAccountDto, @Req() req: Request) {
+    await this.passwordResetService.selectAccount(dto, requestMeta(req).ip);
   }
 
   // Public: identity for this endpoint is the refresh token (cookie or body),
@@ -125,6 +139,7 @@ export class AuthController {
   // log out even when their session has technically expired.
   @Public()
   @HttpCode(HttpStatus.NO_CONTENT)
+  @AllowDuringMaintenance()
   @Post('logout')
   async logout(@Body() dto: LogoutDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const tokenFromCookie = req.cookies?.[REFRESH_COOKIE_NAME] as string | undefined;
@@ -144,7 +159,13 @@ export class AuthController {
     return user;
   }
 
-  private withoutRefreshToken(result: TokenPair): Omit<TokenPair, 'refreshToken'> {
-    return { accessToken: result.accessToken, user: result.user };
+  // Identity comes only from the authenticated user (never query/body). Any active authenticated user;
+  // the interceptor already re-read the user from DB (RLS-bound company membership). Handler scope: no open
+  // request tx, so denial audits persist. Cache headers are set by NoStoreMiddleware (also covers errors).
+  @Get('offline-kek')
+  @TenantTx({ scope: 'handler' })
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  offlineKek(@CurrentUser() user: AuthenticatedUser, @Query() query: OfflineKekQueryDto, @Req() req: Request): Promise<OfflineKek> {
+    return this.offlineKekService.issue(user, query.version, requestMeta(req).ip);
   }
 }

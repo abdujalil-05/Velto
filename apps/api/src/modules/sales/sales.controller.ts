@@ -2,10 +2,14 @@ import { Body, Controller, Delete, Get, Param, ParseUUIDPipe, Post, Query } from
 import type { AuthenticatedUser } from '../../common/auth/auth.types';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RequirePermission } from '../../common/decorators/require-permission.decorator';
+import { Idempotent } from '../../common/idempotency/idempotent.decorator';
 import { AssignCourierDto } from './dto/assign-courier.dto';
 import { CancelOrderDto } from './dto/cancel-order.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { DeliverOrderDto } from './dto/deliver-order.dto';
+import { HandoverOrderDto } from './dto/handover-order.dto';
 import { ListOrdersQueryDto } from './dto/list-orders.query';
+import { ReturnToWarehouseDto } from './dto/return-to-warehouse.dto';
 import { SalesService } from './sales.service';
 
 @Controller('orders')
@@ -16,6 +20,13 @@ export class SalesController {
   @RequirePermission('orders.read')
   list(@Query() query: ListOrdersQueryDto, @CurrentUser() user: AuthenticatedUser) {
     return this.sales.list(query, user);
+  }
+
+  /** Courier picker for dispatch — declared before ':id' so the static path wins. Minimal fields; no users.read needed. */
+  @Get('assignable-couriers')
+  @RequirePermission('orders.assignCourier')
+  assignableCouriers() {
+    return this.sales.listAssignableCouriers();
   }
 
   @Get(':id')
@@ -31,6 +42,7 @@ export class SalesController {
   }
 
   @Post(':id/confirm')
+  @Idempotent()
   @RequirePermission('orders.update')
   confirm(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.sales.confirm(id, user);
@@ -40,20 +52,52 @@ export class SalesController {
   // it can mark its own deliveries done without also being able to confirm,
   // cancel or delete anyone's orders (the rest of this controller).
   @Post(':id/deliver')
+  @Idempotent()
   @RequirePermission('orders.deliver')
-  deliver(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
-    return this.sales.deliver(id, user);
+  // Optional body (F2.4): `lines[{lineId, deliveredQty}]` for a partial goods
+  // issue; empty body = full delivery (courier Mini App path, unchanged).
+  deliver(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: DeliverOrderDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.sales.deliver(id, user, dto);
   }
 
-  /** Attaches a delivery Courier and moves the order straight to SHIPPED — see SalesService.assignCourier(). */
+  /** Courier (re)assignment on a CONFIRMED order; status/stock unchanged — see SalesService.assignCourier(). */
   @Post(':id/assign-courier')
-  @RequirePermission('orders.update')
+  @Idempotent()
+  @RequirePermission('orders.assignCourier')
   assignCourier(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: AssignCourierDto,
     @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.sales.assignCourier(id, dto, user);
+  }
+
+  /** Physical hand-over to the assigned courier: CONFIRMED → SHIPPED, no stock/invoice — see SalesService.handover(). */
+  @Post(':id/handover')
+  @Idempotent()
+  @RequirePermission('orders.dispatch')
+  handover(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: HandoverOrderDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.sales.handover(id, dto, user);
+  }
+
+  /** Goods back from the courier: SHIPPED → CONFIRMED, courier detached, reservation kept — see SalesService.returnToWarehouse(). */
+  @Post(':id/return-to-warehouse')
+  @Idempotent()
+  @RequirePermission('orders.returnToWarehouse')
+  returnToWarehouse(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ReturnToWarehouseDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.sales.returnToWarehouse(id, dto, user);
   }
 
   @Post(':id/close')
@@ -63,6 +107,7 @@ export class SalesController {
   }
 
   @Post(':id/cancel')
+  @Idempotent()
   @RequirePermission('orders.cancel')
   cancel(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CancelOrderDto, @CurrentUser() user: AuthenticatedUser) {
     return this.sales.cancel(id, dto, user);

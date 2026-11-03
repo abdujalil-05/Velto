@@ -16,6 +16,61 @@ export interface RawRow {
   _enc: EncryptedBlob;
 }
 
+/** Sealed held row: only owner ids + code/time in plaintext; the entry itself is AES-GCM under a random DEK that is AES-KW wrapped by the KEK. */
+export interface SealedRow {
+  clientId: string;
+  ownerUserId: string;
+  ownerCompanyId: string;
+  wrappedDek: ArrayBuffer;
+  iv: Uint8Array;
+  ciphertext: ArrayBuffer;
+  kekVersion: number;
+  heldCode: string;
+  createdAt: string;
+}
+
+/** Per-(user, company) vault key, wrapped (AES-KW) by the server-issued KEK. Nothing else is persisted about it (vault.ts). */
+export interface VaultRow {
+  userId: string;
+  companyId: string;
+  kekVersion: number;
+  wrappedUK: ArrayBuffer;
+}
+
+/** Argon2id parameters stored per entry (so a stronger/weaker device setting never breaks an old entry). m = KiB. */
+export interface UnlockKdfParams {
+  m: number;
+  t: number;
+  p: number;
+  v: 19;
+}
+
+/**
+ * Opt-in Offline Unlock entry (ADR-071). Holds ONLY: the UK wrapped (AES-KW) by a key derived from the passphrase
+ * (Argon2id), the random salt, the KDF params and counters. Never the passphrase, the derived key or the raw UK.
+ * `profile` = minimal AuthenticatedUser sealed under the UK (uk1 format) so the shell can render offline.
+ */
+export interface OfflineUnlockRow {
+  userId: string;
+  companyId: string;
+  fmt: 'pw1';
+  wrappedUK: ArrayBuffer;
+  /** 16 random bytes (ArrayBuffer: survives IndexedDB read/write round trips in every implementation). */
+  salt: ArrayBuffer;
+  params: UnlockKdfParams;
+  /** Vault KEK version current when the entry was created/refreshed (informational; rotation keeps the entry). */
+  kekVersion: number;
+  enrolledAt: number;
+  /** Device clock at the last successful online authentication. TTL + clock-rollback anchor. */
+  lastOnlineAt: number;
+  failCount: number;
+  nextAttemptAt: number;
+  profile?: EncryptedBlob;
+}
+
+/** meta key holding the last allocated queue sequence number. */
+export const QUEUE_SEQ_KEY = 'queue:seq';
+
 class VeltoOfflineDb extends Dexie {
   products!: Table<RawRow & { id: string; sku: string; name: string; categoryId: string | null }, string>;
   packagings!: Table<RawRow & { id: string; productId: string }, string>;
@@ -27,8 +82,17 @@ class VeltoOfflineDb extends Dexie {
   balances!: Table<RawRow & { customerId: string }, string>;
   routes!: Table<RawRow & { id: string; weekday: number }, string>;
   routeStops!: Table<RawRow & { id: string; routeId: string; outletId: string }, string>;
-  queue!: Table<RawRow & { clientId: string; type: string; status: string; createdAt: string }, string>;
+  queue!: Table<
+    RawRow & { clientId: string; type: string; status: string; createdAt: string; userId: string; companyId: string; seq?: number },
+    string
+  >;
   meta!: Table<{ key: string; value: unknown }, string>;
+  /** Held (reconciliation) payments sealed at logout under a per-row DEK wrapped by the owner's server KEK (held-seal.ts). Never cleared by clearOfflineDb; only by emergency wipe. */
+  sealed!: Table<SealedRow, string>;
+  /** Wrapped vault keys per (user, company); never cleared by clearOfflineDb (only emergency wipe). */
+  vault!: Table<VaultRow, [string, string]>;
+  /** Opt-in Offline Unlock entries (ADR-071): UK wrapped by a passphrase-derived key. Never cleared by clearOfflineDb (only logout of the owner, revoke, emergency wipe, retired vault). */
+  offlineUnlock!: Table<OfflineUnlockRow, [string, string]>;
 
   constructor() {
     super('velto-miniapp');
@@ -50,13 +114,47 @@ class VeltoOfflineDb extends Dexie {
     this.version(2).stores({
       customers: 'id, code, name',
     });
+    // v3 (F4, additive): queue gains plaintext owner indexes (userId/companyId)
+    // so the engine can scope pushes to the current user. No `.upgrade()` data
+    // rewrite on purpose — existing v2 rows (incl. PENDING) are left byte-for-
+    // byte intact; their missing owner/attemptCount fields are normalised on
+    // read (queue.ts `normalize`) and legacy rows are quarantined (never adopted;
+    // claimed only if the payload names the current user - session-bootstrap.ts). Encryption can't run inside a
+    // Dexie upgrade transaction, which is the other reason not to rewrite.
+    // Pull cursor + scope live in `meta` under `pull:<company>:<user>`.
+    this.version(3).stores({
+      queue: 'clientId, type, status, createdAt, userId, companyId',
+    });
+    // v4 (additive): monotonic per-device `seq` (plaintext index) = FIFO order,
+    // since createdAt (ms) ties. Upgrade only ADDS seq to existing rows ordered
+    // by createdAt then clientId (both plaintext) — no row is dropped or re-encrypted.
+    this.version(4)
+      .stores({ queue: 'clientId, type, status, createdAt, userId, companyId, seq' })
+      .upgrade(async (tx) => {
+        const table = tx.table('queue');
+        const rows = (await table.toArray()) as { clientId: string; createdAt?: string; seq?: number; [k: string]: unknown }[];
+        rows.sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? '') || a.clientId.localeCompare(b.clientId));
+        let n = 0;
+        for (const r of rows) {
+          n += 1;
+          await table.put({ ...r, seq: n });
+        }
+        await tx.table('meta').put({ key: QUEUE_SEQ_KEY, value: n });
+      });
+    // v5 (additive): `sealed` table for held payments of logged-out users. No
+    // upgrade step - the queue table and its unsynced rows are not touched.
+    this.version(5).stores({ sealed: 'clientId, ownerUserId, ownerCompanyId' });
+    // v6 (additive): wrapped vault keys. No upgrade step - the queue/sealed tables are not touched.
+    this.version(6).stores({ vault: '[userId+companyId]' });
+    // v7 (additive, ADR-071): opt-in Offline Unlock entries. No upgrade step - queue/sealed/vault are not touched.
+    this.version(7).stores({ offlineUnlock: '[userId+companyId]' });
   }
 }
 
 export const db = new VeltoOfflineDb();
 
 /** Logout / device-key rotation: wipes every locally cached + queued row. auth-context.tsx's logout() is the only caller and refuses to invoke this while any queue entry is unsynced — see its comment. */
-export async function clearOfflineDb(): Promise<void> {
+export async function clearOfflineDb(opts: { keepQueue?: boolean } = {}): Promise<void> {
   await db.transaction(
     'rw',
     [db.products, db.packagings, db.prices, db.customers, db.outlets, db.stock, db.categories, db.balances, db.routes, db.routeStops, db.queue, db.meta],
@@ -72,7 +170,7 @@ export async function clearOfflineDb(): Promise<void> {
         db.balances.clear(),
         db.routes.clear(),
         db.routeStops.clear(),
-        db.queue.clear(),
+        opts.keepQueue ? Promise.resolve() : db.queue.clear(),
         db.meta.clear(),
       ]);
     },

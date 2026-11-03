@@ -90,11 +90,12 @@ export function useCourierOrdersQuery(courierId: string | null | undefined) {
   });
 }
 
-/** POST /orders/:id/deliver — requires `orders.update`, which the COURIER role holds. */
+/** POST /orders/:id/deliver — requires `orders.deliver`. */
 export function useDeliverOrderMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (orderId: string) => apiFetch<Order>(`/orders/${orderId}/deliver`, { method: 'POST' }),
+    mutationFn: ({ orderId, idempotencyKey }: { orderId: string; idempotencyKey: string }) =>
+      apiFetch<Order>(`/orders/${orderId}/deliver`, { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey } }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['orders'] }),
   });
 }
@@ -104,6 +105,8 @@ export interface CreateOrderLineInput {
   packagingId: string;
   qty: number;
   discountPct?: number;
+  /** Base-unit price (decimal string) the agent saw when composing — sent for every offline line so the server can detect PRICE_CHANGED. */
+  expectedUnitPrice?: string;
 }
 
 export interface CreateOrderInput {

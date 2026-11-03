@@ -22,6 +22,16 @@ export class OutletsService {
     });
   }
 
+  /** F3 data-quality: active outlets lacking coordinates (visits there get OUTLET_NO_COORDS). */
+  async listNoCoords() {
+    return this.tenantPrisma.client.outlet.findMany({
+      where: { deletedAt: null, OR: [{ latitude: null }, { longitude: null }] },
+      select: { id: true, name: true, address: true, customerId: true, customer: { select: { name: true } } },
+      orderBy: { name: 'asc' },
+      take: 500,
+    });
+  }
+
   async create(customerId: string, dto: OutletInputDto, user: AuthenticatedUser): Promise<{ outlet: unknown; warnings: DuplicateWarning[] }> {
     const tx = this.tenantPrisma.client;
     await this.assertCustomerExists(customerId);

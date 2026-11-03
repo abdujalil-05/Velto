@@ -5,15 +5,25 @@ import { useTranslations } from 'next-intl';
 import { useAuth } from '@/lib/auth/auth-context';
 import { isCourierOnly } from '@/lib/auth/roles';
 import { SyncStatusBadge } from '@/components/shared/sync-status-badge';
+import { QueueNavLink } from '@/components/queue/queue-nav-link';
+import { SyncBanners } from '@/components/queue/sync-banners';
+import { ForeignLegacyGate } from '@/components/foreign-legacy-gate';
+import { useForeignLegacyRows } from '@/lib/offline/use-vault-status';
+import { RevokedNotice } from '@/components/revoked-notice';
 import { TelegramFallback } from '@/components/telegram-fallback';
 import { Button } from '@/components/ui/button';
+import { OfflineUnlockScreen } from '@/components/offline-unlock/unlock-screen';
+import { LocalModeBanner } from '@/components/offline-unlock/local-banner';
+import { Link } from '@/i18n/navigation';
+import { Settings } from 'lucide-react';
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
-  const { user, status, linkPhone, linking } = useAuth();
+  const { user, status, linkPhone, linking, revoked } = useAuth();
   const t = useTranslations('Auth');
   // No sync engine is mounted for a courier-only session (see OfflineLayer in
   // components/providers.tsx), and there is nothing queued to report either.
   const courierOnly = isCourierOnly(user?.roles);
+  const foreignLegacy = useForeignLegacyRows();
 
   if (status === 'loading') {
     return (
@@ -30,6 +40,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   // the fallback's job is to hand the agent that link rather than to explain
   // a login they cannot perform here. This used to be a single line of muted
   // text on an otherwise empty page, which on a phone reads as a blank screen.
+  if (status === 'mfa-web-required') {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-4 p-6 text-center">
+        <p className="max-w-xs text-sm text-muted-foreground">{t('mfaWebRequired')}</p>
+      </div>
+    );
+  }
+  // ADR-071: tokens kept but the server is unreachable - never the "session expired" fallback.
+  if (status === 'offline-locked') return <OfflineUnlockScreen />;
+  if (status === 'unauthenticated' && revoked) return <RevokedNotice />;
   if (status === 'no-telegram-context' || status === 'unauthenticated') {
     return <TelegramFallback reason={status} />;
   }
@@ -47,13 +67,29 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     );
   }
 
+  if (!courierOnly && foreignLegacy > 0) return <ForeignLegacyGate />;
+
   return (
     <div className="mx-auto flex min-h-screen max-w-lg flex-col">
       <header className="flex items-center justify-between border-b border-border px-4 py-3">
         <span className="text-sm font-semibold">Velto</span>
-        {!courierOnly && <SyncStatusBadge />}
+        {status === 'authenticated' && (
+          <Link href="/settings" aria-label={t('settings')} className="ml-auto mr-2 inline-flex min-h-[44px] items-center px-2">
+            <Settings className="h-4 w-4" aria-hidden />
+          </Link>
+        )}
+        {!courierOnly && (
+          <div className="flex items-center gap-2">
+            <QueueNavLink />
+            <SyncStatusBadge />
+          </div>
+        )}
       </header>
-      <main className="flex-1 p-4">{children}</main>
+      <main className="flex-1 space-y-4 p-4">
+        {status === 'offline-local' && <LocalModeBanner />}
+        {!courierOnly && <SyncBanners />}
+        {children}
+      </main>
     </div>
   );
 }

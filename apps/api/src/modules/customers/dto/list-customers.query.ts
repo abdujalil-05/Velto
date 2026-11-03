@@ -12,4 +12,10 @@ export class ListCustomersQueryDto extends PaginationQueryDto {
   @ParseBooleanQuery()
   @IsBoolean()
   isBlocked?: boolean;
+
+  /** ADR-061: soft-deleted customers only (restore workbench); requires `customers.restore`. */
+  @IsOptional()
+  @ParseBooleanQuery()
+  @IsBoolean()
+  deleted?: boolean;
 }

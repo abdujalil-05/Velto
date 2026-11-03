@@ -4,7 +4,7 @@ import { useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, Download, FileSpreadsheet, Loader2, Upload, XCircle } from 'lucide-react';
+import { CheckCircle2, Download, FileSpreadsheet, Info, Loader2, Upload, XCircle } from 'lucide-react';
 import { useAuth } from '@/lib/auth/auth-context';
 import {
   useImportJobsQuery,
@@ -19,6 +19,7 @@ import { formatDateTime } from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useUsersQuery } from '@/lib/api/users';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ImportStatusBadge } from '@/components/import/import-status-badge';
 import { ImportErrorsTable } from '@/components/import/import-errors-table';
@@ -30,6 +31,7 @@ export default function ImportPage() {
   const t = useTranslations('Import');
   const locale = useLocale();
   const { hasPermission } = useAuth();
+  const canRead = hasPermission('settings.read');
   const canUpload = hasPermission('settings.update');
   const queryClient = useQueryClient();
 
@@ -41,7 +43,16 @@ export default function ImportPage() {
   const uploadMutation = useUploadImportMutation(type);
   const confirmMutation = useConfirmImportMutation();
   const { data: activeJob, isLoading: activeJobLoading } = useImportJobQuery(activeJobId, true);
-  const { data: history, isLoading: historyLoading, refetch: refetchHistory } = useImportJobsQuery({ page: 1, pageSize: 10 });
+  const {
+    data: history,
+    isLoading: historyLoading,
+    isError: historyError,
+    error: historyErr,
+    refetch: refetchHistory,
+  } = useImportJobsQuery({ page: 1, pageSize: 10 });
+  // createdBy is a bare user id; resolve names only when the viewer may list users.
+  const { data: usersData } = useUsersQuery({ page: 1, pageSize: 100 }, hasPermission('users.read'));
+  const userNames = new Map((usersData?.data ?? []).map((u) => [u.id, `${u.firstName} ${u.lastName}`]));
 
   async function handleDownloadTemplate() {
     setIsDownloadingTemplate(true);
@@ -79,9 +90,22 @@ export default function ImportPage() {
     refetchHistory();
   }
 
+  if (!canRead) {
+    return (
+      <Alert>
+        <AlertDescription>{t('noPermissionPage')}</AlertDescription>
+      </Alert>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-semibold">{t('title')}</h1>
+
+      <Alert>
+        <Info className="h-4 w-4" />
+        <AlertDescription>{t('createOnlyNote')}</AlertDescription>
+      </Alert>
 
       {!activeJobId && (
         <Card>
@@ -152,27 +176,50 @@ export default function ImportPage() {
                 </div>
 
                 {activeJob.errorLog && (
-                  <div className="grid grid-cols-3 gap-4 text-center">
+                  <div className={cn('grid gap-4 text-center', activeJob.status === 'DONE' ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3')}>
                     <Stat label={t('totalRows')} value={activeJob.errorLog.totalRows} />
-                    <Stat
-                      label={activeJob.status === 'DONE' ? t('created') : t('validRows')}
-                      value={activeJob.status === 'DONE' ? (activeJob.errorLog.createdCount ?? 0) : activeJob.errorLog.validCount}
-                      tone="success"
-                    />
-                    <Stat
-                      label={activeJob.status === 'DONE' ? t('skipped') : t('invalidRows')}
-                      value={activeJob.status === 'DONE' ? (activeJob.errorLog.skippedCount ?? 0) : activeJob.errorLog.invalidCount}
-                      tone={
-                        (activeJob.status === 'DONE' ? activeJob.errorLog.skippedCount : activeJob.errorLog.invalidCount) ? 'destructive' : undefined
-                      }
-                    />
+                    {activeJob.status === 'DONE' ? (
+                      <>
+                        <Stat label={t('created')} value={activeJob.errorLog.createdCount ?? 0} tone="success" />
+                        <Stat label={t('skipped')} value={activeJob.errorLog.skippedCount ?? 0} />
+                        <Stat
+                          label={t('invalidRows')}
+                          value={activeJob.errorLog.invalidCount}
+                          tone={activeJob.errorLog.invalidCount ? 'destructive' : undefined}
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <Stat label={t('validRows')} value={activeJob.errorLog.validCount} tone="success" />
+                        <Stat
+                          label={t('invalidRows')}
+                          value={activeJob.errorLog.invalidCount}
+                          tone={activeJob.errorLog.invalidCount ? 'destructive' : undefined}
+                        />
+                      </>
+                    )}
                   </div>
                 )}
 
                 {activeJob.status === 'PROCESSING' && (
-                  <div className="flex items-center justify-center gap-2 py-6 text-sm text-muted-foreground">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    {t('processing')}
+                  <div className="space-y-2 py-4" role="status">
+                    <div className="flex items-center justify-between text-sm text-muted-foreground">
+                      <span className="flex items-center gap-2">
+                        <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                        {t('processing')}
+                      </span>
+                      <span className="tabular-nums">{activeJob.progress}%</span>
+                    </div>
+                    <div
+                      className="h-2 w-full overflow-hidden rounded-full bg-muted"
+                      role="progressbar"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={activeJob.progress}
+                      aria-label={t('processing')}
+                    >
+                      <div className="h-full bg-primary transition-all" style={{ width: `${activeJob.progress}%` }} />
+                    </div>
                   </div>
                 )}
 
@@ -186,7 +233,7 @@ export default function ImportPage() {
                 {activeJob.status === 'DONE' && (
                   <Alert>
                     <CheckCircle2 className="h-4 w-4" />
-                    <AlertDescription>{t('doneMessage')}</AlertDescription>
+                    <AlertDescription>{t('doneMessage', { created: activeJob.errorLog?.createdCount ?? 0, skipped: activeJob.errorLog?.skippedCount ?? 0 })}</AlertDescription>
                   </Alert>
                 )}
 
@@ -220,6 +267,16 @@ export default function ImportPage() {
                 ))}
               </div>
             )}
+            {historyError && (
+              <Alert variant="destructive">
+                <AlertDescription className="flex items-center justify-between gap-4">
+                  <span>{errorMessage(historyErr, locale)}</span>
+                  <Button variant="outline" size="sm" onClick={() => refetchHistory()}>
+                    {t('retry')}
+                  </Button>
+                </AlertDescription>
+              </Alert>
+            )}
             {history && history.data.length === 0 && <p className="text-sm text-muted-foreground">{t('noHistory')}</p>}
             {history && history.data.length > 0 && (
               <div className="overflow-x-auto">
@@ -228,6 +285,7 @@ export default function ImportPage() {
                     <tr className="border-b border-border text-left text-xs text-muted-foreground">
                       <th className="pb-2 pr-3 font-medium">{t('type')}</th>
                       <th className="pb-2 pr-3 font-medium">{t('date')}</th>
+                      <th className="pb-2 pr-3 font-medium">{t('createdBy')}</th>
                       <th className="pb-2 pr-3 font-medium">{t('status')}</th>
                       <th className="pb-2 text-right font-medium">{t('actions')}</th>
                     </tr>
@@ -237,6 +295,7 @@ export default function ImportPage() {
                       <tr key={job.id} className="hover:bg-accent/50">
                         <td className="py-2 pr-3">{t(`types.${job.type}`)}</td>
                         <td className="py-2 pr-3 text-muted-foreground">{formatDateTime(job.createdAt, locale)}</td>
+                        <td className="py-2 pr-3 text-muted-foreground">{(job.createdBy && userNames.get(job.createdBy)) || '—'}</td>
                         <td className="py-2 pr-3">
                           <ImportStatusBadge status={job.status} />
                         </td>

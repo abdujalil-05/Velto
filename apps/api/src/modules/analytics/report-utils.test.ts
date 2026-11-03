@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Prisma } from '@velto/database';
-import { isoWeekday, pctChange, resolveDateRange } from './report-utils';
+import { DEFAULT_TIME_ZONE, isoWeekday, pctChange, resolveDateRange } from './report-utils';
 
 describe('report-utils', () => {
   describe('isoWeekday', () => {
@@ -41,9 +41,11 @@ describe('report-utils', () => {
 
     it('extends an explicit `to` date to its end-of-day boundary', () => {
       const { start, end } = resolveDateRange('2026-01-01', '2026-01-10');
-      expect(end.getHours()).toBe(23);
-      expect(end.getMinutes()).toBe(59);
-      expect(start.getHours()).toBe(0);
+      // Company-day boundaries in DEFAULT_TIME_ZONE (Asia/Tashkent, UTC+5, no DST),
+      // asserted as exact instants so the result is independent of the host TZ.
+      expect(DEFAULT_TIME_ZONE).toBe('Asia/Tashkent');
+      expect(start.toISOString()).toBe('2025-12-31T19:00:00.000Z');
+      expect(end.toISOString()).toBe('2026-01-10T18:59:59.999Z');
     });
   });
 });

@@ -1,0 +1,17 @@
+# Velto gitleaks config. Extends the default ruleset; only allowlists
+# known-safe, non-secret sample values. Never add real credentials here.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Safe samples: .env.example, local-dev/CI-only demo values"
+paths = [
+  '''(^|/)\.env\.example$''',
+  '''pnpm-lock\.yaml$''',
+]
+regexes = [
+  '''Velto#CI2026''',                     # CI-only SEED_DEMO_PASSWORD (ci.yml)
+  '''velto_(app|owner|system):velto_(app|owner|system)@localhost''', # local/CI DB roles
+  '''velto:velto@localhost''',
+  '''ci-only-secret-not-for-real-use-min-32-chars''',
+]

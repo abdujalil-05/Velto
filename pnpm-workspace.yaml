@@ -2,6 +2,8 @@ packages:
   - "apps/*"
   - "packages/*"
 
+engineStrict: true
+
 allowBuilds:
   '@nestjs/core': true
   '@prisma/client': true
@@ -32,3 +34,14 @@ onlyBuiltDependencies:
   - "@swc/core"
   - esbuild
   - prisma
+
+overrides:
+  # GHSA-x5fp-wj9c-mxmx, -4mjr-xmp4-gh2g, -q8mj, -6pq8: qs<6.16 via express 4.22.1 (pinned by @nestjs/platform-express 10.4.22)
+  express@4: 4.22.3
+  # GHSA-q7qp-rjg7-q26m: Nest 10 has no fixed release
+  multer: ^2.5.0
+  # GHSA-27r3-jxmh-p828: Nest 10 has no fixed release
+  body-parser@1: ^1.20.9
+  lodash: ^4.17.24
+  postcss: ^8.5.23
+  deepmerge-ts: ^8.0.2

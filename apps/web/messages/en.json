@@ -28,7 +28,13 @@
       "title": "Confirm cancellation",
       "description": "Are you sure you want to cancel “{name}”? This action cannot be undone.",
       "confirm": "Yes, cancel"
-    }
+    },
+    "reverse": {
+      "reason": "Reason",
+      "reasonHint": "{min}–{max} characters, required",
+      "confirm": "Reverse"
+    },
+    "openingLabel": "Opening debt/advance"
   },
   "Nav": {
     "dashboard": "Dashboard",
@@ -44,7 +50,11 @@
     "audit": "Audit log",
     "settings": "Settings",
     "help": "Help",
-    "cash": "Cash & payments"
+    "cash": "Cash & payments",
+    "purchases": "Purchasing",
+    "reconciliation": "Reconciliation",
+    "visits": "Visits",
+    "export1c": "1C export"
   },
   "LanguageSwitcher": {
     "label": "Language"
@@ -60,6 +70,7 @@
     "submit": "Sign in",
     "forgotPassword": "Forgot your password?",
     "reset": {
+      "smsUnavailable": "Password recovery via SMS is unavailable. Contact your company owner/administrator to reset your password.",
       "title": "Reset password",
       "phoneStepDescription": "A verification code will be sent by SMS",
       "sendCode": "Send code",
@@ -73,7 +84,52 @@
       "resendIn": "Resend ({seconds}s)",
       "success": "Password updated. Sign in with your new password",
       "back": "Back",
-      "cancel": "Cancel"
+      "cancel": "Cancel",
+      "accountStepDescription": "Several accounts use this number. The password will change only for the one you choose.",
+      "chooseAccount": "Choose an account",
+      "successAccount": "Password changed only for the account \"{account}\". Other accounts are unchanged. Sign in with your new password"
+    },
+    "chooseCompany": "Which company do you want to sign in to?",
+    "continue": "Continue",
+    "backToPassword": "Back to password",
+    "challengeInvalid": "This selection expired or was already used. Enter your phone and password again.",
+    "challengeRateLimited": "Please wait a moment and try again.",
+    "sessionExpired": "Session expired. Please sign in again.",
+    "mfa": {
+      "sessionRequired": "Two-factor authentication is required. Please sign in again.",
+      "loading": "Loading",
+      "retry": "Try again",
+      "continue": "Continue",
+      "challengeExpired": "This verification expired or was already used. Enter your phone and password again.",
+      "webLoginRequired": "This account must sign in through the web app. Enter your phone and password again.",
+      "codeInvalid": "The code is incorrect. Check the code and try again.",
+      "rateLimited": "Too many attempts. Wait a few minutes and try again.",
+      "serviceUnavailable": "Verification is temporarily unavailable. Try again shortly.",
+      "codeFormat": "Enter the 6-digit code",
+      "recoveryRequired": "Enter a recovery code",
+      "verifyTitle": "Two-factor verification",
+      "verifyHint": "Enter the 6-digit code from your authenticator app.",
+      "codeLabel": "Authentication code",
+      "verify": "Verify",
+      "useRecovery": "Use a recovery code",
+      "useAuthenticator": "Use authenticator code",
+      "recoveryPrompt": "Enter one of your saved recovery codes. Each works once.",
+      "recoveryLabel": "Recovery code",
+      "enrollTitle": "Set up two-factor authentication",
+      "enrollHint": "Scan the QR code with an authenticator app, then enter the 6-digit code it shows.",
+      "qrAlt": "QR code for the authenticator app",
+      "manualKey": "Or enter this key manually",
+      "copy": "Copy",
+      "copied": "Copied",
+      "confirmCodeLabel": "6-digit code",
+      "confirmEnroll": "Confirm and continue",
+      "recoveryTitle": "Save your recovery codes",
+      "recoveryHint": "Each code works once if you lose your authenticator. They are shown only now.",
+      "download": "Download .txt",
+      "savedCheck": "I saved these codes in a safe place",
+      "enrollmentCodeHint": "Get this code from your company owner (owners: Velto support). The code is single-use.",
+      "enrollmentCodeLabel": "Setup code",
+      "enrollmentCodeContinue": "Continue"
     }
   },
   "NotFound": {
@@ -98,23 +154,24 @@
       "light": "Light mode (click for dark)",
       "dark": "Dark mode (click for system)",
       "system": "System mode (click for light)"
-    }
+    },
+    "security": "Security"
   },
   "Dashboard": {
     "title": "Dashboard",
     "refresh": "Refresh",
     "retry": "Retry",
     "vsYesterday": "vs yesterday",
-    "todayTurnover": "Today's turnover",
-    "orderCount": "Order count",
+    "todayTurnover": "Delivered turnover today",
+    "orderCount": "Delivered orders today",
     "collected": "Collected",
     "overdueDebt": "Overdue debt",
-    "turnoverTrend": "Turnover — last 30 days",
+    "turnoverTrend": "Delivered turnover — last 30 days",
     "agentsToday": "Agents today",
     "agent": "Agent",
     "visits": "Visits",
-    "orders": "Orders",
-    "turnover": "Turnover",
+    "orders": "Delivered orders",
+    "turnover": "Delivered turnover",
     "noAgentsToday": "No agent activity today",
     "topDebtors": "Top debtors",
     "noDebtors": "No outstanding debt",
@@ -146,7 +203,8 @@
     "filter": {
       "all": "All",
       "active": "Active",
-      "blocked": "Blocked"
+      "blocked": "Blocked",
+      "deleted": "Deleted"
     },
     "form": {
       "required": "Required field",
@@ -218,6 +276,50 @@
       "visitOutcome": {
         "ORDERED": "Ordered",
         "NO_ORDER": "No order"
+      },
+      "credit": "Credit",
+      "advance": "Advance",
+      "allocate": {
+        "action": "Allocate advance",
+        "title": "Allocate advance",
+        "success": "Advance allocated",
+        "retry": "Retry",
+        "noAdvance": "The customer has no unallocated advance",
+        "noInvoices": "The customer has no open internal invoices to allocate to",
+        "payment": "Payment",
+        "advanceOf": "advance",
+        "outstanding": "Outstanding",
+        "amount": "Amount",
+        "invalidAmount": "Enter an amount up to the outstanding balance",
+        "total": "Allocated",
+        "exceedsAdvance": "exceeds the advance",
+        "submit": "Allocate"
+      },
+      "inTransit": "In transit ({count} payments)",
+      "inTransitHint": "Debt is not reduced until a cashier accepts the payment"
+    },
+    "credit": "Credit",
+    "advance": "Advance",
+    "restore": "Restore",
+    "confirmRestore": {
+      "title": "Restore customer",
+      "description": "Restore “{name}”? The customer will reappear in the active list."
+    },
+    "restoreSuccess": "“{name}” has been restored.",
+    "restoreCodeConflict": "An active customer with code “{code}” already exists. Rename that active customer first, then restore this one.",
+    "emptyDeleted": "No deleted customers",
+    "deleteBlockers": {
+      "intro": "Cannot delete — open items:",
+      "orders": "{count} order(s) in status {status}",
+      "pendingHandover": "{count} payment(s) awaiting cashier handover",
+      "debt": "Open debt: {amount}",
+      "advance": "Unapplied advance: {amount}",
+      "status": {
+        "DRAFT": "Draft",
+        "SUBMITTED": "Submitted",
+        "CONFIRMED": "Confirmed",
+        "SHIPPED": "Shipped",
+        "DELIVERED": "Delivered"
       }
     }
   },
@@ -287,10 +389,40 @@
       "cancel": "Cancel order",
       "cancelSuccess": "Order cancelled",
       "cancelTitle": "Cancel order",
-      "cancelReasonLabel": "Reason (optional)",
+      "cancelReasonLabel": "Reason",
       "cancelConfirm": "Cancel order",
+      "returnToWarehouse": "Return to warehouse",
+      "returnTitle": "Return order to warehouse",
+      "returnConfirm": "Return to warehouse",
+      "returnKeep": "Don't return",
+      "returnSuccess": "Order returned to warehouse",
+      "courierNotAssigned": "No courier assigned",
+      "courierSelect": "Courier",
+      "courierChoose": "Select a courier",
+      "courierLoading": "Loading…",
+      "courierNone": "No couriers available",
+      "assignCourier": "Assign",
+      "reassignCourier": "Reassign",
+      "assignSuccess": "Courier assigned",
+      "handover": "Hand over to courier",
+      "handoverTitle": "Hand over to courier",
+      "handoverHint": "Confirm that the order has been physically handed to the courier. It will move to Shipped.",
+      "handoverNote": "Note (optional)",
+      "handoverConfirm": "Confirm handover",
+      "handoverSuccess": "Order handed over to courier",
+      "reassignViaReturnHint": "Courier is assigned. To change the courier, return the order to the warehouse first.",
+      "deliverNeedsHandover": "Hand over the order to the courier before delivery.",
+      "cancelShippedHint": "The order is already with a courier. Return it to the warehouse first to cancel it.",
       "cancelKeep": "Keep order",
-      "courier": "Courier"
+      "courier": "Courier",
+      "deliverTitle": "Deliver order",
+      "deliverHint": "Enter the quantity actually issued per line (base unit). Default is the full ordered quantity.",
+      "deliveredQty": "Delivered",
+      "deliveredQtyOver": "Cannot exceed ordered quantity",
+      "deliveredQtyInvalid": "Enter a valid non-negative number (up to 3 decimals)",
+      "deliverRemainderNotice": "The undelivered remainder will be released from reservation and the order will be closed as delivered.",
+      "deliverAllZero": "At least one line must have a quantity above zero. To stop the order, cancel it instead.",
+      "deliverConfirm": "Confirm delivery"
     },
     "form": {
       "title": "New order",
@@ -304,6 +436,8 @@
       "lines": "Lines",
       "addLine": "Add line",
       "removeLine": "Remove line",
+      "qtyPrecision": "Quantity allows at most 3 decimals.",
+      "qtyPrecisionBase": "Base quantity (qty × packaging factor) must have at most 3 decimals.",
       "searchProduct": "Search product",
       "noProducts": "No products found",
       "available": "Available",
@@ -324,11 +458,11 @@
   "Receivables": {
     "customer": "Customer",
     "current": "Current",
-    "d1to30": "1–30 days",
     "d31to60": "31–60 days",
-    "d61to90": "61–90 days",
-    "d90plus": "90+ days",
-    "total": "Total"
+    "total": "Total",
+    "d1to7": "1–7 days",
+    "d8to30": "8–30 days",
+    "d60plus": "60+ days"
   },
   "Products": {
     "title": "Products",
@@ -423,17 +557,47 @@
         "fifo": "Automatic (FIFO)",
         "manual": "Manual"
       },
-      "fifoHint": "Allocated automatically, starting from the oldest open invoice.",
-      "manualHint": "Set how much goes to each invoice yourself.",
-      "noOpenInvoices": "No open invoices",
+      "fifoHint": "Allocated automatically, starting from the oldest open internal invoice.",
+      "manualHint": "Set how much goes to each internal invoice yourself.",
+      "noOpenInvoices": "No open internal invoices",
       "outstanding": "Outstanding",
       "allocatedTotal": "Allocated total",
       "selectCustomerFirst": "Select a customer first",
       "invalidAmount": "Enter a valid amount",
-      "allocateAtLeastOne": "Allocate an amount to at least one invoice",
+      "allocateAtLeastOne": "Allocate an amount to at least one internal invoice",
       "allocationExceedsAmount": "Allocated amount exceeds the payment amount",
       "submit": "Save payment",
-      "created": "Payment added"
+      "created": "Payment added",
+      "idempotencyConflict": "This payment was already submitted with different details. Reopen the form to create a new payment."
+    },
+    "status": "Status",
+    "actions": "Actions",
+    "statuses": {
+      "PENDING_HANDOVER": "In transit (awaiting cashier)",
+      "POSTED": "Posted",
+      "REJECTED": "Rejected",
+      "REVERSED": "Reversed"
+    },
+    "reverse": {
+      "action": "Reverse",
+      "title": "Reverse payment {number}",
+      "description": "The payment will be reversed and internal invoices and the customer balance recalculated. This cannot be undone.",
+      "success": "Payment reversed"
+    },
+    "handover": {
+      "accept": "Accept",
+      "reject": "Reject",
+      "acceptSuccess": "Payment accepted",
+      "rejectSuccess": "Payment rejected",
+      "rejectTitle": "Reject payment {number}",
+      "rejectDescription": "The payment will be rejected and the customer's debt will not decrease. A reason is required.",
+      "openSession": "Open a cash session"
+    },
+    "source": {
+      "label": "Source",
+      "COLLECTION": "Collected payments",
+      "OPENING": "Opening advance",
+      "all": "All"
     }
   },
   "Stock": {
@@ -460,6 +624,41 @@
       "invalidQty": "Enter a valid quantity",
       "submit": "Receive",
       "received": "Stock received"
+    },
+    "tabs": {
+      "levels": "Stock levels",
+      "movements": "Movements"
+    },
+    "movements": {
+      "product": "Product",
+      "warehouse": "Warehouse",
+      "type": "Type",
+      "all": "All",
+      "to": "To",
+      "refresh": "Refresh",
+      "retry": "Retry",
+      "empty": "No movements for these filters — adjust the filters or receive stock",
+      "date": "Date",
+      "qty": "Quantity",
+      "reason": "Reason",
+      "status": "Status",
+      "actions": "Actions",
+      "isReversal": "Reversal",
+      "reversed": "Reversed",
+      "types": {
+        "RECEIVE": "Receive",
+        "ISSUE": "Issue",
+        "RESERVE": "Reserve",
+        "RELEASE": "Release",
+        "ADJUST": "Adjustment"
+      },
+      "from": "From",
+      "reverse": {
+        "action": "Reverse",
+        "title": "Reverse stock movement",
+        "description": "The movement will be reversed with an opposite entry. This cannot be undone.",
+        "success": "Movement reversed"
+      }
     }
   },
   "Users": {
@@ -532,6 +731,45 @@
       "created": "User added",
       "updated": "Changes saved",
       "retry": "Retry"
+    },
+    "mfaReset": {
+      "action": "Reset MFA",
+      "title": "Reset two-factor authentication",
+      "description": "{name} will lose all sessions and must set up an authenticator again at the next sign-in.",
+      "reason": "Reason (required)",
+      "cancel": "Cancel",
+      "confirm": "Reset MFA",
+      "success": "MFA reset for {name}",
+      "sessionsRevoked": "Sessions revoked: {count}",
+      "shownOnce": "One-time setup code for {name}. Share it through a secure channel; it will not be shown again.",
+      "copy": "Copy",
+      "expires": "Expires: {at}",
+      "noCode": "No setup code is needed: the user can set up an authenticator at the next sign-in.",
+      "close": "Close",
+      "retry": "Retry",
+      "password": "Your password",
+      "totp": "Current 6-digit TOTP code",
+      "totpFormat": "Enter exactly 6 digits.",
+      "proofHint": "For security, enter your own password and current 6-digit TOTP code. Recovery codes are not accepted.",
+      "preparing": "Preparing secure request...",
+      "challengeRenewed": "The request expired or was already used. A new one was prepared; enter your password and a fresh TOTP code and retry.",
+      "codeInvalid": "Password or TOTP code is incorrect.",
+      "rateLimited": "Too many attempts. Wait a few minutes and try again.",
+      "unavailable": "MFA service is temporarily unavailable. Try again later."
+    },
+    "mfaCode": {
+      "action": "Issue MFA setup code",
+      "title": "MFA setup code",
+      "description": "A one-time MFA setup code will be generated for {name}. It is shown only once.",
+      "shownOnce": "Code for {name}. Share it through a secure channel; it will not be shown again.",
+      "copy": "Copy",
+      "expires": "Expires: {at}",
+      "close": "Close",
+      "issue": "Generate code",
+      "retry": "Retry",
+      "password": "Your password",
+      "totp": "Current TOTP code or recovery code",
+      "proofHint": "For security, enter your own password and current TOTP code (or one recovery code). The code is valid for 1 hour."
     }
   },
   "Onboarding": {
@@ -546,14 +784,16 @@
       "warehouse": "Warehouse",
       "product": "Product",
       "customer": "Customer",
-      "agent": "Sales agent"
+      "agent": "Sales agent",
+      "openingBalances": "Opening balances"
     },
     "warehouse": {
       "required": "Required field",
       "name": "Warehouse name",
       "address": "Address",
       "submit": "Save warehouse"
-    }
+    },
+    "continue": "Continue"
   },
   "Settings": {
     "title": "Settings",
@@ -568,7 +808,13 @@
       "address": "Address",
       "currency": "Currency",
       "timezone": "Timezone",
-      "submit": "Save changes"
+      "submit": "Save changes",
+      "gpsRadiusRange": "Whole number from 10 to 5000",
+      "gpsAccuracyRange": "Whole number from 5 to 1000",
+      "gpsRadius": "Visit GPS radius (m)",
+      "gpsRadiusHelp": "Max distance between the agent and the outlet for a visit to count as verified. 10–5000, default 150.",
+      "gpsAccuracy": "Max GPS accuracy (m)",
+      "gpsAccuracyHelp": "Readings less accurate than this are flagged as low accuracy. 5–1000, default 100."
     }
   },
   "Audit": {
@@ -652,7 +898,7 @@
     "cancel": "Cancel",
     "confirmImport": "Confirm import",
     "processing": "Processing...",
-    "doneMessage": "Import finished",
+    "doneMessage": "Import finished: {created} created, {skipped} skipped",
     "failedGeneric": "Import failed",
     "totalRows": "Total rows",
     "validRows": "Valid",
@@ -673,7 +919,11 @@
       "PROCESSING": "Processing",
       "DONE": "Done",
       "FAILED": "Failed"
-    }
+    },
+    "noPermissionPage": "You don't have permission to view imports",
+    "createOnlyNote": "Import is create-only: rows whose code/SKU already exists are skipped, existing records are never updated.",
+    "retry": "Retry",
+    "createdBy": "Created by"
   },
   "Reports": {
     "title": "Reports",
@@ -688,12 +938,12 @@
       "aging": "Receivables"
     },
     "sales": {
-      "turnover": "Turnover",
-      "orderCount": "Order count",
-      "avgCheck": "Average check",
-      "byDay": "Turnover by day",
-      "byAgent": "By agent",
-      "topProducts": "Top products",
+      "turnover": "Delivered turnover",
+      "orderCount": "Delivered orders",
+      "avgCheck": "Average check (per delivered order)",
+      "byDay": "Delivered turnover by day",
+      "byAgent": "By agent (delivered)",
+      "topProducts": "Top products (delivered)",
       "noData": "No data for this period"
     },
     "agentPerformance": {
@@ -701,15 +951,15 @@
       "visits": "Visits",
       "routeCompletion": "Route completion",
       "effectiveVisits": "Effective visits",
-      "orderCount": "Orders",
-      "turnover": "Turnover",
-      "avgCheck": "Average check",
+      "orderCount": "Delivered orders",
+      "turnover": "Delivered turnover",
+      "avgCheck": "Average check (per delivered order)",
       "noData": "No agent activity for this period"
     },
     "overview": {
-      "turnover": "Turnover",
-      "orderCount": "Order count",
-      "avgCheck": "Average check",
+      "turnover": "Delivered turnover",
+      "orderCount": "Delivered orders",
+      "avgCheck": "Average check (per delivered order)",
       "activeCustomers": "Active customers",
       "newCustomers": "New customers",
       "totalCustomers": "Total customers",
@@ -720,12 +970,29 @@
     "aging": {
       "customer": "Customer",
       "current": "Current",
-      "d1to30": "1–30 days",
       "d31to60": "31–60 days",
-      "d61to90": "61–90 days",
-      "d90plus": "90+ days",
       "total": "Total",
-      "emptyState": "No outstanding debt"
+      "emptyState": "No outstanding debt",
+      "d1to7": "1–7 days",
+      "d8to30": "8–30 days",
+      "d60plus": "60+ days",
+      "asOf": "As of date"
+    },
+    "exportCsv": "Export to CSV",
+    "info": {
+      "title": "Report definition",
+      "period": "Period: {from} – {to} (time zone {timeZone})",
+      "asOfDate": "As of date: {asOf} (time zone {timeZone})",
+      "currency": "Currency: UZS (so'm)",
+      "statuses": "Counted orders: turnover and order count include delivered orders only (DELIVERED, CLOSED); other statuses are excluded",
+      "notes": {
+        "amount": "Amount: delivered quantity (internal invoice total).",
+        "avgCheck": "Average check = Delivered turnover / Delivered orders",
+        "routeCompletion": "Route completion % = Completed visits / Planned visits × 100",
+        "effectiveVisit": "Effective visit % = Visits that ended with an order / Completed visits × 100",
+        "debtSnapshot": "Debt is the current state (not tied to the period); overdue share % = Overdue debt / Total debt × 100",
+        "aging": "Days overdue = as-of date − (internal invoice date +customer payment term days), counted in calendar days of the company time zone."
+      }
     }
   },
   "Agents": {
@@ -742,8 +1009,8 @@
     "routeCount": "{count, plural, one {# route} other {# routes}}",
     "noRoutes": "No route assigned",
     "todayVisits": "Visits today",
-    "todayOrders": "Orders today",
-    "todayTurnover": "Turnover today",
+    "todayOrders": "Delivered orders today",
+    "todayTurnover": "Delivered turnover today",
     "actions": "Actions",
     "delete": "Delete",
     "deleteSuccess": "\"{name}\" deleted"
@@ -934,7 +1201,7 @@
               "Which customer owes how much, and since when — visible at a glance.",
               "Which shop the agent visited and how many orders they took — tracked through the day.",
               "How much stock you have and how much is reserved for orders — calculated automatically.",
-              "Every sum a cashier accepts is recorded against the invoice it pays off."
+              "Every sum a cashier accepts is recorded against the internal invoice it pays off."
             ]
           },
           {
@@ -943,8 +1210,8 @@
               "Customer — the company or entrepreneur you sell to. One customer can have several outlets.",
               "Outlet — a customer's specific shop with its address. Routes are built from outlets.",
               "Order — the list of products a customer asked for, and its total.",
-              "Invoice — the document to be paid, created once the order is delivered. Debt is counted from it.",
-              "Payment — money received from a customer. It is allocated to invoices and reduces the debt.",
+              "Internal invoice — the document to be paid, created once the order is delivered. Debt is counted from it.",
+              "Payment — money received from a customer. It is allocated to internal invoices and reduces the debt.",
               "Route — the list of outlets an agent visits on a given weekday."
             ]
           }
@@ -999,8 +1266,8 @@
             "items": [
               "Submitted — the agent or an operator entered the order; it is waiting for review.",
               "Confirmed — the order is accepted and the goods are reserved in the warehouse for that customer.",
-              "Delivered — the goods were handed over. At that moment stock goes down and an invoice is created.",
-              "Closed — the invoice is fully paid and the order is finished.",
+              "Delivered — the goods were handed over. At that moment stock goes down and an internal invoice is created.",
+              "Closed — the internal invoice is fully paid and the order is finished.",
               "Cancelled — the order fell through; the reserved goods are released."
             ]
           },
@@ -1049,7 +1316,7 @@
             "heading": "Buttons on the order card",
             "items": [
               "\"Confirm\" — reserves the goods for this customer.",
-              "\"Mark delivered\" — reduces stock and creates the invoice.",
+              "\"Mark delivered\" — reduces stock and creates the internal invoice.",
               "\"Close\" — finishes the order once it is fully paid.",
               "\"Cancel\" — you can record a reason; the reserved goods are released."
             ]
@@ -1064,7 +1331,7 @@
             "heading": "When adding a customer",
             "items": [
               "Code — the customer's internal number; it must be unique.",
-              "Payment term (days) — how many days the customer has to pay an invoice. Past that, the debt is marked overdue.",
+              "Payment term (days) — how many days the customer has to pay an internal invoice. Past that, the debt is marked overdue.",
               "Price list — which prices apply to this customer.",
               "Outlet — the customer's shop. If there are several, the rest can be added later."
             ]
@@ -1134,8 +1401,8 @@
           {
             "heading": "Allocating a payment",
             "items": [
-              "Automatic (FIFO) — the money is applied starting from the oldest open invoice. This is the usual choice.",
-              "Manual — you decide exactly which invoice the customer is paying for.",
+              "Automatic (FIFO) — the money is applied starting from the oldest open internal invoice. This is the usual choice.",
+              "Manual — you decide exactly which internal invoice the customer is paying for.",
               "Payment method: cash, card or bank transfer.",
               "A saved payment is never deleted — a mistake is fixed with a new correcting entry."
             ]
@@ -1270,7 +1537,7 @@
               "A product isn't in the list when creating an order — it hasn't been added yet, or it was made inactive.",
               "A product can't be sold, available stock is zero — it is reserved for other confirmed orders, or the stock was never received.",
               "A payment can't be added — the cash shift is probably not open. Open the shift first.",
-              "A customer's debt looks wrong — the invoice is only created once the order is delivered; an undelivered order is not counted as debt.",
+              "A customer's debt looks wrong — the internal invoice is only created once the order is delivered; an undelivered order is not counted as debt.",
               "I forgot my password — use \"Forgot password?\" on the login page and a code is sent to your phone. If that fails, an admin can issue a new password.",
               "Can data be exported to Excel — yes, list and report pages have an \"Export to Excel\" button.",
               "How do I change the language — use the language button in the top right corner: Uzbek, Russian or English."
@@ -1293,6 +1560,506 @@
           }
         ]
       }
+    }
+  },
+  "Purchases": {
+    "title": "Purchasing",
+    "tabOrders": "Purchase orders",
+    "tabSuppliers": "Suppliers",
+    "newOrder": "New purchase order",
+    "newReceipt": "Goods receipt",
+    "noPermission": "You don't have permission to view purchasing",
+    "refresh": "Refresh",
+    "retry": "Retry",
+    "emptyOrders": "No purchase orders yet. Create the first one.",
+    "emptyFiltered": "Nothing matches the filters",
+    "number": "Number",
+    "supplier": "Supplier",
+    "warehouse": "Warehouse",
+    "expectedAt": "Expected date",
+    "total": "Total",
+    "statusLabel": "Status",
+    "somUnit": "UZS",
+    "actions": "Actions",
+    "note": "Note",
+    "backToList": "Back to purchasing",
+    "orderCreated": "Order {number} created",
+    "receiptCreated": "Goods receipt recorded",
+    "filters": {
+      "status": "Status",
+      "allStatuses": "All statuses",
+      "supplier": "Supplier",
+      "allSuppliers": "All suppliers",
+      "from": "From date",
+      "to": "To date"
+    },
+    "status": {
+      "DRAFT": "Draft",
+      "ORDERED": "Ordered",
+      "PARTIALLY_RECEIVED": "Partially received",
+      "RECEIVED": "Received",
+      "CANCELLED": "Cancelled"
+    },
+    "suppliers": {
+      "new": "New supplier",
+      "searchPlaceholder": "Search by name or tax ID",
+      "statusFilter": "Filter by status",
+      "all": "All",
+      "active": "Active",
+      "inactive": "Inactive",
+      "empty": "No suppliers yet. Add the first one.",
+      "edit": "Edit",
+      "deactivate": "Deactivate",
+      "deactivated": "“{name}” deactivated",
+      "confirmDeactivate": {
+        "title": "Deactivate supplier",
+        "description": "“{name}” will no longer be selectable on new orders. Continue?"
+      }
+    },
+    "supplierForm": {
+      "createTitle": "New supplier",
+      "editTitle": "Edit supplier",
+      "name": "Name",
+      "legalName": "Legal name",
+      "inn": "Tax ID",
+      "phone": "Phone",
+      "address": "Address",
+      "note": "Note",
+      "nameRequired": "Enter a name",
+      "cancel": "Cancel",
+      "save": "Save",
+      "created": "Supplier added",
+      "updated": "Supplier updated"
+    },
+    "orderForm": {
+      "supplier": "Supplier",
+      "warehouse": "Warehouse",
+      "expectedAt": "Expected date",
+      "chooseSupplier": "Select",
+      "chooseWarehouse": "Select",
+      "lines": "Items",
+      "searchProduct": "Search product",
+      "noProducts": "No products found",
+      "noLines": "Add products using the search",
+      "product": "Product",
+      "qty": "Quantity",
+      "unitPrice": "Unit price",
+      "removeLine": "Remove line",
+      "totalsHint": "The final total is calculated by the server after saving.",
+      "note": "Note",
+      "saveDraft": "Save as draft",
+      "saveAndOrder": "Save and order",
+      "selectSupplier": "Select a supplier",
+      "selectWarehouse": "Select a warehouse",
+      "addLine": "Add at least one product",
+      "invalidQty": "“{name}”: invalid quantity (above 0, up to 3 decimals)",
+      "invalidPrice": "“{name}”: invalid price (up to 2 decimals)"
+    },
+    "detail": {
+      "ordered": "Marked as ordered",
+      "cancelled": "Order cancelled",
+      "markOrdered": "Mark as ordered",
+      "cancelOrder": "Cancel order",
+      "lines": "Items",
+      "product": "Product",
+      "qty": "Ordered",
+      "qtyReceived": "Received",
+      "remaining": "Remaining",
+      "unitPrice": "Unit price",
+      "lineTotal": "Line total",
+      "receipts": "Receipts",
+      "noReceipts": "No receipts for this order yet",
+      "confirmCancel": {
+        "title": "Cancel order",
+        "description": "Order {number} will be cancelled. Continue?"
+      }
+    },
+    "receiptForm": {
+      "product": "Product",
+      "remaining": "Remaining",
+      "qtyNow": "Quantity received",
+      "nothingToReceive": "Enter a quantity to receive",
+      "invalidQty": "“{name}”: invalid quantity (above 0, up to 3 decimals)",
+      "exceedsRemaining": "“{name}”: quantity must not exceed the remaining {remaining}",
+      "fromOrder": "Against order {number} · {supplier} · {warehouse}",
+      "fullyReceived": "This order is fully received",
+      "warehouse": "Warehouse",
+      "chooseWarehouse": "Select",
+      "supplierOptional": "Supplier (optional)",
+      "noSupplier": "Not specified",
+      "lines": "Items",
+      "searchProduct": "Search product",
+      "noProducts": "No products found",
+      "noLines": "Add products using the search",
+      "unitCost": "Unit cost",
+      "removeLine": "Remove line",
+      "note": "Note",
+      "selectWarehouse": "Select a warehouse",
+      "addLine": "Add at least one product",
+      "invalidCost": "“{name}”: invalid unit cost (up to 2 decimals)",
+      "submit": "Receive"
+    },
+    "tabReceipts": "Goods receipts",
+    "receiptsTitle": "Goods receipts",
+    "emptyReceipts": "No goods receipts yet. Receive goods to see them here.",
+    "receiptDate": "Date",
+    "receiptPo": "Purchase order",
+    "noPo": "No PO",
+    "receiptLines": "Lines",
+    "receiptTotalQty": "Total qty",
+    "receivedBy": "Received by",
+    "allWarehouses": "All warehouses"
+  },
+  "Reconciliation": {
+    "title": "Reconciliation",
+    "subtitle": "Checks stored stock and customer balances against the ledger.",
+    "refresh": "Refresh",
+    "retry": "Retry",
+    "noPermission": "You do not have permission to view reconciliation.",
+    "runNow": "Run now",
+    "runDone": "Run finished: {stock} stock and {balance} balance findings, {healed} self-healed.",
+    "runDoneBalanceOnly": "Run finished: {balance} balance findings, {healed} self-healed.",
+    "busy": "A reconciliation run is already in progress. Try again in a minute.",
+    "alreadyConsistent": "Already consistent: the stored value already matches the ledger, nothing changed.",
+    "fixed": "Projection overwritten with the ledger value.",
+    "fix": "Fix",
+    "empty": "No findings for these filters. Stored values match the ledger; use Run now to check again.",
+    "columnsHint": "Values shown as expected (ledger) / actual (stored) / difference (actual − expected).",
+    "product": "Product ID",
+    "warehouse": "Warehouse ID",
+    "customer": "Customer ID",
+    "runsTitle": "Recent runs",
+    "runsEmpty": "No runs yet. The daily check will appear here, or start one with Run now.",
+    "filters": {
+      "kind": "Type",
+      "status": "Status",
+      "all": "All"
+    },
+    "kind": {
+      "STOCK": "Stock",
+      "BALANCE": "Balance"
+    },
+    "status": {
+      "OPEN": "Open",
+      "FIXED": "Fixed"
+    },
+    "trigger": {
+      "SCHEDULED": "Scheduled",
+      "MANUAL": "Manual"
+    },
+    "col": {
+      "kind": "Type",
+      "subject": "Subject",
+      "main": "On hand / balance",
+      "reserved": "Reserved",
+      "status": "Status",
+      "detected": "Detected"
+    },
+    "runs": {
+      "started": "Started",
+      "trigger": "Trigger",
+      "stock": "Stock findings",
+      "balance": "Balance findings",
+      "ratio": "{found} of {checked} checked"
+    },
+    "fixDialog": {
+      "title": "Fix this finding?",
+      "description": "This overwrites the stored stock/balance projection with the value calculated from the ledger. The ledger itself is not changed. The action is recorded in the audit log.",
+      "confirm": "Overwrite with ledger value"
+    },
+    "paymentConflicts": {
+      "title": "Offline payment conflicts",
+      "subtitle": "Offline payments the server rejected and that still need a cashier decision.",
+      "warning": "Confirming only records your decision. It does not create, change or cancel any payment. \"Payment was not posted\" requires evidence from the source document (receipt, bank statement, cash log).",
+      "retry": "Retry",
+      "empty": "No open offline payment conflicts. Nothing to do here.",
+      "col": {
+        "number": "Payment",
+        "amount": "Amount",
+        "status": "Status",
+        "rejections": "Rejections",
+        "last": "Last rejected"
+      },
+      "confirmAction": "Record decision",
+      "outcome": {
+        "EXISTING_PAYMENT_CONFIRMED": "Existing payment is correct",
+        "NOT_POSTED_CONFIRMED": "Payment was not posted"
+      },
+      "form": {
+        "title": "Decision for payment {number}",
+        "outcome": "Outcome",
+        "reason": "Reason (at least 10 characters)",
+        "evidence": "Source document reference",
+        "evidenceHint": "Required for \"Payment was not posted\": receipt, bank statement or cash log number.",
+        "reasonShort": "Reason must be at least {min} characters.",
+        "evidenceRequired": "Source document reference is required for \"Payment was not posted\".",
+        "submit": "Record decision",
+        "cancel": "Cancel"
+      },
+      "result": {
+        "done": "Decision recorded. No payment was changed.",
+        "replayed": "This decision was already recorded. No payment was changed.",
+        "payment": "Payment"
+      }
+    }
+  },
+  "Visits": {
+    "title": "Visits",
+    "refresh": "Refresh",
+    "retry": "Retry",
+    "noPermission": "You do not have permission to view visits.",
+    "agent": "Agent",
+    "allAgents": "All agents",
+    "outlet": "Outlet",
+    "startedAt": "Started",
+    "outcome": "Outcome",
+    "gpsStatus": "GPS status",
+    "allGps": "All GPS statuses",
+    "distanceM": "Distance (m)",
+    "accuracyM": "Accuracy (m)",
+    "reason": "Reason",
+    "emptyState": "No visits yet. Visits appear here once agents check in at outlets.",
+    "emptyFiltered": "No visits match the filters.",
+    "outcomes": {
+      "ORDERED": "Ordered",
+      "NO_ORDER": "No order",
+      "SKIPPED": "Skipped"
+    },
+    "gps": {
+      "VERIFIED": "Verified",
+      "OUTSIDE_RADIUS": "Outside radius",
+      "LOW_ACCURACY": "Low accuracy",
+      "NO_PERMISSION": "No GPS permission",
+      "NO_FIX": "No GPS fix",
+      "OUTLET_NO_COORDS": "Outlet has no coordinates"
+    }
+  },
+  "Notifications": {
+    "title": "Notifications",
+    "bell": "Notifications",
+    "bellWithCount": "Notifications, {count} unread",
+    "unreadOnly": "Unread only",
+    "markAllRead": "Mark all read",
+    "empty": "No notifications yet",
+    "emptyUnread": "No unread notifications",
+    "retry": "Retry",
+    "unread": "Unread"
+  },
+  "Export1c": {
+    "legacyNoChecksum": "This is a legacy export — re-export to confirm/download",
+    "title": "1C export",
+    "subtitle": "Generate accounting files for 1C by period, download them and confirm the result.",
+    "refresh": "Refresh",
+    "retry": "Retry",
+    "noPermission": "You do not have permission to use the 1C export.",
+    "throttled": "Too many requests. Please wait a minute and try again.",
+    "created": "Export queued. It will appear in the list below.",
+    "empty": "No exports yet. Choose a period and format above and create the first export.",
+    "failedUnknown": "Generation failed. Create the export again.",
+    "download": "Download",
+    "form": {
+      "from": "Period from",
+      "to": "Period to",
+      "format": "Format",
+      "formatPlaceholder": "Select format",
+      "create": "Create export",
+      "hint": "The period must end no later than yesterday ({date}, company time zone).",
+      "periodInvalid": "Choose a valid period: start not after end, end not later than yesterday.",
+      "xmlUnverified": "XML/CSV (mapping v2) is not yet verified against a real 1C import; documents with discounts, non-zero VAT or unsupported units are rejected. Excel is an informational register only, not for 1C import."
+    },
+    "format": {
+      "EXCEL": "Excel (informational register, not a 1C import file)",
+      "CSV": "CSV",
+      "XML": "XML (not pilot-verified)"
+    },
+    "status": {
+      "QUEUED": "Queued",
+      "PROCESSING": "Processing",
+      "GENERATED": "Ready",
+      "FAILED": "Failed",
+      "ACCOUNTING_ACCEPTED": "Accepted by accounting",
+      "FAILED_REVIEW": "Rejected in 1C"
+    },
+    "col": {
+      "status": "Status",
+      "period": "Period",
+      "format": "Format",
+      "records": "Records",
+      "file": "File / SHA-256",
+      "generated": "Generated",
+      "ack": "Confirmation"
+    },
+    "hash": {
+      "copy": "Copy SHA-256",
+      "copied": "SHA-256 copied.",
+      "copyFailed": "Could not copy.",
+      "match": "Downloaded file matches the SHA-256",
+      "mismatch": "Downloaded file does NOT match the SHA-256. Do not import it into 1C.",
+      "unavailable": "Downloaded; SHA-256 could not be compared in the browser."
+    },
+    "ack": {
+      "accept": "Accepted",
+      "reject": "Error (rejected)",
+      "acceptTitle": "Confirm acceptance in 1C",
+      "acceptDescription": "Confirm that the file {file} was imported into 1C successfully. This cannot be changed later.",
+      "rejectTitle": "Report an error in 1C",
+      "rejectDescription": "Describe why the file {file} was rejected by 1C. This cannot be changed later.",
+      "doneAccepted": "Marked as accepted.",
+      "doneRejected": "Marked as rejected."
+    },
+    "unsupported": {
+      "total": "Unsupported documents: {total}",
+      "invoice": "Invoice",
+      "sku": "SKU",
+      "reasons": "Reasons",
+      "hint": "Choose another period. Documents were not changed; no partial file was created.",
+      "reason": {
+        "DISCOUNT": "Discount",
+        "VAT": "VAT",
+        "QTY_X_PRICE_MISMATCH": "Qty × price mismatch",
+        "UNIT": "Unit",
+        "TOTAL_MISMATCH": "Total mismatch"
+      }
+    }
+  },
+  "Trial": {
+    "ending": "Your trial ends in {days, plural, =0 {0 days (today)} one {# day} other {# days}}. Activate a plan to keep working.",
+    "expired": "Your trial has expired. The system keeps working, but a plan must be activated."
+  },
+  "OpeningBalances": {
+    "title": "Opening balances",
+    "subtitle": "Upload customer debts/advances and warehouse stock from the old system (1C) as a file: preview first, then post against the 1C control totals.",
+    "noPermission": "You do not have access to opening balances.",
+    "retry": "Retry",
+    "uploadOwnerOnly": "Only the Owner (OWNER) can upload files. You can view the list of batches and their details.",
+    "upload": "Upload file",
+    "uploadRetry": "Upload another file",
+    "startOver": "Start over",
+    "newUpload": "Upload a new file",
+    "kinds": {
+      "CUSTOMER_BALANCE": "Customer debt/advance",
+      "STOCK": "Warehouse stock"
+    },
+    "statuses": {
+      "PREVIEWED": "Previewed",
+      "POSTED": "Posted",
+      "VOIDED": "Voided"
+    },
+    "guide": {
+      "title": "File columns",
+      "CUSTOMER_BALANCE": "customerCode or customerId; debt or credit (debt = customer owes, credit = advance, one per row); docRef (required for debt — the 1C document number); docDate (YYYY-MM-DD).",
+      "STOCK": "sku; warehouseName or warehouseId; qty (up to 3 decimals).",
+      "formats": "Format: .xlsx or .csv, first row is the header, at most 5000 rows. If any row is invalid nothing is posted partially."
+    },
+    "preview": {
+      "totalRows": "Total rows",
+      "validRows": "Valid rows",
+      "invalidRows": "Invalid rows",
+      "totalDebt": "Total debt",
+      "totalCredit": "Total advance",
+      "totalQty": "Total quantity",
+      "hasErrors": "The file has invalid rows. Fix and re-upload — opening balances are never posted partially.",
+      "ownerOnly": "Only the Owner (OWNER) can post this batch. You can review the preview result."
+    },
+    "post": {
+      "title": "Post and sign off",
+      "cutover": "Warning: after the chosen date, balances and debts in the old system must not be changed — otherwise the two systems will diverge.",
+      "asOfDate": "As-of date",
+      "source": "Source",
+      "sourcePlaceholder": "e.g. 1C, turnover sheet 30.09",
+      "controlTitle": "1C control totals",
+      "controlHint": "Enter the totals from 1C (0 is allowed). They must exactly equal the previewed file totals.",
+      "controlDebt": "1C total debt",
+      "controlCredit": "1C total advance",
+      "controlQty": "1C total stock",
+      "previewTotals": "File totals",
+      "mismatch": "The control totals differ from the file totals. The server will refuse to post — check the 1C data and the file.",
+      "mismatchExpected": "File totals: debt {debt}, advance {credit}, quantity {qty}.",
+      "signOff": "I have reconciled the totals with 1C and confirm posting.",
+      "submit": "Post",
+      "submitAnyway": "Try to post despite the difference",
+      "success": "Opening balances posted",
+      "result": "{kind}: {rows} rows posted. Total:",
+      "dateRequired": "Enter a date",
+      "dateFuture": "The date cannot be in the future",
+      "sourceInvalid": "Enter the source (1–200 characters)",
+      "amountInvalid": "Enter an amount: a number with up to 2 decimals (0 is allowed)",
+      "qtyInvalid": "Enter a quantity: a number with up to 3 decimals (0 is allowed)",
+      "signOffRequired": "Sign-off is required"
+    },
+    "history": {
+      "title": "Batches",
+      "empty": "No opening balance batches yet. Upload a file above.",
+      "kind": "Type",
+      "createdAt": "Date",
+      "source": "Source",
+      "rows": "Rows",
+      "totals": "Totals",
+      "status": "Status",
+      "actions": "Actions",
+      "asOf": "As-of date",
+      "debt": "Debt",
+      "credit": "Advance"
+    },
+    "void": {
+      "action": "Void",
+      "title": "Void batch",
+      "description": "The batch documents will be reversed. If later operations already used them, the batch cannot be voided.",
+      "confirm": "Void batch",
+      "success": "Batch voided",
+      "touchedHint": "Resolve the linked payment allocation or stock movement first."
+    },
+    "downloadTemplate": "Download CSV template"
+  },
+  "CompanyExport": {
+    "title": "Export company data",
+    "purpose": "For the customer's right to access their data and for offboarding: a full copy of your company's data as one Excel file.",
+    "includes": "Included: customers, outlets, products, prices, stock, orders, internal invoices, payments, cash sessions, users (name, phone, email, roles only).",
+    "excludes": "Never included: passwords, tokens, Telegram identifiers and other secrets.",
+    "create": "Create export",
+    "inProgress": "Export in progress",
+    "created": "Export started",
+    "throttled": "Too many requests. Try again in a minute.",
+    "retry": "Retry",
+    "empty": "No exports yet. Press \"Create export\" to get your first file.",
+    "failedUnknown": "Export failed",
+    "download": "Download",
+    "col": {
+      "status": "Status",
+      "file": "File",
+      "size": "Size",
+      "date": "Date"
+    },
+    "status": {
+      "QUEUED": "Queued",
+      "PROCESSING": "Processing",
+      "GENERATED": "Ready",
+      "FAILED": "Failed",
+      "ACCOUNTING_ACCEPTED": "Ready",
+      "FAILED_REVIEW": "Ready"
+    },
+    "hash": {
+      "match": "Checksum verified",
+      "mismatch": "Checksum mismatch - do not use this file",
+      "unavailable": "Checksum could not be verified"
+    }
+  },
+  "Security": {
+    "title": "Security",
+    "password": "Password",
+    "currentCode": "Current 6-digit code",
+    "reenroll": {
+      "title": "Change authenticator",
+      "description": "Set up two-factor authentication on a new device. Requires your password and a current code.",
+      "submit": "Continue",
+      "done": "Done",
+      "success": "Authenticator updated"
+    },
+    "regenerate": {
+      "title": "New recovery codes",
+      "description": "Generate a new set of recovery codes. Old codes stop working.",
+      "submit": "Generate codes",
+      "done": "Done"
     }
   }
 }

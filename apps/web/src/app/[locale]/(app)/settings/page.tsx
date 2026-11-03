@@ -10,6 +10,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import { CompanyExportCard } from '@/components/settings/company-export-card';
 import { SettingsForm } from '@/components/settings/settings-form';
 
 export default function SettingsPage() {
@@ -66,6 +67,8 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
       )}
+
+      {hasPermission('company.export') && <CompanyExportCard />}
     </div>
   );
 }

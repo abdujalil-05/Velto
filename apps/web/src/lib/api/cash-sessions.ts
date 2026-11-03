@@ -55,8 +55,12 @@ export function useOpenCashSessionMutation() {
 export function useCloseCashSessionMutation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, closeAmount }: { id: string; closeAmount: number }) =>
-      apiFetch<CashSession>(`/cash-sessions/${id}/close`, { method: 'POST', body: { closeAmount } }),
+    mutationFn: ({ id, closeAmount, idempotencyKey }: { id: string; closeAmount: number; idempotencyKey: string }) =>
+      apiFetch<CashSession>(`/cash-sessions/${id}/close`, {
+        method: 'POST',
+        body: { closeAmount },
+        headers: { 'Idempotency-Key': idempotencyKey },
+      }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['cash-sessions'] }),
   });
 }

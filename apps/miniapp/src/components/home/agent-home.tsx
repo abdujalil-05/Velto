@@ -110,8 +110,11 @@ export function AgentHome() {
                 {visitsToday.data?.length ?? 0} / {totalStopsToday ?? 0}{' '}
                 <span className="text-sm font-normal text-muted-foreground">{t('stops')}</span>
               </p>
-              <p className="text-lg font-semibold tabular-nums">
-                {formatMoney(turnoverToday ?? 0)} <span className="text-sm text-muted-foreground">{tCommon('somUnit')}</span>
+              <p className="text-sm text-muted-foreground">
+                {t('ordersTotalToday')}:{' '}
+                <span className="text-lg font-semibold tabular-nums text-foreground">
+                  {formatMoney(turnoverToday ?? 0)} {tCommon('somUnit')}
+                </span>
               </p>
               <p className="text-sm text-muted-foreground">
                 {t('collected')}:{' '}

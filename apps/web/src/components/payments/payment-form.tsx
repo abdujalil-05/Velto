@@ -6,6 +6,7 @@ import { useCustomersQuery, type Customer } from '@/lib/api/customers';
 import { useInvoicesQuery } from '@/lib/api/invoices';
 import { useDebouncedValue } from '@/lib/hooks/use-debounced-value';
 import { formatMoney } from '@/lib/format';
+import { sumDecimal, sumExceeds } from '@/lib/decimal-math';
 import type { CreatePaymentInput, PaymentMethod } from '@/lib/api/payments';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -53,11 +54,6 @@ export function PaymentForm({ isSubmitting, submitError, onSubmit }: PaymentForm
     [invoicesData],
   );
 
-  const manualTotal = useMemo(
-    () => Object.values(manualAmounts).reduce((sum, v) => sum + (Number(v) || 0), 0),
-    [manualAmounts],
-  );
-
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setValidationError(null);
@@ -80,7 +76,7 @@ export function PaymentForm({ isSubmitting, submitError, onSubmit }: PaymentForm
         setValidationError(t('allocateAtLeastOne'));
         return;
       }
-      if (manualTotal > amountNum) {
+      if (sumExceeds(Object.values(manualAmounts), amount)) {
         setValidationError(t('allocationExceedsAmount'));
         return;
       }
@@ -177,7 +173,7 @@ export function PaymentForm({ isSubmitting, submitError, onSubmit }: PaymentForm
           ))}
           {openInvoices.length > 0 && (
             <p className="pt-1 text-right text-sm font-medium">
-              {t('allocatedTotal')}: {formatMoney(manualTotal)} {tCommon('somUnit')}
+              {t('allocatedTotal')}: {formatMoney(sumDecimal(Object.values(manualAmounts)))} {tCommon('somUnit')}
             </p>
           )}
         </div>

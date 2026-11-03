@@ -1,5 +1,5 @@
 import { useTranslations } from 'next-intl';
-import { Trash2 } from 'lucide-react';
+import { RotateCcw, Trash2 } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -15,12 +15,15 @@ interface CustomersTableProps {
   /** `customers.delete` — Owner-only on the API side. */
   canDelete?: boolean;
   onDelete?: (customer: Customer) => void;
+  /** `customers.restore` — shown instead of delete in the deleted view. */
+  canRestore?: boolean;
+  onRestore?: (customer: Customer) => void;
 }
 
-export function CustomersTable({ customers, sort, onSort, canDelete = false, onDelete }: CustomersTableProps) {
+export function CustomersTable({ customers, sort, onSort, canDelete = false, onDelete, canRestore = false, onRestore }: CustomersTableProps) {
   const t = useTranslations('Customers');
   const tCommon = useTranslations('Common');
-  const showActions = canDelete && !!onDelete;
+  const showActions = (canDelete && !!onDelete) || (canRestore && !!onRestore);
 
   return (
     <div className="overflow-x-auto">
@@ -37,6 +40,7 @@ export function CustomersTable({ customers, sort, onSort, canDelete = false, onD
             <SortableHeader column="balance" sort={sort} onSort={onSort} align="right">
               {t('balance')}
             </SortableHeader>
+            <th className="pb-2 pr-3 text-right font-medium">{t('advance')}</th>
             <th className="pb-2 font-medium">{t('status')}</th>
             {showActions && <th className="pb-2 text-right font-medium">{t('actions')}</th>}
           </tr>
@@ -58,7 +62,18 @@ export function CustomersTable({ customers, sort, onSort, canDelete = false, onD
                 </td>
                 <td className="py-2 pr-3 text-muted-foreground">{customer.phone ?? '—'}</td>
                 <td className={`py-2 pr-3 text-right tabular-nums ${balance > 0 ? 'text-destructive font-medium' : ''}`}>
-                  {formatMoney(customer.cachedBalance)} <span className="text-muted-foreground">{tCommon('somUnit')}</span>
+                  {balance < 0 ? formatMoney(customer.cachedBalance.replace('-', '')) : formatMoney(customer.cachedBalance)}{' '}
+                  <span className="text-muted-foreground">{tCommon('somUnit')}</span>
+                  {balance < 0 && <span className="ml-1 text-xs text-success">{t('credit')}</span>}
+                </td>
+                <td className="py-2 pr-3 text-right tabular-nums">
+                  {Number(customer.advance) > 0 ? (
+                    <>
+                      {formatMoney(customer.advance)} <span className="text-muted-foreground">{tCommon('somUnit')}</span>
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  )}
                 </td>
                 <td className="py-2">
                   {customer.isBlocked ? (
@@ -69,9 +84,16 @@ export function CustomersTable({ customers, sort, onSort, canDelete = false, onD
                 </td>
                 {showActions && (
                   <td className="py-2 text-right">
-                    <Button variant="ghost" size="sm" onClick={() => onDelete?.(customer)} aria-label={t('delete')}>
-                      <Trash2 className="h-4 w-4 text-destructive" />
-                    </Button>
+                    {canRestore && onRestore ? (
+                      <Button variant="ghost" size="sm" onClick={() => onRestore(customer)}>
+                        <RotateCcw className="mr-1 h-4 w-4" />
+                        {t('restore')}
+                      </Button>
+                    ) : (
+                      <Button variant="ghost" size="sm" onClick={() => onDelete?.(customer)} aria-label={t('delete')}>
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      </Button>
+                    )}
                   </td>
                 )}
               </tr>

@@ -1,7 +1,10 @@
 import {
   BarChart3,
   BookOpen,
+  ClipboardList,
   History,
+  Scale,
+  FileOutput,
   IdCard,
   LayoutDashboard,
   Package,
@@ -14,6 +17,7 @@ import {
   Wallet,
   Warehouse,
   type LucideIcon,
+  MapPin,
 } from 'lucide-react';
 
 export interface NavItem {
@@ -24,12 +28,16 @@ export interface NavItem {
     | 'products'
     | 'cash'
     | 'stock'
+    | 'purchases'
     | 'couriers'
     | 'users'
     | 'routes'
+    | 'visits'
     | 'agents'
     | 'reports'
     | 'audit'
+    | 'reconciliation'
+    | 'export1c'
     | 'settings'
     | 'help';
   href: string;
@@ -57,12 +65,16 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'products', href: '/products', icon: Package, permission: 'catalog.read' },
   { key: 'cash', href: '/cash', icon: Wallet, permission: 'payments.read' },
   { key: 'stock', href: '/stock', icon: Warehouse, permission: 'stock.read' },
+  { key: 'purchases', href: '/purchases', icon: ClipboardList, permission: 'purchases.read' },
   { key: 'couriers', href: '/couriers', icon: Truck, permission: 'users.read' },
   { key: 'users', href: '/users', icon: IdCard, permission: 'users.read' },
+  { key: 'visits', href: '/visits', icon: MapPin, permission: 'field.read' },
   { key: 'agents', href: '/agents', icon: UserCog, permission: 'users.read' },
   { key: 'routes', href: '/routes', icon: Route, permission: 'routes.read' },
   { key: 'reports', href: '/reports', icon: BarChart3, permission: 'reports.read' },
   { key: 'audit', href: '/audit', icon: History, permission: 'audit.read' },
+  { key: 'reconciliation', href: '/reconciliation', icon: Scale, permission: 'reconciliation.read' },
+  { key: 'export1c', href: '/export-1c', icon: FileOutput, permission: 'integrations.export1c' },
   { key: 'settings', href: '/settings', icon: SettingsIcon, permission: 'settings.read' },
   { key: 'help', href: '/help', icon: BookOpen },
 ];

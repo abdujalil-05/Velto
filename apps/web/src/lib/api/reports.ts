@@ -17,6 +17,8 @@ interface ReportRange {
 // fields arrive as strings.
 export interface SalesReport {
   range: ReportRange;
+  /** Company IANA time zone the range/day buckets are computed in. */
+  timeZone: string;
   summary: { turnover: string; orderCount: number; avgCheck: string };
   byDay: { date: string; turnover: string }[];
   byAgent: { agentId: string; agentName: string; turnover: string; orderCount: number }[];
@@ -31,8 +33,15 @@ export function useSalesReportQuery(params: DateRangeParams, enabled = true) {
   });
 }
 
-export function downloadSalesReportExcel(params: DateRangeParams): Promise<void> {
-  return apiDownload(`/reports/sales/export${toQueryString(params)}`, `sotuv-hisoboti-${new Date().toISOString().slice(0, 10)}.xlsx`);
+export type ReportExportFormat = 'xlsx' | 'csv';
+
+/** `/export` is the Excel endpoint, `/export.csv` the CSV one (apps/api reports.controller.ts). */
+function exportPath(base: string, format: ReportExportFormat): string {
+  return format === 'csv' ? `${base}/export.csv` : `${base}/export`;
+}
+
+export function downloadSalesReport(params: DateRangeParams, format: ReportExportFormat): Promise<void> {
+  return apiDownload(`${exportPath('/reports/sales', format)}${toQueryString(params)}`, `sotuv-hisoboti-${new Date().toISOString().slice(0, 10)}.${format}`);
 }
 
 // Mirrors apps/api/src/modules/analytics/agent-performance.service.ts.
@@ -50,6 +59,7 @@ export interface AgentPerformanceRow {
 
 export interface AgentPerformanceReport {
   range: ReportRange;
+  timeZone: string;
   agents: AgentPerformanceRow[];
 }
 
@@ -61,14 +71,15 @@ export function useAgentPerformanceReportQuery(params: DateRangeParams, enabled 
   });
 }
 
-export function downloadAgentPerformanceExcel(params: DateRangeParams): Promise<void> {
-  return apiDownload(`/reports/agents/export${toQueryString(params)}`, `agentlar-hisoboti-${new Date().toISOString().slice(0, 10)}.xlsx`);
+export function downloadAgentPerformanceReport(params: DateRangeParams, format: ReportExportFormat): Promise<void> {
+  return apiDownload(`${exportPath('/reports/agents', format)}${toQueryString(params)}`, `agentlar-hisoboti-${new Date().toISOString().slice(0, 10)}.${format}`);
 }
 
 // Mirrors apps/api/src/modules/analytics/overview-report.service.ts. Debt
 // fields are a live snapshot ("as of now"), not scoped to [from,to].
 export interface OverviewReport {
   range: ReportRange;
+  timeZone: string;
   turnover: string;
   orderCount: number;
   avgCheck: string;
@@ -88,6 +99,6 @@ export function useOverviewReportQuery(params: DateRangeParams, enabled = true) 
   });
 }
 
-export function downloadOverviewReportExcel(params: DateRangeParams): Promise<void> {
-  return apiDownload(`/reports/overview/export${toQueryString(params)}`, `umumiy-hisobot-${new Date().toISOString().slice(0, 10)}.xlsx`);
+export function downloadOverviewReport(params: DateRangeParams, format: ReportExportFormat): Promise<void> {
+  return apiDownload(`${exportPath('/reports/overview', format)}${toQueryString(params)}`, `umumiy-hisobot-${new Date().toISOString().slice(0, 10)}.${format}`);
 }
